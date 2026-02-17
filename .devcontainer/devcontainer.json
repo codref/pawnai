@@ -1,0 +1,15 @@
+{
+  "build": { "dockerfile": "Dockerfile" },
+  "runArgs": [
+    "--gpus",
+    "all",
+    "--ulimit",
+    "memlock=-1",
+    "--ipc=host",
+    "--ulimit",
+    "stack=67108864"
+], "remoteUser": "operatore",
+"containerEnv": {
+    "SHELL": "/bin/bash"
+}
+}

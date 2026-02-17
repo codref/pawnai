@@ -1,0 +1,9 @@
+nemo_toolkit[asr]
+pyannote.audio==4.0.3
+lancedb
+duckdb
+pylance
+typer[all]
+rich
+prompt-toolkit
+python-dotenv
