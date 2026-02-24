@@ -6,4 +6,6 @@ pylance
 typer[all]
 rich
 prompt-toolkit
-python-dotenv
+PyYAML>=6.0
+boto3>=1.26.0
+github-copilot-sdk

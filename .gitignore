@@ -150,6 +150,7 @@ activemq-data/
 # Environments
 .env
 .envrc
+.pawnai.yml
 .venv
 env/
 venv/
@@ -222,3 +223,6 @@ old
 speakers_db
 
 data
+
+pawnai_recorder
+output

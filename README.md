@@ -687,7 +687,7 @@ pytest --cov=pawnai
 - **LanceDB**: Vector database for embeddings
 - **Typer**: CLI framework with auto-generated help
 - **Rich**: Beautiful terminal output formatting
-- **python-dotenv**: Environment variable management from .env files
+- **PyYAML**: Configuration management from .pawnai.yml files
 - **PyTorch**: Deep learning framework
 - **scikit-learn**: Machine learning utilities
 

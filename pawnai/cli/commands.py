@@ -1,6 +1,7 @@
 """CLI command definitions for PawnAI."""
 
-from typing import List, Optional
+import shutil
+from typing import Any, List, Optional, Tuple
 import typer
 from pathlib import Path
 
@@ -12,6 +13,93 @@ app = typer.Typer(
 )
 
 
+def _resolve_s3_paths(
+    paths: List[str],
+    app_cfg: Any,
+) -> Tuple[List[str], List[str]]:
+    """Download any ``s3://`` paths to temporary local files.
+
+    Paths that are already local are passed through unchanged.  The caller
+    is responsible for deleting the returned temp files when processing is
+    complete (typically in a ``finally`` block).
+
+    Args:
+        paths: List of file paths, which may contain ``s3://`` URIs.
+        app_cfg: Active :class:`~pawnai.core.config.AppConfig` instance used
+            to read the ``s3:`` configuration section.
+
+    Returns:
+        Tuple of ``(resolved_paths, temp_files)`` where *resolved_paths* has
+        ``s3://`` entries replaced by local temp file paths and *temp_files*
+        is the list of temporary file paths to delete after processing.
+
+    Raises:
+        typer.Exit: If any ``s3://`` URI is present but no ``s3:`` section is
+            configured in ``.pawnai.yml``.
+    """
+    import tempfile
+    from ..core.s3 import is_s3_path, S3Client, parse_s3_uri, expand_s3_glob
+
+    has_s3 = any(is_s3_path(p) for p in paths)
+    if not has_s3:
+        return paths, []
+
+    s3_cfg = app_cfg.get_s3_config()
+    if s3_cfg is None:
+        console.print(
+            "[red]Error: S3 paths require an 's3:' section in .pawnai.yml[/red]"
+        )
+        raise typer.Exit(1)
+
+    client = S3Client.from_dict(s3_cfg)
+
+    # Resolve base download directory (configured or OS /tmp)
+    _dl_dir_cfg = s3_cfg.get("download_dir")
+    if _dl_dir_cfg:
+        _base_dir = Path(_dl_dir_cfg)
+        _base_dir.mkdir(parents=True, exist_ok=True)
+    else:
+        _base_dir = None  # tempfile will use the OS default (/tmp)
+
+    # Create a single randomly-named subdirectory for this invocation so that
+    # downloaded files keep their original S3 key name (e.g. 260224183013_01.flac)
+    # and LanceDB stores a meaningful speaker ID rather than the random tmp name.
+    tmp_dir = Path(tempfile.mkdtemp(prefix="pawnai_s3_", dir=str(_base_dir) if _base_dir else None))
+
+    # Expand any wildcard URIs before downloading
+    expanded_paths: List[str] = []
+    for path in paths:
+        if is_s3_path(path) and any(c in path for c in ("*", "?", "[")):
+            matches = expand_s3_glob(path, client)
+            if not matches:
+                console.print(f"[yellow]Warning: no S3 objects matched {path!r}[/yellow]")
+            else:
+                console.print(
+                    f"[cyan]Expanded {path!r} → {len(matches)} file(s)[/cyan]"
+                )
+                expanded_paths.extend(matches)
+        else:
+            expanded_paths.append(path)
+
+    # temps holds the tmp_dir path so the caller can delete it in finally
+    temps: List[str] = [str(tmp_dir)]
+    resolved: List[str] = []
+
+    for path in expanded_paths:
+        if not is_s3_path(path):
+            resolved.append(path)
+            continue
+
+        bucket, key = parse_s3_uri(path, configured_bucket=client.bucket)
+        # Preserve the original filename so speaker IDs in LanceDB are meaningful
+        local_path = tmp_dir / Path(key).name
+        console.print(f"[cyan]Downloading s3://{bucket}/{key} …[/cyan]")
+        client.download_file(key, str(local_path), bucket=bucket)
+        resolved.append(str(local_path))
+
+    return resolved, temps
+
+
 @app.command()
 def diarize(
     audio_paths: List[str] = typer.Argument(
@@ -21,7 +109,7 @@ def diarize(
         None, "--output", "-o", help="Output file path (format inferred from extension: .txt or .json)"
     ),
     config: Optional[str] = typer.Option(
-        None, "--config", help="Path to .env configuration file"
+        None, "--config", help="Path to YAML configuration file (.pawnai.yml)"
     ),
     db_path: str = typer.Option(
         "speakers_db", help="Path to speaker database"
@@ -52,13 +140,13 @@ def diarize(
     # Lazy imports to avoid loading models during --help
     import json
     from ..core import DiarizationEngine
-    from ..core.config import Config, load_config_from_file
-    
-    # Load config from specified file if provided
-    if config:
-        load_config_from_file(config)
-    
+    from ..core.config import Config, AppConfig
+
+    # Load config; capture instance so S3 config is accessible
+    app_cfg = AppConfig(config_path=config) if config else AppConfig()
+    _s3_temps: List[str] = []
     try:
+        audio_paths, _s3_temps = _resolve_s3_paths(audio_paths, app_cfg)
         for p in audio_paths:
             if not Path(p).exists():
                 console.print(f"[red]Error: Audio file not found: {p}[/red]")
@@ -149,6 +237,9 @@ def diarize(
     except Exception as e:
         console.print(f"[red]Error during diarization: {str(e)}[/red]")
         raise typer.Exit(1)
+    finally:
+        for _f in _s3_temps:
+            shutil.rmtree(_f, ignore_errors=True)
 
 
 @app.command()
@@ -160,7 +251,7 @@ def transcribe(
         None, "--output", "-o", help="Output file path (format inferred from extension: .txt or .json)"
     ),
     config: Optional[str] = typer.Option(
-        None, "--config", help="Path to .env configuration file"
+        None, "--config", help="Path to YAML configuration file (.pawnai.yml)"
     ),
     with_timestamps: bool = typer.Option(
         True, "--timestamps/--no-timestamps", help="Include word-level timestamps"
@@ -195,13 +286,13 @@ def transcribe(
     # Lazy imports to avoid loading models during --help
     import json
     from ..core import TranscriptionEngine
-    from ..core.config import load_config_from_file
-    
-    # Load config from specified file if provided
-    if config:
-        load_config_from_file(config)
-    
+    from ..core.config import AppConfig
+
+    # Load config; capture instance so S3 config is accessible
+    app_cfg = AppConfig(config_path=config) if config else AppConfig()
+    _s3_temps: List[str] = []
     try:
+        audio_paths, _s3_temps = _resolve_s3_paths(audio_paths, app_cfg)
         for p in audio_paths:
             if not Path(p).exists():
                 console.print(f"[red]Error: Audio file not found: {p}[/red]")
@@ -276,6 +367,9 @@ def transcribe(
     except Exception as e:
         console.print(f"[red]Error during transcription: {str(e)}[/red]")
         raise typer.Exit(1)
+    finally:
+        for _f in _s3_temps:
+            shutil.rmtree(_f, ignore_errors=True)
 
 
 @app.command(name="transcribe-diarize")
@@ -287,7 +381,7 @@ def transcribe_diarize(
         None, "--output", "-o", help="Output file path (format inferred from extension: .txt or .json)"
     ),
     config: Optional[str] = typer.Option(
-        None, "--config", help="Path to .env configuration file"
+        None, "--config", help="Path to YAML configuration file (.pawnai.yml)"
     ),
     session: Optional[str] = typer.Option(
         None, "--session", "-s",
@@ -355,13 +449,13 @@ def transcribe_diarize(
     # Lazy imports to avoid loading models during --help
     import json
     from ..core import transcribe_with_diarization, format_transcript_with_speakers
-    from ..core.config import Config, load_config_from_file
+    from ..core.config import Config, AppConfig
 
-    # Load config from specified file if provided
-    if config:
-        load_config_from_file(config)
-
+    # Load config; capture instance so S3 config is accessible
+    app_cfg = AppConfig(config_path=config) if config else AppConfig()
+    _s3_temps: List[str] = []
     try:
+        audio_paths, _s3_temps = _resolve_s3_paths(audio_paths, app_cfg)
         for p in audio_paths:
             if not Path(p).exists():
                 console.print(f"[red]Error: Audio file not found: {p}[/red]")
@@ -555,6 +649,9 @@ def transcribe_diarize(
         import traceback
         traceback.print_exc()
         raise typer.Exit(1)
+    finally:
+        for _f in _s3_temps:
+            shutil.rmtree(_f, ignore_errors=True)
 
 
 @app.command()
@@ -566,7 +663,7 @@ def embed(
         ..., "--speaker-id", "-s", help="Unique speaker identifier"
     ),
     config: Optional[str] = typer.Option(
-        None, "--config", help="Path to .env configuration file"
+        None, "--config", help="Path to YAML configuration file (.pawnai.yml)"
     ),
     db_path: str = typer.Option(
         "speakers_db", help="Path to speaker database"
@@ -586,13 +683,13 @@ def embed(
     """
     # Lazy imports to avoid loading models during --help
     from ..core import DiarizationEngine, EmbeddingManager
-    from ..core.config import Config, load_config_from_file
-    
-    # Load config from specified file if provided
-    if config:
-        load_config_from_file(config)
-    
+    from ..core.config import Config, AppConfig
+
+    # Load config; capture instance so S3 config is accessible
+    app_cfg = AppConfig(config_path=config) if config else AppConfig()
+    _s3_temps: List[str] = []
     try:
+        audio_paths, _s3_temps = _resolve_s3_paths(audio_paths, app_cfg)
         for p in audio_paths:
             if not Path(p).exists():
                 console.print(f"[red]Error: Audio file not found: {p}[/red]")
@@ -619,6 +716,9 @@ def embed(
     except Exception as e:
         console.print(f"[red]Error during embedding: {str(e)}[/red]")
         raise typer.Exit(1)
+    finally:
+        for _f in _s3_temps:
+            shutil.rmtree(_f, ignore_errors=True)
 
 
 @app.command()
@@ -627,7 +727,7 @@ def search(
         ..., help="Speaker ID to search similar speakers for"
     ),
     config: Optional[str] = typer.Option(
-        None, "--config", help="Path to .env configuration file"
+        None, "--config", help="Path to YAML configuration file (.pawnai.yml)"
     ),
     db_path: str = typer.Option(
         "speakers_db", help="Path to speaker database"
@@ -646,11 +746,11 @@ def search(
     """
     # Lazy imports to avoid loading models during --help
     from ..core import EmbeddingManager
-    from ..core.config import load_config_from_file
+    from ..core.config import AppConfig
     
     # Load config from specified file if provided
     if config:
-        load_config_from_file(config)
+        AppConfig(config_path=config)
     
     try:
         embedding_manager = EmbeddingManager(db_path=db_path)
@@ -688,7 +788,7 @@ def label(
         None, "--name", "-n", help="Human-readable name for the speaker"
     ),
     config: Optional[str] = typer.Option(
-        None, "--config", help="Path to .env configuration file"
+        None, "--config", help="Path to YAML configuration file (.pawnai.yml)"
     ),
     list_all: bool = typer.Option(
         False, "--list", "-l", help="List all speaker name mappings"
@@ -711,11 +811,11 @@ def label(
     import lancedb
     import pyarrow as pa
     from datetime import datetime
-    from ..core.config import load_config_from_file
+    from ..core.config import AppConfig
     
     # Load config from specified file if provided
     if config:
-        load_config_from_file(config)
+        AppConfig(config_path=config)
     
     try:
         db = lancedb.connect(db_path)
@@ -961,7 +1061,7 @@ def analyze(
 @app.command()
 def status(
     config: Optional[str] = typer.Option(
-        None, "--config", help="Path to .env configuration file"
+        None, "--config", help="Path to YAML configuration file (.pawnai.yml)"
     ),
 ) -> None:
     """Show application status and available models.
@@ -969,11 +1069,11 @@ def status(
     Displays system information and model availability.
     """
     # Lazy import to avoid loading torch during --help
-    from ..core.config import load_config_from_file
+    from ..core.config import AppConfig
     
     # Load config from specified file if provided
     if config:
-        load_config_from_file(config)
+        AppConfig(config_path=config)
     
     import torch
     
@@ -992,4 +1092,121 @@ def status(
     console.print("  embed              - Extract speaker embeddings")
     console.print("  search             - Search for similar speakers")
     console.print("  label              - Assign names to speakers")
+    console.print("  s3-ls              - List objects in the configured S3 bucket")
     console.print("  status             - Show this status message")
+
+
+@app.command(name="s3-ls")
+def s3_ls(
+    prefix: Optional[str] = typer.Argument(
+        None, help="Optional key prefix to filter results (e.g. 'recordings/2024/')"
+    ),
+    config: Optional[str] = typer.Option(
+        None, "--config", help="Path to YAML configuration file (.pawnai.yml)"
+    ),
+    recursive: bool = typer.Option(
+        False, "--recursive", "-r", help="List all objects recursively (no common-prefix grouping)"
+    ),
+    long: bool = typer.Option(
+        False, "--long", "-l", help="Show size and last-modified date for each object"
+    ),
+) -> None:
+    """List objects in the configured S3 bucket.
+
+    Reads S3 credentials from the ``s3:`` section of ``.pawnai.yml`` (or the
+    file passed via ``--config``).  Without a prefix all top-level keys are
+    listed; with a prefix only keys that start with that prefix are shown.
+
+    By default the listing uses delimiter ``/`` so that common prefixes
+    (virtual directories) are grouped, similar to ``aws s3 ls``.  Pass
+    ``--recursive`` to list every object under the prefix without grouping.
+
+    Example:
+        pawnai s3-ls
+        pawnai s3-ls recordings/
+        pawnai s3-ls recordings/2024/ --long
+        pawnai s3-ls --recursive --long
+    """
+    from ..core.config import AppConfig
+    from ..core.s3 import S3Client
+
+    app_cfg = AppConfig(config_path=config) if config else AppConfig()
+
+    s3_cfg = app_cfg.get_s3_config()
+    if s3_cfg is None:
+        console.print(
+            "[red]Error: no 's3:' section found in .pawnai.yml – "
+            "add S3 credentials before using s3-ls[/red]"
+        )
+        raise typer.Exit(1)
+
+    client = S3Client.from_dict(s3_cfg)
+
+    if not client.check_bucket():
+        console.print(
+            f"[red]Error: bucket '{client.bucket}' is not accessible – "
+            "check credentials and endpoint_url[/red]"
+        )
+        raise typer.Exit(1)
+
+    # ── Build list_objects_v2 kwargs ─────────────────────────────────────────
+    list_kwargs: dict = {"Bucket": client.bucket}
+    if prefix:
+        list_kwargs["Prefix"] = prefix
+    if not recursive:
+        list_kwargs["Delimiter"] = "/"
+
+    console.print(
+        f"\n[bold cyan]s3://{client.bucket}"
+        f"{'/' + prefix.lstrip('/') if prefix else ''}[/bold cyan]\n"
+    )
+
+    # ── Paginate ─────────────────────────────────────────────────────────────
+    # Access the underlying boto3 client via the private attribute (same pattern
+    # used in pawnai_recorder's S3Uploader for head_bucket / upload_file).
+    boto_client = client._client  # noqa: SLF001
+
+    paginator = boto_client.get_paginator("list_objects_v2")
+
+    total_objects = 0
+    total_bytes = 0
+
+    try:
+        for page in paginator.paginate(**list_kwargs):
+            # Virtual directories (common prefixes)
+            for cp in page.get("CommonPrefixes") or []:
+                console.print(f"  [bold blue]{cp['Prefix']}[/bold blue]")
+
+            # Objects
+            for obj in page.get("Contents") or []:
+                total_objects += 1
+                total_bytes += obj["Size"]
+                key = obj["Key"]
+
+                if long:
+                    size_str = _fmt_size(obj["Size"])
+                    modified = obj["LastModified"].strftime("%Y-%m-%d %H:%M:%S")
+                    console.print(
+                        f"  [green]{modified}[/green]  "
+                        f"[yellow]{size_str:>10}[/yellow]  {key}"
+                    )
+                else:
+                    console.print(f"  {key}")
+
+    except Exception as e:
+        console.print(f"[red]Error listing bucket: {e}[/red]")
+        raise typer.Exit(1)
+
+    console.print(
+        f"\n[dim]Total: {total_objects} object(s), {_fmt_size(total_bytes)}[/dim]"
+    )
+
+
+def _fmt_size(num_bytes: int) -> str:
+    """Return a human-readable file size string."""
+    for unit in ("B", "KB", "MB", "GB", "TB"):
+        if num_bytes < 1024:
+            return f"{num_bytes:.1f} {unit}" if unit != "B" else f"{num_bytes} B"
+        num_bytes //= 1024
+    return f"{num_bytes:.1f} PB"
+
