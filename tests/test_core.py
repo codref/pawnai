@@ -2,7 +2,7 @@
 
 import pytest
 from pawnai.core.diarization import DiarizationEngine
-from openbrain.core.config import Config
+from pawnai.core.config import Config
 
 
 def test_diarization_engine_initialization():

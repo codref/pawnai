@@ -9,7 +9,7 @@ from .diarization import DiarizationEngine
 
 def transcribe_with_diarization(
     audio_path: Union[str, List[str]],
-    db_path: Optional[str] = None,
+    db_dsn: Optional[str] = None,
     similarity_threshold: float = 0.7,
     store_new_speakers: bool = True,
     device: str = "cuda",
@@ -29,7 +29,7 @@ def transcribe_with_diarization(
     Args:
         audio_path: Path to audio file, or ordered list of paths treated as
                     sequential chunks of the same conversation.
-        db_path: Path to speaker database (None to skip database lookup).
+        db_path: PostgreSQL DSN for speaker database (None to skip).
         similarity_threshold: Minimum similarity to match speakers against
                               the database (0-1).
         store_new_speakers: Whether to store embeddings for unknown speakers.
@@ -98,7 +98,7 @@ def transcribe_with_diarization(
     diarization_engine = DiarizationEngine(device=device if device != "cpu" else None)
     diarization = diarization_engine.diarize(
         audio_paths if multiple else audio_paths[0],
-        db_path=db_path,
+        db_dsn=db_dsn,
         similarity_threshold=similarity_threshold,
         store_new_speakers=store_new_speakers,
         cross_file_threshold=cross_file_threshold,

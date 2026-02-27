@@ -6,6 +6,7 @@ import typer
 from pathlib import Path
 
 from .utils import console
+from ..core.config import DEFAULT_DB_DSN
 
 app = typer.Typer(
     help="PawnAI: Speaker diarization and transcription CLI tool",
@@ -63,7 +64,7 @@ def _resolve_s3_paths(
 
     # Create a single randomly-named subdirectory for this invocation so that
     # downloaded files keep their original S3 key name (e.g. 260224183013_01.flac)
-    # and LanceDB stores a meaningful speaker ID rather than the random tmp name.
+    # and the speaker ID stored in PostgreSQL is derived from the original filename.
     tmp_dir = Path(tempfile.mkdtemp(prefix="pawnai_s3_", dir=str(_base_dir) if _base_dir else None))
 
     # Expand any wildcard URIs before downloading
@@ -91,7 +92,7 @@ def _resolve_s3_paths(
             continue
 
         bucket, key = parse_s3_uri(path, configured_bucket=client.bucket)
-        # Preserve the original filename so speaker IDs in LanceDB are meaningful
+        # Preserve the original filename so speaker IDs in PostgreSQL are meaningful
         local_path = tmp_dir / Path(key).name
         console.print(f"[cyan]Downloading s3://{bucket}/{key} …[/cyan]")
         client.download_file(key, str(local_path), bucket=bucket)
@@ -111,8 +112,8 @@ def diarize(
     config: Optional[str] = typer.Option(
         None, "--config", help="Path to YAML configuration file (.pawnai.yml)"
     ),
-    db_path: str = typer.Option(
-        "speakers_db", help="Path to speaker database"
+    db_dsn: str = typer.Option(
+        DEFAULT_DB_DSN, help="PostgreSQL DSN for speaker database"
     ),
     threshold: float = typer.Option(
         0.7, "--threshold", "-t", help="Similarity threshold for speaker matching (0-1, default: 0.7)"
@@ -152,7 +153,7 @@ def diarize(
                 console.print(f"[red]Error: Audio file not found: {p}[/red]")
                 raise typer.Exit(1)
 
-        config = Config(db_path=db_path)
+        config = Config(db_dsn=db_dsn)
         config.ensure_paths_exist()
 
         engine = DiarizationEngine()
@@ -165,7 +166,7 @@ def diarize(
 
         result = engine.diarize(
             audio_paths if len(audio_paths) > 1 else audio_paths[0],
-            db_path=db_path,
+            db_dsn=db_dsn,
             similarity_threshold=threshold,
             store_new_speakers=store_new
         )
@@ -389,8 +390,8 @@ def transcribe_diarize(
              "timestamps are loaded so new audio is appended to the same conversation.  "
              "After processing the file is updated with the full accumulated results."
     ),
-    db_path: str = typer.Option(
-        "speakers_db", help="Path to speaker database"
+    db_dsn: str = typer.Option(
+        DEFAULT_DB_DSN, help="PostgreSQL DSN for speaker database"
     ),
     threshold: float = typer.Option(
         0.7, "--threshold", "-t", help="Similarity threshold for speaker matching (0-1)"
@@ -461,7 +462,7 @@ def transcribe_diarize(
                 console.print(f"[red]Error: Audio file not found: {p}[/red]")
                 raise typer.Exit(1)
 
-        config = Config(db_path=db_path)
+        config = Config(db_dsn=db_dsn)
         config.ensure_paths_exist()
 
         # ------------------------------------------------------------------
@@ -516,7 +517,7 @@ def transcribe_diarize(
         # ------------------------------------------------------------------
         result = transcribe_with_diarization(
             audio_paths if len(audio_paths) > 1 else audio_paths[0],
-            db_path=db_path,
+            db_dsn=db_dsn,
             similarity_threshold=threshold,
             store_new_speakers=store_new,
             device=device,
@@ -665,8 +666,8 @@ def embed(
     config: Optional[str] = typer.Option(
         None, "--config", help="Path to YAML configuration file (.pawnai.yml)"
     ),
-    db_path: str = typer.Option(
-        "speakers_db", help="Path to speaker database"
+    db_dsn: str = typer.Option(
+        DEFAULT_DB_DSN, help="PostgreSQL DSN for speaker database"
     ),
 ) -> None:
     """Extract and store speaker embeddings.
@@ -695,11 +696,11 @@ def embed(
                 console.print(f"[red]Error: Audio file not found: {p}[/red]")
                 raise typer.Exit(1)
 
-        config = Config(db_path=db_path)
+        config = Config(db_dsn=db_dsn)
         config.ensure_paths_exist()
 
         diarization_engine = DiarizationEngine()
-        embedding_manager = EmbeddingManager(db_path=db_path)
+        embedding_manager = EmbeddingManager(db_dsn=db_dsn)
 
         if len(audio_paths) == 1:
             console.print(f"[cyan]Extracting embeddings: {audio_paths[0]}[/cyan]")
@@ -729,8 +730,8 @@ def search(
     config: Optional[str] = typer.Option(
         None, "--config", help="Path to YAML configuration file (.pawnai.yml)"
     ),
-    db_path: str = typer.Option(
-        "speakers_db", help="Path to speaker database"
+    db_dsn: str = typer.Option(
+        DEFAULT_DB_DSN, help="PostgreSQL DSN for speaker database"
     ),
     limit: int = typer.Option(
         5, help="Maximum number of results to return"
@@ -753,7 +754,7 @@ def search(
         AppConfig(config_path=config)
     
     try:
-        embedding_manager = EmbeddingManager(db_path=db_path)
+        embedding_manager = EmbeddingManager(db_dsn=db_dsn)
         speaker_names = embedding_manager.get_speaker_names()
         
         # Get first embedding for the speaker
@@ -793,8 +794,8 @@ def label(
     list_all: bool = typer.Option(
         False, "--list", "-l", help="List all speaker name mappings"
     ),
-    db_path: str = typer.Option(
-        "speakers_db", help="Path to speaker database"
+    db_dsn: str = typer.Option(
+        DEFAULT_DB_DSN, help="PostgreSQL DSN for speaker database"
     ),
 ) -> None:
     """Assign human-readable names to speakers.
@@ -808,89 +809,58 @@ def label(
         # List all labeled speakers
         pawnai label --list
     """
-    import lancedb
-    import pyarrow as pa
-    from datetime import datetime
+    from datetime import datetime, timezone
     from ..core.config import AppConfig
-    
+    from ..core.database import SpeakerName, get_engine, get_session, init_db
+    from sqlalchemy import select
+
     # Load config from specified file if provided
     if config:
         AppConfig(config_path=config)
-    
+
     try:
-        db = lancedb.connect(db_path)
-        
+        engine = get_engine(db_dsn)
+        init_db(engine)
+
         if list_all:
-            # List all speaker names
-            if "speaker_names" not in db.table_names():
+            with get_session(engine) as session:
+                rows = session.execute(select(SpeakerName)).scalars().all()
+            if not rows:
                 console.print("[yellow]No speaker labels found. Use 'pawnai label' to add labels.[/yellow]")
                 return
-            
-            names_table = db.open_table("speaker_names")
-            names_df = names_table.to_pandas()
-            
-            if names_df.empty:
-                console.print("[yellow]No speaker labels found.[/yellow]")
-                return
-            
             console.print("\n[bold cyan]Labeled Speakers[/bold cyan]")
-            for _, row in names_df.iterrows():
-                console.print(f"\n[bold]• {row['speaker_name']}[/bold]")
-                console.print(f"  File: {Path(row['audio_file']).name}")
-                console.print(f"  Label: {row['local_speaker_label']}")
-                console.print(f"  Labeled: {row['labeled_at']}")
+            for row in rows:
+                console.print(f"\n[bold]• {row.speaker_name}[/bold]")
+                console.print(f"  File: {Path(row.audio_file).name}")
+                console.print(f"  Label: {row.local_speaker_label}")
+                console.print(f"  Labeled: {row.labeled_at}")
             return
-        
+
         # Add/update speaker name
         if not audio_file or not speaker or not name:
             console.print("[red]Error: --file, --speaker, and --name are required to add a label.[/red]")
             console.print("[yellow]Use --list to see all labeled speakers.[/yellow]")
             raise typer.Exit(1)
-        
+
         if not Path(audio_file).exists():
             console.print(f"[red]Error: Audio file not found: {audio_file}[/red]")
             raise typer.Exit(1)
-        
-        # Get or create speaker_names table
-        if "speaker_names" in db.table_names():
-            names_table = db.open_table("speaker_names")
-            
-            # Check if mapping already exists and delete it
-            names_df = names_table.to_pandas()
-            if not names_df.empty:
-                mask = (names_df['audio_file'] == audio_file) & \
-                       (names_df['local_speaker_label'] == speaker)
-                if mask.any():
-                    existing_id = names_df[mask].iloc[0]['id']
-                    names_table.delete(f"id = '{existing_id}'")
-                    console.print(f"[yellow]Updated existing label[/yellow]")
-        else:
-            # Create schema for speaker names
-            schema = pa.schema([
-                pa.field("id", pa.string()),
-                pa.field("audio_file", pa.string()),
-                pa.field("local_speaker_label", pa.string()),
-                pa.field("speaker_name", pa.string()),
-                pa.field("labeled_at", pa.timestamp('ms')),
-            ])
-            names_table = db.create_table("speaker_names", schema=schema)
-        
-        # Add new record
+
         record_id = f"{Path(audio_file).name}_{speaker}"
-        now = datetime.now()
-        timestamp_ms = pa.scalar(int(now.timestamp() * 1000), type=pa.timestamp('ms'))
-        
-        record = {
-            'id': record_id,
-            'audio_file': str(audio_file),
-            'local_speaker_label': speaker,
-            'speaker_name': name,
-            'labeled_at': timestamp_ms,
-        }
-        
-        names_table.add([record])
+        record = SpeakerName(
+            id=record_id,
+            audio_file=str(audio_file),
+            local_speaker_label=speaker,
+            speaker_name=name,
+            labeled_at=datetime.now(timezone.utc),
+        )
+        with get_session(engine) as session:
+            existing = session.get(SpeakerName, record_id)
+            if existing:
+                console.print("[yellow]Updated existing label[/yellow]")
+            session.merge(record)
         console.print(f"[green]✓ Labeled {speaker} in {Path(audio_file).name} as '{name}'[/green]")
-        
+
     except Exception as e:
         console.print(f"[red]Error during labeling: {str(e)}[/red]")
         raise typer.Exit(1)
@@ -910,8 +880,8 @@ def analyze(
     model: str = typer.Option(
         "gpt-4o", "--model", "-m", help="Copilot model to use for analysis"
     ),
-    db_path: str = typer.Option(
-        "speakers_db", help="Path to speaker database (used when processing audio directly)"
+    db_dsn: str = typer.Option(
+        DEFAULT_DB_DSN, help="PostgreSQL DSN for speaker database (used when processing audio directly)"
     ),
     device: str = typer.Option(
         "cuda", "--device", "-d", help="Device for audio processing: cuda or cpu"
@@ -962,7 +932,7 @@ def analyze(
         if mode == "graph":
             triples = engine.extract_graph_from_file(
                 input_path,
-                db_path=db_path,
+                db_dsn=db_dsn,
                 device=device,
             )
 
@@ -1014,7 +984,7 @@ def analyze(
         else:
             analysis_text = engine.analyze_from_file(
                 input_path,
-                db_path=db_path,
+                db_dsn=db_dsn,
                 device=device,
             )
 

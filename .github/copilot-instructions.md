@@ -1,14 +1,14 @@
-# GitHub Copilot Instructions - OpenBrain Project
+# GitHub Copilot Instructions - PawnAI Project
 
 ## Project Overview
 
-**OpenBrain** is a professional Python CLI application for speaker diarization, transcription, and speaker embedding management. This document provides project-specific guidelines and architecture for development.
+**PawnAI** is a professional Python CLI application for speaker diarization, transcription, and speaker embedding management. This document provides project-specific guidelines and architecture for development.
 
 ## Project Structure
 
 ```
 /workspaces/parakeet/
-├── openbrain/                          # Main package
+├── pawnai/                          # Main package
 │   ├── __init__.py                     # Package metadata & public API
 │   ├── __main__.py                     # 🎯 SINGLE CLI ENTRYPOINT
 │   ├── core/                           # Core business logic
@@ -47,7 +47,7 @@
 ## Key Architectural Principles
 
 ### 1. Single Entry Point
-All CLI commands route through `openbrain/__main__.py:main()`:
+All CLI commands route through `pawnai/__main__.py:main()`:
 ```python
 def main() -> None:
     """Main entry point function for the CLI."""
@@ -62,12 +62,12 @@ def main() -> None:
 ```
 
 ### 2. Separation of Concerns
-- **Core Layer** (`openbrain/core/`): Pure business logic, no CLI dependencies
-- **CLI Layer** (`openbrain/cli/`): Command definitions, argument parsing, formatting
-- **Utils Layer** (`openbrain/utils/`): Reusable helper functions
+- **Core Layer** (`pawnai/core/`): Pure business logic, no CLI dependencies
+- **CLI Layer** (`pawnai/cli/`): Command definitions, argument parsing, formatting
+- **Utils Layer** (`pawnai/utils/`): Reusable helper functions
 
 ### 3. CLI Framework: Typer
-Commands are defined using Typer decorators in `openbrain/cli/commands.py`:
+Commands are defined using Typer decorators in `pawnai/cli/commands.py`:
 ```python
 @app.command()
 def diarize(
@@ -81,7 +81,7 @@ def diarize(
 ### 4. Rich Output
 Use Rich library for formatted terminal output:
 ```python
-from openbrain.cli.utils import console
+from pawnai.cli.utils import console
 
 console.print("[green]✓ Success[/green]")
 console.print("[red]✗ Error[/red]")
@@ -101,7 +101,7 @@ with console.status("[bold green]Processing..."):
 
 ### Adding New Commands
 
-1. Add command function to `openbrain/cli/commands.py`:
+1. Add command function to `pawnai/cli/commands.py`:
 ```python
 @app.command()
 def new_command(
@@ -113,7 +113,7 @@ def new_command(
     pass
 ```
 
-2. Add corresponding core logic to appropriate module in `openbrain/core/`
+2. Add corresponding core logic to appropriate module in `pawnai/core/`
 
 3. Add tests in `tests/test_cli.py` and `tests/test_core.py`
 
@@ -150,30 +150,30 @@ pip install -e ".[dev]"
 ### Running Commands
 ```bash
 # CLI entry point
-openbrain --help
-openbrain status
-openbrain diarize audio.wav
+pawnai --help
+pawnai status
+pawnai diarize audio.wav
 
 # Python module
-python -m openbrain status
-python -m openbrain transcribe audio.wav
+python -m pawnai status
+python -m pawnai transcribe audio.wav
 ```
 
 ### Code Quality
 ```bash
 # Format code
-black openbrain tests
-isort openbrain tests
+black pawnai tests
+isort pawnai tests
 
 # Lint
-flake8 openbrain tests
+flake8 pawnai tests
 
 # Type check
-mypy openbrain
+mypy pawnai
 
 # Run tests
 pytest
-pytest --cov=openbrain
+pytest --cov=pawnai
 ```
 
 ## Type Hints & IDE Support
@@ -242,7 +242,7 @@ def transcribe(audio_path: str, timestamps: bool = True) -> str:
 ### Test Example
 ```python
 import pytest
-from openbrain.core import diarization
+from pawnai.core import diarization
 
 @pytest.fixture
 def sample_audio():
@@ -262,7 +262,7 @@ def test_diarize(sample_audio):
 ### pyproject.toml Structure
 ```toml
 [project]
-name = "openbrain"
+name = "pawnai"
 version = "1.0.0"  # Or dynamic from __init__.py
 dependencies = [
     "typer[all]>=0.9.0",
@@ -283,7 +283,7 @@ dev = [
 ]
 
 [project.scripts]
-openbrain = "openbrain.__main__:main"
+pawnai = "pawnai.__main__:main"
 ```
 
 ## Common Patterns
@@ -316,7 +316,7 @@ except ValueError as e:
 ### Configuration Management
 ```python
 from pathlib import Path
-from openbrain.core.config import AppConfig
+from pawnai.core.config import AppConfig
 
 config = AppConfig()
 db_path = Path(config.get("db_path", "speakers_db"))
@@ -337,8 +337,8 @@ import typer
 from rich.console import Console
 
 # Local imports last
-from openbrain.core import diarization
-from openbrain.cli.utils import console
+from pawnai.core import diarization
+from pawnai.cli.utils import console
 ```
 
 ### Avoid Circular Imports
@@ -366,19 +366,19 @@ from openbrain.cli.utils import console
 
 ### Enable Verbose Output
 ```python
-from openbrain.cli.utils import console
+from pawnai.cli.utils import console
 
 console.print("[debug][yellow]Debug message[/yellow][/debug]")
 ```
 
 ### Check System Status
 ```bash
-openbrain status
+pawnai status
 ```
 
 ### Inspect Database
 ```python
-from openbrain.core.embeddings import EmbeddingManager
+from pawnai.core.embeddings import EmbeddingManager
 
 manager = EmbeddingManager()
 speakers = manager.list_speakers()
@@ -418,5 +418,5 @@ print(speakers)
 ---
 
 **Last Updated**: February 2026
-**Project**: OpenBrain
+**Project**: PawnAI
 **Status**: Production Ready

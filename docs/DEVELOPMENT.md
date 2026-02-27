@@ -1,4 +1,4 @@
-# OpenBrain Development Workflow
+# PawnAI Development Workflow
 
 ## Setup
 
@@ -15,32 +15,32 @@ pip install -e ".[dev]"
 
 ```bash
 # Run as CLI command (after installation)
-openbrain --help
-openbrain status
+pawnai --help
+pawnai status
 
 # Run as Python module
-python -m openbrain --help
-python -m openbrain status
+python -m pawnai --help
+python -m pawnai status
 ```
 
 ## Development Tasks
 
 ```bash
 # Format code
-black openbrain tests
-isort openbrain tests
+black pawnai tests
+isort pawnai tests
 
 # Lint
-flake8 openbrain tests
+flake8 pawnai tests
 
 # Type checking
-mypy openbrain
+mypy pawnai
 
 # Run tests
 pytest
 
 # Run tests with coverage
-pytest --cov=openbrain --cov-report=html
+pytest --cov=pawnai --cov-report=html
 ```
 
 ## Building and Distributing
@@ -55,7 +55,7 @@ python -m twine upload dist/*
 
 ## Project Organization
 
-- **openbrain/**: Main package directory
+- **pawnai/**: Main package directory
   - **__main__.py**: Single CLI entrypoint
   - **__init__.py**: Package metadata and public API
   - **core/**: Core business logic (diarization, transcription, embeddings)
@@ -69,7 +69,7 @@ python -m twine upload dist/*
 
 ## Key Design Patterns
 
-1. **Single Entrypoint**: All CLI commands go through `openbrain/__main__.py`
+1. **Single Entrypoint**: All CLI commands go through `pawnai/__main__.py`
 2. **Lazy Loading**: Models are loaded on first use, not at startup
 3. **Separation of Concerns**: Core logic separated from CLI layer
 4. **Type Hints**: Full type annotations for IDE support and safety

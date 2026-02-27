@@ -107,15 +107,15 @@ rm dbscan.py transcribe.py requirements.txt
 
 | File | Purpose |
 |------|---------|
-| `openbrain/__init__.py` | Package metadata, version, public API |
-| `openbrain/__main__.py` | Single CLI entry point |
-| `openbrain/core/config.py` | Configuration management |
-| `openbrain/core/diarization.py` | Speaker diarization engine |
-| `openbrain/core/transcription.py` | Audio transcription engine |
-| `openbrain/core/embeddings.py` | Speaker embedding management |
-| `openbrain/cli/commands.py` | CLI command definitions |
-| `openbrain/cli/utils.py` | CLI utilities (Rich console) |
-| `openbrain/utils/__init__.py` | General purpose helpers |
+| `pawnai/__init__.py` | Package metadata, version, public API |
+| `pawnai/__main__.py` | Single CLI entry point |
+| `pawnai/core/config.py` | Configuration management |
+| `pawnai/core/diarization.py` | Speaker diarization engine |
+| `pawnai/core/transcription.py` | Audio transcription engine |
+| `pawnai/core/embeddings.py` | Speaker embedding management |
+| `pawnai/cli/commands.py` | CLI command definitions |
+| `pawnai/cli/utils.py` | CLI utilities (Rich console) |
+| `pawnai/utils/__init__.py` | General purpose helpers |
 
 ### Configuration Files Created
 
@@ -138,7 +138,7 @@ rm dbscan.py transcribe.py requirements.txt
 
 ## 🎯 Key Design Decisions
 
-✅ **Single Entry Point**: All commands route through `openbrain/__main__.py:main()`
+✅ **Single Entry Point**: All commands route through `pawnai/__main__.py:main()`
 
 ✅ **Separation of Concerns**: 
    - Core logic (diarization, transcription, embeddings)
@@ -188,7 +188,7 @@ The `.gitignore` is already configured to ignore:
 - `*.npz` files (embedding files)
 
 ### Backward Compatibility
-Old files (`dbscan.py`, `transcribe.py`) are now integrated into the `openbrain/core/` modules. The `.py` file can optionally be removed after verification.
+Old files (`dbscan.py`, `transcribe.py`) are now integrated into the `pawnai/core/` modules. The `.py` file can optionally be removed after verification.
 
 ---
 
@@ -203,7 +203,7 @@ Old files (`dbscan.py`, `transcribe.py`) are now integrated into the `openbrain/
 
 ## ✨ You're All Set!
 
-Your OpenBrain project is now:
+Your PawnAI project is now:
 - ✅ Professionally organized
 - ✅ Ready for distribution
 - ✅ Easy to extend
@@ -212,9 +212,9 @@ Your OpenBrain project is now:
 
 Once dependencies are installed, you can start using:
 ```bash
-openbrain diarize audio.wav
-openbrain transcribe speech.wav
-openbrain embed audio.wav -s speaker_001
+pawnai diarize audio.wav
+pawnai transcribe speech.wav
+pawnai embed audio.wav -s speaker_001
 ```
 
 Happy hacking! 🚀

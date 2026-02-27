@@ -1,17 +1,17 @@
-# OpenBrain CLI Architecture
+# PawnAI CLI Architecture
 
 ## Single Entrypoint Diagram
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
 │  User Commands                                              │
-│  $ openbrain [command]                                      │
-│  $ python -m openbrain [command]                            │
+│  $ pawnai [command]                                      │
+│  $ python -m pawnai [command]                            │
 └────────────────┬────────────────────────────────────────────┘
                  │
                  ▼
 ┌─────────────────────────────────────────────────────────────┐
-│  🎯 openbrain/__main__.py::main()                           │
+│  🎯 pawnai/__main__.py::main()                           │
 │     Single Entry Point                                      │
 │     - Handles keyboard interrupts                           │
 │     - Manages error reporting                               │
@@ -21,7 +21,7 @@
                  ▼
 ┌─────────────────────────────────────────────────────────────┐
 │  CLI Application Router (Typer)                             │
-│  openbrain/cli/commands.py                                  │
+│  pawnai/cli/commands.py                                  │
 │  - diarize <audio>                                          │
 │  - transcribe <audio>                                       │
 │  - embed <audio> --speaker-id ID                            │
@@ -35,8 +35,8 @@
     └────┬────┘     └───┬──────┘  └───┬────┘ └──┬────┘
          │              │             │         │
     ┌────▼──────────────▼──────┬──────▼─────────▼┐
-    │    Core Business Logic    │  openbrain/   │
-    │    openbrain/core/        │  utils/ (CLI) │
+    │    Core Business Logic    │  pawnai/   │
+    │    pawnai/core/        │  utils/ (CLI) │
     ├───────────────────────────┤               │
     │ • diarization.py          │ • Rich output │
     │ • transcription.py        │ • Progress    │
@@ -56,7 +56,7 @@
 
 ## Module Responsibilities
 
-### Entry Point: `openbrain/__main__.py`
+### Entry Point: `pawnai/__main__.py`
 ```python
 main() → app()
 ```
@@ -65,19 +65,19 @@ main() → app()
 - ✅ Sets exit codes properly
 - ✅ Displays user-friendly error messages
 
-### CLI Layer: `openbrain/cli/`
+### CLI Layer: `pawnai/cli/`
 - **commands.py**: Command definitions using Typer decorators
 - **utils.py**: CLI-specific utilities (Rich console, progress bars)
 - **__init__.py**: Exports console for rich output
 
-### Core Layer: `openbrain/core/`
+### Core Layer: `pawnai/core/`
 - **config.py**: Configuration class, paths, constants
 - **diarization.py**: DiarizationEngine for speaker identification
 - **transcription.py**: TranscriptionEngine for speech-to-text
 - **embeddings.py**: EmbeddingManager for vector storage
 - **__init__.py**: Public API exports
 
-### Utilities: `openbrain/utils/`
+### Utilities: `pawnai/utils/`
 - **__init__.py**: General helper functions
 - Audio file discovery, validation, etc.
 
@@ -97,21 +97,21 @@ pip install -e ".[dev]"
 ```bash
 pip install .
 # Then run
-openbrain --help
+pawnai --help
 ```
 
 ### From Git
 ```bash
 git clone <repo>
-cd openbrain
+cd pawnai
 pip install -e ".[dev]"
-python -m openbrain status
+python -m pawnai status
 ```
 
 ## Code Flow Example: Transcribe Command
 
 ```
-$ openbrain transcribe audio.wav
+$ pawnai transcribe audio.wav
          ↓
 __main__.py:main()
          ↓
@@ -133,29 +133,29 @@ sys.exit(0)
 ## Package Metadata Flow
 
 ```
-openbrain/__init__.py
+pawnai/__init__.py
   ├─ __version__ = "1.0.0"
-  ├─ __author__ = "OpenBrain Contributors"
+  ├─ __author__ = "PawnAI Contributors"
   └─ __description__ = "..."
          ↓
 pyproject.toml [tool.setuptools.dynamic]
   ├─ reads version from __init__.py
-  ├─ defines entry point: openbrain = openbrain.__main__:main
+  ├─ defines entry point: pawnai = pawnai.__main__:main
   └─ lists dependencies
          ↓
 Installation: pip install -e .
-  ├─ Creates command: openbrain
+  ├─ Creates command: pawnai
   └─ Installs dependencies
 ```
 
 ## Dependency Layers
 
 ```
-openbrain/cli/commands.py
+pawnai/cli/commands.py
     ↓
-openbrain/core/[diarization|transcription|embeddings].py
+pawnai/core/[diarization|transcription|embeddings].py
     ↓ (only imports from)
-openbrain/core/config.py
+pawnai/core/config.py
     (no dependencies between core modules)
     ↓
 External: torch, pyannote, nemo, lancedb
@@ -176,34 +176,34 @@ External: torch, pyannote, nemo, lancedb
 ### Basic Usage
 ```bash
 # Show help
-python -m openbrain --help
+python -m pawnai --help
 
 # Show status
-python -m openbrain status
+python -m pawnai status
 
 # Diarize audio
-python -m openbrain diarize meeting.wav
+python -m pawnai diarize meeting.wav
 
 # Transcribe
-python -m openbrain transcribe speech.wav
+python -m pawnai transcribe speech.wav
 
 # Store embeddings
-python -m openbrain embed audio.wav -s speaker_001
+python -m pawnai embed audio.wav -s speaker_001
 
 # Search similar
-python -m openbrain search speaker_001
+python -m pawnai search speaker_001
 ```
 
 ### With Configuration
 ```bash
 # Use custom database
-python -m openbrain diarize audio.wav --db-path ./my_db
+python -m pawnai diarize audio.wav --db-path ./my_db
 
 # No timestamps
-python -m openbrain transcribe audio.wav --no-timestamps
+python -m pawnai transcribe audio.wav --no-timestamps
 
 # Limit search results
-python -m openbrain search speaker_001 --limit 10
+python -m pawnai search speaker_001 --limit 10
 ```
 
 ### Development
@@ -212,19 +212,19 @@ python -m openbrain search speaker_001 --limit 10
 pytest
 
 # Run with coverage
-pytest --cov=openbrain
+pytest --cov=pawnai
 
 # Format code
-black openbrain tests
-isort openbrain tests
+black pawnai tests
+isort pawnai tests
 
 # Type check
-mypy openbrain
+mypy pawnai
 ```
 
 ---
 
-**This architecture ensures OpenBrain is:**
+**This architecture ensures PawnAI is:**
 - 🎯 Easy to use with a single entry point
 - 🏗️ Well-organized with clear separation of concerns
 - 📦 Professional and distributable

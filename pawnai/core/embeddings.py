@@ -1,141 +1,154 @@
-"""Speaker embedding management using LanceDB."""
+"""Speaker embedding management using PostgreSQL + pgvector."""
 
-from typing import List, Optional, Dict, Any
+from __future__ import annotations
+
+from datetime import datetime, timezone
+from typing import Any, Dict, List
+
 import numpy as np
-import lancedb
-import pyarrow as pa
-from pathlib import Path
+from sqlalchemy import select, text
 
-from .config import DEFAULT_DB_PATH
+from .config import DEFAULT_DB_DSN
+from .database import Embedding, SpeakerName, get_engine, get_session, init_db
 
 
 class EmbeddingManager:
-    """Manage speaker embeddings using LanceDB."""
+    """Manage speaker embeddings backed by PostgreSQL + pgvector.
 
-    def __init__(self, db_path: str = DEFAULT_DB_PATH):
-        """Initialize the embedding manager.
+    Args:
+        db_dsn: PostgreSQL DSN, e.g.
+                ``"postgresql+psycopg://user:pass@host:5432/db"``.
+                Falls back to :data:`~pawnai.core.config.DEFAULT_DB_DSN`
+                (which respects the ``DATABASE_URL`` environment variable).
+    """
 
-        Args:
-            db_path: Path to LanceDB database directory
-        """
-        self.db_path = db_path
-        self.db = lancedb.connect(db_path)
+    def __init__(self, db_dsn: str = DEFAULT_DB_DSN) -> None:
+        self.db_dsn = db_dsn
+        self._engine = get_engine(db_dsn)
+        init_db(self._engine)
 
-    def get_or_create_speaker_names_table(self) -> Any:
-        """Get or create the speaker_names table.
-
-        Returns:
-            LanceDB table object
-        """
-        try:
-            return self.db.open_table("speaker_names")
-        except Exception:
-            # Create table with initial schema if it doesn't exist
-            return self.db.create_table(
-                "speaker_names",
-                data=pa.table(
-                    {
-                        "speaker_id": pa.array([], type=pa.string()),
-                        "name": pa.array([], type=pa.string()),
-                        "count": pa.array([], type=pa.int32()),
-                    }
-                ),
-                mode="overwrite",
-            )
-
-    def get_or_create_embeddings_table(self) -> Any:
-        """Get or create the embeddings table.
-
-        Returns:
-            LanceDB table object
-        """
-        try:
-            return self.db.open_table("embeddings")
-        except Exception:
-            # Create table with initial schema if it doesn't exist
-            return self.db.create_table(
-                "embeddings",
-                data=pa.table(
-                    {
-                        "speaker_id": pa.array([], type=pa.string()),
-                        "embedding": pa.array([], type=pa.list_(pa.float32())),
-                        "audio_path": pa.array([], type=pa.string()),
-                    }
-                ),
-                mode="overwrite",
-            )
+    # ──────────────────────────────────────────────────────────────────────────
+    # Write operations
+    # ──────────────────────────────────────────────────────────────────────────
 
     def add_embedding(
-        self, speaker_id: str, embedding: np.ndarray, audio_path: str
+        self,
+        speaker_id: str,
+        embedding: np.ndarray,
+        audio_path: str,
     ) -> None:
-        """Add an embedding to the database.
+        """Store (or replace) an embedding for *speaker_id*.
+
+        Uses ``speaker_id`` as both the record ``id`` and the
+        ``local_speaker_label`` so the record can be retrieved via
+        :meth:`get_all_embeddings`.
 
         Args:
-            speaker_id: Unique speaker identifier
-            embedding: Embedding vector
-            audio_path: Path to the audio file
+            speaker_id: Unique identifier for the speaker (user-supplied).
+            embedding: Normalised 512-dim float32 embedding array.
+            audio_path: Path to the audio source.
         """
-        table = self.get_or_create_embeddings_table()
-        table.add(
-            [
-                {
-                    "speaker_id": speaker_id,
-                    "embedding": embedding.tolist(),
-                    "audio_path": audio_path,
-                }
-            ]
+        vec = embedding.flatten().tolist()
+        record = Embedding(
+            id=speaker_id,
+            audio_file=str(audio_path),
+            local_speaker_label=speaker_id,
+            start_time=0.0,
+            end_time=0.0,
+            embedding=vec,
         )
+        with get_session(self._engine) as session:
+            session.merge(record)  # upsert on primary key
 
     def add_speaker_name(
-        self, speaker_id: str, name: str, count: int = 1
+        self,
+        speaker_id: str,
+        name: str,
+        count: int = 1,  # retained for API compat; not persisted
     ) -> None:
-        """Add or update a speaker name.
+        """Add or update a human-readable name for *speaker_id*.
 
         Args:
-            speaker_id: Unique speaker identifier
-            name: Human-readable speaker name
-            count: Number of samples
+            speaker_id: Unique speaker identifier.
+            name: Human-readable speaker name.
+            count: Unused (kept for backward API compatibility).
         """
-        table = self.get_or_create_speaker_names_table()
-        table.add([{"speaker_id": speaker_id, "name": name, "count": count}])
+        record = SpeakerName(
+            id=speaker_id,
+            audio_file="",
+            local_speaker_label=speaker_id,
+            speaker_name=name,
+            labeled_at=datetime.now(timezone.utc),
+        )
+        with get_session(self._engine) as session:
+            session.merge(record)
+
+    # ──────────────────────────────────────────────────────────────────────────
+    # Read operations
+    # ──────────────────────────────────────────────────────────────────────────
 
     def search_similar_speakers(
-        self, embedding: np.ndarray, limit: int = 5
+        self,
+        embedding: np.ndarray,
+        limit: int = 5,
     ) -> List[Dict[str, Any]]:
-        """Search for similar speakers by embedding.
+        """Return the *limit* most similar speaker embeddings.
+
+        Similarity is measured by cosine distance using pgvector's ``<=>``
+        operator (``distance = 1 - cosine_similarity``).
 
         Args:
-            embedding: Query embedding vector
-            limit: Maximum number of results
+            embedding: Query embedding vector.
+            limit: Maximum number of results.
 
         Returns:
-            List of similar speaker results
+            List of dicts with keys ``id``, ``audio_file``,
+            ``local_speaker_label``, ``start_time``, ``end_time``, and
+            ``_distance`` (cosine distance, lower is better).
         """
-        table = self.get_or_create_embeddings_table()
-        results = table.search(embedding.tolist()).limit(limit).to_list()
-        return results
+        vec_str = "[" + ",".join(str(v) for v in embedding.flatten().tolist()) + "]"
+        sql = text(
+            "SELECT id, audio_file, local_speaker_label, start_time, end_time, "
+            "(embedding <=> CAST(:vec AS vector)) AS _distance "
+            "FROM embeddings "
+            "ORDER BY embedding <=> CAST(:vec AS vector) "
+            "LIMIT :limit"
+        )
+        with self._engine.connect() as conn:
+            rows = conn.execute(sql, {"vec": vec_str, "limit": limit}).fetchall()
+        return [row._asdict() for row in rows]
 
     def get_all_embeddings(self) -> List[Dict[str, Any]]:
-        """Retrieve all embeddings from the database.
+        """Return all embedding records.
 
         Returns:
-            List of embedding records
+            List of dicts containing all
+            :class:`~pawnai.core.database.Embedding` columns plus a
+            ``speaker_id`` alias for ``local_speaker_label``.
         """
-        try:
-            table = self.db.open_table("embeddings")
-            return table.search().to_list()
-        except Exception:
-            return []
+        with get_session(self._engine) as session:
+            rows = session.execute(select(Embedding)).scalars().all()
+        results = []
+        for row in rows:
+            results.append(
+                {
+                    "speaker_id": row.local_speaker_label,
+                    "id": row.id,
+                    "audio_file": row.audio_file,
+                    "local_speaker_label": row.local_speaker_label,
+                    "start_time": row.start_time,
+                    "end_time": row.end_time,
+                    "embedding": row.embedding,
+                }
+            )
+        return results
 
     def get_speaker_names(self) -> Dict[str, str]:
-        """Get all speaker names.
+        """Return a mapping of speaker identifier to human-readable name.
 
         Returns:
-            Dictionary mapping speaker_id to name
+            ``{local_speaker_label: speaker_name}`` dict.
         """
-        try:
-            table = self.db.open_table("speaker_names")
-            records = table.search().to_list()
-            return {r["speaker_id"]: r["name"] for r in records}
-        except Exception:
-            return {}
+        with get_session(self._engine) as session:
+            rows = session.execute(select(SpeakerName)).scalars().all()
+        return {row.local_speaker_label: row.speaker_name for row in rows}

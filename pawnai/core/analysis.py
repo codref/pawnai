@@ -60,7 +60,7 @@ class AnalysisEngine:
     def _load_transcript(
         self,
         input_path: str,
-        db_path: str = "speakers_db",
+        db_dsn: str = "speakers_db",
         device: str = "cuda",
     ) -> str:
         """Load or generate a transcript from various input formats.
@@ -102,7 +102,7 @@ class AnalysisEngine:
             # Audio file – transcribe and diarize
             result = transcribe_with_diarization(
                 input_path,
-                db_path=db_path,
+                db_dsn=db_dsn,
                 device=device,
             )
             return format_transcript_with_speakers(result, include_timestamps=True)
@@ -253,7 +253,7 @@ TRANSCRIPT:
     def extract_graph_from_file(
         self,
         input_path: str,
-        db_path: str = "speakers_db",
+        db_dsn: str = "speakers_db",
         device: str = "cuda",
     ) -> List[Tuple[str, str, str]]:
         """Extract a knowledge graph from a file.
@@ -262,7 +262,7 @@ TRANSCRIPT:
 
         Args:
             input_path: Path to input (JSON, TXT, or audio file)
-            db_path: Path to speaker database (for audio processing)
+            db_dsn: PostgreSQL DSN for speaker database (for audio processing)
             device: Device for audio processing ("cuda" or "cpu")
 
         Returns:
@@ -273,13 +273,13 @@ TRANSCRIPT:
             ValueError: If content cannot be extracted or parsed
             RuntimeError: If Copilot call fails
         """
-        transcript = self._load_transcript(input_path, db_path, device)
+        transcript = self._load_transcript(input_path, db_dsn, device)
         return self.extract_graph(transcript)
 
     def analyze_from_file(
         self,
         input_path: str,
-        db_path: str = "speakers_db",
+        db_dsn: str = "speakers_db",
         device: str = "cuda",
     ) -> str:
         """Analyze content from a file.
@@ -288,7 +288,7 @@ TRANSCRIPT:
 
         Args:
             input_path: Path to input (JSON, TXT, or audio file)
-            db_path: Path to speaker database (for audio processing)
+            db_dsn: PostgreSQL DSN for speaker database (for audio processing)
             device: Device for audio processing ("cuda" or "cpu")
 
         Returns:
@@ -299,5 +299,5 @@ TRANSCRIPT:
             ValueError: If content cannot be extracted or is empty
             RuntimeError: If Copilot call fails
         """
-        transcript = self._load_transcript(input_path, db_path, device)
+        transcript = self._load_transcript(input_path, db_dsn, device)
         return self.analyze(transcript)

@@ -1,7 +1,8 @@
 nemo_toolkit[asr]
 pyannote.audio==4.0.3
-lancedb
-duckdb
+sqlalchemy>=2.0.0
+psycopg[binary]>=3.1.0
+pgvector>=0.3.0
 pylance
 typer[all]
 rich

@@ -6,8 +6,8 @@ import warnings
 import os
 import torch
 import numpy as np
-import torchaudio
 import soundfile as sf
+from math import gcd
 from pathlib import Path
 from pyannote.audio import Pipeline, Model, Inference
 from sklearn.cluster import DBSCAN
@@ -21,6 +21,37 @@ from .config import (
 )
 
 warnings.filterwarnings("ignore")
+
+
+def _load_audio(path: str) -> Tuple[torch.Tensor, int]:
+    """Load an audio file into a (channels, frames) float32 tensor.
+
+    Uses soundfile for lossless formats (WAV, FLAC, AIFF, etc.) and
+    librosa as a fallback for compressed formats (MP3, M4A, AAC).
+    Avoids torchcodec / torchaudio entirely.
+    """
+    try:
+        data, sr = sf.read(str(path), dtype="float32", always_2d=True)
+        waveform = torch.from_numpy(data.T.copy())  # (channels, frames)
+        return waveform, sr
+    except Exception:
+        import librosa  # lazy import – only needed for MP3/M4A/AAC
+        data, sr = librosa.load(str(path), sr=None, mono=False, dtype=np.float32)
+        if data.ndim == 1:
+            data = data[np.newaxis, :]  # ensure (channels, frames)
+        return torch.from_numpy(data), sr
+
+
+def _resample(waveform: torch.Tensor, orig_sr: int, target_sr: int) -> torch.Tensor:
+    """Resample waveform tensor from orig_sr to target_sr using scipy."""
+    if orig_sr == target_sr:
+        return waveform
+    from scipy.signal import resample_poly
+    g = gcd(orig_sr, target_sr)
+    up, down = target_sr // g, orig_sr // g
+    data = waveform.numpy()  # (channels, frames)
+    resampled = resample_poly(data, up, down, axis=-1).astype(np.float32)
+    return torch.from_numpy(resampled)
 
 
 class DiarizationEngine:
@@ -64,39 +95,32 @@ class DiarizationEngine:
             'waveform', 'sample_rate', and 'uri' for in-memory processing (MP3, AAC, M4A)
         """
         audio_path_obj = Path(audio_path)
-        
-        # Only preprocess MP3, AAC, and FLAC files due to potential torchaudio sample count issues
-        if audio_path_obj.suffix.lower() in ['.mp3', '.m4a', '.aac', '.flac']:
-            print(f"Loading {audio_path_obj.suffix} file into memory for compatibility...")
-            
-            try:
-                # Load audio with torchaudio into memory
-                waveform, sample_rate = torchaudio.load(str(audio_path))
-                
-                # Resample to 16kHz if necessary (standard for speech processing)
-                target_sr = 16000
-                if sample_rate != target_sr:
-                    resampler = torchaudio.transforms.Resample(sample_rate, target_sr)
-                    waveform = resampler(waveform)
-                    sample_rate = target_sr
-                    print(f"Resampled to {target_sr}Hz")
-                
-                # Return as dict for in-memory processing (avoids temporary files)
-                audio_dict = {
-                    'waveform': waveform,
-                    'sample_rate': sample_rate,
-                    'uri': audio_path_obj.stem
-                }
-                print(f"Audio loaded into memory: {waveform.shape} at {sample_rate}Hz")
-                
-                return audio_dict
-            
-            except Exception as e:
-                print(f"Warning: Could not load {audio_path_obj.suffix} file into memory: {e}")
-                print("Attempting to process original file directly...")
-                return str(audio_path)
-        
-        return str(audio_path)
+
+        # Always load into memory so pyannote never calls torchcodec internally.
+        # torchcodec is broken with PyTorch ≥ 2.6+cu* builds; we use soundfile/
+        # librosa + scipy instead (see module-level _load_audio / _resample).
+        try:
+            waveform, sample_rate = _load_audio(str(audio_path))
+
+            # Resample to 16 kHz if necessary (standard for speech processing)
+            target_sr = 16000
+            if sample_rate != target_sr:
+                waveform = _resample(waveform, sample_rate, target_sr)
+                sample_rate = target_sr
+                print(f"Resampled to {target_sr}Hz")
+
+            audio_dict = {
+                'waveform': waveform,
+                'sample_rate': sample_rate,
+                'uri': audio_path_obj.stem,
+            }
+            print(f"Audio loaded into memory: {waveform.shape} at {sample_rate}Hz")
+            return audio_dict
+
+        except Exception as e:
+            print(f"Warning: Could not load audio into memory: {e}")
+            print("Attempting to process original file directly...")
+            return str(audio_path)
 
     def _concatenate_to_temp_file(
         self, audio_paths: List[str]
@@ -132,9 +156,9 @@ class DiarizationEngine:
             tmp_path, mode="w", samplerate=TARGET_SR, channels=1, subtype="PCM_16"
         ) as out_f:
             for path in audio_paths:
-                waveform, sr = torchaudio.load(str(path))
+                waveform, sr = _load_audio(str(path))
                 if sr != TARGET_SR:
-                    waveform = torchaudio.transforms.Resample(sr, TARGET_SR)(waveform)
+                    waveform = _resample(waveform, sr, TARGET_SR)
                 # Mix to mono and convert to float32 numpy
                 if waveform.shape[0] > 1:
                     waveform = waveform.mean(dim=0, keepdim=True)
@@ -238,9 +262,9 @@ class DiarizationEngine:
                 waveform = processed_audio["waveform"]
                 sample_rate = processed_audio["sample_rate"]
             else:
-                waveform, sample_rate = torchaudio.load(str(processed_audio))
+                waveform, sample_rate = _load_audio(str(processed_audio))
                 if sample_rate != TARGET_SR:
-                    waveform = torchaudio.transforms.Resample(sample_rate, TARGET_SR)(waveform)
+                    waveform = _resample(waveform, sample_rate, TARGET_SR)
                     sample_rate = TARGET_SR
 
             file_duration = waveform.shape[1] / sample_rate
@@ -404,7 +428,7 @@ class DiarizationEngine:
     def diarize(
         self,
         audio_path: Union[str, List[str]],
-        db_path: Optional[str] = None,
+        db_dsn: Optional[str] = None,
         similarity_threshold: float = 0.7,
         store_new_speakers: bool = True,
         cross_file_threshold: float = 0.85,
@@ -422,7 +446,7 @@ class DiarizationEngine:
 
         Args:
             audio_path: Path to audio file, or ordered list of paths.
-            db_path: Path to LanceDB database (None to skip database lookup).
+            db_dsn: PostgreSQL DSN (None to skip database lookup).
             similarity_threshold: Minimum cosine similarity to match a speaker
                 against the database (0-1).
             store_new_speakers: Whether to store embeddings for unknown speakers.
@@ -450,7 +474,8 @@ class DiarizationEngine:
                 - new_time_cursor: Updated total seconds processed; pass as
                   time_cursor on the next incremental call.
         """
-        import lancedb
+        from .database import Embedding, SpeakerName, get_engine, get_session, init_db
+        from sqlalchemy import select, text
         import os
 
         self._initialize_models()
@@ -495,7 +520,7 @@ class DiarizationEngine:
                 sample_rate = processed_audio["sample_rate"]
             else:
                 print(f"Diarizing: {processed_audio}")
-                waveform, sample_rate = torchaudio.load(str(processed_audio))
+                waveform, sample_rate = _load_audio(str(processed_audio))
 
             file_duration = waveform.shape[1] / sample_rate
 
@@ -544,24 +569,25 @@ class DiarizationEngine:
         # STEP 2: Database lookup — match each speaker against known embeddings
         # ------------------------------------------------------------------
         try:
-            db = None
-            embeddings_table = None
-            names_table = None
-            if db_path:
+            engine = None
+            has_embeddings = False
+            if db_dsn:
                 try:
-                    db = lancedb.connect(db_path)
-                    existing_tables = db.table_names()
-                    if "embeddings" in existing_tables:
-                        embeddings_table = db.open_table("embeddings")
-                    if "speaker_names" in existing_tables:
-                        names_table = db.open_table("speaker_names")
+                    engine = get_engine(db_dsn)
+                    init_db(engine)
+                    # Check whether the embeddings table has any rows
+                    with engine.connect() as conn:
+                        count = conn.execute(
+                            text("SELECT COUNT(*) FROM embeddings")
+                        ).scalar()
+                        has_embeddings = count > 0
                 except Exception as e:
                     print(f"Warning: Could not connect to database: {e}")
 
             matched_speakers: Dict[str, str] = {}
             new_speakers: List[str] = []
 
-            if embeddings_table is not None:
+            if has_embeddings and engine is not None:
                 print("Searching database for speaker matches...")
                 for speaker_label, emb_list in speaker_embeddings.items():
                     if not emb_list:
@@ -573,33 +599,36 @@ class DiarizationEngine:
                     stacked = np.stack([e["embedding"].flatten() for e in emb_list])
                     mean_embedding = np.average(stacked, axis=0, weights=weights)
                     mean_embedding = mean_embedding / np.linalg.norm(mean_embedding)
-                    query_embedding = mean_embedding.tolist()
+                    vec_str = "[" + ",".join(str(v) for v in mean_embedding.tolist()) + "]"
 
                     try:
-                        search_results = (
-                            embeddings_table.search(query_embedding)
-                            .metric("cosine")
-                            .limit(1)
-                            .to_pandas()
+                        sql = text(
+                            "SELECT id, audio_file, local_speaker_label, "
+                            "(embedding <=> CAST(:vec AS vector)) AS _distance "
+                            "FROM embeddings "
+                            "ORDER BY embedding <=> CAST(:vec AS vector) "
+                            "LIMIT 1"
                         )
+                        with engine.connect() as conn:
+                            row = conn.execute(sql, {"vec": vec_str}).fetchone()
 
-                        if not search_results.empty:
-                            best_match = search_results.iloc[0]
-                            similarity = 1 - best_match["_distance"]
+                        if row is not None:
+                            similarity = 1.0 - row._distance
 
                             if similarity >= similarity_threshold:
-                                matched_label = best_match["local_speaker_label"]
-                                matched_file = best_match["audio_file"]
+                                matched_label = row.local_speaker_label
+                                matched_file = row.audio_file
 
                                 speaker_name = None
-                                if names_table is not None:
-                                    names_df = names_table.to_pandas()
-                                    mask = (
-                                        (names_df["audio_file"] == matched_file)
-                                        & (names_df["local_speaker_label"] == matched_label)
-                                    )
-                                    if mask.any():
-                                        speaker_name = names_df[mask].iloc[0]["speaker_name"]
+                                with get_session(engine) as session:
+                                    name_row = session.execute(
+                                        select(SpeakerName).where(
+                                            SpeakerName.audio_file == matched_file,
+                                            SpeakerName.local_speaker_label == matched_label,
+                                        )
+                                    ).scalars().first()
+                                    if name_row:
+                                        speaker_name = name_row.speaker_name
 
                                 if speaker_name:
                                     print(
@@ -608,10 +637,9 @@ class DiarizationEngine:
                                     )
                                     matched_speakers[speaker_label] = speaker_name
                                 else:
-                                    matched_id = best_match["id"]
                                     print(
                                         f"  Found match for {speaker_label} but no name assigned "
-                                        f"(id: {matched_id}, similarity={similarity:.3f})"
+                                        f"(id: {row.id}, similarity={similarity:.3f})"
                                     )
                             else:
                                 new_speakers.append(speaker_label)
@@ -626,34 +654,32 @@ class DiarizationEngine:
             # ------------------------------------------------------------------
             # STEP 3: Store embeddings for new/unknown speakers
             # ------------------------------------------------------------------
-            if store_new_speakers and new_speakers and db_path and db:
+            if store_new_speakers and new_speakers and db_dsn and engine:
                 print(f"Storing embeddings for {len(new_speakers)} new speaker(s)...")
-                records_to_add = []
-                # For multi-file runs the "source file" is the first file by convention;
-                # the per-file origin is captured in source_file field of each segment.
                 source_file = audio_paths[0]
+                records_to_add = []
 
                 for speaker_label in new_speakers:
                     if speaker_label not in speaker_embeddings:
                         continue
                     for idx, emb_data in enumerate(speaker_embeddings[speaker_label]):
-                        records_to_add.append({
-                            "id": f"{os.path.basename(source_file)}_{speaker_label}_{idx}",
-                            "audio_file": str(source_file),
-                            "local_speaker_label": speaker_label,
-                            "start_time": float(emb_data["start"]),
-                            "end_time": float(emb_data["end"]),
-                            "embedding": emb_data["embedding"].flatten().tolist(),
-                        })
+                        records_to_add.append(
+                            Embedding(
+                                id=f"{os.path.basename(source_file)}_{speaker_label}_{idx}",
+                                audio_file=str(source_file),
+                                local_speaker_label=speaker_label,
+                                start_time=float(emb_data["start"]),
+                                end_time=float(emb_data["end"]),
+                                embedding=emb_data["embedding"].flatten().tolist(),
+                            )
+                        )
 
                 if records_to_add:
                     try:
-                        if embeddings_table is None:
-                            embeddings_table = db.create_table("embeddings", data=records_to_add)
-                            print(f"  Created embeddings table with {len(records_to_add)} records")
-                        else:
-                            embeddings_table.add(records_to_add)
-                            print(f"  Added {len(records_to_add)} embeddings to database")
+                        with get_session(engine) as session:
+                            for rec in records_to_add:
+                                session.merge(rec)
+                        print(f"  Added {len(records_to_add)} embeddings to database")
                     except Exception as e:
                         print(f"Warning: Could not store embeddings: {e}")
 
@@ -777,7 +803,7 @@ class DiarizationEngine:
             embeddings_list.append(emb.flatten())
 
             # Measure duration for weighting
-            waveform, sr = torchaudio.load(str(path))
+            waveform, sr = _load_audio(str(path))
             durations.append(waveform.shape[1] / sr)
             del waveform  # free immediately
 

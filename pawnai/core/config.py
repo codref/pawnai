@@ -53,7 +53,11 @@ import yaml
 # Module-level defaults
 # ──────────────────────────────────────────────────────────────────────────────
 
-DEFAULT_DB_PATH = "speakers_db"
+DEFAULT_DB_PATH = "speakers_db"  # kept for backward compat; prefer DEFAULT_DB_DSN
+DEFAULT_DB_DSN: str = os.getenv(
+    "DATABASE_URL",
+    "postgresql+psycopg://postgres:postgres@localhost:5432/pawnai",
+)
 
 # Model identifiers
 DIARIZATION_MODEL = "pyannote/speaker-diarization-community-1"
@@ -89,7 +93,8 @@ class AppConfig:
             "embedding_model": EMBEDDING_MODEL,
             "transcription_model": TRANSCRIPTION_MODEL,
             # paths
-            "db_path": DEFAULT_DB_PATH,
+            "db_path": DEFAULT_DB_PATH,   # legacy – prefer db_dsn
+            "db_dsn": DEFAULT_DB_DSN,
             "audio_dir": "audio/",
             # device
             "device": "auto",
@@ -132,7 +137,7 @@ class AppConfig:
         # paths: section
         paths = content.get("paths", {})
         if isinstance(paths, dict):
-            for key in ("db_path", "audio_dir"):
+            for key in ("db_path", "db_dsn", "audio_dir"):
                 if key in paths:
                     self._config[key] = paths[key]
 
@@ -210,15 +215,29 @@ DEVICE_TYPE: str = _default_config.get("device", "auto")
 # ──────────────────────────────────────────────────────────────────────────────
 
 class Config:
-    """Lightweight path-configuration helper.
+    """Lightweight database-configuration helper.
 
     Args:
-        db_path: Path to the LanceDB speaker database directory.
+        db_dsn: PostgreSQL DSN used to connect to the speaker database.
+            Defaults to :data:`DEFAULT_DB_DSN` (respects the ``DATABASE_URL``
+            environment variable).
     """
 
-    def __init__(self, db_path: str = DEFAULT_DB_PATH) -> None:
-        self.db_path = Path(db_path)
+    def __init__(self, db_dsn: str = DEFAULT_DB_DSN) -> None:
+        self.db_dsn = db_dsn
+
+    def get_engine(self):
+        """Return a SQLAlchemy engine and ensure tables exist.
+
+        Returns:
+            :class:`sqlalchemy.engine.Engine` connected to the configured DB.
+        """
+        from .database import get_engine, init_db
+
+        engine = get_engine(self.db_dsn)
+        init_db(engine)
+        return engine
 
     def ensure_paths_exist(self) -> None:
-        """Create the database directory if it does not already exist."""
-        self.db_path.mkdir(parents=True, exist_ok=True)
+        """Initialise PostgreSQL tables (replaces legacy directory creation)."""
+        self.get_engine()

@@ -1,14 +1,14 @@
-# OpenBrain Project Organization - Summary
+# PawnAI Project Organization - Summary
 
 ## What Was Done
 
-Your project has been successfully reorganized as a professional Python CLI application named **OpenBrain** with a single entrypoint and proper package structure.
+Your project has been successfully reorganized as a professional Python CLI application named **PawnAI** with a single entrypoint and proper package structure.
 
 ## Final Project Structure
 
 ```
 /workspaces/parakeet/
-├── openbrain/                          # Main package
+├── pawnai/                          # Main package
 │   ├── __init__.py                     # Package metadata & public API
 │   ├── __main__.py                     # 🎯 SINGLE CLI ENTRYPOINT
 │   ├── core/                           # Core business logic
@@ -44,11 +44,11 @@ Your project has been successfully reorganized as a professional Python CLI appl
 ## Key Features
 
 ### 1. Single Entrypoint Architecture
-- All commands route through `openbrain/__main__.py:main()`
+- All commands route through `pawnai/__main__.py:main()`
 - Can be invoked as:
   ```bash
-  python -m openbrain [command]
-  openbrain [command]  # After installation
+  python -m pawnai [command]
+  pawnai [command]  # After installation
   ```
 
 ### 2. Command Structure
@@ -79,7 +79,7 @@ Available CLI commands:
 - `pyproject.toml`: Complete project metadata
 - ALL dependencies listed with versions
 - Optional dependency groups for dev/docs
-- Entry point defined: `openbrain = "openbrain.__main__:main"`
+- Entry point defined: `pawnai = "pawnai.__main__:main"`
 
 ### 5. Professional Development Setup
 - Test suite with pytest
@@ -99,32 +99,32 @@ pip install -e ".[dev]"
 ### Run Commands
 ```bash
 # Show status
-python -m openbrain status
+python -m pawnai status
 
 # Diarize audio
-python -m openbrain diarize audio.wav
+python -m pawnai diarize audio.wav
 
 # Transcribe
-python -m openbrain transcribe audio.wav
+python -m pawnai transcribe audio.wav
 
 # Extract embeddings
-python -m openbrain embed audio.wav --speaker-id speaker_001
+python -m pawnai embed audio.wav --speaker-id speaker_001
 
 # Help
-python -m openbrain --help
+python -m pawnai --help
 ```
 
 ### Run Tests
 ```bash
 pytest
-pytest --cov=openbrain
+pytest --cov=pawnai
 ```
 
 ## What Was Kept
 
 ✅ All original functionality preserved:
-- `dbscan.py` → `openbrain/core/diarization.py`
-- `transcribe.py` → `openbrain/core/transcription.py`
+- `dbscan.py` → `pawnai/core/diarization.py`
+- `transcribe.py` → `pawnai/core/transcription.py`
 - Original speaker embeddings and database structure
 - All dependencies from `requirements.txt`
 
@@ -150,11 +150,11 @@ rm -rf old/
 
 2. **Test the CLI**:
    ```bash
-   python -m openbrain status
+   python -m pawnai status
    ```
 
 3. **Customize**:
-   - Update `openbrain/__init__.py` with actual version info
+   - Update `pawnai/__init__.py` with actual version info
    - Update `pyproject.toml` with correct GitHub URLs
    - Expand test coverage for your specific use cases
 
