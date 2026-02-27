@@ -4,6 +4,7 @@ import shutil
 from typing import Any, List, Optional, Tuple
 import typer
 from pathlib import Path
+import numpy as np
 
 from .utils import console
 
@@ -11,6 +12,32 @@ app = typer.Typer(
     help="PawnAI: Speaker diarization and transcription CLI tool",
     rich_markup_mode="rich",
 )
+
+
+def _get_database_manager(config_path: Optional[str] = None) -> Tuple[Any, Any, Any]:
+    """Initialize AppConfig, DatabaseManager, and EmbeddingManager.
+    
+    Args:
+        config_path: Optional path to config file
+        
+    Returns:
+        Tuple of (app_cfg, database_manager, embedding_manager)
+    """
+    from ..core.config import AppConfig
+    from ..core.database import DatabaseManager
+    from ..core.embeddings import EmbeddingManager
+    
+    app_cfg = AppConfig(config_path=config_path) if config_path else AppConfig()
+    
+    # Initialize database manager with configured URL
+    db_url = app_cfg.get_database_url()
+    database_manager = DatabaseManager(db_url)
+    
+    # Initialize embedding manager with configured path
+    db_path = app_cfg.get("db_path", "speakers_db")
+    embedding_manager = EmbeddingManager(db_path)
+    
+    return app_cfg, database_manager, embedding_manager
 
 
 def _resolve_s3_paths(
@@ -140,10 +167,10 @@ def diarize(
     # Lazy imports to avoid loading models during --help
     import json
     from ..core import DiarizationEngine
-    from ..core.config import Config, AppConfig
+    from ..core.config import Config
 
-    # Load config; capture instance so S3 config is accessible
-    app_cfg = AppConfig(config_path=config) if config else AppConfig()
+    # Initialize database and embedding managers
+    app_cfg, database_manager, embedding_manager = _get_database_manager(config)
     _s3_temps: List[str] = []
     try:
         audio_paths, _s3_temps = _resolve_s3_paths(audio_paths, app_cfg)
@@ -152,10 +179,13 @@ def diarize(
                 console.print(f"[red]Error: Audio file not found: {p}[/red]")
                 raise typer.Exit(1)
 
-        config = Config(db_path=db_path)
-        config.ensure_paths_exist()
+        config_obj = Config(db_path=db_path)
+        config_obj.ensure_paths_exist()
 
-        engine = DiarizationEngine()
+        engine = DiarizationEngine(
+            database_manager=database_manager,
+            embedding_manager=embedding_manager,
+        )
         if len(audio_paths) == 1:
             console.print(f"[cyan]Diarizing: {audio_paths[0]}[/cyan]")
         else:
@@ -171,6 +201,102 @@ def diarize(
         )
         
         console.print(f"[green]✓ Diarization complete[/green]")
+        
+        # Store diarization results in database
+        try:
+            import soundfile as sf
+            with database_manager.get_session() as db_session:
+                # Map to store speaker label -> speaker_id
+                speaker_map = {}
+                
+                # Store each audio file and create speakers
+                for audio_path in audio_paths:
+                    audio_data, sample_rate = sf.read(audio_path)
+                    duration = len(audio_data) / sample_rate
+                    file_size = Path(audio_path).stat().st_size
+                    
+                    audio_file = database_manager.get_or_create_audio_file(
+                        db_session,
+                        file_path=str(Path(audio_path).absolute()),
+                        file_name=Path(audio_path).name,
+                        duration_seconds=duration,
+                        sample_rate=sample_rate,
+                        channels=len(audio_data.shape) if audio_data.ndim > 1 else 1,
+                        file_size_bytes=file_size,
+                    )
+                    
+                    # Create speaker records for unique speakers
+                    for speaker_label in result.get('speakers', []):
+                        if speaker_label not in speaker_map:
+                            speaker = database_manager.create_speaker(
+                                db_session,
+                                first_seen_audio_id=audio_file.id,
+                            )
+                            speaker_map[speaker_label] = speaker.id
+                            
+                            # Store speaker name if matched
+                            matched_name = result.get('matched_speakers', {}).get(speaker_label)
+                            if matched_name:
+                                database_manager.create_speaker_name(
+                                    db_session,
+                                    speaker_id=speaker.id,
+                                    name=matched_name,
+                                    context_audio_id=audio_file.id,
+                                )
+                    
+                    # Store speaker segments
+                    for segment in result.get('segments', []):
+                        speaker_label = segment.get('original_label', segment.get('speaker'))
+                        if speaker_label in speaker_map:
+                            database_manager.create_speaker_segment(
+                                db_session,
+                                audio_file_id=audio_file.id,
+                                speaker_id=speaker_map[speaker_label],
+                                start_time=segment['start'],
+                                end_time=segment['end'],
+                                local_speaker_label=speaker_label,
+                            )
+                
+                db_session.commit()
+                
+                # Now store embeddings to LanceDB with correct speaker_ids and audio_file_ids
+                speaker_embeddings_data = result.get('speaker_embeddings', {})
+                if speaker_embeddings_data and embedding_manager:
+                    try:
+                        embedding_count = 0
+                        for speaker_label, emb_list in speaker_embeddings_data.items():
+                            if speaker_label not in speaker_map:
+                                continue
+                            speaker_id = speaker_map[speaker_label]
+                            
+                            for idx, emb_data in enumerate(emb_list):
+                                # Ensure embedding is a numpy array
+                                emb = emb_data['embedding']
+                                if not isinstance(emb, np.ndarray):
+                                    emb = np.array(emb)
+                                
+                                # Store each segment's embedding to LanceDB
+                                embedding_id = f"{Path(audio_paths[0]).stem}_{speaker_label}_{idx}"
+                                embedding_manager.add_embedding(
+                                    embedding_id=embedding_id,
+                                    speaker_id=speaker_id,
+                                    embedding=emb,
+                                    audio_file_id=audio_file.id,
+                                    start_time=float(emb_data['start']),
+                                    end_time=float(emb_data['end']),
+                                )
+                                embedding_count += 1
+                        
+                        if embedding_count > 0:
+                            console.print(f"[dim]✓ Stored {embedding_count} embedding(s) to LanceDB[/dim]")
+                    except Exception as embed_err:
+                        import traceback
+                        console.print(f"[yellow]Warning: Could not store embeddings to LanceDB: {embed_err}[/yellow]")
+                        console.print(f"[dim]{traceback.format_exc()}[/dim]")
+                
+                console.print(f"[dim]✓ Stored {len(speaker_map)} speaker(s) and {len(result.get('segments',  []))} segment(s)[/dim]")
+        except Exception as e:
+            console.print(f"[yellow]Warning: Could not store diarization in database: {e}[/yellow]")
         
         # Show matched speakers if any
         if result.get('matched_speakers'):
@@ -285,11 +411,11 @@ def transcribe(
     """
     # Lazy imports to avoid loading models during --help
     import json
+    import soundfile as sf
     from ..core import TranscriptionEngine
-    from ..core.config import AppConfig
 
-    # Load config; capture instance so S3 config is accessible
-    app_cfg = AppConfig(config_path=config) if config else AppConfig()
+    # Initialize database and embedding managers
+    app_cfg, database_manager, embedding_manager = _get_database_manager(config)
     _s3_temps: List[str] = []
     try:
         audio_paths, _s3_temps = _resolve_s3_paths(audio_paths, app_cfg)
@@ -298,7 +424,10 @@ def transcribe(
                 console.print(f"[red]Error: Audio file not found: {p}[/red]")
                 raise typer.Exit(1)
 
-        engine = TranscriptionEngine(device=device)
+        engine = TranscriptionEngine(
+            device=device,
+            database_manager=database_manager,
+        )
 
         if len(audio_paths) == 1:
             console.print(f"[cyan]Transcribing: {audio_paths[0]}[/cyan]")
@@ -323,6 +452,43 @@ def transcribe(
                 audio_paths, include_timestamps=with_timestamps, chunk_duration=chunk_duration
             )
         console.print(f"[green]✓ Transcription complete[/green]")
+        
+        # Store in database
+        try:
+            with database_manager.get_session() as session:
+                for idx, audio_path in enumerate(audio_paths):
+                    # Get audio metadata
+                    audio_data, sample_rate = sf.read(audio_path)
+                    duration = len(audio_data) / sample_rate
+                    file_size = Path(audio_path).stat().st_size
+                    
+                    # Create or get audio file record
+                    audio_file = database_manager.get_or_create_audio_file(
+                        session,
+                        file_path=str(Path(audio_path).absolute()),
+                        file_name=Path(audio_path).name,
+                        duration_seconds=duration,
+                        sample_rate=sample_rate,
+                        channels=len(audio_data.shape) if audio_data.ndim > 1 else 1,
+                        file_size_bytes=file_size,
+                    )
+                    
+                    # Store transcript (for single file or first file in conversation)
+                    if idx == 0:
+                        transcript = database_manager.create_transcript(
+                            session,
+                            audio_file_id=audio_file.id,
+                            text=result.get('text', ''),
+                            word_timestamps=result.get('word_timestamps'),
+                            segment_timestamps=result.get('segment_timestamps'),
+                            char_timestamps=result.get('char_timestamps'),
+                            model_name=app_cfg.get('transcription_model'),
+                        )
+                        console.print(f"[dim]✓ Stored transcript (ID: {transcript.id})[/dim]")
+                
+                session.commit()
+        except Exception as e:
+            console.print(f"[yellow]Warning: Could not store in database: {e}[/yellow]")
         
         # Determine output format
         if output:
@@ -448,11 +614,12 @@ def transcribe_diarize(
     """
     # Lazy imports to avoid loading models during --help
     import json
+    import soundfile as sf
     from ..core import transcribe_with_diarization, format_transcript_with_speakers
-    from ..core.config import Config, AppConfig
+    from ..core.config import Config
 
-    # Load config; capture instance so S3 config is accessible
-    app_cfg = AppConfig(config_path=config) if config else AppConfig()
+    # Initialize database and embedding managers
+    app_cfg, database_manager, embedding_manager = _get_database_manager(config)
     _s3_temps: List[str] = []
     try:
         audio_paths, _s3_temps = _resolve_s3_paths(audio_paths, app_cfg)
@@ -461,8 +628,8 @@ def transcribe_diarize(
                 console.print(f"[red]Error: Audio file not found: {p}[/red]")
                 raise typer.Exit(1)
 
-        config = Config(db_path=db_path)
-        config.ensure_paths_exist()
+        config_obj = Config(db_path=db_path)
+        config_obj.ensure_paths_exist()
 
         # ------------------------------------------------------------------
         # Load prior session state (if --session is specified and file exists)
@@ -524,9 +691,160 @@ def transcribe_diarize(
             cross_file_threshold=cross_file_threshold,
             prior_speaker_embeddings=prior_speaker_embeddings,
             time_cursor=prior_time_cursor,
+            database_manager=database_manager,
+            embedding_manager=embedding_manager,
         )
 
         console.print(f"[green]✓ Processing complete[/green]")
+        
+        # ------------------------------------------------------------------
+        # Store results in database
+        # ------------------------------------------------------------------
+        try:
+            with database_manager.get_session() as db_session:
+                # Create or get conversation if session is specified
+                conversation = None
+                if session:
+                    session_name = Path(session).stem
+                    conversation = database_manager.get_or_create_conversation(
+                        db_session,
+                        name=session_name,
+                        description=f"Session from {session}",
+                    )
+                
+                # Store each audio file
+                for audio_path in audio_paths:
+                    audio_data, sample_rate = sf.read(audio_path)
+                    duration = len(audio_data) / sample_rate
+                    file_size = Path(audio_path).stat().st_size
+                    
+                    audio_file = database_manager.get_or_create_audio_file(
+                        db_session,
+                        file_path=str(Path(audio_path).absolute()),
+                        file_name=Path(audio_path).name,
+                        duration_seconds=duration,
+                        sample_rate=sample_rate,
+                        channels=len(audio_data.shape) if audio_data.ndim > 1 else 1,
+                        file_size_bytes=file_size,
+                        conversation_id=conversation.id if conversation else None,
+                    )
+                
+                # Store transcript for the first file (or combined result)
+                first_audio = database_manager.get_audio_file_by_path(
+                    db_session,
+                    str(Path(audio_paths[0]).absolute()),
+                )
+                if first_audio:
+                    transcript = database_manager.create_transcript(
+                        db_session,
+                        audio_file_id=first_audio.id,
+                        text=result.get('text', ''),
+                        word_timestamps=result.get('word_timestamps'),
+                        segment_timestamps=result.get('segment_timestamps'),
+                        model_name=app_cfg.get('transcription_model'),
+                    )
+                    console.print(f"[dim]✓ Stored transcript (ID: {transcript.id})[/dim]")
+                
+                # Store speakers and segments from diarization
+                speaker_map = {}
+                for speaker_label in result.get('speakers', []):
+                    if speaker_label not in speaker_map:
+                        speaker = database_manager.create_speaker(
+                            db_session,
+                            first_seen_audio_id=first_audio.id if first_audio else None,
+                        )
+                        speaker_map[speaker_label] = speaker.id
+                        
+                        # Store speaker name if matched
+                        matched_name = result.get('matched_speakers', {}).get(speaker_label)
+                        if matched_name:
+                            database_manager.create_speaker_name(
+                                db_session,
+                                speaker_id=speaker.id,
+                                name=matched_name,
+                                context_audio_id=first_audio.id if first_audio else None,
+                            )
+                
+                # Store speaker segments with transcript text
+                for segment in result.get('segments', []):
+                    # Find which audio file this segment belongs to
+                    segment_audio = first_audio
+                    for audio_path in audio_paths:
+                        abs_path = str(Path(audio_path).absolute())
+                        audio_rec = database_manager.get_audio_file_by_path(db_session, abs_path)
+                        if audio_rec:
+                            segment_audio = audio_rec
+                            break
+                    
+                    if segment_audio:
+                        speaker_label = segment.get('original_label', segment.get('speaker'))
+                        if speaker_label in speaker_map:
+                            database_manager.create_speaker_segment(
+                                db_session,
+                                audio_file_id=segment_audio.id,
+                                speaker_id=speaker_map[speaker_label],
+                                start_time=segment.get('start', 0),
+                                end_time=segment.get('end', 0),
+                                local_speaker_label=speaker_label,
+                                transcript_text=segment.get('text', ''),
+                            )
+                
+                if speaker_map:
+                    console.print(f"[dim]✓ Stored {len(speaker_map)} speaker(s) and {len(result.get('segments', []))} segment(s)[/dim]")
+                
+                # Store embeddings to LanceDB with correct speaker_ids and audio_file_ids
+                speaker_embeddings_data = result.get('speaker_embeddings', {})
+                if speaker_embeddings_data and embedding_manager and speaker_map:
+                    embedding_count = 0
+                    for speaker_label, emb_list in speaker_embeddings_data.items():
+                        if speaker_label not in speaker_map:
+                            continue
+                        speaker_id = speaker_map[speaker_label]
+                        
+                        # Use first audio file ID for embeddings
+                        audio_file_id = first_audio.id if first_audio else None
+                        if not audio_file_id:
+                            continue
+                        
+                        for idx, emb_data in enumerate(emb_list):
+                            # Ensure embedding is a numpy array
+                            emb = emb_data['embedding']
+                            if not isinstance(emb, np.ndarray):
+                                emb = np.array(emb)
+                            
+                            # Store each segment's embedding to LanceDB
+                            embedding_id = f"{Path(audio_paths[0]).stem}_{speaker_label}_{idx}"
+                            embedding_manager.add_embedding(
+                                embedding_id=embedding_id,
+                                speaker_id=speaker_id,
+                                embedding=emb,
+                                audio_file_id=audio_file_id,
+                                start_time=float(emb_data['start']),
+                                end_time=float(emb_data['end']),
+                            )
+                            embedding_count += 1
+                    
+                    if embedding_count > 0:
+                        console.print(f"[dim]✓ Stored {embedding_count} embedding(s) to LanceDB[/dim]")
+                
+                # Store session state in database if specified
+                if session and conversation:
+                    session_obj = database_manager.get_or_create_session(
+                        db_session,
+                        name=Path(session).stem,
+                        conversation_id=conversation.id,
+                        time_cursor=result.get('new_time_cursor', prior_time_cursor),
+                        state_data={
+                            'session_speaker_embeddings': result.get('session_speaker_embeddings'),
+                            'speakers': result.get('speakers'),
+                            'matched_speakers': result.get('matched_speakers'),
+                        },
+                    )
+                    console.print(f"[dim]✓ Stored session state (ID: {session_obj.id})[/dim]")
+                
+                db_session.commit()
+        except Exception as e:
+            console.print(f"[yellow]Warning: Could not store in database: {e}[/yellow]")
 
         # ------------------------------------------------------------------
         # Merge this call's output with prior session data
@@ -1059,6 +1377,85 @@ def analyze(
 
 
 @app.command()
+@app.command(name="init-db")
+def init_db(
+    config: Optional[str] = typer.Option(
+        None, "--config", help="Path to YAML configuration file (.pawnai.yml)"
+    ),
+    reset: bool = typer.Option(
+        False, "--reset", help="Drop all tables and recreate (WARNING: deletes all data!)"
+    ),
+) -> None:
+    """Initialize the database schema.
+    
+    Creates all necessary tables for storing audio files, transcripts,
+    speaker information, and sessions. Safe to run multiple times - only
+    creates missing tables.
+    
+    Uses SQLite by default (no setup needed). For PostgreSQL, ensure
+    docker-compose is running and database URL is configured.
+    
+    Example:
+        pawnai init-db
+        pawnai init-db --reset  # Warning: deletes all data!
+    """
+    app_cfg, database_manager, _ = _get_database_manager(config)
+    
+    db_url = app_cfg.get_database_url()
+    db_type = "PostgreSQL" if db_url.startswith("postgresql") else "SQLite"
+    
+    console.print(f"\n[bold cyan]Database Initialization[/bold cyan]")
+    console.print(f"Database Type: {db_type}")
+    console.print(f"Connection: {db_url.split('@')[-1] if '@' in db_url else db_url}")
+    
+    if reset:
+        if not typer.confirm("\n⚠️  This will DELETE ALL DATA. Continue?", default=False):
+            console.print("[yellow]Cancelled[/yellow]")
+            raise typer.Exit(0)
+        
+        console.print("[yellow]Dropping all tables...[/yellow]")
+        try:
+            database_manager.drop_all()
+            console.print("[green]✓ All tables dropped[/green]")
+        except Exception as e:
+            console.print(f"[red]Error dropping tables: {e}[/red]")
+            raise typer.Exit(1)
+    
+    console.print("\n[cyan]Creating database tables...[/cyan]")
+    try:
+        database_manager.init_db()
+        console.print("[green]✓ Database initialized successfully[/green]")
+        
+        # Show which tables were created
+        console.print("\n[bold]Tables created:[/bold]")
+        tables = [
+            "conversations",
+            "audio_files",
+            "speakers",
+            "speaker_segments",
+            "transcripts",
+            "sessions",
+            "speaker_names",
+        ]
+        for table in tables:
+            console.print(f"  ✓ {table}")
+        
+        console.print("\n[dim]You can now run diarization and transcription commands.[/dim]")
+        console.print(f"[dim]Vector embeddings will be stored in: {app_cfg.get('db_path', 'speakers_db')}[/dim]")
+        
+    except Exception as e:
+        console.print(f"[red]Error initializing database: {e}[/red]")
+        
+        if db_type == "PostgreSQL" and "could not connect" in str(e).lower():
+            console.print("\n[yellow]PostgreSQL connection failed. Make sure:[/yellow]")
+            console.print("  1. Docker is running: docker-compose up -d")
+            console.print("  2. Database URL is correct in .pawnai.yml")
+            console.print("  3. PostgreSQL container is healthy: docker-compose ps")
+        
+        raise typer.Exit(1)
+
+
+@app.command()
 def status(
     config: Optional[str] = typer.Option(
         None, "--config", help="Path to YAML configuration file (.pawnai.yml)"
@@ -1069,13 +1466,9 @@ def status(
     Displays system information and model availability.
     """
     # Lazy import to avoid loading torch during --help
-    from ..core.config import AppConfig
-    
-    # Load config from specified file if provided
-    if config:
-        AppConfig(config_path=config)
-    
     import torch
+    
+    app_cfg, database_manager, _ = _get_database_manager(config)
     
     console.print("\n[bold cyan]PawnAI Status[/bold cyan]")
     console.print(f"Device: {torch.device('cuda' if torch.cuda.is_available() else 'cpu')}")
@@ -1084,7 +1477,23 @@ def status(
     if torch.cuda.is_available():
         console.print(f"GPU: {torch.cuda.get_device_name(0)}")
     
+    # Database info
+    db_url = app_cfg.get_database_url()
+    db_type = "PostgreSQL" if db_url.startswith("postgresql") else "SQLite"
+    console.print(f"\nDatabase: {db_type}")
+    if db_type == "SQLite":
+        db_path = db_url.replace("sqlite:///", "")
+        console.print(f"  Path: {db_path}")
+    else:
+        # Show PostgreSQL connection without password
+        connection_str = db_url.split('@')[-1] if '@' in db_url else db_url
+        console.print(f"  Connection: {connection_str}")
+    
+    # LanceDB embeddings path
+    console.print(f"Embeddings: {app_cfg.get('db_path', 'speakers_db')}")
+    
     console.print("\n[bold]Available commands:[/bold]")
+    console.print("  init-db            - Initialize database schema")
     console.print("  diarize            - Perform speaker diarization")
     console.print("  transcribe         - Transcribe audio to text")
     console.print("  transcribe-diarize - Transcribe with speaker labels (combined)")

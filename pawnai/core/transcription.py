@@ -9,18 +9,30 @@ import numpy as np
 
 from .config import TRANSCRIPTION_MODEL
 
+# Import DatabaseManager - optional for backward compatibility
+try:
+    from .database import DatabaseManager
+except ImportError:
+    DatabaseManager = None  # type: ignore
+
 
 class TranscriptionEngine:
     """Engine for audio transcription using Nvidia Parakeet model."""
 
-    def __init__(self, device: str = "cuda"):
+    def __init__(
+        self,
+        device: str = "cuda",
+        database_manager: Optional[Any] = None,
+    ):
         """Initialize the transcription engine.
         
         Args:
             device: Device to use ("cuda" or "cpu")
+            database_manager: Optional DatabaseManager for SQL storage
         """
         self.model: Optional[Any] = None
         self.device = device
+        self.database_manager = database_manager
 
     def _initialize_model(self) -> None:
         """Load the transcription model (lazy loading)."""

@@ -1,0 +1,75 @@
+version: '3.8'
+
+services:
+  # PostgreSQL Database (Production-ready)
+  # Use this for: production, multi-user, large datasets
+  # Default credentials: pawnai/pawnai
+  postgres:
+    image: postgres:15-alpine
+    container_name: pawnai-postgres
+    environment:
+      POSTGRES_DB: pawnai
+      POSTGRES_USER: pawnai
+      POSTGRES_PASSWORD: pawnai
+      POSTGRES_INITDB_ARGS: "--encoding=UTF8 --locale=en_US.UTF-8"
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U pawnai"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  # pgAdmin (Optional - Database Management UI)
+  # Access at: http://localhost:5050
+  # Login: admin@pawnai.local / admin
+  pgadmin:
+    image: dpage/pgadmin4:latest
+    container_name: pawnai-pgadmin
+    environment:
+      PGADMIN_DEFAULT_EMAIL: admin@pawnai.local
+      PGADMIN_DEFAULT_PASSWORD: admin
+      PGADMIN_CONFIG_SERVER_MODE: 'False'
+    ports:
+      - "5050:80"
+    volumes:
+      - pgadmin_data:/var/lib/pgadmin
+    depends_on:
+      - postgres
+    restart: unless-stopped
+    profiles:
+      - admin  # Only start with: docker-compose --profile admin up
+
+volumes:
+  postgres_data:
+    driver: local
+  pgadmin_data:
+    driver: local
+
+# Usage:
+# ------
+# Start PostgreSQL only:
+#   docker-compose up -d
+#
+# Start PostgreSQL + pgAdmin:
+#   docker-compose --profile admin up -d
+#
+# Stop services:
+#   docker-compose down
+#
+# Reset database (WARNING: deletes all data):
+#   docker-compose down -v
+#
+# View logs:
+#   docker-compose logs -f postgres
+#
+# Configuration in .pawnai.yml:
+#   database:
+#     url: postgresql://pawnai:pawnai@localhost:5432/pawnai
+#
+# For local development without Docker, use SQLite (default):
+#   database:
+#     url: sqlite:///pawnai.db

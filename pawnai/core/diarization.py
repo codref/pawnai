@@ -20,17 +20,36 @@ from .config import (
     DEVICE_TYPE,
 )
 
+# Import DatabaseManager - optional since we want backward compatibility
+try:
+    from .database import DatabaseManager
+except ImportError:
+    DatabaseManager = None  # type: ignore
+
+# Import updated EmbeddingManager
+try:
+    from .embeddings import EmbeddingManager
+except ImportError:
+    EmbeddingManager = None  # type: ignore
+
 warnings.filterwarnings("ignore")
 
 
 class DiarizationEngine:
     """Engine for speaker diarization and embedding extraction."""
 
-    def __init__(self, device: Optional[str] = None):
+    def __init__(
+        self,
+        device: Optional[str] = None,
+        database_manager: Optional[Any] = None,
+        embedding_manager: Optional[Any] = None,
+    ):
         """Initialize the diarization engine.
 
         Args:
             device: Device to use ("cuda", "cpu", or "auto"). Defaults to auto-detect.
+            database_manager: Optional DatabaseManager for SQL storage  
+            embedding_manager: Optional EmbeddingManager for vector search
         """
         if device is None or device == "auto":
             self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -39,6 +58,8 @@ class DiarizationEngine:
 
         self.diarization_pipeline: Optional[Pipeline] = None
         self.embedding_model: Optional[Inference] = None
+        self.database_manager = database_manager
+        self.embedding_manager = embedding_manager
 
     def _preprocess_audio(self, audio_path: str) -> Union[str, Dict[str, Any]]:
         """Preprocess audio file to ensure compatibility with pyannote.audio.
@@ -546,15 +567,12 @@ class DiarizationEngine:
         try:
             db = None
             embeddings_table = None
-            names_table = None
             if db_path:
                 try:
                     db = lancedb.connect(db_path)
                     existing_tables = db.table_names()
                     if "embeddings" in existing_tables:
                         embeddings_table = db.open_table("embeddings")
-                    if "speaker_names" in existing_tables:
-                        names_table = db.open_table("speaker_names")
                 except Exception as e:
                     print(f"Warning: Could not connect to database: {e}")
 
@@ -588,18 +606,21 @@ class DiarizationEngine:
                             similarity = 1 - best_match["_distance"]
 
                             if similarity >= similarity_threshold:
-                                matched_label = best_match["local_speaker_label"]
-                                matched_file = best_match["audio_file"]
-
+                                # NEW: Get speaker_id from embedding result
+                                matched_speaker_id = int(best_match["speaker_id"])
+                                
+                                # NEW: Look up speaker name from SQLite database
                                 speaker_name = None
-                                if names_table is not None:
-                                    names_df = names_table.to_pandas()
-                                    mask = (
-                                        (names_df["audio_file"] == matched_file)
-                                        & (names_df["local_speaker_label"] == matched_label)
-                                    )
-                                    if mask.any():
-                                        speaker_name = names_df[mask].iloc[0]["speaker_name"]
+                                if self.database_manager:
+                                    try:
+                                        with self.database_manager.get_session() as db_session:
+                                            speaker_name_obj = self.database_manager.get_speaker_name(
+                                                db_session, matched_speaker_id
+                                            )
+                                            if speaker_name_obj:
+                                                speaker_name = speaker_name_obj.name
+                                    except Exception as e:
+                                        print(f"  Warning: Could not query speaker name from database: {e}")
 
                                 if speaker_name:
                                     print(
@@ -611,7 +632,7 @@ class DiarizationEngine:
                                     matched_id = best_match["id"]
                                     print(
                                         f"  Found match for {speaker_label} but no name assigned "
-                                        f"(id: {matched_id}, similarity={similarity:.3f})"
+                                        f"(id: {matched_id}, speaker_id: {matched_speaker_id}, similarity={similarity:.3f})"
                                     )
                             else:
                                 new_speakers.append(speaker_label)
@@ -624,41 +645,9 @@ class DiarizationEngine:
                 new_speakers = list(speaker_embeddings.keys())
 
             # ------------------------------------------------------------------
-            # STEP 3: Store embeddings for new/unknown speakers
-            # ------------------------------------------------------------------
-            if store_new_speakers and new_speakers and db_path and db:
-                print(f"Storing embeddings for {len(new_speakers)} new speaker(s)...")
-                records_to_add = []
-                # For multi-file runs the "source file" is the first file by convention;
-                # the per-file origin is captured in source_file field of each segment.
-                source_file = audio_paths[0]
-
-                for speaker_label in new_speakers:
-                    if speaker_label not in speaker_embeddings:
-                        continue
-                    for idx, emb_data in enumerate(speaker_embeddings[speaker_label]):
-                        records_to_add.append({
-                            "id": f"{os.path.basename(source_file)}_{speaker_label}_{idx}",
-                            "audio_file": str(source_file),
-                            "local_speaker_label": speaker_label,
-                            "start_time": float(emb_data["start"]),
-                            "end_time": float(emb_data["end"]),
-                            "embedding": emb_data["embedding"].flatten().tolist(),
-                        })
-
-                if records_to_add:
-                    try:
-                        if embeddings_table is None:
-                            embeddings_table = db.create_table("embeddings", data=records_to_add)
-                            print(f"  Created embeddings table with {len(records_to_add)} records")
-                        else:
-                            embeddings_table.add(records_to_add)
-                            print(f"  Added {len(records_to_add)} embeddings to database")
-                    except Exception as e:
-                        print(f"Warning: Could not store embeddings: {e}")
-
-            # ------------------------------------------------------------------
-            # STEP 4: Build final segment list, applying matched names
+            # STEP 3: Build final segment list, applying matched names
+            # NOTE: Embedding storage is now handled by the CLI layer after
+            # speaker IDs are assigned in the SQL database.
             # ------------------------------------------------------------------
             if use_multi_file:
                 # Segments already built by _diarize_multiple_files; just rename speakers
@@ -725,6 +714,7 @@ class DiarizationEngine:
                 "matched_speakers": matched_speakers,
                 "new_speakers": new_speakers,
                 "session_speaker_embeddings": session_speaker_embeddings,
+                "speaker_embeddings": speaker_embeddings,  # Raw embeddings for storage
                 "new_time_cursor": new_time_cursor,
             }
 

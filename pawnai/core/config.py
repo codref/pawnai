@@ -24,6 +24,10 @@ project root (or by passing ``--config path/to/file.yml`` on the CLI):
     device:
       type: auto   # auto | cuda | cpu
 
+    database:
+      url: sqlite:///pawnai.db  # SQLite (default) or PostgreSQL
+      # PostgreSQL example: postgresql://pawnai:pawnai@localhost:5432/pawnai
+
     s3:
       bucket: my-audio-bucket
       endpoint_url: https://s3.amazonaws.com
@@ -54,6 +58,7 @@ import yaml
 # ──────────────────────────────────────────────────────────────────────────────
 
 DEFAULT_DB_PATH = "speakers_db"
+DEFAULT_DATABASE_URL = "sqlite:///pawnai.db"
 
 # Model identifiers
 DIARIZATION_MODEL = "pyannote/speaker-diarization-community-1"
@@ -93,6 +98,8 @@ class AppConfig:
             "audio_dir": "audio/",
             # device
             "device": "auto",
+            # database
+            "database_url": DEFAULT_DATABASE_URL,
         }
         self._load_yaml_config(config_path)
 
@@ -141,6 +148,11 @@ class AppConfig:
         if isinstance(device, dict) and "type" in device:
             self._config["device"] = device["type"]
 
+        # database: section
+        database = content.get("database", {})
+        if isinstance(database, dict) and "url" in database:
+            self._config["database_url"] = database["url"]
+
         # s3: section – stored as a raw dict; validated on first use
         s3 = content.get("s3")
         if isinstance(s3, dict):
@@ -186,6 +198,17 @@ class AppConfig:
         if isinstance(s3_config, dict):
             return s3_config
         return None
+
+    def get_database_url(self) -> str:
+        """Return the database URL.
+
+        Checks the DATABASE_URL environment variable first, then falls back
+        to the configured value or default SQLite database.
+
+        Returns:
+            Database connection URL (SQLite or PostgreSQL).
+        """
+        return os.getenv("DATABASE_URL") or self._config.get("database_url", DEFAULT_DATABASE_URL)
 
 
 # ──────────────────────────────────────────────────────────────────────────────

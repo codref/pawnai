@@ -226,3 +226,5 @@ data
 
 pawnai_recorder
 output
+pawnai_recorder.db
+pawnai.db*

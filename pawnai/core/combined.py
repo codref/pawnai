@@ -6,6 +6,14 @@ from pathlib import Path
 from .transcription import TranscriptionEngine
 from .diarization import DiarizationEngine
 
+# Import DatabaseManager for type hints
+try:
+    from .database import DatabaseManager
+    from .embeddings import EmbeddingManager
+except ImportError:
+    DatabaseManager = None  # type: ignore
+    EmbeddingManager = None  # type: ignore
+
 
 def transcribe_with_diarization(
     audio_path: Union[str, List[str]],
@@ -17,6 +25,8 @@ def transcribe_with_diarization(
     cross_file_threshold: float = 0.85,
     prior_speaker_embeddings: Optional[Dict[str, Any]] = None,
     time_cursor: float = 0.0,
+    database_manager: Optional[Any] = None,
+    embedding_manager: Optional[Any] = None,
 ) -> Dict[str, Any]:
     """Transcribe audio with speaker diarization labels.
 
@@ -41,6 +51,8 @@ def transcribe_with_diarization(
             Mapping of global_label → {"embedding": [...], "total_duration": float}.
         time_cursor: Seconds of audio already processed in previous calls.
             All new timestamps are shifted by this value.
+        database_manager: Optional DatabaseManager for SQL storage
+        embedding_manager: Optional EmbeddingManager for vector search
 
     Returns:
         Dictionary containing:
@@ -64,7 +76,10 @@ def transcribe_with_diarization(
     resume_note = f" (resuming from t={time_cursor:.1f}s)" if time_cursor > 0 else ""
 
     print(f"[1/2] Running transcription{'  (' + str(len(audio_paths)) + ' files)' if multiple else ''}{resume_note}...")
-    transcription_engine = TranscriptionEngine(device=device)
+    transcription_engine = TranscriptionEngine(
+        device=device,
+        database_manager=database_manager,
+    )
 
     if multiple:
         transcription = transcription_engine.transcribe_conversation(
@@ -95,7 +110,11 @@ def transcribe_with_diarization(
                 fo["end"] = fo.get("end", 0.0) + time_cursor
 
     print(f"[2/2] Running speaker diarization{'  (' + str(len(audio_paths)) + ' files)' if multiple else ''}{resume_note}...")
-    diarization_engine = DiarizationEngine(device=device if device != "cpu" else None)
+    diarization_engine = DiarizationEngine(
+        device=device if device != "cpu" else None,
+        database_manager=database_manager,
+        embedding_manager=embedding_manager,
+    )
     diarization = diarization_engine.diarize(
         audio_paths if multiple else audio_paths[0],
         db_path=db_path,
