@@ -1,44 +1,93 @@
 """Transcription engine using Nvidia Parakeet model."""
 
+import contextlib
+import os
+import sys
 from typing import List, Dict, Any, Optional
 import tempfile
 from pathlib import Path
-import nemo.collections.asr as nemo_asr
 import soundfile as sf
 import numpy as np
 
 from .config import TRANSCRIPTION_MODEL
 
+_NEMO_LOGGERS = (
+    "nemo_logger",
+    "nemo",
+    "pytorch_lightning",
+    "lightning",
+    "lightning.pytorch",
+    "torch",
+)
+
+
+@contextlib.contextmanager  # type: ignore[misc]
+def _quiet_nemo():  # type: ignore[return]
+    """Suppress NeMo noise: redirect stdout/stderr to devnull and set loggers to ERROR."""
+    import logging
+    for name in _NEMO_LOGGERS:
+        logging.getLogger(name).setLevel(logging.ERROR)
+
+    devnull = open(os.devnull, "w")
+    old_out, old_err = sys.stdout, sys.stderr
+    sys.stdout, sys.stderr = devnull, devnull
+    try:
+        yield
+    finally:
+        sys.stdout, sys.stderr = old_out, old_err
+        devnull.close()
+        # Re-apply: NeMo reconfigures its loggers during import/init
+        for name in _NEMO_LOGGERS:
+            logging.getLogger(name).setLevel(logging.ERROR)
+
+
+@contextlib.contextmanager  # type: ignore[misc]
+def _maybe_quiet(verbose: bool):  # type: ignore[return]
+    """Enter _quiet_nemo() only when verbose is False."""
+    if verbose:
+        yield
+    else:
+        with _quiet_nemo():
+            yield
+
 
 class TranscriptionEngine:
     """Engine for audio transcription using Nvidia Parakeet model."""
 
-    def __init__(self, device: str = "cuda"):
+    def __init__(self, device: str = "cuda", verbose: bool = False):
         """Initialize the transcription engine.
         
         Args:
             device: Device to use ("cuda" or "cpu")
+            verbose: Show NeMo/library log output (default: suppressed)
         """
         self.model: Optional[Any] = None
         self.device = device
+        self.verbose = verbose
 
     def _initialize_model(self) -> None:
         """Load the transcription model (lazy loading)."""
         if self.model is not None:
             return  # Already loaded
 
+        # Import nemo quietly (it emits noise to stdout/stderr at import time)
+        with _maybe_quiet(self.verbose):
+            import nemo.collections.asr as nemo_asr  # noqa: F401  # lazy import
+
         print(f"Loading transcription model: {TRANSCRIPTION_MODEL}")
         print(f"Using device: {self.device}")
-        self.model = nemo_asr.models.ASRModel.from_pretrained(
-            model_name=TRANSCRIPTION_MODEL
-        )
-        
+
+        with _maybe_quiet(self.verbose):
+            self.model = nemo_asr.models.ASRModel.from_pretrained(
+                model_name=TRANSCRIPTION_MODEL
+            )
+
         # Move model to specified device
         if self.device == "cpu":
             self.model = self.model.cpu()
         else:
             self.model = self.model.cuda()
-            
+
         print("Transcription model loaded successfully")
 
     def _preprocess_audio(self, audio_path: str, chunk_duration: Optional[float] = None) -> List[str]:
@@ -126,9 +175,10 @@ class TranscriptionEngine:
             try:
                 if len(chunk_paths) == 1:
                     # Single file, process normally
-                    output = self.model.transcribe(
-                        chunk_paths, timestamps=include_timestamps, batch_size=1
-                    )
+                    with _maybe_quiet(self.verbose):
+                        output = self.model.transcribe(
+                            chunk_paths, timestamps=include_timestamps, batch_size=1
+                        )
                     
                     result = output[0]
                     result_dict = {
@@ -152,10 +202,11 @@ class TranscriptionEngine:
                     
                     for i, chunk_path in enumerate(chunk_paths):
                         print(f"  Transcribing chunk {i+1}/{len(chunk_paths)}...")
-                        output = self.model.transcribe(
-                            [chunk_path], timestamps=include_timestamps, batch_size=1
-                        )
-                        
+                        with _maybe_quiet(self.verbose):
+                            output = self.model.transcribe(
+                                [chunk_path], timestamps=include_timestamps, batch_size=1
+                            )
+
                         result = output[0]
                         chunk_text = result.text if hasattr(result, 'text') else str(result)
                         combined_text.append(chunk_text)
@@ -256,9 +307,10 @@ class TranscriptionEngine:
                 file_offset_start = time_offset
 
                 if len(chunk_paths) == 1:
-                    output = self.model.transcribe(
-                        chunk_paths, timestamps=include_timestamps, batch_size=1
-                    )
+                    with _maybe_quiet(self.verbose):
+                        output = self.model.transcribe(
+                            chunk_paths, timestamps=include_timestamps, batch_size=1
+                        )
                     result = output[0]
                     file_text.append(result.text if hasattr(result, "text") else str(result))
 
@@ -282,9 +334,10 @@ class TranscriptionEngine:
                     inner_offset = time_offset
                     for i, chunk_path in enumerate(chunk_paths):
                         print(f"  Chunk {i + 1}/{len(chunk_paths)}…")
-                        output = self.model.transcribe(
-                            [chunk_path], timestamps=include_timestamps, batch_size=1
-                        )
+                        with _maybe_quiet(self.verbose):
+                            output = self.model.transcribe(
+                                [chunk_path], timestamps=include_timestamps, batch_size=1
+                            )
                         result = output[0]
                         file_text.append(result.text if hasattr(result, "text") else str(result))
 
@@ -353,7 +406,8 @@ class TranscriptionEngine:
         try:
             if len(chunk_paths) == 1:
                 # Single file
-                output = self.model.transcribe([chunk_paths[0]], timestamps=True)
+                with _maybe_quiet(self.verbose):
+                    output = self.model.transcribe([chunk_paths[0]], timestamps=True)
                 
                 if not output or not hasattr(output[0], 'timestamp'):
                     return []
@@ -366,7 +420,8 @@ class TranscriptionEngine:
                 time_offset = 0.0
                 
                 for chunk_path in chunk_paths:
-                    output = self.model.transcribe([chunk_path], timestamps=True)
+                    with _maybe_quiet(self.verbose):
+                        output = self.model.transcribe([chunk_path], timestamps=True)
                     
                     if output and hasattr(output[0], 'timestamp'):
                         segments = output[0].timestamp.get("segment", [])

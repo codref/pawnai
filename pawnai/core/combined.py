@@ -17,6 +17,7 @@ def transcribe_with_diarization(
     cross_file_threshold: float = 0.85,
     prior_speaker_embeddings: Optional[Dict[str, Any]] = None,
     time_cursor: float = 0.0,
+    verbose: bool = False,
 ) -> Dict[str, Any]:
     """Transcribe audio with speaker diarization labels.
 
@@ -64,7 +65,7 @@ def transcribe_with_diarization(
     resume_note = f" (resuming from t={time_cursor:.1f}s)" if time_cursor > 0 else ""
 
     print(f"[1/2] Running transcription{'  (' + str(len(audio_paths)) + ' files)' if multiple else ''}{resume_note}...")
-    transcription_engine = TranscriptionEngine(device=device)
+    transcription_engine = TranscriptionEngine(device=device, verbose=verbose)
 
     if multiple:
         transcription = transcription_engine.transcribe_conversation(

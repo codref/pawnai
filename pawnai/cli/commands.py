@@ -413,6 +413,9 @@ def transcribe_diarize(
     no_timestamps: bool = typer.Option(
         False, "--no-timestamps", help="Hide timestamps in text output"
     ),
+    verbose: bool = typer.Option(
+        False, "--verbose", "-v", help="Show verbose output from NeMo and other libraries"
+    ),
 ) -> None:
     """Transcribe audio with speaker diarization labels.
 
@@ -525,6 +528,7 @@ def transcribe_diarize(
             cross_file_threshold=cross_file_threshold,
             prior_speaker_embeddings=prior_speaker_embeddings,
             time_cursor=prior_time_cursor,
+            verbose=verbose,
         )
 
         console.print(f"[green]✓ Processing complete[/green]")
