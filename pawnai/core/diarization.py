@@ -699,6 +699,7 @@ class DiarizationEngine:
                     segments.append({
                         "speaker": display_name,
                         "original_label": speaker,
+                        "source_file": str(audio_paths[0]),
                         "start": turn.start + time_cursor,
                         "end": turn.end + time_cursor,
                         "duration": turn.end - turn.start,

@@ -191,9 +191,11 @@ def _merge_transcription_with_diarization(
         # Build text from overlapping words
         segment_text = " ".join([w["word"] for w in overlapping_words])
         
-        # Create merged segment
+        # Create merged segment, preserving original pyannote label and source file
         merged_segment = {
             "speaker": speaker,
+            "original_label": speaker_seg.get("original_label", speaker),
+            "source_file": speaker_seg.get("source_file", ""),
             "start": start_time,
             "end": end_time,
             "duration": end_time - start_time,

@@ -20,10 +20,11 @@ from __future__ import annotations
 
 import os
 from contextlib import contextmanager
-from datetime import datetime
-from typing import Generator, Optional
+from datetime import datetime, timezone
+from typing import Any, Dict, Generator, List, Optional, Tuple
 
-from sqlalchemy import DateTime, Float, String, create_engine, text
+from sqlalchemy import DateTime, Float, Integer, String, Text, create_engine, text
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column
 
 from pgvector.sqlalchemy import Vector
@@ -97,6 +98,77 @@ class SpeakerName(Base):
     labeled_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
 
 
+class TranscriptionSegment(Base):
+    """One diarized+transcribed segment stored for a session.
+
+    Columns
+    -------
+    id:
+        Deterministic PK: ``"<session_id>_<segment_index>"``.
+    session_id:
+        Human-readable session name or auto-generated UUID.
+    audio_file:
+        Source audio path for this segment.
+    original_speaker_label:
+        Raw pyannote label (``"SPEAKER_00"`` etc.) – never a user-assigned
+        name.  ``NULL`` for standalone ``transcribe`` runs.
+    start_time / end_time:
+        Globally adjusted segment boundaries in seconds.
+    text:
+        Transcribed text.
+    words:
+        JSON array of ``{"word", "start", "end"}`` objects.
+    segment_index:
+        Zero-based position within the session.
+    created_at:
+        UTC timestamp when the row was written.
+    """
+
+    __tablename__ = "transcription_segments"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    session_id: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    audio_file: Mapped[str] = mapped_column(String, nullable=False)
+    original_speaker_label: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    start_time: Mapped[float] = mapped_column(Float, nullable=False)
+    end_time: Mapped[float] = mapped_column(Float, nullable=False)
+    text: Mapped[str] = mapped_column(Text, nullable=False)
+    words: Mapped[Optional[Any]] = mapped_column(JSONB, nullable=True)
+    segment_index: Mapped[int] = mapped_column(Integer, nullable=False)
+    created_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime, nullable=True, default=lambda: datetime.now(timezone.utc)
+    )
+
+
+class SessionState(Base):
+    """Persisted cross-invocation state for a named session.
+
+    Columns
+    -------
+    session_id:
+        Primary key; matches ``TranscriptionSegment.session_id``.
+    processed_files:
+        JSON list of audio paths already ingested (idempotency guard).
+    speaker_embeddings:
+        JSON dict mapping display labels to
+        ``{"embedding": [...], "total_duration": float}``.
+    time_cursor:
+        Accumulated audio duration in seconds across all processed files.
+    updated_at:
+        UTC timestamp of the last update.
+    """
+
+    __tablename__ = "session_state"
+
+    session_id: Mapped[str] = mapped_column(String, primary_key=True)
+    processed_files: Mapped[Optional[Any]] = mapped_column(JSONB, nullable=True)
+    speaker_embeddings: Mapped[Optional[Any]] = mapped_column(JSONB, nullable=True)
+    time_cursor: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    updated_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime, nullable=True, default=lambda: datetime.now(timezone.utc)
+    )
+
+
 # ──────────────────────────────────────────────────────────────────────────────
 # Engine factory
 # ──────────────────────────────────────────────────────────────────────────────
@@ -160,3 +232,96 @@ def get_session(engine) -> Generator[Session, None, None]:
         except Exception:
             session.rollback()
             raise
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Session-state helpers
+# ──────────────────────────────────────────────────────────────────────────────
+
+
+def load_session_state(
+    session_id: str, engine
+) -> Tuple[Dict[str, Any], float, List[str], int]:
+    """Load prior state for a named session.
+
+    Returns:
+        ``(prior_speaker_embeddings, time_cursor, processed_files, segment_count)``.
+        Returns safe defaults ``({}, 0.0, [], 0)`` when the session does not exist.
+    """
+    from sqlalchemy import select
+    from sqlalchemy import func as sqlfunc
+    with Session(engine) as db:
+        row = db.get(SessionState, session_id)
+        count = db.scalar(
+            select(sqlfunc.count()).where(
+                TranscriptionSegment.session_id == session_id
+            )
+        ) or 0
+    if row is None:
+        return {}, 0.0, [], int(count)
+    return (
+        row.speaker_embeddings or {},
+        float(row.time_cursor or 0.0),
+        list(row.processed_files or []),
+        int(count),
+    )
+
+
+def save_session_state(
+    session_id: str,
+    speaker_embeddings: Dict[str, Any],
+    time_cursor: float,
+    processed_files: List[str],
+    engine,
+) -> None:
+    """Upsert ``SessionState`` for *session_id*."""
+    row = SessionState(
+        session_id=session_id,
+        speaker_embeddings=speaker_embeddings,
+        time_cursor=time_cursor,
+        processed_files=processed_files,
+        updated_at=datetime.now(timezone.utc),
+    )
+    with get_session(engine) as db:
+        db.merge(row)
+
+
+def save_transcription_segments(
+    segments: List[Dict[str, Any]],
+    session_id: str,
+    engine,
+    start_index: int = 0,
+) -> int:
+    """Upsert segment dicts into ``transcription_segments``.
+
+    Reads ``original_label`` and ``source_file`` from each segment dict
+    (populated by the diarization engine).  For standalone ``transcribe``
+    segments both fields may be absent and are stored as ``NULL`` / ``""``.
+
+    Returns the number of rows upserted.
+    """
+    rows = []
+    for i, seg in enumerate(segments):
+        global_idx = start_index + i
+        audio_file = seg.get("source_file") or seg.get("audio_file") or ""
+        text_val = seg.get("text") or seg.get("segment") or ""
+        rows.append(
+            TranscriptionSegment(
+                id=f"{session_id}_{global_idx}",
+                session_id=session_id,
+                audio_file=audio_file,
+                original_speaker_label=seg.get("original_label"),
+                start_time=float(seg.get("start", 0.0)),
+                end_time=float(seg.get("end", 0.0)),
+                text=text_val,
+                words=seg.get("words") or seg.get("word_timestamps"),
+                segment_index=global_idx,
+                created_at=datetime.now(timezone.utc),
+            )
+        )
+    if not rows:
+        return 0
+    with get_session(engine) as db:
+        for row in rows:
+            db.merge(row)
+    return len(rows)

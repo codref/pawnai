@@ -254,6 +254,13 @@ def transcribe(
     config: Optional[str] = typer.Option(
         None, "--config", help="Path to YAML configuration file (.pawnai.yml)"
     ),
+    session: Optional[str] = typer.Option(
+        None, "--session", "-s",
+        help="Session name for grouping transcript segments in the database."
+    ),
+    db_dsn: str = typer.Option(
+        DEFAULT_DB_DSN, help="PostgreSQL DSN for speaker database"
+    ),
     with_timestamps: bool = typer.Option(
         True, "--timestamps/--no-timestamps", help="Include word-level timestamps"
     ),
@@ -286,8 +293,10 @@ def transcribe(
     """
     # Lazy imports to avoid loading models during --help
     import json
+    import uuid
     from ..core import TranscriptionEngine
     from ..core.config import AppConfig
+    from ..core.database import get_engine, init_db, save_transcription_segments
 
     # Load config; capture instance so S3 config is accessible
     app_cfg = AppConfig(config_path=config) if config else AppConfig()
@@ -299,7 +308,11 @@ def transcribe(
                 console.print(f"[red]Error: Audio file not found: {p}[/red]")
                 raise typer.Exit(1)
 
-        engine = TranscriptionEngine(device=device)
+        session_id: str = session if session else str(uuid.uuid4())
+        db_engine = get_engine(db_dsn)
+        init_db(db_engine)
+
+        engine_t = TranscriptionEngine(device=device)
 
         if len(audio_paths) == 1:
             console.print(f"[cyan]Transcribing: {audio_paths[0]}[/cyan]")
@@ -312,7 +325,7 @@ def transcribe(
             console.print(f"[yellow]Chunk duration set to: {chunk_duration}s (will split long audio)[/yellow]")
 
         if len(audio_paths) == 1:
-            results = engine.transcribe(
+            results = engine_t.transcribe(
                 audio_paths, include_timestamps=with_timestamps, chunk_duration=chunk_duration
             )
             if not results:
@@ -320,10 +333,19 @@ def transcribe(
                 return
             result = results[0]
         else:
-            result = engine.transcribe_conversation(
+            result = engine_t.transcribe_conversation(
                 audio_paths, include_timestamps=with_timestamps, chunk_duration=chunk_duration
             )
         console.print(f"[green]✓ Transcription complete[/green]")
+
+        # Save segments to database
+        segs = result.get("segment_timestamps", [])
+        for seg in segs:
+            seg.setdefault("source_file", audio_paths[0] if len(audio_paths) == 1 else "")
+            if "segment" in seg and "text" not in seg:
+                seg["text"] = seg["segment"]
+        saved = save_transcription_segments(segs, session_id=session_id, engine=db_engine)
+        console.print(f"[green]✓ Saved {saved} segment(s) to database [session: {session_id}][/green]")
         
         # Determine output format
         if output:
@@ -386,9 +408,9 @@ def transcribe_diarize(
     ),
     session: Optional[str] = typer.Option(
         None, "--session", "-s",
-        help="Path to a session JSON file.  If the file exists its speaker state and "
-             "timestamps are loaded so new audio is appended to the same conversation.  "
-             "After processing the file is updated with the full accumulated results."
+        help="Session name for continuing a conversation across separate invocations. "
+             "Speaker state and timestamps are loaded from the database and updated "
+             "after processing so new audio is appended to the same conversation."
     ),
     db_dsn: str = typer.Option(
         DEFAULT_DB_DSN, help="PostgreSQL DSN for speaker database"
@@ -428,13 +450,13 @@ def transcribe_diarize(
 
     \b
       # First call – creates / initialises the session
-      pawnai transcribe-diarize part1.flac --session conv.json
+      pawnai transcribe-diarize part1.flac --session myconv
 
       # Second call – picks up where the first left off
-      pawnai transcribe-diarize part2.flac --session conv.json
+      pawnai transcribe-diarize part2.flac --session myconv
 
       # Write the full accumulated transcript to a file
-      pawnai transcribe-diarize part3.flac --session conv.json -o full.txt
+      pawnai transcribe-diarize part3.flac --session myconv -o full.txt
 
     Automatically recognises known speakers from the database.
 
@@ -452,8 +474,13 @@ def transcribe_diarize(
     """
     # Lazy imports to avoid loading models during --help
     import json
+    import uuid
     from ..core import transcribe_with_diarization, format_transcript_with_speakers
     from ..core.config import Config, AppConfig
+    from ..core.database import (
+        get_engine, init_db,
+        load_session_state, save_session_state, save_transcription_segments,
+    )
 
     # Load config; capture instance so S3 config is accessible
     app_cfg = AppConfig(config_path=config) if config else AppConfig()
@@ -465,12 +492,15 @@ def transcribe_diarize(
                 console.print(f"[red]Error: Audio file not found: {p}[/red]")
                 raise typer.Exit(1)
 
-        config = Config(db_dsn=db_dsn)
-        config.ensure_paths_exist()
+        cfg = Config(db_dsn=db_dsn)
+        cfg.ensure_paths_exist()
+        db_engine = get_engine(db_dsn)
+        init_db(db_engine)
 
         # ------------------------------------------------------------------
-        # Load prior session state (if --session is specified and file exists)
+        # Resolve session_id and load prior state from DB when --session given
         # ------------------------------------------------------------------
+        session_id: str = session if session else str(uuid.uuid4())
         prior_speaker_embeddings: Optional[dict] = None
         prior_time_cursor: float = 0.0
         prior_segments: list = []
@@ -479,28 +509,18 @@ def transcribe_diarize(
         prior_speakers: list = []
         prior_matched: dict = {}
         prior_processed_files: list = []
+        prior_segment_count: int = 0
 
         if session:
-            session_path = Path(session)
-            if session_path.exists():
-                console.print(f"[cyan]Resuming session: {session}[/cyan]")
-                with open(session_path, "r", encoding="utf-8") as f:
-                    sess = json.load(f)
-                prior_speaker_embeddings = sess.get("session_speaker_embeddings")
-                prior_time_cursor = float(sess.get("time_cursor", 0.0))
-                prior_segments = sess.get("segments", [])
-                prior_words = sess.get("word_timestamps", [])
-                prior_text = sess.get("text", "")
-                prior_speakers = sess.get("speakers", [])
-                prior_matched = sess.get("matched_speakers", {})
-                prior_processed_files = sess.get("processed_files", [])
-                console.print(
-                    f"  Loaded {len(prior_segments)} prior segments, "
-                    f"t={prior_time_cursor:.1f}s, "
-                    f"speakers: {', '.join(prior_speakers) or '(none)'}"
-                )
+            prior_speaker_embeddings, prior_time_cursor, prior_processed_files, prior_segment_count = \
+                load_session_state(session_id, db_engine)
+            if prior_processed_files:
+                console.print(f"[cyan]Resuming session '{session_id}': "
+                              f"{len(prior_processed_files)} file(s) already processed, "
+                              f"t={prior_time_cursor:.1f}s, "
+                              f"{prior_segment_count} segment(s) stored[/cyan]")
             else:
-                console.print(f"[cyan]Starting new session: {session}[/cyan]")
+                console.print(f"[cyan]Starting new session '{session_id}'[/cyan]")
 
         # ------------------------------------------------------------------
         # Log what we're about to process
@@ -576,25 +596,26 @@ def transcribe_diarize(
         )
 
         # ------------------------------------------------------------------
-        # Save/update session file
+        # Persist segments to DB (always) and session state (when --session)
         # ------------------------------------------------------------------
+        saved = save_transcription_segments(
+            result["segments"],
+            session_id=session_id,
+            engine=db_engine,
+            start_index=prior_segment_count,
+        )
+        console.print(f"[green]✓ Saved {saved} segment(s) to database [session: {session_id}][/green]")
+
         if session:
-            session_data = {
-                "version": 1,
-                "processed_files": prior_processed_files + [str(p) for p in audio_paths],
-                "time_cursor": new_time_cursor,
-                "speakers": all_speakers,
-                "num_speakers": len(all_speakers),
-                "segments": full_segments,
-                "word_timestamps": full_words,
-                "text": full_text,
-                "matched_speakers": merged_matched,
-                "new_speakers": result.get("new_speakers", []),
-                "session_speaker_embeddings": updated_session_embeddings,
-            }
-            with open(session, "w", encoding="utf-8") as f:
-                json.dump(session_data, f, indent=2, ensure_ascii=False)
-            console.print(f"[green]✓ Session updated: {session}[/green]")
+            updated_processed = prior_processed_files + [str(p) for p in audio_paths]
+            save_session_state(
+                session_id=session_id,
+                speaker_embeddings=updated_session_embeddings,
+                time_cursor=new_time_cursor,
+                processed_files=updated_processed,
+                engine=db_engine,
+            )
+            console.print(f"[green]✓ Session state updated: '{session_id}'[/green]")
 
         # ------------------------------------------------------------------
         # Write --output file (full accumulated transcript)
@@ -646,7 +667,9 @@ def transcribe_diarize(
             if len(result["segments"]) > 5:
                 console.print(f"\n[dim]... and {len(result['segments']) - 5} more segments this call[/dim]")
             if session:
-                console.print(f"[dim]Total accumulated: {len(full_segments)} segments across {len(prior_processed_files) + len(audio_paths)} file(s)[/dim]")
+                total_segs = prior_segment_count + saved
+                total_files = len(prior_processed_files) + len(audio_paths)
+                console.print(f"[dim]Session '{session_id}': {total_segs} segments across {total_files} file(s) total[/dim]")
             console.print(f"\n[dim]💡 Tip: Use -o output.txt to save the full transcript[/dim]")
 
     except Exception as e:
@@ -1033,6 +1056,192 @@ def analyze(
 
 
 @app.command()
+def sessions(
+    session: Optional[str] = typer.Option(
+        None, "--session", "-s",
+        help="Session ID to inspect. Shows head/tail of transcript, files, speakers, and timing."
+    ),
+    db_dsn: str = typer.Option(
+        DEFAULT_DB_DSN, help="PostgreSQL DSN for speaker database"
+    ),
+    head: int = typer.Option(
+        5, "--head", help="Number of first segments to show in detail view"
+    ),
+    tail: int = typer.Option(
+        5, "--tail", help="Number of last segments to show in detail view"
+    ),
+    config: Optional[str] = typer.Option(
+        None, "--config", help="Path to YAML configuration file (.pawnai.yml)"
+    ),
+) -> None:
+    """List transcription sessions or inspect a specific one.
+
+    Without --session prints a summary table of all sessions ordered by most
+    recently updated.
+
+    With --session prints detailed information for that session: metadata,
+    audio files, speaker list, and a head/tail preview of the transcript.
+
+    Example:
+        pawnai sessions
+        pawnai sessions --session myconv
+        pawnai sessions --session ef11c094-0d8d-41fe-93c0-c6bf1f2e8663
+        pawnai sessions --session myconv --head 10 --tail 10
+    """
+    from sqlalchemy import select
+    from sqlalchemy import func as sqlfunc
+    from sqlalchemy.orm import Session as OrmSession
+    from rich.table import Table
+    from rich.rule import Rule
+    from rich.text import Text
+    from ..core.database import (
+        get_engine, init_db, SessionState, TranscriptionSegment,
+    )
+    from ..core.config import AppConfig
+
+    if config:
+        AppConfig(config_path=config)
+
+    db_engine = get_engine(db_dsn)
+    init_db(db_engine)
+
+    # ── Detail view ──────────────────────────────────────────────────────────
+    if session:
+        with OrmSession(db_engine) as db:
+            segs = db.execute(
+                select(TranscriptionSegment)
+                .where(TranscriptionSegment.session_id == session)
+                .order_by(TranscriptionSegment.start_time)
+            ).scalars().all()
+
+            if not segs:
+                console.print(f"[red]No segments found for session '{session}'.[/red]")
+                raise typer.Exit(1)
+
+            state = db.get(SessionState, session)
+
+        # ── Metadata panel ────────────────────────────────────────────────
+        files = sorted({s.audio_file for s in segs if s.audio_file})
+        speakers = sorted({s.original_speaker_label for s in segs if s.original_speaker_label})
+        duration = (segs[-1].end_time or 0.0) - (segs[0].start_time or 0.0)
+        duration_str = f"{int(duration // 60)}m {duration % 60:.1f}s"
+        last_up = max((s.created_at for s in segs if s.created_at), default=None)
+
+        meta = Table.grid(padding=(0, 2))
+        meta.add_column(style="bold cyan", no_wrap=True)
+        meta.add_column()
+        meta.add_row("Session", session)
+        meta.add_row("Segments", str(len(segs)))
+        meta.add_row("Duration", duration_str)
+        meta.add_row("Updated", last_up.strftime("%Y-%m-%d %H:%M:%S") if last_up else "—")
+        if state:
+            tc = state.time_cursor or 0.0
+            meta.add_row("Time cursor", f"{int(tc // 60)}m {tc % 60:.1f}s")
+        meta.add_row("Speakers", ", ".join(speakers) if speakers else "(none / transcribe-only)")
+        meta.add_row("Files", "\n".join(f"• {f}" for f in files) if files else "—")
+
+        console.print()
+        console.print(Rule(f"[bold cyan]Session: {session}[/bold cyan]"))
+        console.print(meta)
+
+        # ── Segment preview helper ────────────────────────────────────────
+        def _fmt_time(t: float) -> str:
+            return f"{int(t // 60):02d}:{t % 60:05.2f}"
+
+        def _print_segments(title: str, seg_list) -> None:
+            tbl = Table(title=title, show_lines=True, header_style="bold")
+            tbl.add_column("#", style="dim", justify="right", width=4)
+            tbl.add_column("Time", no_wrap=True)
+            tbl.add_column("Speaker", no_wrap=True)
+            tbl.add_column("Text")
+            for s in seg_list:
+                time_str = f"{_fmt_time(s.start_time)} → {_fmt_time(s.end_time)}"
+                lbl = s.original_speaker_label or "[dim]—[/dim]"
+                text_val = (s.text or "").strip() or "[dim](empty)[/dim]"
+                tbl.add_row(str(s.segment_index), time_str, lbl, text_val)
+            console.print(tbl)
+
+        # ── Head ──────────────────────────────────────────────────────────
+        console.print()
+        head_segs = segs[:head]
+        _print_segments(f"First {len(head_segs)} segment(s)", head_segs)
+
+        # ── Tail (only if non-overlapping) ────────────────────────────────
+        if len(segs) > head:
+            tail_segs = segs[max(head, len(segs) - tail):]
+            omitted = len(segs) - head - len(tail_segs)
+            if omitted > 0:
+                console.print(f"\n[dim]  … {omitted} segment(s) omitted …[/dim]\n")
+            _print_segments(f"Last {len(tail_segs)} segment(s)", tail_segs)
+
+        console.print()
+        return
+
+    # ── List view ─────────────────────────────────────────────────────────────
+    with OrmSession(db_engine) as db:
+        agg = db.execute(
+            select(
+                TranscriptionSegment.session_id,
+                sqlfunc.count(TranscriptionSegment.id).label("segments"),
+                sqlfunc.min(TranscriptionSegment.start_time).label("first_start"),
+                sqlfunc.max(TranscriptionSegment.end_time).label("last_end"),
+                sqlfunc.max(TranscriptionSegment.created_at).label("last_updated"),
+            ).group_by(TranscriptionSegment.session_id)
+            .order_by(sqlfunc.max(TranscriptionSegment.created_at).desc())
+        ).all()
+
+        if not agg:
+            console.print("[yellow]No sessions found in the database.[/yellow]")
+            return
+
+        state_rows = {
+            row.session_id: row
+            for row in db.execute(select(SessionState)).scalars().all()
+        }
+
+        speaker_map: dict = {}
+        for sid, label in db.execute(
+            select(TranscriptionSegment.session_id, TranscriptionSegment.original_speaker_label).distinct()
+        ).all():
+            if label:
+                speaker_map.setdefault(sid, set()).add(label)
+
+        file_map: dict = {}
+        for sid, af in db.execute(
+            select(TranscriptionSegment.session_id, TranscriptionSegment.audio_file).distinct()
+        ).all():
+            if af:
+                file_map.setdefault(sid, []).append(af)
+
+    table = Table(
+        title=f"Transcription Sessions ({len(agg)} total)",
+        show_lines=True,
+        header_style="bold cyan",
+    )
+    table.add_column("Session", style="bold green", no_wrap=True)
+    table.add_column("Updated", style="dim", no_wrap=True)
+    table.add_column("Segs", justify="right")
+    table.add_column("Duration", justify="right")
+    table.add_column("Speakers")
+    table.add_column("Files")
+
+    for row in agg:
+        sid = row.session_id
+        speakers = sorted(speaker_map.get(sid, set()))
+        files = sorted(file_map.get(sid, []))
+        duration = (row.last_end or 0.0) - (row.first_start or 0.0)
+        duration_str = f"{int(duration // 60)}m {duration % 60:.0f}s" if duration else "—"
+        updated = row.last_updated.strftime("%Y-%m-%d %H:%M") if row.last_updated else "—"
+        speakers_str = "\n".join(speakers) if speakers else "[dim](none)[/dim]"
+        files_str = "\n".join(files) if files else "[dim]—[/dim]"
+        table.add_row(sid, updated, str(row.segments), duration_str, speakers_str, files_str)
+
+    console.print()
+    console.print(table)
+    console.print()
+
+
+@app.command()
 def status(
     config: Optional[str] = typer.Option(
         None, "--config", help="Path to YAML configuration file (.pawnai.yml)"
@@ -1066,6 +1275,7 @@ def status(
     console.print("  embed              - Extract speaker embeddings")
     console.print("  search             - Search for similar speakers")
     console.print("  label              - Assign names to speakers")
+    console.print("  sessions           - List or inspect transcription sessions")
     console.print("  s3-ls              - List objects in the configured S3 bucket")
     console.print("  status             - Show this status message")
 
