@@ -895,8 +895,12 @@ def label(
 
 @app.command()
 def analyze(
-    input_path: str = typer.Argument(
-        ..., help="Path to diarization JSON/text file, or an audio file to process first"
+    input_path: Optional[str] = typer.Argument(
+        None, help="Path to diarization JSON/text file, or an audio file to process first. Omit when using --session."
+    ),
+    session: Optional[str] = typer.Option(
+        None, "--session", "-s",
+        help="Load transcript directly from the database by session ID instead of a file."
     ),
     output: Optional[str] = typer.Option(
         None, "--output", "-o", help="Output file path to save analysis results (.txt, .json, or .csv)"
@@ -908,7 +912,7 @@ def analyze(
         "gpt-4o", "--model", "-m", help="Copilot model to use for analysis"
     ),
     db_dsn: str = typer.Option(
-        DEFAULT_DB_DSN, help="PostgreSQL DSN for speaker database (used when processing audio directly)"
+        DEFAULT_DB_DSN, help="PostgreSQL DSN for speaker database (used when processing audio directly or loading from DB)"
     ),
     device: str = typer.Option(
         "cuda", "--device", "-d", help="Device for audio processing: cuda or cpu"
@@ -927,7 +931,8 @@ def analyze(
       Useful for visualizing the conversation as a graph.
 
     Accepts a previously generated diarization JSON or transcript text file,
-    or an audio file that will be transcribed and diarized on-the-fly.
+    an audio file that will be transcribed and diarized on-the-fly, or a
+    session ID to load the transcript directly from the database.
 
     Example:
         pawnai analyze result.json
@@ -936,6 +941,8 @@ def analyze(
         pawnai analyze result.json --mode graph -o graph.csv
         pawnai analyze audio.wav --mode summary -o analysis.txt
         pawnai analyze result.json --model gpt-4o
+        pawnai analyze --session myconv
+        pawnai analyze --session myconv --mode graph -o graph.json
     """
     import json
     import csv as csv_module
@@ -949,18 +956,30 @@ def analyze(
         console.print(f"[red]Error: Invalid mode '{mode}'. Choose from: {', '.join(VALID_MODES)}[/red]")
         raise typer.Exit(1)
 
+    # Validate input: exactly one of input_path or --session must be provided
+    if session and input_path:
+        console.print("[red]Error: provide either a file path or --session, not both.[/red]")
+        raise typer.Exit(1)
+    if not session and not input_path:
+        console.print("[red]Error: provide a file path or --session.[/red]")
+        raise typer.Exit(1)
+
+    # Label used in output headers / log lines
+    source_label = f"session:{session}" if session else input_path
+
     try:
         engine = AnalysisEngine(model=model)
-        console.print(f"[cyan]Analyzing: {input_path} (mode={mode}, model={model})…[/cyan]")
+        console.print(f"[cyan]Analyzing: {source_label} (mode={mode}, model={model})…[/cyan]")
 
         # ------------------------------------------------------------------ #
         # GRAPH MODE                                                          #
         # ------------------------------------------------------------------ #
         if mode == "graph":
             triples = engine.extract_graph_from_file(
-                input_path,
+                input_path or "",
                 db_dsn=db_dsn,
                 device=device,
+                session_id=session,
             )
 
             console.print(f"[green]✓ Extracted {len(triples)} graph triple(s)[/green]")
@@ -972,7 +991,7 @@ def analyze(
                 if out_suffix == ".json":
                     payload = {
                         "model": model,
-                        "source": str(input_path),
+                        "source": source_label,
                         "triples": [
                             {"subject": s, "relation": r, "object": o}
                             for s, r, o in triples
@@ -1010,9 +1029,10 @@ def analyze(
         # ------------------------------------------------------------------ #
         else:
             analysis_text = engine.analyze_from_file(
-                input_path,
+                input_path or "",
                 db_dsn=db_dsn,
                 device=device,
+                session_id=session,
             )
 
             console.print(f"[green]✓ Analysis complete[/green]")
@@ -1024,7 +1044,7 @@ def analyze(
                 if out_suffix == ".json":
                     payload = {
                         "model": model,
-                        "source": str(input_path),
+                        "source": source_label,
                         "analysis": analysis_text,
                     }
                     with open(output_path, "w", encoding="utf-8") as f:
@@ -1032,7 +1052,7 @@ def analyze(
                     console.print(f"[green]✓ Saved JSON analysis to: {output}[/green]")
                 else:
                     with open(output_path, "w", encoding="utf-8") as f:
-                        f.write(f"Analysis of: {input_path}\n")
+                        f.write(f"Analysis of: {source_label}\n")
                         f.write(f"Model: {model}\n")
                         f.write("=" * 60 + "\n\n")
                         f.write(analysis_text)
@@ -1070,6 +1090,10 @@ def sessions(
     tail: int = typer.Option(
         5, "--tail", help="Number of last segments to show in detail view"
     ),
+    output: Optional[Path] = typer.Option(
+        None, "--output", "-o",
+        help="Write the full session transcript to this file (requires --session)."
+    ),
     config: Optional[str] = typer.Option(
         None, "--config", help="Path to YAML configuration file (.pawnai.yml)"
     ),
@@ -1082,11 +1106,14 @@ def sessions(
     With --session prints detailed information for that session: metadata,
     audio files, speaker list, and a head/tail preview of the transcript.
 
+    With --session and --output writes the complete transcript to a file.
+
     Example:
         pawnai sessions
         pawnai sessions --session myconv
         pawnai sessions --session ef11c094-0d8d-41fe-93c0-c6bf1f2e8663
         pawnai sessions --session myconv --head 10 --tail 10
+        pawnai sessions --session myconv --output transcript.txt
     """
     from sqlalchemy import select
     from sqlalchemy import func as sqlfunc
@@ -1095,12 +1122,17 @@ def sessions(
     from rich.rule import Rule
     from rich.text import Text
     from ..core.database import (
-        get_engine, init_db, SessionState, TranscriptionSegment,
+        get_engine, init_db, SessionState, TranscriptionSegment, SpeakerName,
     )
     from ..core.config import AppConfig
 
     if config:
         AppConfig(config_path=config)
+
+    # --output requires --session
+    if output is not None and not session:
+        console.print("[red]Error: --output requires --session to be specified.[/red]")
+        raise typer.Exit(1)
 
     db_engine = get_engine(db_dsn)
     init_db(db_engine)
@@ -1173,6 +1205,39 @@ def sessions(
             if omitted > 0:
                 console.print(f"\n[dim]  … {omitted} segment(s) omitted …[/dim]\n")
             _print_segments(f"Last {len(tail_segs)} segment(s)", tail_segs)
+
+        # ── Write full transcript to file ─────────────────────────────────
+        if output is not None:
+            # Resolve human-assigned speaker names in one batch query
+            with OrmSession(db_engine) as db:
+                audio_files = list({s.audio_file for s in segs if s.audio_file})
+                labels = list({s.original_speaker_label for s in segs if s.original_speaker_label})
+                name_rows = db.execute(
+                    select(SpeakerName).where(
+                        SpeakerName.audio_file.in_(audio_files),
+                        SpeakerName.local_speaker_label.in_(labels),
+                    )
+                ).scalars().all() if labels else []
+            name_lookup = {
+                (r.audio_file, r.local_speaker_label): r.speaker_name for r in name_rows
+            }
+
+            lines = []
+            for s in segs:
+                mm = int(s.start_time // 60)
+                ss_val = s.start_time % 60
+                if s.original_speaker_label:
+                    display = name_lookup.get(
+                        (s.audio_file, s.original_speaker_label),
+                        s.original_speaker_label,
+                    )
+                else:
+                    display = "Speaker"
+                lines.append(f"[{mm:02d}:{ss_val:05.2f}] {display}: {(s.text or '').strip()}")
+
+            output.parent.mkdir(parents=True, exist_ok=True)
+            output.write_text("\n".join(lines), encoding="utf-8")
+            console.print(f"[green]Transcript written to {output} ({len(lines)} segments)[/green]")
 
         console.print()
         return

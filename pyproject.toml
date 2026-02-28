@@ -37,7 +37,8 @@ dependencies = [
     "soundfile>=0.12.0",
     "PyYAML>=6.0",
     "boto3>=1.26.0",
-    "github-copilot-sdk"
+    "github-copilot-sdk",
+    "alembic>=1.13.0",
 ]
 
 [project.optional-dependencies]
