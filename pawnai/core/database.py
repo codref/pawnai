@@ -433,3 +433,39 @@ def save_session_analysis(
     with get_session(engine) as db:
         db.add(row)
     return row_id
+
+
+def get_session_analysis(
+    session_id: str,
+    engine,
+) -> Optional["SessionAnalysis"]:
+    """Return the most recent :class:`SessionAnalysis` row for *session_id*.
+
+    Selects the row with the latest ``analyzed_at`` timestamp so that
+    repeated analyses return the freshest result.
+
+    Args:
+        session_id: Session identifier to look up.
+        engine: A SQLAlchemy engine connected to the target database.
+
+    Returns:
+        The :class:`SessionAnalysis` ORM instance, or ``None`` when no
+        analysis exists for the given *session_id*.
+    """
+    from sqlalchemy import select
+
+    with Session(engine) as db:
+        row = db.scalars(
+            select(SessionAnalysis)
+            .where(SessionAnalysis.session_id == session_id)
+            .order_by(SessionAnalysis.analyzed_at.desc())
+            .limit(1)
+        ).first()
+        if row is None:
+            return None
+        # Detach a plain copy so the caller can access attributes after the
+        # session closes without triggering lazy-load errors.
+        db.expunge(row)
+        from sqlalchemy.orm import make_transient
+        make_transient(row)
+        return row

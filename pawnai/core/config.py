@@ -34,6 +34,13 @@ project root (or by passing ``--config path/to/file.yml`` on the CLI):
       verify_ssl: true       # optional, default true
       path_style: true       # optional, default true
 
+    siyuan:
+      url: http://127.0.0.1:6806
+      token: your_api_token_here
+      notebook: 20210817205410-2kvfpfn   # target notebook ID
+      path_template: "/Conversations/{date}/{session_id}"  # {date}, {session_id}, {title}
+      daily_note_path: "/daily note/{year}/{month}/{date}"  # for daily-note backLink
+
 If ``models.hf_token`` is absent the ``HF_TOKEN`` environment variable is
 used as a fallback so that CI/CD pipelines that inject secrets via env vars
 continue to work without a config file.
@@ -151,6 +158,11 @@ class AppConfig:
         if isinstance(s3, dict):
             self._config["s3"] = s3
 
+        # siyuan: section – stored as a raw dict; validated on first use
+        siyuan = content.get("siyuan")
+        if isinstance(siyuan, dict):
+            self._config["siyuan"] = siyuan
+
         # Propagate HF token to env var so any code using os.getenv("HF_TOKEN")
         # picks it up (including module-level constants evaluated after this call).
         hf_token = self._config.get("hf_token")
@@ -190,6 +202,18 @@ class AppConfig:
         s3_config = self._config.get("s3")
         if isinstance(s3_config, dict):
             return s3_config
+        return None
+
+    def get_siyuan_config(self) -> Optional[Dict[str, Any]]:
+        """Return the ``siyuan:`` configuration mapping, or ``None`` if absent.
+
+        Returns:
+            Dictionary of SiYuan settings from ``.pawnai.yml``, or ``None``
+            when the ``siyuan:`` section is not present.
+        """
+        siyuan_config = self._config.get("siyuan")
+        if isinstance(siyuan_config, dict):
+            return siyuan_config
         return None
 
 

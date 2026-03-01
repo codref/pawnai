@@ -55,3 +55,31 @@ device:
 #   prefix: ""               # prepended to every object key
 #   verify_ssl: true         # set to false to skip TLS verification (dev only)
 #   path_style: true         # use path-style addressing (required for MinIO)
+
+
+# ── SiYuan Note integration ───────────────────────────────────────────────────
+# When present, `pawnai sync-siyuan` pushes conversation analyses to your
+# locally-running SiYuan instance as rich documents.
+#
+# How to get your API token:
+#   1. Open SiYuan → Settings (top-right gear icon)
+#   2. Go to "About"
+#   3. Copy the value under "API token"
+#
+
+siyuan:
+  url: http://127.0.0.1:6806
+  token: your_api_token_here   # replace with the token from SiYuan Settings → About
+
+  # Notebook ID to write documents into.
+  # Find it in SiYuan: right-click a notebook → Properties → copy the ID shown.
+  notebook: ""
+
+  # Path template for each session document.
+  # Available placeholders: {session_id}, {title}, {date}, {year}, {month}, {day}
+  # {title} is auto-slugified from the analysis title.
+  path_template: "/Conversations/{date}/{session_id}"
+
+  # Path template for the daily note where a backlink is inserted.
+  # Set to "" or remove to disable daily-note backlinks.
+  daily_note_path: "/daily note/{year}/{month}/{date}"

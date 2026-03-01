@@ -8,6 +8,7 @@ lazily via ``__getattr__`` so that lightweight commands (e.g. ``s3-ls``,
 from __future__ import annotations
 
 from .s3 import S3Client, S3Config, is_s3_path, s3_audio_paths, expand_s3_glob
+from .siyuan import SiyuanClient, SiyuanError, format_session_markdown, resolve_path_template
 
 # Names exported through lazy __getattr__ below
 _LAZY = {
@@ -31,6 +32,10 @@ __all__ = [
     "is_s3_path",
     "s3_audio_paths",
     "expand_s3_glob",
+    "SiyuanClient",
+    "SiyuanError",
+    "format_session_markdown",
+    "resolve_path_template",
 ]
 
 

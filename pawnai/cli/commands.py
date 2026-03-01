@@ -1075,6 +1075,275 @@ def analyze(
         raise typer.Exit(1)
 
 
+@app.command(name="sync-siyuan")
+def sync_siyuan(
+    session: Optional[str] = typer.Option(
+        None, "--session", "-s",
+        help="Session ID to sync to SiYuan. Must have a completed analysis in the DB."
+    ),
+    all_sessions: bool = typer.Option(
+        False, "--all", help="Sync every session that has a completed analysis."
+    ),
+    notebook: Optional[str] = typer.Option(
+        None, "--notebook", "-n",
+        help="Target SiYuan notebook ID. Falls back to siyuan.notebook in .pawnai.yml."
+    ),
+    token: Optional[str] = typer.Option(
+        None, "--token", "-t",
+        help="SiYuan API token. Falls back to siyuan.token in .pawnai.yml."
+    ),
+    url: Optional[str] = typer.Option(
+        None, "--url",
+        help="SiYuan instance URL. Falls back to siyuan.url in .pawnai.yml, then http://127.0.0.1:6806."
+    ),
+    path_template: Optional[str] = typer.Option(
+        None, "--path-template",
+        help=(
+            "Document path template. Placeholders: {session_id}, {title}, {date}, "
+            "{year}, {month}, {day}. Defaults to /Conversations/{date}/{session_id}."
+        ),
+    ),
+    daily_note: bool = typer.Option(
+        True, "--daily-note/--no-daily-note",
+        help="Also append a backlink in today's SiYuan daily note."
+    ),
+    daily_path_template: Optional[str] = typer.Option(
+        None, "--daily-path-template",
+        help=(
+            "Daily note path template. Placeholders: {date}, {year}, {month}, {day}. "
+            "Defaults to /daily note/{year}/{month}/{date}."
+        ),
+    ),
+    db_dsn: str = typer.Option(
+        DEFAULT_DB_DSN, help="PostgreSQL DSN for speaker database."
+    ),
+    config: Optional[str] = typer.Option(
+        None, "--config", help="Path to YAML configuration file (.pawnai.yml)."
+    ),
+) -> None:
+    """Push conversation analysis to a running SiYuan Note instance.
+
+    Reads the most recent stored analysis for one or all sessions from the
+    database (produced by a previous [bold]analyze[/bold] run) and creates
+    a rich SiYuan document containing the structured analysis and full
+    transcript.  Existing documents at the same path are overwritten.
+
+    Configuration can be provided via [bold].pawnai.yml[/bold]:
+
+    \\b
+        siyuan:
+          url: http://127.0.0.1:6806
+          token: your_token
+          notebook: 20210817205410-2kvfpfn
+          path_template: "/Conversations/{date}/{session_id}"
+          daily_note_path: "/daily note/{year}/{month}/{date}"
+
+    Example:
+        pawnai sync-siyuan --session myconv
+        pawnai sync-siyuan --session myconv --notebook 20210817... --token xxx
+        pawnai sync-siyuan --all
+    """
+    from datetime import datetime, timezone
+
+    from ..core.config import AppConfig
+    from ..core.database import get_engine, get_session_analysis, SessionAnalysis
+    from ..core.siyuan import (
+        SiyuanClient,
+        SiyuanError,
+        format_session_markdown,
+        resolve_path_template,
+        DEFAULT_PATH_TEMPLATE,
+        DEFAULT_DAILY_PATH_TEMPLATE,
+    )
+    from ..core.analysis import AnalysisEngine
+    from sqlalchemy import select
+    from sqlalchemy.orm import Session as OrmSession
+
+    # ── Load YAML config ───────────────────────────────────────────────────────
+    app_cfg = AppConfig(config_path=config)
+    sy_cfg = app_cfg.get_siyuan_config() or {}
+
+    resolved_url = url or sy_cfg.get("url", "http://127.0.0.1:6806")
+    resolved_token = token or sy_cfg.get("token", "")
+    resolved_notebook = notebook or sy_cfg.get("notebook", "")
+    resolved_path_tpl = path_template or sy_cfg.get("path_template", DEFAULT_PATH_TEMPLATE)
+    resolved_daily_tpl = daily_path_template or sy_cfg.get("daily_note_path", DEFAULT_DAILY_PATH_TEMPLATE)
+
+    if not resolved_notebook:
+        console.print(
+            "[red]Error: No SiYuan notebook ID provided. Use --notebook or set "
+            "siyuan.notebook in .pawnai.yml.[/red]"
+        )
+        raise typer.Exit(1)
+
+    if not resolved_token:
+        console.print(
+            "[yellow]Warning: No SiYuan API token provided. Requests may be "
+            "rejected. Use --token or set siyuan.token in .pawnai.yml.[/yellow]"
+        )
+
+    if not session and not all_sessions:
+        console.print("[red]Error: provide --session or --all.[/red]")
+        raise typer.Exit(1)
+
+    if session and all_sessions:
+        console.print("[red]Error: provide either --session or --all, not both.[/red]")
+        raise typer.Exit(1)
+
+    # ── Collect analysis rows to sync ──────────────────────────────────────────
+    engine = get_engine(db_dsn)
+
+    if session:
+        row = get_session_analysis(session, engine)
+        if row is None:
+            console.print(
+                f"[red]Error: No analysis found for session {session!r}. "
+                "Run 'pawnai analyze --session {session}' first.[/red]"
+            )
+            raise typer.Exit(1)
+        rows_to_sync = [row]
+    else:
+        # --all: fetch the latest analysis for every distinct session_id
+        from sqlalchemy import select, func as sqlfunc
+        with OrmSession(engine) as db:
+            # Subquery: max analyzed_at per session_id
+            subq = (
+                select(
+                    SessionAnalysis.session_id,
+                    sqlfunc.max(SessionAnalysis.analyzed_at).label("max_at"),
+                )
+                .where(SessionAnalysis.session_id.is_not(None))
+                .group_by(SessionAnalysis.session_id)
+                .subquery()
+            )
+            rows_to_sync = db.scalars(
+                select(SessionAnalysis).join(
+                    subq,
+                    (SessionAnalysis.session_id == subq.c.session_id)
+                    & (SessionAnalysis.analyzed_at == subq.c.max_at),
+                )
+            ).all()
+            from sqlalchemy.orm import make_transient
+            for r in rows_to_sync:
+                db.expunge(r)
+                make_transient(r)
+
+    if not rows_to_sync:
+        console.print("[yellow]No sessions with completed analyses found.[/yellow]")
+        raise typer.Exit(0)
+
+    console.print(
+        f"[cyan]Syncing {len(rows_to_sync)} session(s) → SiYuan "
+        f"{resolved_url} notebook={resolved_notebook}[/cyan]"
+    )
+
+    client = SiyuanClient(
+        url=resolved_url,
+        token=resolved_token,
+        notebook_id=resolved_notebook,
+    )
+
+    ae = AnalysisEngine()
+    now = datetime.now(timezone.utc)
+    success = 0
+    errors = 0
+
+    for row in rows_to_sync:
+        sid = row.session_id or row.source
+        try:
+            # ── Load transcript ────────────────────────────────────────────────
+            try:
+                transcript = ae._load_transcript(
+                    "", db_dsn=db_dsn, session_id=row.session_id
+                )
+            except Exception:
+                transcript = "_Transcript not available._"
+
+            # ── Build Markdown ─────────────────────────────────────────────────
+            md = format_session_markdown(
+                title=row.title,
+                summary=row.summary,
+                key_topics=row.key_topics,
+                speaker_highlights=row.speaker_highlights,
+                sentiment=row.sentiment,
+                sentiment_tags=row.sentiment_tags,
+                tags=row.tags,
+                session_id=row.session_id,
+                source=row.source,
+                analyzed_at=row.analyzed_at,
+                transcript=transcript,
+                model=row.model,
+            )
+
+            # ── Resolve document path ──────────────────────────────────────────
+            doc_path = resolve_path_template(
+                resolved_path_tpl,
+                session_id=sid,
+                title=row.title,
+                now=row.analyzed_at or now,
+            )
+
+            # ── Build block attributes ─────────────────────────────────────────
+            # 'tags' is SiYuan's native attribute read by the Tags panel.
+            # Values must be comma-separated with no leading #.
+            attrs: dict[str, str] = {"custom-pawnai-session": sid}
+            all_tags: list[str] = list(row.tags or []) + list(row.sentiment_tags or [])
+            if all_tags:
+                attrs["tags"] = ",".join(all_tags)
+            if row.model:
+                attrs["custom-model"] = row.model
+
+            # ── Upsert document ────────────────────────────────────────────────
+            with console.status(f"[bold green]Syncing {sid!r}…"):
+                doc_id = client.upsert_session_doc(
+                    notebook=resolved_notebook,
+                    path=doc_path,
+                    markdown=md,
+                    attrs=attrs,
+                )
+
+            console.print(
+                f"[green]✓ {sid!r} → {doc_path} (doc_id={doc_id})[/green]"
+            )
+
+            # ── Daily note backlink ────────────────────────────────────────────
+            if daily_note and doc_id:
+                daily_path = resolve_path_template(
+                    resolved_daily_tpl,
+                    session_id=sid,
+                    title=None,
+                    now=now,
+                )
+                try:
+                    client.append_daily_note_link(
+                        notebook=resolved_notebook,
+                        daily_path=daily_path,
+                        doc_id=doc_id,
+                        title=row.title or sid,
+                    )
+                    console.print(
+                        f"  [dim]↩ backlink added to daily note: {daily_path}[/dim]"
+                    )
+                except SiyuanError as e:
+                    console.print(
+                        f"  [yellow]Warning: could not add daily note backlink: {e}[/yellow]"
+                    )
+            success += 1
+
+        except SiyuanError as e:
+            console.print(f"[red]✗ {sid!r}: SiYuan API error — {e}[/red]")
+            errors += 1
+        except Exception as e:
+            console.print(f"[red]✗ {sid!r}: {e}[/red]")
+            errors += 1
+
+    console.print(
+        f"\n[bold]Done:[/bold] {success} synced, {errors} failed."
+    )
+    if errors:
+        raise typer.Exit(1)
+
+
 @app.command()
 def sessions(
     session: Optional[str] = typer.Option(
