@@ -1,7 +1,7 @@
 """CLI command definitions for PawnAI."""
 
 import shutil
-from typing import Any, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 import typer
 from pathlib import Path
 
@@ -17,7 +17,7 @@ app = typer.Typer(
 def _resolve_s3_paths(
     paths: List[str],
     app_cfg: Any,
-) -> Tuple[List[str], List[str]]:
+) -> Tuple[List[str], List[str], Dict[str, str]]:
     """Download any ``s3://`` paths to temporary local files.
 
     Paths that are already local are passed through unchanged.  The caller
@@ -85,9 +85,12 @@ def _resolve_s3_paths(
     # temps holds the tmp_dir path so the caller can delete it in finally
     temps: List[str] = [str(tmp_dir)]
     resolved: List[str] = []
+    # Maps local temp path → original S3 URI (or path → path for local files)
+    path_map: Dict[str, str] = {}
 
     for path in expanded_paths:
         if not is_s3_path(path):
+            path_map[path] = path
             resolved.append(path)
             continue
 
@@ -96,9 +99,11 @@ def _resolve_s3_paths(
         local_path = tmp_dir / Path(key).name
         console.print(f"[cyan]Downloading s3://{bucket}/{key} …[/cyan]")
         client.download_file(key, str(local_path), bucket=bucket)
+        # Map local temp path → original S3 URI so callers store canonical paths in DB
+        path_map[str(local_path)] = path
         resolved.append(str(local_path))
 
-    return resolved, temps
+    return resolved, temps, path_map
 
 
 @app.command()
@@ -147,7 +152,7 @@ def diarize(
     app_cfg = AppConfig(config_path=config) if config else AppConfig()
     _s3_temps: List[str] = []
     try:
-        audio_paths, _s3_temps = _resolve_s3_paths(audio_paths, app_cfg)
+        audio_paths, _s3_temps, _path_map = _resolve_s3_paths(audio_paths, app_cfg)
         for p in audio_paths:
             if not Path(p).exists():
                 console.print(f"[red]Error: Audio file not found: {p}[/red]")
@@ -168,7 +173,8 @@ def diarize(
             audio_paths if len(audio_paths) > 1 else audio_paths[0],
             db_dsn=db_dsn,
             similarity_threshold=threshold,
-            store_new_speakers=store_new
+            store_new_speakers=store_new,
+            source_map=_path_map,
         )
         
         console.print(f"[green]✓ Diarization complete[/green]")
@@ -307,7 +313,7 @@ def transcribe(
     app_cfg = AppConfig(config_path=config) if config else AppConfig()
     _s3_temps: List[str] = []
     try:
-        audio_paths, _s3_temps = _resolve_s3_paths(audio_paths, app_cfg)
+        audio_paths, _s3_temps, _path_map = _resolve_s3_paths(audio_paths, app_cfg)
         for p in audio_paths:
             if not Path(p).exists():
                 console.print(f"[red]Error: Audio file not found: {p}[/red]")
@@ -345,8 +351,9 @@ def transcribe(
 
         # Save segments to database
         segs = result.get("segment_timestamps", [])
+        _canonical_first = _path_map.get(audio_paths[0], audio_paths[0]) if audio_paths else ""
         for seg in segs:
-            seg.setdefault("source_file", audio_paths[0] if len(audio_paths) == 1 else "")
+            seg.setdefault("source_file", _canonical_first if len(audio_paths) == 1 else "")
             if "segment" in seg and "text" not in seg:
                 seg["text"] = seg["segment"]
         saved = save_transcription_segments(segs, session_id=session_id, engine=db_engine)
@@ -495,7 +502,7 @@ def transcribe_diarize(
     app_cfg = AppConfig(config_path=config) if config else AppConfig()
     _s3_temps: List[str] = []
     try:
-        audio_paths, _s3_temps = _resolve_s3_paths(audio_paths, app_cfg)
+        audio_paths, _s3_temps, _path_map = _resolve_s3_paths(audio_paths, app_cfg)
         for p in audio_paths:
             if not Path(p).exists():
                 console.print(f"[red]Error: Audio file not found: {p}[/red]")
@@ -559,6 +566,7 @@ def transcribe_diarize(
             time_cursor=prior_time_cursor,
             verbose=verbose,
             backend=backend,
+            source_map=_path_map,
         )
 
         console.print(f"[green]✓ Processing complete[/green]")
@@ -727,7 +735,7 @@ def embed(
     app_cfg = AppConfig(config_path=config) if config else AppConfig()
     _s3_temps: List[str] = []
     try:
-        audio_paths, _s3_temps = _resolve_s3_paths(audio_paths, app_cfg)
+        audio_paths, _s3_temps, _path_map = _resolve_s3_paths(audio_paths, app_cfg)
         for p in audio_paths:
             if not Path(p).exists():
                 console.print(f"[red]Error: Audio file not found: {p}[/red]")
@@ -748,7 +756,7 @@ def embed(
                 console.print(f"  {i}. {p}")
             embeddings = diarization_engine.extract_embeddings(audio_paths)
 
-        embedding_manager.add_embedding(speaker_id, embeddings, audio_paths[0])
+        embedding_manager.add_embedding(speaker_id, embeddings, _path_map.get(audio_paths[0], audio_paths[0]))
         console.print(f"[green]✓ Embedding stored for speaker: {speaker_id}[/green]")
         
     except Exception as e:
@@ -817,7 +825,7 @@ def search(
 @app.command()
 def label(
     audio_file: Optional[str] = typer.Option(
-        None, "--file", "-f", help="Audio file containing the speaker"
+        None, "--file", "-f", help="Audio file path or S3 URI (optional when --session resolves it)"
     ),
     speaker: Optional[str] = typer.Option(
         None, "--speaker", "-s", help="Speaker label (e.g., SPEAKER_00)"
@@ -825,33 +833,49 @@ def label(
     name: Optional[str] = typer.Option(
         None, "--name", "-n", help="Human-readable name for the speaker"
     ),
+    session: Optional[str] = typer.Option(
+        None, "--session", help="Session ID to scope listing/labelling to a specific session"
+    ),
     config: Optional[str] = typer.Option(
         None, "--config", help="Path to YAML configuration file (.pawnai.yml)"
     ),
     list_all: bool = typer.Option(
-        False, "--list", "-l", help="List all speaker name mappings"
+        False, "--list", "-l", help="List speaker mappings (all sessions, or full session view with --session)"
     ),
     db_dsn: str = typer.Option(
         DEFAULT_DB_DSN, help="PostgreSQL DSN for speaker database"
     ),
 ) -> None:
     """Assign human-readable names to speakers.
-    
-    Label speakers so they can be automatically identified in future diarizations.
-    
+
+    Use [bold]--session[/bold] to scope listing and labelling to a specific session,
+    making it easy to identify unmapped speakers across multi-file recordings.
+
+    \b
     Examples:
-        # Label a specific speaker
-        pawnai label -f audio.wav -s SPEAKER_00 -n "John Doe"
-        
-        # List all labeled speakers
+        # Show unmapped speakers in a session
+        pawnai label --session my-session
+
+        # Show all speakers in a session (mapped + unmapped)
+        pawnai label --session my-session --list
+
+        # Label a speaker from a session (auto-resolves file when unambiguous)
+        pawnai label --session my-session --speaker SPEAKER_00 --name "Alice"
+
+        # Label with explicit file (required when speaker label spans multiple files)
+        pawnai label --session my-session -s SPEAKER_00 -f s3://bucket/audio.flac -n "Alice"
+
+        # List all globally labeled speakers
         pawnai label --list
+
+        # Label with an explicit local path
+        pawnai label -f audio.wav -s SPEAKER_00 -n "John Doe"
     """
     from datetime import datetime, timezone
     from ..core.config import AppConfig
-    from ..core.database import SpeakerName, get_engine, get_session, init_db
+    from ..core.database import SpeakerName, TranscriptionSegment, get_engine, get_session, init_db
     from sqlalchemy import select
 
-    # Load config from specified file if provided
     if config:
         AppConfig(config_path=config)
 
@@ -859,44 +883,136 @@ def label(
         engine = get_engine(db_dsn)
         init_db(engine)
 
+        # ------------------------------------------------------------------
+        # Session-scoped listing (no --name means display-only mode)
+        # ------------------------------------------------------------------
+        if session and not name:
+            with get_session(engine) as db_sess:
+                # Unmapped = raw SPEAKER_XX labels not yet resolved to a human name
+                unmapped_rows = db_sess.execute(
+                    select(
+                        TranscriptionSegment.audio_file,
+                        TranscriptionSegment.original_speaker_label,
+                    )
+                    .where(
+                        TranscriptionSegment.session_id == session,
+                        TranscriptionSegment.original_speaker_label.like("SPEAKER_%"),
+                    )
+                    .distinct()
+                ).all()
+
+                mapped_rows: list = []
+                if list_all:
+                    mapped_rows = db_sess.execute(
+                        select(
+                            TranscriptionSegment.audio_file,
+                            TranscriptionSegment.original_speaker_label,
+                        )
+                        .where(
+                            TranscriptionSegment.session_id == session,
+                            ~TranscriptionSegment.original_speaker_label.like("SPEAKER_%"),
+                            TranscriptionSegment.original_speaker_label.isnot(None),
+                        )
+                        .distinct()
+                    ).all()
+
+            if not unmapped_rows and not mapped_rows:
+                console.print(f"[yellow]No segments found for session '{session}'.[/yellow]")
+                return
+
+            console.print(f"\n[bold cyan]Session: {session}[/bold cyan]")
+
+            if unmapped_rows:
+                console.print(f"\n[bold yellow]Unmapped speakers ({len(unmapped_rows)}):[/bold yellow]")
+                for seg_audio, seg_label in unmapped_rows:
+                    console.print(f"\n  [bold]• {seg_label}[/bold]")
+                    console.print(f"    File: {seg_audio}")
+                    console.print(
+                        f"    [dim]pawnai label --session {session} "
+                        f"--speaker {seg_label} --name \"Name\"[/dim]"
+                    )
+            else:
+                console.print(f"[green]All speakers in session '{session}' are labeled.[/green]")
+
+            if mapped_rows:
+                console.print(f"\n[bold green]Already resolved ({len(mapped_rows)}):[/bold green]")
+                for seg_audio, seg_label in mapped_rows:
+                    console.print(f"  • [bold]{seg_label}[/bold]  ({Path(seg_audio).name if seg_audio else ''})")
+            return
+
+        # ------------------------------------------------------------------
+        # Global list mode (no session, --list only)
+        # ------------------------------------------------------------------
         if list_all:
-            with get_session(engine) as session:
-                rows = session.execute(select(SpeakerName)).scalars().all()
+            with get_session(engine) as db_sess:
+                rows = db_sess.execute(select(SpeakerName)).scalars().all()
             if not rows:
                 console.print("[yellow]No speaker labels found. Use 'pawnai label' to add labels.[/yellow]")
                 return
             console.print("\n[bold cyan]Labeled Speakers[/bold cyan]")
             for row in rows:
                 console.print(f"\n[bold]• {row.speaker_name}[/bold]")
-                console.print(f"  File: {Path(row.audio_file).name}")
+                console.print(f"  File: {row.audio_file}")
                 console.print(f"  Label: {row.local_speaker_label}")
                 console.print(f"  Labeled: {row.labeled_at}")
             return
 
-        # Add/update speaker name
-        if not audio_file or not speaker or not name:
-            console.print("[red]Error: --file, --speaker, and --name are required to add a label.[/red]")
-            console.print("[yellow]Use --list to see all labeled speakers.[/yellow]")
+        # ------------------------------------------------------------------
+        # Add / update a speaker name mapping
+        # ------------------------------------------------------------------
+        if not speaker or not name:
+            console.print("[red]Error: --speaker and --name are required to add a label.[/red]")
+            console.print("[yellow]Use --list or --session <id> to see current speakers.[/yellow]")
             raise typer.Exit(1)
 
-        if not Path(audio_file).exists():
-            console.print(f"[red]Error: Audio file not found: {audio_file}[/red]")
+        # Resolve audio_file: use --file if given, otherwise auto-detect from session
+        resolved_audio_file: Optional[str] = audio_file
+        if not resolved_audio_file and session:
+            with get_session(engine) as db_sess:
+                candidates = db_sess.execute(
+                    select(TranscriptionSegment.audio_file)
+                    .where(
+                        TranscriptionSegment.session_id == session,
+                        TranscriptionSegment.original_speaker_label == speaker,
+                    )
+                    .distinct()
+                ).scalars().all()
+
+            if not candidates:
+                console.print(
+                    f"[red]Error: Speaker '{speaker}' not found in session '{session}'.[/red]"
+                )
+                raise typer.Exit(1)
+
+            if len(candidates) > 1:
+                console.print(
+                    f"[yellow]Speaker '{speaker}' appears in {len(candidates)} files in "
+                    f"session '{session}'. Use --file to specify which one:[/yellow]"
+                )
+                for c in candidates:
+                    console.print(f"  {c}")
+                raise typer.Exit(1)
+
+            resolved_audio_file = candidates[0]
+
+        if not resolved_audio_file:
+            console.print("[red]Error: --file is required (or provide --session to auto-resolve).[/red]")
             raise typer.Exit(1)
 
-        record_id = f"{Path(audio_file).name}_{speaker}"
+        record_id = f"{Path(resolved_audio_file).name}_{speaker}"
         record = SpeakerName(
             id=record_id,
-            audio_file=str(audio_file),
+            audio_file=str(resolved_audio_file),
             local_speaker_label=speaker,
             speaker_name=name,
             labeled_at=datetime.now(timezone.utc),
         )
-        with get_session(engine) as session:
-            existing = session.get(SpeakerName, record_id)
+        with get_session(engine) as db_sess:
+            existing = db_sess.get(SpeakerName, record_id)
             if existing:
                 console.print("[yellow]Updated existing label[/yellow]")
-            session.merge(record)
-        console.print(f"[green]✓ Labeled {speaker} in {Path(audio_file).name} as '{name}'[/green]")
+            db_sess.merge(record)
+        console.print(f"[green]✓ Labeled {speaker} in {Path(resolved_audio_file).name} as '{name}'[/green]")
 
     except Exception as e:
         console.print(f"[red]Error during labeling: {str(e)}[/red]")

@@ -19,6 +19,7 @@ def transcribe_with_diarization(
     time_cursor: float = 0.0,
     verbose: bool = False,
     backend: str = "nemo",
+    source_map: Optional[Dict[str, str]] = None,
 ) -> Dict[str, Any]:
     """Transcribe audio with speaker diarization labels.
 
@@ -108,6 +109,7 @@ def transcribe_with_diarization(
         cross_file_threshold=cross_file_threshold,
         prior_speaker_embeddings=prior_speaker_embeddings,
         time_cursor=time_cursor,
+        source_map=source_map,
     )
 
     print("Merging transcription with speaker labels...")

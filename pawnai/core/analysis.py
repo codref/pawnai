@@ -126,15 +126,31 @@ class AnalysisEngine:
                 }
 
         # --- Format segments (plain dicts, no live ORM objects) --------------
+        # Group consecutive same-speaker segments: print the speaker header once
+        # on change, then indent each segment's text with its timestamp range.
         lines: List[str] = []
+        current_speaker: Optional[str] = None
         for seg in segments:
+            text = seg["text"].strip()
+            if not text:
+                continue
             mm = int(seg["start_time"] // 60)
             ss = seg["start_time"] % 60
             if seg["label"] is not None:
-                display = name_lookup.get((seg["audio_file"], seg["label"]), seg["label"])
+                # If the stored label is already a resolved name (not a raw
+                # SPEAKER_XX label), use it directly; otherwise try name_lookup.
+                raw_label = seg["label"]
+                display = name_lookup.get((seg["audio_file"], raw_label), raw_label)
             else:
                 display = "Speaker"
-            lines.append(f"[{mm:02d}:{ss:05.2f}] {display}: {seg['text'].strip()}")
+
+            if display != current_speaker:
+                if current_speaker is not None:
+                    lines.append("")  # blank line between speaker blocks
+                lines.append(f"[{mm:02d}:{ss:05.2f}] {display}:")
+                current_speaker = display
+
+            lines.append(f"  {text}")
 
         return "\n".join(lines)
 

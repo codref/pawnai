@@ -434,6 +434,7 @@ class DiarizationEngine:
         cross_file_threshold: float = 0.85,
         prior_speaker_embeddings: Optional[Dict[str, Any]] = None,
         time_cursor: float = 0.0,
+        source_map: Optional[Dict[str, str]] = None,
     ) -> Dict[str, Any]:
         """Perform speaker diarization on audio file(s) with database lookup.
 
@@ -475,7 +476,7 @@ class DiarizationEngine:
                   time_cursor on the next incremental call.
         """
         from .database import Embedding, SpeakerName, get_engine, get_session, init_db
-        from sqlalchemy import select, text
+        from sqlalchemy import text
         import os
 
         self._initialize_models()
@@ -509,6 +510,11 @@ class DiarizationEngine:
                 prior_speaker_embeddings=prior_speaker_embeddings,
                 time_cursor=time_cursor,
             )
+            # Canonicalise source_file paths using the S3 path map (local tmp → s3://)
+            if source_map:
+                for seg in segments:
+                    if "source_file" in seg:
+                        seg["source_file"] = source_map.get(seg["source_file"], seg["source_file"])
             speakers: set = {seg["speaker"] for seg in segments}
         else:
             # ----- single-file baseline path (no prior state) -----
@@ -619,16 +625,28 @@ class DiarizationEngine:
                                 matched_label = row.local_speaker_label
                                 matched_file = row.audio_file
 
+                                # Look up the human name for the matched embedding.
+                                # Try exact (audio_file, label) match first; fall back
+                                # to basename-only match so that paths that differ only
+                                # in their /tmp/ prefix still resolve correctly.
                                 speaker_name = None
-                                with get_session(engine) as session:
-                                    name_row = session.execute(
-                                        select(SpeakerName).where(
-                                            SpeakerName.audio_file == matched_file,
-                                            SpeakerName.local_speaker_label == matched_label,
-                                        )
-                                    ).scalars().first()
-                                    if name_row:
-                                        speaker_name = name_row.speaker_name
+                                with engine.connect() as _conn:
+                                    nm = _conn.execute(
+                                        text(
+                                            "SELECT speaker_name FROM speaker_names "
+                                            "WHERE local_speaker_label = :label "
+                                            "  AND ("
+                                            "    audio_file = :af "
+                                            "    OR substring(audio_file from '[^/]+$')"
+                                            "       = substring(:af from '[^/]+$')"
+                                            "  ) "
+                                            "ORDER BY CASE WHEN audio_file = :af THEN 0 ELSE 1 END "
+                                            "LIMIT 1"
+                                        ),
+                                        {"label": matched_label, "af": matched_file},
+                                    ).fetchone()
+                                    if nm:
+                                        speaker_name = nm.speaker_name
 
                                 if speaker_name:
                                     print(
@@ -636,11 +654,33 @@ class DiarizationEngine:
                                         f"(similarity={similarity:.3f})"
                                     )
                                     matched_speakers[speaker_label] = speaker_name
+                                    # Persist the resolved name for every audio file in
+                                    # this run so _load_transcript_from_db can find it via
+                                    # the speaker_names table (enables SiYuan sync to show
+                                    # real names instead of SPEAKER_XX labels).
+                                    try:
+                                        with get_session(engine) as _sn_sess:
+                                            for _af in audio_paths:
+                                                _canonical_af = source_map.get(str(_af), str(_af)) if source_map else str(_af)
+                                                _sn_sess.merge(SpeakerName(
+                                                    id=f"{os.path.basename(_canonical_af)}_{speaker_label}",
+                                                    audio_file=_canonical_af,
+                                                    local_speaker_label=speaker_label,
+                                                    speaker_name=speaker_name,
+                                                    labeled_at=None,
+                                                ))
+                                    except Exception as _e:
+                                        print(f"Warning: Could not persist speaker name mapping: {_e}")
                                 else:
+                                    # Embedding match found but no name yet: still treat as
+                                    # a new speaker so embeddings are stored and future
+                                    # labelling will take effect on the next run.
                                     print(
                                         f"  Found match for {speaker_label} but no name assigned "
-                                        f"(id: {row.id}, similarity={similarity:.3f})"
+                                        f"(id: {row.id}, similarity={similarity:.3f}) — "
+                                        f"storing embeddings for future labelling"
                                     )
+                                    new_speakers.append(speaker_label)
                             else:
                                 new_speakers.append(speaker_label)
                         else:
@@ -657,6 +697,7 @@ class DiarizationEngine:
             if store_new_speakers and new_speakers and db_dsn and engine:
                 print(f"Storing embeddings for {len(new_speakers)} new speaker(s)...")
                 source_file = audio_paths[0]
+                canonical_source = source_map.get(str(source_file), str(source_file)) if source_map else str(source_file)
                 records_to_add = []
 
                 for speaker_label in new_speakers:
@@ -665,8 +706,8 @@ class DiarizationEngine:
                     for idx, emb_data in enumerate(speaker_embeddings[speaker_label]):
                         records_to_add.append(
                             Embedding(
-                                id=f"{os.path.basename(source_file)}_{speaker_label}_{idx}",
-                                audio_file=str(source_file),
+                                id=f"{os.path.basename(canonical_source)}_{speaker_label}_{idx}",
+                                audio_file=canonical_source,
                                 local_speaker_label=speaker_label,
                                 start_time=float(emb_data["start"]),
                                 end_time=float(emb_data["end"]),
@@ -692,6 +733,7 @@ class DiarizationEngine:
                     seg["speaker"] = matched_speakers.get(seg["speaker"], seg["speaker"])
             else:
                 # Build segments from single-file diarization annotation
+                canonical_path0 = source_map.get(str(audio_paths[0]), str(audio_paths[0])) if source_map else str(audio_paths[0])
                 for turn, _, speaker in diarization.itertracks(yield_label=True):  # type: ignore[union-attr]
                     if turn.end - turn.start < 0.5:
                         continue
@@ -699,7 +741,7 @@ class DiarizationEngine:
                     segments.append({
                         "speaker": display_name,
                         "original_label": speaker,
-                        "source_file": str(audio_paths[0]),
+                        "source_file": canonical_path0,
                         "start": turn.start + time_cursor,
                         "end": turn.end + time_cursor,
                         "duration": turn.end - turn.start,
