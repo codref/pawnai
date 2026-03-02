@@ -9,7 +9,7 @@ from pathlib import Path
 import soundfile as sf
 import numpy as np
 
-from .config import TRANSCRIPTION_MODEL
+from .config import TRANSCRIPTION_MODEL, TRANSCRIPTION_BACKEND, WHISPER_MODEL
 
 _NEMO_LOGGERS = (
     "nemo_logger",
@@ -52,18 +52,35 @@ def _maybe_quiet(verbose: bool):  # type: ignore[return]
 
 
 class TranscriptionEngine:
-    """Engine for audio transcription using Nvidia Parakeet model."""
+    """Engine for audio transcription.
 
-    def __init__(self, device: str = "cuda", verbose: bool = False):
+    Supports two backends selectable via the *backend* parameter:
+
+    * ``"nemo"`` (default) — Nvidia NeMo Parakeet model.
+    * ``"whisper"`` — faster-whisper (CTranslate2-based, word timestamps native).
+    """
+
+    def __init__(
+        self,
+        device: str = "cuda",
+        verbose: bool = False,
+        backend: str = TRANSCRIPTION_BACKEND,
+    ):
         """Initialize the transcription engine.
-        
+
         Args:
-            device: Device to use ("cuda" or "cpu")
+            device: Device to use (``"cuda"`` or ``"cpu"``)
             verbose: Show NeMo/library log output (default: suppressed)
+            backend: Transcription backend — ``"nemo"`` (Parakeet) or
+                ``"whisper"`` (faster-whisper).
         """
-        self.model: Optional[Any] = None
+        self.model: Optional[Any] = None          # NeMo model
+        self.whisper_model: Optional[Any] = None  # faster-whisper model
         self.device = device
         self.verbose = verbose
+        self.backend = backend.lower()
+        if self.backend not in ("nemo", "whisper"):
+            raise ValueError(f"Unknown transcription backend: {backend!r}. Choose 'nemo' or 'whisper'.")
 
     def _initialize_model(self) -> None:
         """Load the transcription model (lazy loading)."""
@@ -89,6 +106,152 @@ class TranscriptionEngine:
             self.model = self.model.cuda()
 
         print("Transcription model loaded successfully")
+
+    # ── Whisper backend ───────────────────────────────────────────────────────
+
+    def _initialize_whisper_model(self) -> None:
+        """Lazy-load the faster-whisper model."""
+        if self.whisper_model is not None:
+            return
+
+        from faster_whisper import WhisperModel  # noqa: F401  # lazy import
+
+        print(f"Loading Whisper model: {WHISPER_MODEL}")
+        print(f"Using device: {self.device}")
+        compute_type = "float16" if self.device != "cpu" else "int8"
+        self.whisper_model = WhisperModel(
+            WHISPER_MODEL,
+            device=self.device,
+            compute_type=compute_type,
+        )
+        print("Whisper model loaded successfully")
+
+    def _transcribe_whisper_single(
+        self, audio_path: str, include_timestamps: bool = True
+    ) -> Dict[str, Any]:
+        """Transcribe one audio file via faster-whisper and normalise to the internal schema.
+
+        Schema returned matches the NeMo backend:
+            text, word_timestamps [{word, start, end}],
+            segment_timestamps [{start, end, segment}], char_timestamps []
+        """
+        # Ensure model is initialised (may be called directly from transcribe_with_segments)
+        self._initialize_whisper_model()
+        segments_gen, _ = self.whisper_model.transcribe(
+            audio_path,
+            word_timestamps=include_timestamps,
+            beam_size=5,
+        )
+
+        # Consume the lazy generator once
+        segments = list(segments_gen)
+
+        text = " ".join(seg.text.strip() for seg in segments)
+        result: Dict[str, Any] = {"text": text}
+
+        if include_timestamps:
+            word_timestamps: List[Dict[str, Any]] = []
+            segment_timestamps: List[Dict[str, Any]] = []
+            for seg in segments:
+                segment_timestamps.append(
+                    {"start": seg.start, "end": seg.end, "segment": seg.text.strip()}
+                )
+                for w in (seg.words or []):
+                    word_timestamps.append(
+                        {"word": w.word.strip(), "start": w.start, "end": w.end}
+                    )
+            result["word_timestamps"] = word_timestamps
+            result["segment_timestamps"] = segment_timestamps
+            result["char_timestamps"] = []
+
+        return result
+
+    def _transcribe_whisper_batch(
+        self,
+        audio_paths: List[str],
+        include_timestamps: bool = True,
+    ) -> List[Dict[str, Any]]:
+        """Transcribe a list of independent files with the Whisper backend."""
+        self._initialize_whisper_model()
+        print(f"Transcribing {len(audio_paths)} file(s) [whisper]...")
+        all_results: List[Dict[str, Any]] = []
+        for audio_path in audio_paths:
+            # Preprocess for mono only — faster-whisper handles long audio internally
+            chunk_paths = self._preprocess_audio(audio_path, chunk_duration=None)
+            try:
+                result = self._transcribe_whisper_single(chunk_paths[0], include_timestamps)
+                all_results.append(result)
+            finally:
+                for cp in chunk_paths:
+                    if cp != audio_path:
+                        try:
+                            os.unlink(cp)
+                        except Exception:
+                            pass
+        return all_results
+
+    def _transcribe_whisper_conversation(
+        self,
+        audio_paths: List[str],
+        include_timestamps: bool = True,
+    ) -> Dict[str, Any]:
+        """Transcribe multiple files as one conversation with the Whisper backend.
+
+        Timestamps from each file are offset so the merged result has a
+        continuous timeline, matching the behaviour of :meth:`transcribe_conversation`.
+        """
+        self._initialize_whisper_model()
+        combined_text: List[str] = []
+        combined_words: List[Dict[str, Any]] = []
+        combined_segs: List[Dict[str, Any]] = []
+        file_offsets: List[Dict[str, Any]] = []
+        time_offset = 0.0
+
+        for file_idx, audio_path in enumerate(audio_paths):
+            print(f"Transcribing file {file_idx + 1}/{len(audio_paths)}: {audio_path} [whisper]")
+            audio_data, sr = sf.read(audio_path)
+            file_duration = len(audio_data) / sr
+            file_offset_start = time_offset
+
+            chunk_paths = self._preprocess_audio(audio_path, chunk_duration=None)
+            try:
+                result = self._transcribe_whisper_single(chunk_paths[0], include_timestamps)
+                combined_text.append(result["text"])
+                if include_timestamps:
+                    for w in result.get("word_timestamps", []):
+                        wc = w.copy()
+                        wc["start"] += time_offset
+                        wc["end"] += time_offset
+                        combined_words.append(wc)
+                    for s in result.get("segment_timestamps", []):
+                        sc = s.copy()
+                        sc["start"] += time_offset
+                        sc["end"] += time_offset
+                        combined_segs.append(sc)
+            finally:
+                for cp in chunk_paths:
+                    if cp != audio_path:
+                        try:
+                            os.unlink(cp)
+                        except Exception:
+                            pass
+
+            file_offsets.append(
+                {"path": audio_path, "start": file_offset_start, "end": file_offset_start + file_duration}
+            )
+            time_offset += file_duration
+
+        result_dict: Dict[str, Any] = {
+            "text": " ".join(combined_text),
+            "file_offsets": file_offsets,
+        }
+        if include_timestamps:
+            result_dict["word_timestamps"] = combined_words
+            result_dict["segment_timestamps"] = combined_segs
+            result_dict["char_timestamps"] = []
+        return result_dict
+
+    # ── Preprocessing ─────────────────────────────────────────────────────────
 
     def _preprocess_audio(self, audio_path: str, chunk_duration: Optional[float] = None) -> List[str]:
         """Preprocess audio file to ensure it's mono and optionally split into chunks.
@@ -156,13 +319,18 @@ class TranscriptionEngine:
         Args:
             audio_paths: List of paths to audio files
             include_timestamps: Whether to include word-level timestamps
-            chunk_duration: Duration of each chunk in seconds (splits long files to avoid OOM)
+            chunk_duration: Duration of each chunk in seconds (splits long files to avoid OOM).
+                Ignored by the ``whisper`` backend (faster-whisper handles long audio
+                internally via its sliding-window VAD).
 
         Returns:
             List of transcription results with timestamps if requested
         """
         import os
-        
+
+        if self.backend == "whisper":
+            return self._transcribe_whisper_batch(audio_paths, include_timestamps)
+
         self._initialize_model()
         print(f"Transcribing {len(audio_paths)} file(s)...")
         
@@ -272,7 +440,8 @@ class TranscriptionEngine:
         Args:
             audio_paths: Ordered list of audio file paths
             include_timestamps: Whether to include word/segment-level timestamps
-            chunk_duration: Per-file chunk splitting duration (to avoid OOM)
+            chunk_duration: Per-file chunk splitting duration (to avoid OOM).
+            Ignored by the ``whisper`` backend.
 
         Returns:
             Single transcription result dict with keys:
@@ -283,6 +452,9 @@ class TranscriptionEngine:
         """
         import soundfile as sf
         import os
+
+        if self.backend == "whisper":
+            return self._transcribe_whisper_conversation(audio_paths, include_timestamps)
 
         self._initialize_model()
 
@@ -391,13 +563,18 @@ class TranscriptionEngine:
 
         Args:
             audio_path: Path to audio file
-            chunk_duration: Duration of each chunk in seconds (splits long files to avoid OOM)
+            chunk_duration: Duration of each chunk in seconds (splits long files to avoid OOM).
+                Ignored by the ``whisper`` backend.
 
         Returns:
             List of segment dictionaries with timing and text
         """
         import os
-        
+
+        if self.backend == "whisper":
+            result = self._transcribe_whisper_single(audio_path, include_timestamps=True)
+            return result.get("segment_timestamps", [])
+
         self._initialize_model()
         
         # Preprocess audio (convert stereo to mono and split into chunks if needed)

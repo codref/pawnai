@@ -270,6 +270,10 @@ def transcribe(
     chunk_duration: Optional[float] = typer.Option(
         None, "--chunk-duration", "-c", help="Split each audio file into chunks of N seconds (helps avoid OOM)"
     ),
+    backend: str = typer.Option(
+        "nemo", "--backend", "-b",
+        help="Transcription backend: 'nemo' (Parakeet/NeMo) or 'whisper' (faster-whisper large-v3)"
+    ),
 ) -> None:
     """Transcribe one or more audio files using the Parakeet model.
 
@@ -290,6 +294,7 @@ def transcribe(
         pawnai transcribe audio.wav -o transcript.json
         pawnai transcribe large.mp3 --device cpu
         pawnai transcribe large.mp3 -c 300 -o output.txt
+        pawnai transcribe audio.wav --backend whisper
     """
     # Lazy imports to avoid loading models during --help
     import json
@@ -312,7 +317,7 @@ def transcribe(
         db_engine = get_engine(db_dsn)
         init_db(db_engine)
 
-        engine_t = TranscriptionEngine(device=device)
+        engine_t = TranscriptionEngine(device=device, backend=backend)
 
         if len(audio_paths) == 1:
             console.print(f"[cyan]Transcribing: {audio_paths[0]}[/cyan]")
@@ -438,6 +443,10 @@ def transcribe_diarize(
     verbose: bool = typer.Option(
         False, "--verbose", "-v", help="Show verbose output from NeMo and other libraries"
     ),
+    backend: str = typer.Option(
+        "nemo", "--backend", "-b",
+        help="Transcription backend: 'nemo' (Parakeet/NeMo) or 'whisper' (faster-whisper large-v3)"
+    ),
 ) -> None:
     """Transcribe audio with speaker diarization labels.
 
@@ -549,6 +558,7 @@ def transcribe_diarize(
             prior_speaker_embeddings=prior_speaker_embeddings,
             time_cursor=prior_time_cursor,
             verbose=verbose,
+            backend=backend,
         )
 
         console.print(f"[green]✓ Processing complete[/green]")
@@ -1305,6 +1315,19 @@ def sync_siyuan(
             console.print(
                 f"[green]✓ {sid!r} → {doc_path} (doc_id={doc_id})[/green]"
             )
+
+            # ── SiYuan toast notification + inbox message ─────────────────────
+            try:
+                client.push_msg(f"PawnAI: synced '{sid}'\n{doc_path}")
+            except Exception:
+                pass  # notification is best-effort
+            try:
+                client.create_shorthand(
+                    f"**PawnAI sync** — [{row.title or sid}](siyuan://blocks/{doc_id})\n"
+                    f"Session: `{sid}`  ·  Path: `{doc_path}`"
+                )
+            except Exception:
+                pass  # inbox write is best-effort
 
             # ── Daily note backlink ────────────────────────────────────────────
             if daily_note and doc_id:

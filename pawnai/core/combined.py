@@ -18,6 +18,7 @@ def transcribe_with_diarization(
     prior_speaker_embeddings: Optional[Dict[str, Any]] = None,
     time_cursor: float = 0.0,
     verbose: bool = False,
+    backend: str = "nemo",
 ) -> Dict[str, Any]:
     """Transcribe audio with speaker diarization labels.
 
@@ -42,6 +43,8 @@ def transcribe_with_diarization(
             Mapping of global_label → {"embedding": [...], "total_duration": float}.
         time_cursor: Seconds of audio already processed in previous calls.
             All new timestamps are shifted by this value.
+        backend: Transcription backend — ``"nemo"`` (Parakeet) or
+            ``"whisper"`` (faster-whisper).
 
     Returns:
         Dictionary containing:
@@ -65,7 +68,7 @@ def transcribe_with_diarization(
     resume_note = f" (resuming from t={time_cursor:.1f}s)" if time_cursor > 0 else ""
 
     print(f"[1/2] Running transcription{'  (' + str(len(audio_paths)) + ' files)' if multiple else ''}{resume_note}...")
-    transcription_engine = TranscriptionEngine(device=device, verbose=verbose)
+    transcription_engine = TranscriptionEngine(device=device, verbose=verbose, backend=backend)
 
     if multiple:
         transcription = transcription_engine.transcribe_conversation(

@@ -16,6 +16,8 @@ project root (or by passing ``--config path/to/file.yml`` on the CLI):
       diarization_model: pyannote/speaker-diarization-community-1
       embedding_model: pyannote/embedding
       transcription_model: nvidia/parakeet-tdt-0.6b-v3
+      transcription_backend: nemo   # nemo | whisper
+      whisper_model: large-v3       # used when transcription_backend: whisper
 
     paths:
       db_path: speakers_db
@@ -70,6 +72,8 @@ DEFAULT_DB_DSN: str = os.getenv(
 DIARIZATION_MODEL = "pyannote/speaker-diarization-community-1"
 EMBEDDING_MODEL = "pyannote/embedding"
 TRANSCRIPTION_MODEL = "nvidia/parakeet-tdt-0.6b-v3"
+TRANSCRIPTION_BACKEND = "nemo"   # "nemo" (Parakeet) or "whisper" (faster-whisper)
+WHISPER_MODEL = "large-v3"       # faster-whisper model size or path
 
 CONFIG_FILE = ".pawnai.yml"
 
@@ -99,6 +103,8 @@ class AppConfig:
             "diarization_model": DIARIZATION_MODEL,
             "embedding_model": EMBEDDING_MODEL,
             "transcription_model": TRANSCRIPTION_MODEL,
+            "transcription_backend": TRANSCRIPTION_BACKEND,
+            "whisper_model": WHISPER_MODEL,
             # paths
             "db_path": DEFAULT_DB_PATH,   # legacy – prefer db_dsn
             "db_dsn": DEFAULT_DB_DSN,
@@ -137,6 +143,8 @@ class AppConfig:
                 "diarization_model",
                 "embedding_model",
                 "transcription_model",
+                "transcription_backend",
+                "whisper_model",
             ):
                 if key in models:
                     self._config[key] = models[key]

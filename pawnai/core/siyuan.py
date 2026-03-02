@@ -377,6 +377,83 @@ class SiyuanClient:
 
         return new_doc_id
 
+    # ── inbox (shorthands) ──────────────────────────────────────────────────
+    # NOTE: These endpoints are internal (not in the public API docs) and may
+    # change in future SiYuan releases.  Auth header format is identical to the
+    # documented APIs.
+
+    def create_shorthand(self, content: str) -> str:
+        """Send a message to the SiYuan Inbox (shorthands).
+
+        Args:
+            content: Markdown content of the inbox item.
+
+        Returns:
+            ID of the newly created inbox item.
+        """
+        data = self._post("/api/inbox/createShorthand", {"content": content})
+        return (data or {}).get("id", "")
+
+    def get_shorthands(self, page: int = 1) -> List[Dict[str, Any]]:
+        """List inbox items (shorthands), paginated.
+
+        Args:
+            page: 1-based page number (default 1).
+
+        Returns:
+            List of shorthand dicts.
+        """
+        data = self._post("/api/inbox/getShorthands", {"page": page})
+        return (data or {}).get("shorthands", [])
+
+    def get_shorthand(self, shorthand_id: str) -> Dict[str, Any]:
+        """Fetch a single inbox item by ID.
+
+        Args:
+            shorthand_id: Inbox item ID.
+
+        Returns:
+            Shorthand dict, or empty dict if not found.
+        """
+        data = self._post("/api/inbox/getShorthand", {"id": shorthand_id})
+        return data or {}
+
+    def remove_shorthands(self, ids: List[str]) -> None:
+        """Delete one or more inbox items by ID.
+
+        Args:
+            ids: List of inbox item IDs to delete.
+        """
+        self._post("/api/inbox/removeShorthands", {"ids": ids})
+
+    # ── notifications ─────────────────────────────────────────────────────────
+
+    def push_msg(self, msg: str, timeout: int = 7000) -> str:
+        """Push a toast notification to the SiYuan UI.
+
+        Args:
+            msg: Message text to display.
+            timeout: Display duration in milliseconds (default 7000).
+
+        Returns:
+            Message ID string.
+        """
+        data = self._post("/api/notification/pushMsg", {"msg": msg, "timeout": timeout})
+        return (data or {}).get("id", "")
+
+    def push_err_msg(self, msg: str, timeout: int = 7000) -> str:
+        """Push an error toast notification to the SiYuan UI.
+
+        Args:
+            msg: Error message text to display.
+            timeout: Display duration in milliseconds (default 7000).
+
+        Returns:
+            Message ID string.
+        """
+        data = self._post("/api/notification/pushErrMsg", {"msg": msg, "timeout": timeout})
+        return (data or {}).get("id", "")
+
     def append_daily_note_link(
         self,
         notebook: str,
