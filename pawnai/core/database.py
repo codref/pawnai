@@ -364,7 +364,11 @@ def save_transcription_segments(
                 id=f"{session_id}_{global_idx}",
                 session_id=session_id,
                 audio_file=audio_file,
-                original_speaker_label=seg.get("original_label"),
+                # Prefer the resolved display name (seg["speaker"]) over the raw
+                # pyannote label (seg["original_label"]) so that speaker names
+                # matched from the embedding DB are persisted and visible when the
+                # transcript is later loaded via _load_transcript_from_db().
+                original_speaker_label=seg.get("speaker") or seg.get("original_label"),
                 start_time=float(seg.get("start", 0.0)),
                 end_time=float(seg.get("end", 0.0)),
                 text=text_val,
