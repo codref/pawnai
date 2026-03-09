@@ -171,6 +171,11 @@ class AppConfig:
         if isinstance(siyuan, dict):
             self._config["siyuan"] = siyuan
 
+        # queue: section – pawn-queue listener configuration
+        queue = content.get("queue")
+        if isinstance(queue, dict):
+            self._config["queue"] = queue
+
         # Propagate HF token to env var so any code using os.getenv("HF_TOKEN")
         # picks it up (including module-level constants evaluated after this call).
         hf_token = self._config.get("hf_token")
@@ -222,6 +227,18 @@ class AppConfig:
         siyuan_config = self._config.get("siyuan")
         if isinstance(siyuan_config, dict):
             return siyuan_config
+        return None
+
+    def get_queue_config(self) -> Optional[Dict[str, Any]]:
+        """Return the ``queue:`` configuration mapping, or ``None`` if absent.
+
+        Returns:
+            Dictionary of pawn-queue settings from ``.pawnai.yml``, or
+            ``None`` when the ``queue:`` section is not present.
+        """
+        queue_config = self._config.get("queue")
+        if isinstance(queue_config, dict):
+            return queue_config
         return None
 
 

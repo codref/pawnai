@@ -1859,6 +1859,89 @@ def s3_ls(
     )
 
 
+@app.command()
+def listen(
+    config: Optional[str] = typer.Option(
+        None, "--config", help="Path to YAML configuration file (.pawnai.yml)"
+    ),
+    topic: Optional[str] = typer.Option(
+        None, "--topic", "-T",
+        help="Topic name to subscribe to. Overrides the value in the queue: config section."
+    ),
+    consumer_name: Optional[str] = typer.Option(
+        None, "--consumer-name", "-n",
+        help="Consumer registration name. Overrides the value in the queue: config section."
+    ),
+) -> None:
+    """Listen for commands on a pawn-queue topic and execute them.
+
+    Connects to the S3-backed pawn-queue configured in the ``queue:`` section
+    of ``.pawnai.yml`` and blocks until interrupted.  Each incoming message
+    must be a JSON object with at minimum a ``command`` key:
+
+    \b
+      {
+        "command": "transcribe-diarize",
+        "audio_paths": ["s3://bucket/audio.flac"],
+        "threshold": 0.2,
+        "cross_file_threshold": 0.2,
+        "session": "tom-20260305",
+        "device": "cpu"
+      }
+
+    Supported commands: transcribe-diarize, transcribe, diarize, embed, analyze, sync-siyuan.
+
+    On success the message is acked; on failure it is sent to the dead-letter
+    queue so it can be inspected and replayed later.
+
+    Stop with Ctrl-C.
+    """
+    import asyncio
+    import logging
+    from ..core.config import AppConfig
+    from ..core.queue_listener import start_listener, DEFAULT_TOPIC, DEFAULT_CONSUMER_NAME
+
+    # Configure logging so queue activity is visible in the terminal
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+    )
+
+    app_cfg = AppConfig(config_path=config)
+
+    queue_cfg = app_cfg.get_queue_config()
+    effective_topic = topic or (queue_cfg or {}).get("topic", DEFAULT_TOPIC)
+    effective_consumer = consumer_name or (queue_cfg or {}).get("consumer_name", DEFAULT_CONSUMER_NAME)
+
+    console.print(
+        f"[bold green]PawnAI queue listener starting[/bold green]\n"
+        f"  topic    : [cyan]{effective_topic}[/cyan]\n"
+        f"  consumer : [cyan]{effective_consumer}[/cyan]"
+    )
+    if queue_cfg:
+        s3_ep = queue_cfg.get("s3", {}).get("endpoint_url", "http://localhost:9000")
+        console.print(f"  endpoint : [cyan]{s3_ep}[/cyan]")
+    console.print("[dim]Press Ctrl-C to stop.[/dim]\n")
+
+    try:
+        asyncio.run(
+            start_listener(
+                cfg=app_cfg,
+                topic_override=topic,
+                consumer_name_override=consumer_name,
+            )
+        )
+    except KeyboardInterrupt:
+        console.print("\n[yellow]Listener stopped by user.[/yellow]")
+    except RuntimeError as exc:
+        console.print(f"[red]Configuration error: {exc}[/red]")
+        raise typer.Exit(1)
+    except Exception as exc:
+        console.print(f"[red]Listener error: {exc}[/red]")
+        raise typer.Exit(1)
+
+
 def _fmt_size(num_bytes: int) -> str:
     """Return a human-readable file size string."""
     for unit in ("B", "KB", "MB", "GB", "TB"):

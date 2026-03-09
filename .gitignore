@@ -225,6 +225,7 @@ speakers_db
 data
 
 pawnai_recorder
+pawn_queue
 output
 
 pawnai.db*

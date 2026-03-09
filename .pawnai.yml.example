@@ -83,3 +83,41 @@ siyuan:
   # Path template for the daily note where a backlink is inserted.
   # Set to "" or remove to disable daily-note backlinks.
   daily_note_path: "/daily note/{year}/{month}/{date}"
+
+
+# ── Queue listener (pawn-queue) ───────────────────────────────────────────────
+# When present, `pawnai listen` connects to this S3-backed queue and waits
+# for job messages. Each message payload must contain a "command" key and
+# the relevant parameters for that command.
+#
+# Run a worker with:
+#   pawnai listen
+#   pawnai listen --topic my-topic --consumer-name worker-02
+#
+# See docs/QUEUE_LISTENER.md for the full message format reference.
+
+# queue:
+#   # Topic the listener subscribes to (created automatically if absent).
+#   topic: pawnai-jobs
+#
+#   # Unique name for this consumer instance. Use different names when
+#   # running multiple workers to avoid consuming the same messages.
+#   consumer_name: pawnai-listener
+#
+#   # S3 bucket used exclusively by the queue for message storage.
+#   # Credentials and endpoint are reused from the top-level s3: section above.
+#   bucket_name: pawnai-queue
+#
+#   polling:
+#     interval_seconds: 5                    # how often to poll for new messages
+#     max_messages_per_poll: 1               # process one job at a time
+#     # Must be longer than the slowest expected job (e.g. CPU diarization).
+#     visibility_timeout_seconds: 300        # 5 minutes
+#     lease_refresh_interval_seconds: 60    # keep lease alive every 60 s
+#     jitter_max_ms: 200
+#
+#   concurrency:
+#     # auto  → detect at startup (works everywhere)
+#     # conditional_write → requires AWS S3 or Cloudflare R2
+#     # csprng_verify     → works on MinIO / Ceph / Hetzner
+#     strategy: auto

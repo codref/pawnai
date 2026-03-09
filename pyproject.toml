@@ -41,6 +41,8 @@ dependencies = [
     "github-copilot-sdk",
     "requests>=2.28.0",
     "alembic>=1.13.0",
+    "pawn-queue>=0.1",
+    "aioboto3>=13.0",
 ]
 
 [project.optional-dependencies]
