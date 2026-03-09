@@ -1019,6 +1019,394 @@ def label(
         raise typer.Exit(1)
 
 
+@app.command(name="session-relabel")
+def session_relabel(
+    session: str = typer.Option(
+        ..., "--session", "-s", help="Session ID to update."
+    ),
+    wrong_speaker: str = typer.Option(
+        ..., "--from", "-F", help="Speaker name / label currently stored in the session (the wrong one)."
+    ),
+    correct_speaker: str = typer.Option(
+        ..., "--to", "-T", help="Correct speaker name to apply across the whole session."
+    ),
+    yes: bool = typer.Option(
+        False, "--yes", "-y", help="Skip the confirmation prompt and apply changes immediately."
+    ),
+    db_dsn: str = typer.Option(
+        DEFAULT_DB_DSN, help="PostgreSQL DSN for the speaker database."
+    ),
+    config: Optional[str] = typer.Option(
+        None, "--config", help="Path to YAML configuration file (.pawnai.yml)."
+    ),
+) -> None:
+    """Correct a mis-identified speaker across an entire session.
+
+    When the diarization engine associates the wrong identity with a speaker,
+    that error propagates to every subsequent file in the session because new
+    embeddings keep matching the same (incorrect) DB entry.  This command
+    performs a bulk rename in one shot:
+
+    \b
+    1. Every [bold]transcription_segments[/bold] row in the session whose
+       [bold]original_speaker_label[/bold] equals --from is updated to --to.
+    2. Every [bold]speaker_names[/bold] row whose [bold]speaker_name[/bold]
+       equals --from and whose audio_file belongs to the session is updated
+       to --to.
+
+    \b
+    Examples:
+        # Preview what would change (dry-run – no --yes flag)
+        pawnai session-relabel --session my-session --from "Edo" --to "John"
+
+        # Apply without prompting
+        pawnai session-relabel --session my-session -F "Edo" -T "John" --yes
+    """
+    from sqlalchemy import select, update
+    from sqlalchemy.orm import Session as OrmSession
+    from rich.table import Table
+    from ..core.database import (
+        get_engine, init_db, TranscriptionSegment, SpeakerName,
+    )
+    from ..core.config import AppConfig
+
+    if config:
+        AppConfig(config_path=config)
+
+    try:
+        engine = get_engine(db_dsn)
+        init_db(engine)
+
+        with OrmSession(engine) as db:
+            # ── 1. Segments that will be renamed ─────────────────────────
+            affected_segs = db.execute(
+                select(TranscriptionSegment)
+                .where(
+                    TranscriptionSegment.session_id == session,
+                    TranscriptionSegment.original_speaker_label == wrong_speaker,
+                )
+                .order_by(TranscriptionSegment.start_time)
+            ).scalars().all()
+
+            if not affected_segs:
+                console.print(
+                    f"[yellow]No segments in session '{session}' have "
+                    f"speaker '{wrong_speaker}'. Nothing to do.[/yellow]"
+                )
+                raise typer.Exit(0)
+
+            # ── 2. SpeakerName rows that will be renamed ──────────────────
+            session_files = list({s.audio_file for s in affected_segs if s.audio_file})
+            affected_names = db.execute(
+                select(SpeakerName).where(
+                    SpeakerName.audio_file.in_(session_files),
+                    SpeakerName.speaker_name == wrong_speaker,
+                )
+            ).scalars().all() if session_files else []
+
+        # ── Preview ───────────────────────────────────────────────────────
+        console.print()
+        console.print(
+            f"[bold cyan]Session:[/bold cyan] {session}\n"
+            f"[bold red]  From:[/bold red] {wrong_speaker}\n"
+            f"[bold green]    To:[/bold green] {correct_speaker}\n"
+        )
+
+        seg_tbl = Table(
+            title=f"Segments to relabel ({len(affected_segs)})",
+            show_lines=False,
+            header_style="bold",
+        )
+        seg_tbl.add_column("#", style="dim", justify="right", width=4)
+        seg_tbl.add_column("Time", no_wrap=True)
+        seg_tbl.add_column("File", no_wrap=True)
+        seg_tbl.add_column("Text excerpt")
+
+        def _fmt_time(t: float) -> str:
+            return f"{int(t // 60):02d}:{t % 60:05.2f}"
+
+        # Show at most 20 rows in the preview to avoid flooding the terminal
+        preview_segs = affected_segs[:20]
+        for seg in preview_segs:
+            time_str = f"{_fmt_time(seg.start_time)} → {_fmt_time(seg.end_time)}"
+            excerpt = (seg.text or "").strip()[:60]
+            if len((seg.text or "").strip()) > 60:
+                excerpt += "…"
+            seg_tbl.add_row(
+                str(seg.segment_index),
+                time_str,
+                Path(seg.audio_file).name if seg.audio_file else "—",
+                excerpt,
+            )
+        if len(affected_segs) > 20:
+            seg_tbl.add_row("…", "…", "…", f"[dim]({len(affected_segs) - 20} more)[/dim]")
+        console.print(seg_tbl)
+
+        if affected_names:
+            console.print(
+                f"\n[bold]Also updating {len(affected_names)} speaker_names row(s)[/bold] "
+                f"in: {', '.join(Path(f).name for f in session_files)}"
+            )
+
+        # ── Confirm ───────────────────────────────────────────────────────
+        if not yes:
+            confirm = typer.confirm(
+                f"\nApply {len(affected_segs)} segment update(s) "
+                + (f"and {len(affected_names)} speaker-name update(s) " if affected_names else "")
+                + "?",
+                default=False,
+            )
+            if not confirm:
+                console.print("[yellow]Aborted – no changes made.[/yellow]")
+                raise typer.Exit(0)
+
+        # ── Apply ─────────────────────────────────────────────────────────
+        with OrmSession(engine) as db:
+            # Bulk-update transcription segments
+            db.execute(
+                update(TranscriptionSegment)
+                .where(
+                    TranscriptionSegment.session_id == session,
+                    TranscriptionSegment.original_speaker_label == wrong_speaker,
+                )
+                .values(original_speaker_label=correct_speaker)
+            )
+
+            # Bulk-update speaker_names rows (if any)
+            if affected_names and session_files:
+                db.execute(
+                    update(SpeakerName)
+                    .where(
+                        SpeakerName.audio_file.in_(session_files),
+                        SpeakerName.speaker_name == wrong_speaker,
+                    )
+                    .values(speaker_name=correct_speaker)
+                )
+
+            db.commit()
+
+        console.print(
+            f"\n[green]✓ Relabeled {len(affected_segs)} segment(s)"
+            + (f" and {len(affected_names)} speaker-name record(s)" if affected_names else "")
+            + f" — '{wrong_speaker}' → '{correct_speaker}' in session '{session}'[/green]"
+        )
+
+    except typer.Exit:
+        raise
+    except Exception as e:
+        console.print(f"[red]Error during session relabeling: {str(e)}[/red]")
+        raise typer.Exit(1)
+
+
+@app.command(name="session-info")
+def session_info(
+    session: str = typer.Argument(..., help="Session ID to inspect."),
+    db_dsn: str = typer.Option(
+        DEFAULT_DB_DSN, help="PostgreSQL DSN for the speaker database."
+    ),
+    config: Optional[str] = typer.Option(
+        None, "--config", help="Path to YAML configuration file (.pawnai.yml)."
+    ),
+) -> None:
+    """Show speakers and their embedding source files for a session.
+
+    For each speaker found in the session prints:
+
+    \b
+    • How many segments they speak in and their total speaking time.
+    • Which audio files those segments span.
+    • The underlying raw pyannote label (SPEAKER_XX) when resolved via a
+      human-assigned name.
+    • The embedding records stored in the database for that speaker, including
+      how many embedding segments exist and in which file(s) they were captured.
+
+    \b
+    Example:
+        pawnai session-info my-session
+        pawnai session-info ef11c094-0d8d-41fe-93c0-c6bf1f2e8663
+    """
+    from sqlalchemy import select, func as sqlfunc
+    from sqlalchemy.orm import Session as OrmSession
+    from rich.table import Table
+    from rich.rule import Rule
+    from ..core.database import (
+        get_engine, init_db, TranscriptionSegment, SpeakerName, Embedding, SessionState,
+    )
+    from ..core.config import AppConfig
+
+    if config:
+        AppConfig(config_path=config)
+
+    try:
+        engine = get_engine(db_dsn)
+        init_db(engine)
+
+        with OrmSession(engine) as db:
+            # ── 1. All segments for this session ────────────────────────────
+            segs = db.execute(
+                select(TranscriptionSegment)
+                .where(TranscriptionSegment.session_id == session)
+                .order_by(TranscriptionSegment.start_time)
+            ).scalars().all()
+
+            if not segs:
+                console.print(f"[red]No segments found for session '{session}'.[/red]")
+                raise typer.Exit(1)
+
+            # ── 2. Session state (accumlated speaker embeddings / durations) ─
+            state = db.get(SessionState, session)
+            session_emb_meta: dict = (state.speaker_embeddings or {}) if state else {}
+
+            # ── 3. All speaker_names rows for files in this session ──────────
+            session_files = list({s.audio_file for s in segs if s.audio_file})
+            name_rows = db.execute(
+                select(SpeakerName).where(SpeakerName.audio_file.in_(session_files))
+            ).scalars().all() if session_files else []
+
+            # (audio_file, local_speaker_label) → human name
+            label_to_name: dict = {
+                (r.audio_file, r.local_speaker_label): r.speaker_name for r in name_rows
+            }
+            # display_name → list of (audio_file, local_speaker_label) pairs
+            name_to_labels: dict = {}
+            for r in name_rows:
+                name_to_labels.setdefault(r.speaker_name, []).append(
+                    (r.audio_file, r.local_speaker_label)
+                )
+
+            # ── 4. Aggregate per-speaker stats from segments ─────────────────
+            # speaker_display_name → {files: set, segments: int, duration: float}
+            speaker_stats: dict = {}
+            for seg in segs:
+                spk = seg.original_speaker_label or "(none)"
+                stats = speaker_stats.setdefault(spk, {"files": set(), "segments": 0, "duration": 0.0})
+                stats["segments"] += 1
+                stats["duration"] += max(0.0, (seg.end_time or 0.0) - (seg.start_time or 0.0))
+                if seg.audio_file:
+                    stats["files"].add(seg.audio_file)
+
+            # ── 5. Embedding records for session files ───────────────────────
+            embed_rows = db.execute(
+                select(
+                    Embedding.audio_file,
+                    Embedding.local_speaker_label,
+                    sqlfunc.count(Embedding.id).label("n"),
+                    sqlfunc.min(Embedding.start_time).label("t_start"),
+                    sqlfunc.max(Embedding.end_time).label("t_end"),
+                )
+                .where(Embedding.audio_file.in_(session_files))
+                .group_by(Embedding.audio_file, Embedding.local_speaker_label)
+            ).all() if session_files else []
+
+            # (audio_file, local_speaker_label) → {n, t_start, t_end}
+            embed_map: dict = {
+                (r.audio_file, r.local_speaker_label): {"n": r.n, "t_start": r.t_start, "t_end": r.t_end}
+                for r in embed_rows
+            }
+
+        # ── Render ────────────────────────────────────────────────────────────
+        def _fmt_dur(secs: float) -> str:
+            m, s = divmod(secs, 60)
+            return f"{int(m)}m {s:.1f}s" if m else f"{s:.1f}s"
+
+        console.print()
+        console.print(Rule(f"[bold cyan]Session info: {session}[/bold cyan]"))
+        console.print(
+            f"  [dim]Segments:[/dim] {len(segs)}   "
+            f"[dim]Files:[/dim] {len(session_files)}   "
+            f"[dim]Speakers:[/dim] {len(speaker_stats)}\n"
+        )
+
+        for spk_name, stats in sorted(speaker_stats.items()):
+            seg_count = stats["segments"]
+            duration = stats["duration"]
+            files = sorted(stats["files"])
+
+            # Accumulated tracking duration from session_state (may differ from
+            # segment sum because it includes prior-session blending).
+            tracked_dur = None
+            if spk_name in session_emb_meta:
+                tracked_dur = session_emb_meta[spk_name].get("total_duration")
+
+            console.print(Rule(f"[bold green]{spk_name}[/bold green]", style="green"))
+
+            # Basic stats row
+            stats_grid = Table.grid(padding=(0, 2))
+            stats_grid.add_column(style="dim", no_wrap=True)
+            stats_grid.add_column(no_wrap=True)
+            stats_grid.add_row("Segments", str(seg_count))
+            stats_grid.add_row("Speaking time", _fmt_dur(duration))
+            if tracked_dur is not None:
+                stats_grid.add_row("Tracked emb. duration", _fmt_dur(tracked_dur))
+            console.print(stats_grid)
+
+            # Files where this speaker appears
+            files_tbl = Table(
+                title="Files (transcript segments)",
+                show_header=True,
+                header_style="bold",
+                show_lines=False,
+                box=None,
+                padding=(0, 2),
+            )
+            files_tbl.add_column("File", style="cyan")
+            files_tbl.add_column("Segs in file", justify="right")
+            files_tbl.add_column("Duration in file", justify="right")
+            for f in files:
+                f_segs = [s for s in segs if s.audio_file == f and s.original_speaker_label == spk_name]
+                f_dur = sum(max(0.0, (s.end_time or 0.0) - (s.start_time or 0.0)) for s in f_segs)
+                files_tbl.add_row(Path(f).name, str(len(f_segs)), _fmt_dur(f_dur))
+            console.print(files_tbl)
+
+            # Resolve raw pyannote labels for this speaker (via speaker_names table)
+            raw_labels = name_to_labels.get(spk_name, [])
+
+            # If the speaker name IS a raw SPEAKER_XX label (never renamed),
+            # look it up directly across the session files.
+            if not raw_labels and spk_name.startswith("SPEAKER_"):
+                raw_labels = [(f, spk_name) for f in files]
+
+            if raw_labels:
+                emb_tbl = Table(
+                    title="Embedding records (DB)",
+                    show_header=True,
+                    header_style="bold",
+                    show_lines=False,
+                    box=None,
+                    padding=(0, 2),
+                )
+                emb_tbl.add_column("File", style="cyan")
+                emb_tbl.add_column("Raw label", style="yellow")
+                emb_tbl.add_column("Emb. segs", justify="right")
+                emb_tbl.add_column("Time range", justify="right")
+
+                any_found = False
+                for af, raw_lbl in sorted(raw_labels):
+                    info = embed_map.get((af, raw_lbl))
+                    if info:
+                        t_range = (
+                            f"{_fmt_dur(info['t_start'] or 0.0)} → {_fmt_dur(info['t_end'] or 0.0)}"
+                        )
+                        emb_tbl.add_row(Path(af).name, raw_lbl, str(info["n"]), t_range)
+                        any_found = True
+                    else:
+                        emb_tbl.add_row(Path(af).name, raw_lbl, "[dim]—[/dim]", "[dim]no embedding stored[/dim]")
+                        any_found = True
+
+                if any_found:
+                    console.print(emb_tbl)
+            else:
+                console.print("[dim]  No speaker_names mapping found – embeddings can't be cross-referenced.[/dim]")
+
+            console.print()
+
+    except typer.Exit:
+        raise
+    except Exception as e:
+        console.print(f"[red]Error fetching session info: {str(e)}[/red]")
+        raise typer.Exit(1)
+
+
 @app.command()
 def analyze(
     input_path: Optional[str] = typer.Argument(
@@ -1748,6 +2136,8 @@ def status(
     console.print("  embed              - Extract speaker embeddings")
     console.print("  search             - Search for similar speakers")
     console.print("  label              - Assign names to speakers")
+    console.print("  session-relabel    - Bulk-rename a speaker across an entire session")
+    console.print("  session-info       - Show speakers & embedding sources for a session")
     console.print("  sessions           - List or inspect transcription sessions")
     console.print("  s3-ls              - List objects in the configured S3 bucket")
     console.print("  status             - Show this status message")
