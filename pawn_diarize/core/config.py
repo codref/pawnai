@@ -2,11 +2,11 @@
 
 This module provides configuration constants and the :class:`AppConfig` class
 which merges defaults with values from an optional YAML file
-(``.pawn-diarize.yml`` in the working directory or a path supplied at runtime).
+(``pawnai.yaml`` in the working directory or a path supplied at runtime).
 
-Configuration file (``.pawn-diarize.yml``)
---------------------------------------
-All settings can be overridden at runtime via ``.pawn-diarize.yml`` placed in the
+Configuration file (``pawnai.yaml``)
+------------------------------------
+All settings can be overridden at runtime via ``pawnai.yaml`` placed in the
 project root (or by passing ``--config path/to/file.yml`` on the CLI):
 
 .. code-block:: yaml
@@ -65,7 +65,7 @@ import yaml
 DEFAULT_DB_PATH = "speakers_db"  # kept for backward compat; prefer DEFAULT_DB_DSN
 DEFAULT_DB_DSN: str = os.getenv(
     "DATABASE_URL",
-    "postgresql+psycopg://postgres:postgres@localhost:5432/pawn_diarize",
+    "postgresql+psycopg://postgres:postgres@localhost:5432/pawnai",
 )
 
 # Model identifiers
@@ -75,7 +75,9 @@ TRANSCRIPTION_MODEL = "nvidia/parakeet-tdt-0.6b-v3"
 TRANSCRIPTION_BACKEND = "nemo"   # "nemo" (Parakeet) or "whisper" (faster-whisper)
 WHISPER_MODEL = "large-v3"       # faster-whisper model size or path
 
-CONFIG_FILE = ".pawn-diarize.yml"
+# Config filename candidates – checked in order; first match wins.
+_CONFIG_CANDIDATES = ("pawnai.yaml", "pawnai.yml", ".pawn-diarize.yml", ".pawn-diarize.yaml")
+CONFIG_FILE = _CONFIG_CANDIDATES[0]  # canonical name
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -92,8 +94,8 @@ class AppConfig:
 
     Args:
         config_path: Path to a YAML config file.  When *None* the default
-            ``.pawn-diarize.yml`` in the current working directory is used (if it
-            exists).
+            ``pawnai.yaml`` in the current working directory is used (if it
+            exists); falls back to legacy names for backward compatibility.
     """
 
     def __init__(self, config_path: Optional[str] = None) -> None:
@@ -123,8 +125,12 @@ class AppConfig:
             if not yaml_file.exists():
                 raise FileNotFoundError(f"Config file not found: {config_path}")
         else:
-            yaml_file = Path.cwd() / CONFIG_FILE
-            if not yaml_file.exists():
+            cwd = Path.cwd()
+            yaml_file = next(
+                (cwd / name for name in _CONFIG_CANDIDATES if (cwd / name).exists()),
+                None,
+            )
+            if yaml_file is None:
                 return
 
         content = yaml.safe_load(yaml_file.read_text(encoding="utf-8"))
@@ -244,7 +250,7 @@ class AppConfig:
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Module-level default instance
-# Reads .pawn-diarize.yml from cwd at first import; also seeds os.environ["HF_TOKEN"]
+# Reads pawnai.yaml from cwd at first import; also seeds os.environ["HF_TOKEN"]
 # so that HUGGINGFACE_TOKEN below is populated when the YAML is present.
 # ──────────────────────────────────────────────────────────────────────────────
 

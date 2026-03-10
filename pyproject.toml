@@ -43,6 +43,7 @@ dependencies = [
     "alembic>=1.13.0",
     "pawn-queue>=0.1",
     "aioboto3>=13.0",
+    "dspy-ai>=2.5",
 ]
 
 [project.optional-dependencies]
@@ -61,6 +62,7 @@ docs = [
 
 [project.scripts]
 pawn-diarize = "pawn_diarize.__main__:main"
+pawn-agent = "pawn_agent.__main__:main"
 
 [tool.setuptools.dynamic]
 version = {attr = "pawn_diarize.__version__"}
@@ -72,7 +74,10 @@ Repository = "https://github.com/example/pawn-diarize.git"
 "Bug Tracker" = "https://github.com/example/pawn-diarize/issues"
 
 [tool.setuptools]
-packages = ["pawn_diarize", "pawn_diarize.core", "pawn_diarize.cli", "pawn_diarize.utils"]
+packages = [
+    "pawn_diarize", "pawn_diarize.core", "pawn_diarize.cli", "pawn_diarize.utils",
+    "pawn_agent", "pawn_agent.core", "pawn_agent.cli", "pawn_agent.utils",
+]
 
 [tool.black]
 line-length = 100

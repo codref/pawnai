@@ -36,7 +36,7 @@ def _resolve_s3_paths(
 
     Raises:
         typer.Exit: If any ``s3://`` URI is present but no ``s3:`` section is
-            configured in ``.pawn-diarize.yml``.
+            configured in ``pawnai.yaml``.
     """
     import tempfile
     from ..core.s3 import is_s3_path, S3Client, parse_s3_uri, expand_s3_glob
@@ -48,7 +48,7 @@ def _resolve_s3_paths(
     s3_cfg = app_cfg.get_s3_config()
     if s3_cfg is None:
         console.print(
-            "[red]Error: S3 paths require an 's3:' section in .pawn-diarize.yml[/red]"
+            "[red]Error: S3 paths require an 's3:' section in pawnai.yaml[/red]"
         )
         raise typer.Exit(1)
 
@@ -115,7 +115,7 @@ def diarize(
         None, "--output", "-o", help="Output file path (format inferred from extension: .txt or .json)"
     ),
     config: Optional[str] = typer.Option(
-        None, "--config", help="Path to YAML configuration file (.pawn-diarize.yml)"
+        None, "--config", help="Path to YAML configuration file (pawnai.yaml)"
     ),
     db_dsn: str = typer.Option(
         DEFAULT_DB_DSN, help="PostgreSQL DSN for speaker database"
@@ -258,7 +258,7 @@ def transcribe(
         None, "--output", "-o", help="Output file path (format inferred from extension: .txt or .json)"
     ),
     config: Optional[str] = typer.Option(
-        None, "--config", help="Path to YAML configuration file (.pawn-diarize.yml)"
+        None, "--config", help="Path to YAML configuration file (pawnai.yaml)"
     ),
     session: Optional[str] = typer.Option(
         None, "--session", "-s",
@@ -416,7 +416,7 @@ def transcribe_diarize(
         None, "--output", "-o", help="Output file path (format inferred from extension: .txt or .json)"
     ),
     config: Optional[str] = typer.Option(
-        None, "--config", help="Path to YAML configuration file (.pawn-diarize.yml)"
+        None, "--config", help="Path to YAML configuration file (pawnai.yaml)"
     ),
     session: Optional[str] = typer.Option(
         None, "--session", "-s",
@@ -709,7 +709,7 @@ def embed(
         ..., "--speaker-id", "-s", help="Unique speaker identifier"
     ),
     config: Optional[str] = typer.Option(
-        None, "--config", help="Path to YAML configuration file (.pawn-diarize.yml)"
+        None, "--config", help="Path to YAML configuration file (pawnai.yaml)"
     ),
     db_dsn: str = typer.Option(
         DEFAULT_DB_DSN, help="PostgreSQL DSN for speaker database"
@@ -773,7 +773,7 @@ def search(
         ..., help="Speaker ID to search similar speakers for"
     ),
     config: Optional[str] = typer.Option(
-        None, "--config", help="Path to YAML configuration file (.pawn-diarize.yml)"
+        None, "--config", help="Path to YAML configuration file (pawnai.yaml)"
     ),
     db_dsn: str = typer.Option(
         DEFAULT_DB_DSN, help="PostgreSQL DSN for speaker database"
@@ -837,7 +837,7 @@ def label(
         None, "--session", help="Session ID to scope listing/labelling to a specific session"
     ),
     config: Optional[str] = typer.Option(
-        None, "--config", help="Path to YAML configuration file (.pawn-diarize.yml)"
+        None, "--config", help="Path to YAML configuration file (pawnai.yaml)"
     ),
     list_all: bool = typer.Option(
         False, "--list", "-l", help="List speaker mappings (all sessions, or full session view with --session)"
@@ -1037,7 +1037,7 @@ def session_relabel(
         DEFAULT_DB_DSN, help="PostgreSQL DSN for the speaker database."
     ),
     config: Optional[str] = typer.Option(
-        None, "--config", help="Path to YAML configuration file (.pawn-diarize.yml)."
+        None, "--config", help="Path to YAML configuration file (pawnai.yaml)."
     ),
 ) -> None:
     """Correct a mis-identified speaker across an entire session.
@@ -1205,7 +1205,7 @@ def session_info(
         DEFAULT_DB_DSN, help="PostgreSQL DSN for the speaker database."
     ),
     config: Optional[str] = typer.Option(
-        None, "--config", help="Path to YAML configuration file (.pawn-diarize.yml)."
+        None, "--config", help="Path to YAML configuration file (pawnai.yaml)."
     ),
 ) -> None:
     """Show speakers and their embedding source files for a session.
@@ -1600,15 +1600,15 @@ def sync_siyuan(
     ),
     notebook: Optional[str] = typer.Option(
         None, "--notebook", "-n",
-        help="Target SiYuan notebook ID. Falls back to siyuan.notebook in .pawn-diarize.yml."
+        help="Target SiYuan notebook ID. Falls back to siyuan.notebook in pawnai.yaml."
     ),
     token: Optional[str] = typer.Option(
         None, "--token", "-t",
-        help="SiYuan API token. Falls back to siyuan.token in .pawn-diarize.yml."
+        help="SiYuan API token. Falls back to siyuan.token in pawnai.yaml."
     ),
     url: Optional[str] = typer.Option(
         None, "--url",
-        help="SiYuan instance URL. Falls back to siyuan.url in .pawn-diarize.yml, then http://127.0.0.1:6806."
+        help="SiYuan instance URL. Falls back to siyuan.url in pawnai.yaml, then http://127.0.0.1:6806."
     ),
     path_template: Optional[str] = typer.Option(
         None, "--path-template",
@@ -1632,7 +1632,7 @@ def sync_siyuan(
         DEFAULT_DB_DSN, help="PostgreSQL DSN for speaker database."
     ),
     config: Optional[str] = typer.Option(
-        None, "--config", help="Path to YAML configuration file (.pawn-diarize.yml)."
+        None, "--config", help="Path to YAML configuration file (pawnai.yaml)."
     ),
 ) -> None:
     """Push conversation analysis to a running SiYuan Note instance.
@@ -1642,7 +1642,7 @@ def sync_siyuan(
     a rich SiYuan document containing the structured analysis and full
     transcript.  Existing documents at the same path are overwritten.
 
-    Configuration can be provided via [bold].pawn-diarize.yml[/bold]:
+    Configuration can be provided via [bold]pawnai.yaml[/bold]:
 
     \\b
         siyuan:
@@ -1686,14 +1686,14 @@ def sync_siyuan(
     if not resolved_notebook:
         console.print(
             "[red]Error: No SiYuan notebook ID provided. Use --notebook or set "
-            "siyuan.notebook in .pawn-diarize.yml.[/red]"
+            "siyuan.notebook in pawnai.yaml.[/red]"
         )
         raise typer.Exit(1)
 
     if not resolved_token:
         console.print(
             "[yellow]Warning: No SiYuan API token provided. Requests may be "
-            "rejected. Use --token or set siyuan.token in .pawn-diarize.yml.[/yellow]"
+            "rejected. Use --token or set siyuan.token in pawnai.yaml.[/yellow]"
         )
 
     if not session and not all_sessions:
@@ -1891,7 +1891,7 @@ def sessions(
         help="Write the full session transcript to this file (requires --session)."
     ),
     config: Optional[str] = typer.Option(
-        None, "--config", help="Path to YAML configuration file (.pawn-diarize.yml)"
+        None, "--config", help="Path to YAML configuration file (pawnai.yaml)"
     ),
 ) -> None:
     """List transcription sessions or inspect a specific one.
@@ -2105,7 +2105,7 @@ def sessions(
 @app.command()
 def status(
     config: Optional[str] = typer.Option(
-        None, "--config", help="Path to YAML configuration file (.pawn-diarize.yml)"
+        None, "--config", help="Path to YAML configuration file (pawnai.yaml)"
     ),
 ) -> None:
     """Show application status and available models.
@@ -2149,7 +2149,7 @@ def s3_ls(
         None, help="Optional key prefix to filter results (e.g. 'recordings/2024/')"
     ),
     config: Optional[str] = typer.Option(
-        None, "--config", help="Path to YAML configuration file (.pawn-diarize.yml)"
+        None, "--config", help="Path to YAML configuration file (pawnai.yaml)"
     ),
     recursive: bool = typer.Option(
         False, "--recursive", "-r", help="List all objects recursively (no common-prefix grouping)"
@@ -2160,7 +2160,7 @@ def s3_ls(
 ) -> None:
     """List objects in the configured S3 bucket.
 
-    Reads S3 credentials from the ``s3:`` section of ``.pawn-diarize.yml`` (or the
+    Reads S3 credentials from the ``s3:`` section of ``pawnai.yaml`` (or the
     file passed via ``--config``).  Without a prefix all top-level keys are
     listed; with a prefix only keys that start with that prefix are shown.
 
@@ -2182,7 +2182,7 @@ def s3_ls(
     s3_cfg = app_cfg.get_s3_config()
     if s3_cfg is None:
         console.print(
-            "[red]Error: no 's3:' section found in .pawn-diarize.yml – "
+            "[red]Error: no 's3:' section found in pawnai.yaml – "
             "add S3 credentials before using s3-ls[/red]"
         )
         raise typer.Exit(1)
@@ -2252,7 +2252,7 @@ def s3_ls(
 @app.command()
 def listen(
     config: Optional[str] = typer.Option(
-        None, "--config", help="Path to YAML configuration file (.pawn-diarize.yml)"
+        None, "--config", help="Path to YAML configuration file (pawnai.yaml)"
     ),
     topic: Optional[str] = typer.Option(
         None, "--topic", "-T",
@@ -2266,7 +2266,7 @@ def listen(
     """Listen for commands on a pawn-queue topic and execute them.
 
     Connects to the S3-backed pawn-queue configured in the ``queue:`` section
-    of ``.pawn-diarize.yml`` and blocks until interrupted.  Each incoming message
+    of ``pawnai.yaml`` and blocks until interrupted.  Each incoming message
     must be a JSON object with at minimum a ``command`` key:
 
     \b

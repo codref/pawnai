@@ -233,7 +233,11 @@ class AnalysisEngine:
         client = CopilotClient()
         try:
             await client.start()
-            session = await client.create_session(SessionConfig(model=self.model))
+            from copilot import PermissionHandler  # noqa: PLC0415
+            session = await client.create_session({
+                "model": self.model,
+                "on_permission_request": PermissionHandler.approve_all,
+            })
             response = await session.send_and_wait(MessageOptions(prompt=prompt))
             await session.destroy()
 
