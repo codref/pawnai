@@ -1,19 +1,19 @@
 services:
   postgres:
     image: pgvector/pgvector:pg17
-    container_name: pawnai-postgres
+    container_name: pawn-diarize-postgres
     restart: unless-stopped
     environment:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres
-      POSTGRES_DB: pawnai 
+      POSTGRES_DB: pawn-diarize 
     ports:
       - "5432:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
       - ./init.sql:/docker-entrypoint-initdb.d/init.sql:ro
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres -d pawnai"]
+      test: ["CMD-SHELL", "pg_isready -U postgres -d pawn-diarize"]
       interval: 5s
       timeout: 5s
       retries: 6

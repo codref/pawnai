@@ -1,4 +1,4 @@
-"""SiYuan Note integration for PawnAI.
+"""SiYuan Note integration for Pawn Diarize.
 
 Provides :class:`SiyuanClient` for pushing conversation analyses to a locally
 running SiYuan instance (``http://127.0.0.1:6806`` by default).
@@ -11,7 +11,7 @@ Each session is created as a standalone SiYuan **document** with:
 
 Usage::
 
-    from pawnai.core.siyuan import SiyuanClient, format_session_markdown
+    from pawn_diarize.core.siyuan import SiyuanClient, format_session_markdown
 
     client = SiyuanClient(
         url="http://127.0.0.1:6806",

@@ -1,4 +1,4 @@
-# ✅ PawnAI Organization Checklist
+# ✅ Pawn Diarize Organization Checklist
 
 ## ✨ What Was Accomplished
 
@@ -7,7 +7,7 @@ Your project has been completely reorganized as a professional Python CLI applic
 ### 📁 New Package Structure
 
 ```
-pawnai/                    ← Main package
+pawn-diarize/                    ← Main package
 ├── __init__.py             ← Metadata & public API
 ├── __main__.py             ← 🎯 SINGLE ENTRYPOINT
 ├── core/                   ← Business logic
@@ -42,7 +42,7 @@ pawnai/                    ← Main package
 
 | Feature | Details |
 |---------|---------|
-| Single Entrypoint | `python -m pawnai [command]` or `pawnai [command]` after install |
+| Single Entrypoint | `python -m pawn-diarize [command]` or `pawn-diarize [command]` after install |
 | Commands | `diarize`, `transcribe`, `embed`, `search`, `status` |
 | Error Handling | Graceful exceptions, proper exit codes, user-friendly messages |
 | Type Hints | Full typing support for IDE autocomplete |
@@ -67,7 +67,7 @@ pip install -e ".[dev]"
 
 ```bash
 # Test package import
-python -c "from pawnai import __version__; print(f'v{__version__}')"
+python -c "from pawn-diarize import __version__; print(f'v{__version__}')"
 
 # Note: CLI will require dependencies which take time to install
 # The structure is ready to use once dependencies are installed
@@ -84,10 +84,10 @@ pip install -e .
 ### 4️⃣ Run Commands (Once Dependencies Installed)
 
 ```bash
-python -m pawnai status
-python -m pawnai --help
-pawnai diarize audio.wav
-pawnai transcribe audio.wav
+python -m pawn-diarize status
+python -m pawn-diarize --help
+pawn-diarize diarize audio.wav
+pawn-diarize transcribe audio.wav
 ```
 
 ### 5️⃣ Optional: Clean Up Old Files
@@ -107,15 +107,15 @@ rm dbscan.py transcribe.py requirements.txt
 
 | File | Purpose |
 |------|---------|
-| `pawnai/__init__.py` | Package metadata, version, public API |
-| `pawnai/__main__.py` | Single CLI entry point |
-| `pawnai/core/config.py` | Configuration management |
-| `pawnai/core/diarization.py` | Speaker diarization engine |
-| `pawnai/core/transcription.py` | Audio transcription engine |
-| `pawnai/core/embeddings.py` | Speaker embedding management |
-| `pawnai/cli/commands.py` | CLI command definitions |
-| `pawnai/cli/utils.py` | CLI utilities (Rich console) |
-| `pawnai/utils/__init__.py` | General purpose helpers |
+| `pawn-diarize/__init__.py` | Package metadata, version, public API |
+| `pawn-diarize/__main__.py` | Single CLI entry point |
+| `pawn-diarize/core/config.py` | Configuration management |
+| `pawn-diarize/core/diarization.py` | Speaker diarization engine |
+| `pawn-diarize/core/transcription.py` | Audio transcription engine |
+| `pawn-diarize/core/embeddings.py` | Speaker embedding management |
+| `pawn-diarize/cli/commands.py` | CLI command definitions |
+| `pawn-diarize/cli/utils.py` | CLI utilities (Rich console) |
+| `pawn-diarize/utils/__init__.py` | General purpose helpers |
 
 ### Configuration Files Created
 
@@ -138,7 +138,7 @@ rm dbscan.py transcribe.py requirements.txt
 
 ## 🎯 Key Design Decisions
 
-✅ **Single Entry Point**: All commands route through `pawnai/__main__.py:main()`
+✅ **Single Entry Point**: All commands route through `pawn-diarize/__main__.py:main()`
 
 ✅ **Separation of Concerns**: 
    - Core logic (diarization, transcription, embeddings)
@@ -188,7 +188,7 @@ The `.gitignore` is already configured to ignore:
 - `*.npz` files (embedding files)
 
 ### Backward Compatibility
-Old files (`dbscan.py`, `transcribe.py`) are now integrated into the `pawnai/core/` modules. The `.py` file can optionally be removed after verification.
+Old files (`dbscan.py`, `transcribe.py`) are now integrated into the `pawn-diarize/core/` modules. The `.py` file can optionally be removed after verification.
 
 ---
 
@@ -203,7 +203,7 @@ Old files (`dbscan.py`, `transcribe.py`) are now integrated into the `pawnai/cor
 
 ## ✨ You're All Set!
 
-Your PawnAI project is now:
+Your Pawn Diarize project is now:
 - ✅ Professionally organized
 - ✅ Ready for distribution
 - ✅ Easy to extend
@@ -212,9 +212,9 @@ Your PawnAI project is now:
 
 Once dependencies are installed, you can start using:
 ```bash
-pawnai diarize audio.wav
-pawnai transcribe speech.wav
-pawnai embed audio.wav -s speaker_001
+pawn-diarize diarize audio.wav
+pawn-diarize transcribe speech.wav
+pawn-diarize embed audio.wav -s speaker_001
 ```
 
 Happy hacking! 🚀

@@ -1,4 +1,4 @@
-"""CLI command definitions for PawnAI."""
+"""CLI command definitions for Pawn Diarize."""
 
 import shutil
 from typing import Any, Dict, List, Optional, Tuple
@@ -9,7 +9,7 @@ from .utils import console
 from ..core.config import DEFAULT_DB_DSN
 
 app = typer.Typer(
-    help="PawnAI: Speaker diarization and transcription CLI tool",
+    help="Pawn Diarize: Speaker diarization and transcription CLI tool",
     rich_markup_mode="rich",
 )
 
@@ -26,7 +26,7 @@ def _resolve_s3_paths(
 
     Args:
         paths: List of file paths, which may contain ``s3://`` URIs.
-        app_cfg: Active :class:`~pawnai.core.config.AppConfig` instance used
+        app_cfg: Active :class:`~pawn-diarize.core.config.AppConfig` instance used
             to read the ``s3:`` configuration section.
 
     Returns:
@@ -36,7 +36,7 @@ def _resolve_s3_paths(
 
     Raises:
         typer.Exit: If any ``s3://`` URI is present but no ``s3:`` section is
-            configured in ``.pawnai.yml``.
+            configured in ``.pawn-diarize.yml``.
     """
     import tempfile
     from ..core.s3 import is_s3_path, S3Client, parse_s3_uri, expand_s3_glob
@@ -48,7 +48,7 @@ def _resolve_s3_paths(
     s3_cfg = app_cfg.get_s3_config()
     if s3_cfg is None:
         console.print(
-            "[red]Error: S3 paths require an 's3:' section in .pawnai.yml[/red]"
+            "[red]Error: S3 paths require an 's3:' section in .pawn-diarize.yml[/red]"
         )
         raise typer.Exit(1)
 
@@ -65,7 +65,7 @@ def _resolve_s3_paths(
     # Create a single randomly-named subdirectory for this invocation so that
     # downloaded files keep their original S3 key name (e.g. 260224183013_01.flac)
     # and the speaker ID stored in PostgreSQL is derived from the original filename.
-    tmp_dir = Path(tempfile.mkdtemp(prefix="pawnai_s3_", dir=str(_base_dir) if _base_dir else None))
+    tmp_dir = Path(tempfile.mkdtemp(prefix="pawn-diarize_s3_", dir=str(_base_dir) if _base_dir else None))
 
     # Expand any wildcard URIs before downloading
     expanded_paths: List[str] = []
@@ -115,7 +115,7 @@ def diarize(
         None, "--output", "-o", help="Output file path (format inferred from extension: .txt or .json)"
     ),
     config: Optional[str] = typer.Option(
-        None, "--config", help="Path to YAML configuration file (.pawnai.yml)"
+        None, "--config", help="Path to YAML configuration file (.pawn-diarize.yml)"
     ),
     db_dsn: str = typer.Option(
         DEFAULT_DB_DSN, help="PostgreSQL DSN for speaker database"
@@ -138,10 +138,10 @@ def diarize(
     recognizes known speakers from the database.
     
     Example:
-        pawnai diarize audio.wav
-        pawnai diarize part1.wav part2.wav part3.wav -o result.json
-        pawnai diarize audio.wav -t 0.8  # Stricter matching
-        pawnai diarize audio.wav --no-store  # Don't save new speakers
+        pawn-diarize diarize audio.wav
+        pawn-diarize diarize part1.wav part2.wav part3.wav -o result.json
+        pawn-diarize diarize audio.wav -t 0.8  # Stricter matching
+        pawn-diarize diarize audio.wav --no-store  # Don't save new speakers
     """
     # Lazy imports to avoid loading models during --help
     import json
@@ -191,7 +191,7 @@ def diarize(
             if store_new:
                 console.print(f"  [dim](Embeddings stored for future recognition)[/dim]")
             else:
-                console.print(f"  [dim](Use 'pawnai label' to assign names)[/dim]")
+                console.print(f"  [dim](Use 'pawn-diarize label' to assign names)[/dim]")
         
         console.print(f"\n[bold]Detected {result['num_speakers']} speaker(s):[/bold] {', '.join(result['speakers'])}")
         
@@ -258,7 +258,7 @@ def transcribe(
         None, "--output", "-o", help="Output file path (format inferred from extension: .txt or .json)"
     ),
     config: Optional[str] = typer.Option(
-        None, "--config", help="Path to YAML configuration file (.pawnai.yml)"
+        None, "--config", help="Path to YAML configuration file (.pawn-diarize.yml)"
     ),
     session: Optional[str] = typer.Option(
         None, "--session", "-s",
@@ -294,13 +294,13 @@ def transcribe(
     - Use --chunk-duration to split audio into chunks (e.g., -c 300 for 5-minute chunks)
     
     Example:
-        pawnai transcribe audio.wav
-        pawnai transcribe part1.wav part2.wav -o transcript.txt
-        pawnai transcribe audio.wav --no-timestamps
-        pawnai transcribe audio.wav -o transcript.json
-        pawnai transcribe large.mp3 --device cpu
-        pawnai transcribe large.mp3 -c 300 -o output.txt
-        pawnai transcribe audio.wav --backend whisper
+        pawn-diarize transcribe audio.wav
+        pawn-diarize transcribe part1.wav part2.wav -o transcript.txt
+        pawn-diarize transcribe audio.wav --no-timestamps
+        pawn-diarize transcribe audio.wav -o transcript.json
+        pawn-diarize transcribe large.mp3 --device cpu
+        pawn-diarize transcribe large.mp3 -c 300 -o output.txt
+        pawn-diarize transcribe audio.wav --backend whisper
     """
     # Lazy imports to avoid loading models during --help
     import json
@@ -416,7 +416,7 @@ def transcribe_diarize(
         None, "--output", "-o", help="Output file path (format inferred from extension: .txt or .json)"
     ),
     config: Optional[str] = typer.Option(
-        None, "--config", help="Path to YAML configuration file (.pawnai.yml)"
+        None, "--config", help="Path to YAML configuration file (.pawn-diarize.yml)"
     ),
     session: Optional[str] = typer.Option(
         None, "--session", "-s",
@@ -466,13 +466,13 @@ def transcribe_diarize(
 
     \b
       # First call – creates / initialises the session
-      pawnai transcribe-diarize part1.flac --session myconv
+      pawn-diarize transcribe-diarize part1.flac --session myconv
 
       # Second call – picks up where the first left off
-      pawnai transcribe-diarize part2.flac --session myconv
+      pawn-diarize transcribe-diarize part2.flac --session myconv
 
       # Write the full accumulated transcript to a file
-      pawnai transcribe-diarize part3.flac --session myconv -o full.txt
+      pawn-diarize transcribe-diarize part3.flac --session myconv -o full.txt
 
     Automatically recognises known speakers from the database.
 
@@ -481,12 +481,12 @@ def transcribe_diarize(
     - Use --chunk-duration to split audio into chunks
 
     Example:
-        pawnai transcribe-diarize audio.wav
-        pawnai transcribe-diarize part1.wav part2.wav -o transcript.txt
-        pawnai transcribe-diarize audio.wav -o result.json
-        pawnai transcribe-diarize audio.wav -t 0.8 --no-store
-        pawnai transcribe-diarize large.mp3 --device cpu -c 300
-        pawnai transcribe-diarize a.wav b.wav -x 0.9
+        pawn-diarize transcribe-diarize audio.wav
+        pawn-diarize transcribe-diarize part1.wav part2.wav -o transcript.txt
+        pawn-diarize transcribe-diarize audio.wav -o result.json
+        pawn-diarize transcribe-diarize audio.wav -t 0.8 --no-store
+        pawn-diarize transcribe-diarize large.mp3 --device cpu -c 300
+        pawn-diarize transcribe-diarize a.wav b.wav -x 0.9
     """
     # Lazy imports to avoid loading models during --help
     import json
@@ -606,7 +606,7 @@ def transcribe_diarize(
             if store_new:
                 console.print(f"  [dim](Embeddings stored for future recognition)[/dim]")
             else:
-                console.print(f"  [dim](Use 'pawnai label' to assign names)[/dim]")
+                console.print(f"  [dim](Use 'pawn-diarize label' to assign names)[/dim]")
 
         console.print(
             f"\n[bold]All speakers:[/bold] {', '.join(all_speakers)} "
@@ -709,7 +709,7 @@ def embed(
         ..., "--speaker-id", "-s", help="Unique speaker identifier"
     ),
     config: Optional[str] = typer.Option(
-        None, "--config", help="Path to YAML configuration file (.pawnai.yml)"
+        None, "--config", help="Path to YAML configuration file (.pawn-diarize.yml)"
     ),
     db_dsn: str = typer.Option(
         DEFAULT_DB_DSN, help="PostgreSQL DSN for speaker database"
@@ -724,8 +724,8 @@ def embed(
     for later speaker identification and clustering.
     
     Example:
-        pawnai embed audio.wav --speaker-id speaker_001
-        pawnai embed part1.wav part2.wav -s alice --db-path ./my_db
+        pawn-diarize embed audio.wav --speaker-id speaker_001
+        pawn-diarize embed part1.wav part2.wav -s alice --db-path ./my_db
     """
     # Lazy imports to avoid loading models during --help
     from ..core import DiarizationEngine, EmbeddingManager
@@ -773,7 +773,7 @@ def search(
         ..., help="Speaker ID to search similar speakers for"
     ),
     config: Optional[str] = typer.Option(
-        None, "--config", help="Path to YAML configuration file (.pawnai.yml)"
+        None, "--config", help="Path to YAML configuration file (.pawn-diarize.yml)"
     ),
     db_dsn: str = typer.Option(
         DEFAULT_DB_DSN, help="PostgreSQL DSN for speaker database"
@@ -787,8 +787,8 @@ def search(
     Finds speakers with similar voice characteristics based on embeddings.
     
     Example:
-        pawnai search speaker_001
-        pawnai search speaker_001 --limit 10
+        pawn-diarize search speaker_001
+        pawn-diarize search speaker_001 --limit 10
     """
     # Lazy imports to avoid loading models during --help
     from ..core import EmbeddingManager
@@ -837,7 +837,7 @@ def label(
         None, "--session", help="Session ID to scope listing/labelling to a specific session"
     ),
     config: Optional[str] = typer.Option(
-        None, "--config", help="Path to YAML configuration file (.pawnai.yml)"
+        None, "--config", help="Path to YAML configuration file (.pawn-diarize.yml)"
     ),
     list_all: bool = typer.Option(
         False, "--list", "-l", help="List speaker mappings (all sessions, or full session view with --session)"
@@ -854,22 +854,22 @@ def label(
     \b
     Examples:
         # Show unmapped speakers in a session
-        pawnai label --session my-session
+        pawn-diarize label --session my-session
 
         # Show all speakers in a session (mapped + unmapped)
-        pawnai label --session my-session --list
+        pawn-diarize label --session my-session --list
 
         # Label a speaker from a session (auto-resolves file when unambiguous)
-        pawnai label --session my-session --speaker SPEAKER_00 --name "Alice"
+        pawn-diarize label --session my-session --speaker SPEAKER_00 --name "Alice"
 
         # Label with explicit file (required when speaker label spans multiple files)
-        pawnai label --session my-session -s SPEAKER_00 -f s3://bucket/audio.flac -n "Alice"
+        pawn-diarize label --session my-session -s SPEAKER_00 -f s3://bucket/audio.flac -n "Alice"
 
         # List all globally labeled speakers
-        pawnai label --list
+        pawn-diarize label --list
 
         # Label with an explicit local path
-        pawnai label -f audio.wav -s SPEAKER_00 -n "John Doe"
+        pawn-diarize label -f audio.wav -s SPEAKER_00 -n "John Doe"
     """
     from datetime import datetime, timezone
     from ..core.config import AppConfig
@@ -928,7 +928,7 @@ def label(
                     console.print(f"\n  [bold]• {seg_label}[/bold]")
                     console.print(f"    File: {seg_audio}")
                     console.print(
-                        f"    [dim]pawnai label --session {session} "
+                        f"    [dim]pawn-diarize label --session {session} "
                         f"--speaker {seg_label} --name \"Name\"[/dim]"
                     )
             else:
@@ -947,7 +947,7 @@ def label(
             with get_session(engine) as db_sess:
                 rows = db_sess.execute(select(SpeakerName)).scalars().all()
             if not rows:
-                console.print("[yellow]No speaker labels found. Use 'pawnai label' to add labels.[/yellow]")
+                console.print("[yellow]No speaker labels found. Use 'pawn-diarize label' to add labels.[/yellow]")
                 return
             console.print("\n[bold cyan]Labeled Speakers[/bold cyan]")
             for row in rows:
@@ -1037,7 +1037,7 @@ def session_relabel(
         DEFAULT_DB_DSN, help="PostgreSQL DSN for the speaker database."
     ),
     config: Optional[str] = typer.Option(
-        None, "--config", help="Path to YAML configuration file (.pawnai.yml)."
+        None, "--config", help="Path to YAML configuration file (.pawn-diarize.yml)."
     ),
 ) -> None:
     """Correct a mis-identified speaker across an entire session.
@@ -1057,10 +1057,10 @@ def session_relabel(
     \b
     Examples:
         # Preview what would change (dry-run – no --yes flag)
-        pawnai session-relabel --session my-session --from "Edo" --to "John"
+        pawn-diarize session-relabel --session my-session --from "Edo" --to "John"
 
         # Apply without prompting
-        pawnai session-relabel --session my-session -F "Edo" -T "John" --yes
+        pawn-diarize session-relabel --session my-session -F "Edo" -T "John" --yes
     """
     from sqlalchemy import select, update
     from sqlalchemy.orm import Session as OrmSession
@@ -1205,7 +1205,7 @@ def session_info(
         DEFAULT_DB_DSN, help="PostgreSQL DSN for the speaker database."
     ),
     config: Optional[str] = typer.Option(
-        None, "--config", help="Path to YAML configuration file (.pawnai.yml)."
+        None, "--config", help="Path to YAML configuration file (.pawn-diarize.yml)."
     ),
 ) -> None:
     """Show speakers and their embedding source files for a session.
@@ -1222,8 +1222,8 @@ def session_info(
 
     \b
     Example:
-        pawnai session-info my-session
-        pawnai session-info ef11c094-0d8d-41fe-93c0-c6bf1f2e8663
+        pawn-diarize session-info my-session
+        pawn-diarize session-info ef11c094-0d8d-41fe-93c0-c6bf1f2e8663
     """
     from sqlalchemy import select, func as sqlfunc
     from sqlalchemy.orm import Session as OrmSession
@@ -1449,14 +1449,14 @@ def analyze(
     session ID to load the transcript directly from the database.
 
     Example:
-        pawnai analyze result.json
-        pawnai analyze result.txt --mode graph
-        pawnai analyze result.json --mode graph -o graph.json
-        pawnai analyze result.json --mode graph -o graph.csv
-        pawnai analyze audio.wav --mode summary -o analysis.txt
-        pawnai analyze result.json --model gpt-4o
-        pawnai analyze --session myconv
-        pawnai analyze --session myconv --mode graph -o graph.json
+        pawn-diarize analyze result.json
+        pawn-diarize analyze result.txt --mode graph
+        pawn-diarize analyze result.json --mode graph -o graph.json
+        pawn-diarize analyze result.json --mode graph -o graph.csv
+        pawn-diarize analyze audio.wav --mode summary -o analysis.txt
+        pawn-diarize analyze result.json --model gpt-4o
+        pawn-diarize analyze --session myconv
+        pawn-diarize analyze --session myconv --mode graph -o graph.json
     """
     import json
     import csv as csv_module
@@ -1600,15 +1600,15 @@ def sync_siyuan(
     ),
     notebook: Optional[str] = typer.Option(
         None, "--notebook", "-n",
-        help="Target SiYuan notebook ID. Falls back to siyuan.notebook in .pawnai.yml."
+        help="Target SiYuan notebook ID. Falls back to siyuan.notebook in .pawn-diarize.yml."
     ),
     token: Optional[str] = typer.Option(
         None, "--token", "-t",
-        help="SiYuan API token. Falls back to siyuan.token in .pawnai.yml."
+        help="SiYuan API token. Falls back to siyuan.token in .pawn-diarize.yml."
     ),
     url: Optional[str] = typer.Option(
         None, "--url",
-        help="SiYuan instance URL. Falls back to siyuan.url in .pawnai.yml, then http://127.0.0.1:6806."
+        help="SiYuan instance URL. Falls back to siyuan.url in .pawn-diarize.yml, then http://127.0.0.1:6806."
     ),
     path_template: Optional[str] = typer.Option(
         None, "--path-template",
@@ -1632,7 +1632,7 @@ def sync_siyuan(
         DEFAULT_DB_DSN, help="PostgreSQL DSN for speaker database."
     ),
     config: Optional[str] = typer.Option(
-        None, "--config", help="Path to YAML configuration file (.pawnai.yml)."
+        None, "--config", help="Path to YAML configuration file (.pawn-diarize.yml)."
     ),
 ) -> None:
     """Push conversation analysis to a running SiYuan Note instance.
@@ -1642,7 +1642,7 @@ def sync_siyuan(
     a rich SiYuan document containing the structured analysis and full
     transcript.  Existing documents at the same path are overwritten.
 
-    Configuration can be provided via [bold].pawnai.yml[/bold]:
+    Configuration can be provided via [bold].pawn-diarize.yml[/bold]:
 
     \\b
         siyuan:
@@ -1653,9 +1653,9 @@ def sync_siyuan(
           daily_note_path: "/daily note/{year}/{month}/{date}"
 
     Example:
-        pawnai sync-siyuan --session myconv
-        pawnai sync-siyuan --session myconv --notebook 20210817... --token xxx
-        pawnai sync-siyuan --all
+        pawn-diarize sync-siyuan --session myconv
+        pawn-diarize sync-siyuan --session myconv --notebook 20210817... --token xxx
+        pawn-diarize sync-siyuan --all
     """
     from datetime import datetime, timezone
 
@@ -1686,14 +1686,14 @@ def sync_siyuan(
     if not resolved_notebook:
         console.print(
             "[red]Error: No SiYuan notebook ID provided. Use --notebook or set "
-            "siyuan.notebook in .pawnai.yml.[/red]"
+            "siyuan.notebook in .pawn-diarize.yml.[/red]"
         )
         raise typer.Exit(1)
 
     if not resolved_token:
         console.print(
             "[yellow]Warning: No SiYuan API token provided. Requests may be "
-            "rejected. Use --token or set siyuan.token in .pawnai.yml.[/yellow]"
+            "rejected. Use --token or set siyuan.token in .pawn-diarize.yml.[/yellow]"
         )
 
     if not session and not all_sessions:
@@ -1712,7 +1712,7 @@ def sync_siyuan(
         if row is None:
             console.print(
                 f"[red]Error: No analysis found for session {session!r}. "
-                "Run 'pawnai analyze --session {session}' first.[/red]"
+                "Run 'pawn-diarize analyze --session {session}' first.[/red]"
             )
             raise typer.Exit(1)
         rows_to_sync = [row]
@@ -1800,7 +1800,7 @@ def sync_siyuan(
             # ── Build block attributes ─────────────────────────────────────────
             # 'tags' is SiYuan's native attribute read by the Tags panel.
             # Values must be comma-separated with no leading #.
-            attrs: dict[str, str] = {"custom-pawnai-session": sid}
+            attrs: dict[str, str] = {"custom-pawn-diarize-session": sid}
             all_tags: list[str] = list(row.tags or []) + list(row.sentiment_tags or [])
             if all_tags:
                 attrs["tags"] = ",".join(all_tags)
@@ -1822,12 +1822,12 @@ def sync_siyuan(
 
             # ── SiYuan toast notification + inbox message ─────────────────────
             try:
-                client.push_msg(f"PawnAI: synced '{sid}'\n{doc_path}")
+                client.push_msg(f"Pawn Diarize: synced '{sid}'\n{doc_path}")
             except Exception:
                 pass  # notification is best-effort
             try:
                 client.create_shorthand(
-                    f"**PawnAI sync** — [{row.title or sid}](siyuan://blocks/{doc_id})\n"
+                    f"**Pawn Diarize sync** — [{row.title or sid}](siyuan://blocks/{doc_id})\n"
                     f"Session: `{sid}`  ·  Path: `{doc_path}`"
                 )
             except Exception:
@@ -1891,7 +1891,7 @@ def sessions(
         help="Write the full session transcript to this file (requires --session)."
     ),
     config: Optional[str] = typer.Option(
-        None, "--config", help="Path to YAML configuration file (.pawnai.yml)"
+        None, "--config", help="Path to YAML configuration file (.pawn-diarize.yml)"
     ),
 ) -> None:
     """List transcription sessions or inspect a specific one.
@@ -1905,11 +1905,11 @@ def sessions(
     With --session and --output writes the complete transcript to a file.
 
     Example:
-        pawnai sessions
-        pawnai sessions --session myconv
-        pawnai sessions --session ef11c094-0d8d-41fe-93c0-c6bf1f2e8663
-        pawnai sessions --session myconv --head 10 --tail 10
-        pawnai sessions --session myconv --output transcript.txt
+        pawn-diarize sessions
+        pawn-diarize sessions --session myconv
+        pawn-diarize sessions --session ef11c094-0d8d-41fe-93c0-c6bf1f2e8663
+        pawn-diarize sessions --session myconv --head 10 --tail 10
+        pawn-diarize sessions --session myconv --output transcript.txt
     """
     from sqlalchemy import select
     from sqlalchemy import func as sqlfunc
@@ -2105,7 +2105,7 @@ def sessions(
 @app.command()
 def status(
     config: Optional[str] = typer.Option(
-        None, "--config", help="Path to YAML configuration file (.pawnai.yml)"
+        None, "--config", help="Path to YAML configuration file (.pawn-diarize.yml)"
     ),
 ) -> None:
     """Show application status and available models.
@@ -2121,7 +2121,7 @@ def status(
     
     import torch
     
-    console.print("\n[bold cyan]PawnAI Status[/bold cyan]")
+    console.print("\n[bold cyan]Pawn Diarize Status[/bold cyan]")
     console.print(f"Device: {torch.device('cuda' if torch.cuda.is_available() else 'cpu')}")
     console.print(f"CUDA Available: {torch.cuda.is_available()}")
     
@@ -2149,7 +2149,7 @@ def s3_ls(
         None, help="Optional key prefix to filter results (e.g. 'recordings/2024/')"
     ),
     config: Optional[str] = typer.Option(
-        None, "--config", help="Path to YAML configuration file (.pawnai.yml)"
+        None, "--config", help="Path to YAML configuration file (.pawn-diarize.yml)"
     ),
     recursive: bool = typer.Option(
         False, "--recursive", "-r", help="List all objects recursively (no common-prefix grouping)"
@@ -2160,7 +2160,7 @@ def s3_ls(
 ) -> None:
     """List objects in the configured S3 bucket.
 
-    Reads S3 credentials from the ``s3:`` section of ``.pawnai.yml`` (or the
+    Reads S3 credentials from the ``s3:`` section of ``.pawn-diarize.yml`` (or the
     file passed via ``--config``).  Without a prefix all top-level keys are
     listed; with a prefix only keys that start with that prefix are shown.
 
@@ -2169,10 +2169,10 @@ def s3_ls(
     ``--recursive`` to list every object under the prefix without grouping.
 
     Example:
-        pawnai s3-ls
-        pawnai s3-ls recordings/
-        pawnai s3-ls recordings/2024/ --long
-        pawnai s3-ls --recursive --long
+        pawn-diarize s3-ls
+        pawn-diarize s3-ls recordings/
+        pawn-diarize s3-ls recordings/2024/ --long
+        pawn-diarize s3-ls --recursive --long
     """
     from ..core.config import AppConfig
     from ..core.s3 import S3Client
@@ -2182,7 +2182,7 @@ def s3_ls(
     s3_cfg = app_cfg.get_s3_config()
     if s3_cfg is None:
         console.print(
-            "[red]Error: no 's3:' section found in .pawnai.yml – "
+            "[red]Error: no 's3:' section found in .pawn-diarize.yml – "
             "add S3 credentials before using s3-ls[/red]"
         )
         raise typer.Exit(1)
@@ -2210,7 +2210,7 @@ def s3_ls(
 
     # ── Paginate ─────────────────────────────────────────────────────────────
     # Access the underlying boto3 client via the private attribute (same pattern
-    # used in pawnai_recorder's S3Uploader for head_bucket / upload_file).
+    # used in pawn-diarize_recorder's S3Uploader for head_bucket / upload_file).
     boto_client = client._client  # noqa: SLF001
 
     paginator = boto_client.get_paginator("list_objects_v2")
@@ -2252,7 +2252,7 @@ def s3_ls(
 @app.command()
 def listen(
     config: Optional[str] = typer.Option(
-        None, "--config", help="Path to YAML configuration file (.pawnai.yml)"
+        None, "--config", help="Path to YAML configuration file (.pawn-diarize.yml)"
     ),
     topic: Optional[str] = typer.Option(
         None, "--topic", "-T",
@@ -2266,7 +2266,7 @@ def listen(
     """Listen for commands on a pawn-queue topic and execute them.
 
     Connects to the S3-backed pawn-queue configured in the ``queue:`` section
-    of ``.pawnai.yml`` and blocks until interrupted.  Each incoming message
+    of ``.pawn-diarize.yml`` and blocks until interrupted.  Each incoming message
     must be a JSON object with at minimum a ``command`` key:
 
     \b
@@ -2305,7 +2305,7 @@ def listen(
     effective_consumer = consumer_name or (queue_cfg or {}).get("consumer_name", DEFAULT_CONSUMER_NAME)
 
     console.print(
-        f"[bold green]PawnAI queue listener starting[/bold green]\n"
+        f"[bold green]Pawn Diarize queue listener starting[/bold green]\n"
         f"  topic    : [cyan]{effective_topic}[/cyan]\n"
         f"  consumer : [cyan]{effective_consumer}[/cyan]"
     )

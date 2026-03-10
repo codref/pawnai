@@ -1,7 +1,7 @@
 """Tests for utility functions."""
 
 import pytest
-from pawnai.utils import find_audio_files, validate_audio_file
+from pawn_diarize.utils import find_audio_files, validate_audio_file
 from pathlib import Path
 
 

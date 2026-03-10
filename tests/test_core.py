@@ -1,8 +1,8 @@
 """Tests for core diarization functionality."""
 
 import pytest
-from pawnai.core.diarization import DiarizationEngine
-from pawnai.core.config import Config
+from pawn_diarize.core.diarization import DiarizationEngine
+from pawn_diarize.core.config import Config
 
 
 def test_diarization_engine_initialization():

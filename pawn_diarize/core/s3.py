@@ -1,4 +1,4 @@
-"""S3-compatible storage support for PawnAI.
+"""S3-compatible storage support for Pawn Diarize.
 
 This module provides transparent download of audio files stored in
 S3-compatible object storage (AWS S3, MinIO, etc.).  Any command that
@@ -25,7 +25,7 @@ Both of the following forms are accepted and auto-detected:
 
 Configuration
 -------------
-Add an ``s3:`` section to ``.pawnai.yml``:
+Add an ``s3:`` section to ``.pawn-diarize.yml``:
 
 .. code-block:: yaml
 
@@ -83,7 +83,7 @@ def parse_s3_uri(
 
     Args:
         uri: S3 URI string, e.g. ``s3://my-bucket/audio/file.wav``.
-        configured_bucket: Bucket name from ``.pawnai.yml``, used when the
+        configured_bucket: Bucket name from ``.pawn-diarize.yml``, used when the
             URI does not embed a bucket name.
 
     Returns:
@@ -116,7 +116,7 @@ def parse_s3_uri(
         if configured_bucket is None:
             raise ValueError(
                 f"Cannot resolve bucket for URI {uri!r}: no S3 bucket is "
-                "configured.  Add an 's3.bucket' entry to .pawnai.yml."
+                "configured.  Add an 's3.bucket' entry to .pawn-diarize.yml."
             )
         bucket = configured_bucket
         object_key = remainder
@@ -135,8 +135,8 @@ def parse_s3_uri(
 class S3Config:
     """Configuration for an S3-compatible storage backend.
 
-    Mirrors the ``S3Config`` dataclass in ``pawnai_recorder`` so that the
-    same ``.pawnai.yml`` structure works for both packages.
+    Mirrors the ``S3Config`` dataclass in ``pawn-diarize-recorder`` so that the
+    same ``.pawn-diarize.yml`` structure works for both packages.
     """
 
     bucket: str
@@ -154,7 +154,7 @@ class S3Config:
 
         Args:
             data: Dictionary of S3 configuration values, typically read
-                from the ``s3:`` section of ``.pawnai.yml``.
+                from the ``s3:`` section of ``.pawn-diarize.yml``.
 
         Returns:
             Validated :class:`S3Config` instance.
@@ -189,7 +189,7 @@ class S3Client:
     """Client for S3-compatible object storage.
 
     Wraps ``boto3`` to provide download and bucket-health-check operations
-    used by PawnAI when resolving ``s3://`` audio paths.
+    used by Pawn Diarize when resolving ``s3://`` audio paths.
 
     Args:
         config: Validated :class:`S3Config` instance.
@@ -358,7 +358,7 @@ def s3_audio_paths(
             # libraries (soundfile, torchaudio) can sniff the format.
             suffix = Path(key).suffix or ".audio"
             tmp = tempfile.NamedTemporaryFile(
-                suffix=suffix, delete=False, prefix="pawnai_s3_"
+                suffix=suffix, delete=False, prefix="pawn_diarize_s3_"
             )
             tmp.close()
             temp_files.append(tmp)

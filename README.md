@@ -1,6 +1,6 @@
-# PawnAI
+# Pawn Diarize
 
-A command-line application for speaker diarization, transcription, and speaker embedding management. PawnAI provides a unified interface for audio analysis, speaker identification, and voice clustering.
+A command-line application for speaker diarization, transcription, and speaker embedding management. Pawn Diarize provides a unified interface for audio analysis, speaker identification, and voice clustering.
 
 ## Features
 
@@ -24,7 +24,7 @@ A command-line application for speaker diarization, transcription, and speaker e
 ```bash
 # Clone the repository
 git clone <repository-url>
-cd pawnai
+cd pawn-diarize
 
 # Install in development mode with dependencies
 pip install -e ".[dev]"
@@ -54,35 +54,35 @@ cp .env.example .env
 ### 2. Verify Installation
 
 ```bash
-pawnai status
+pawn-diarize status
 ```
 
 ### 3. Basic Commands
 
 ```bash
 # Show system status
-pawnai status
+pawn-diarize status
 
 # Perform speaker identification
-pawnai diarize meeting.wav -o speakers.json
+pawn-diarize diarize meeting.wav -o speakers.json
 
 # Transcribe and identify speakers together
-pawnai transcribe-diarize meeting.wav -o transcript.txt
+pawn-diarize transcribe-diarize meeting.wav -o transcript.txt
 
 # Label a speaker for future recognition
-pawnai label -f audio.wav -s SPEAKER_00 -n "John Doe"
+pawn-diarize label -f audio.wav -s SPEAKER_00 -n "John Doe"
 
 # Transcribe audio to text
-pawnai transcribe audio.wav -o transcript.txt
+pawn-diarize transcribe audio.wav -o transcript.txt
 
 # Analyze a conversation (summaries, keywords, knowledge graphs)
-pawnai analyze result.json --mode summary
+pawn-diarize analyze result.json --mode summary
 
 # Extract speaker embeddings for database
-pawnai embed speaker_audio.wav --speaker-id john_doe
+pawn-diarize embed speaker_audio.wav --speaker-id john_doe
 
 # Search for similar speakers
-pawnai search john_doe
+pawn-diarize search john_doe
 ```
 
 ### 4. Advanced: Multi-File & Session Processing
@@ -91,31 +91,31 @@ pawnai search john_doe
 
 ```bash
 # Diarize multiple files with speaker alignment
-pawnai diarize part1.wav part2.wav part3.wav -o full_speakers.json
+pawn-diarize diarize part1.wav part2.wav part3.wav -o full_speakers.json
 
 # Transcribe multiple files together
-pawnai transcribe-diarize chunk1.wav chunk2.wav -o transcript.txt
+pawn-diarize transcribe-diarize chunk1.wav chunk2.wav -o transcript.txt
 ```
 
 **Process a long conversation in parts over time (session mode):**
 
 ```bash
 # First part - creates session
-pawnai transcribe-diarize part1.wav --session meeting.json
+pawn-diarize transcribe-diarize part1.wav --session meeting.json
 
 # Second part - appends to session
-pawnai transcribe-diarize part2.wav --session meeting.json
+pawn-diarize transcribe-diarize part2.wav --session meeting.json
 
 # Final part - add remaining audio and save output
-pawnai transcribe-diarize part3.wav --session meeting.json -o final_transcript.txt
+pawn-diarize transcribe-diarize part3.wav --session meeting.json -o final_transcript.txt
 ```
 
 ### Using Python Module
 
 ```bash
 # Run as Python module
-python -m pawnai status
-python -m pawnai transcribe audio.wav
+python -m pawn-diarize status
+python -m pawn-diarize transcribe audio.wav
 ```
 
 ## Commands Reference
@@ -125,7 +125,7 @@ python -m pawnai transcribe audio.wav
 Perform speaker diarization on an audio file or multiple files. Identifies and separates different speakers with timestamps showing when each speaker talks. **Automatically recognizes speakers from the database and replaces generic labels with actual names.** Only stores embeddings for new/unknown speakers to avoid database clutter.
 
 ```bash
-pawnai diarize <audio_path> [<audio_path>...] [OPTIONS]
+pawn-diarize diarize <audio_path> [<audio_path>...] [OPTIONS]
 
 Arguments:
   audio_path(s)  One or more audio files to diarize (multiple treated as one conversation)
@@ -141,13 +141,13 @@ Options:
 Example:
 ```bash
 # Single file
-pawnai diarize meeting.wav
-pawnai diarize meeting.wav -o speakers.json
-pawnai diarize meeting.wav --no-store  # Don't save new speakers
+pawn-diarize diarize meeting.wav
+pawn-diarize diarize meeting.wav -o speakers.json
+pawn-diarize diarize meeting.wav --no-store  # Don't save new speakers
 
 # Multiple files (ordered chunks of same conversation)
-pawnai diarize part1.wav part2.wav part3.wav -o full_diarization.json
-pawnai diarize chunk1.wav chunk2.wav -t 0.8  # Stricter matching
+pawn-diarize diarize part1.wav part2.wav part3.wav -o full_diarization.json
+pawn-diarize diarize chunk1.wav chunk2.wav -t 0.8  # Stricter matching
 ```
 
 Features:
@@ -168,7 +168,7 @@ Output includes:
 Convert speech to text using the Nvidia Parakeet model.
 
 ```bash
-pawnai transcribe <audio_path> [OPTIONS]
+pawn-diarize transcribe <audio_path> [OPTIONS]
 
 Arguments:
   audio_path  Path to the audio file to transcribe
@@ -183,14 +183,14 @@ Options:
 
 Example:
 ```bash
-pawnai transcribe speech.wav
-pawnai transcribe speech.wav --no-timestamps
-pawnai transcribe speech.wav -o transcript.txt
-pawnai transcribe speech.wav -o transcript.json
-pawnai transcribe large.mp3 --device cpu
-pawnai transcribe large.mp3 -c 300 -o output.txt
-pawnai transcribe large.mp3 --config ./prod.env  # Use custom config
-pawnai transcribe huge.mp3 --device cpu -c 600
+pawn-diarize transcribe speech.wav
+pawn-diarize transcribe speech.wav --no-timestamps
+pawn-diarize transcribe speech.wav -o transcript.txt
+pawn-diarize transcribe speech.wav -o transcript.json
+pawn-diarize transcribe large.mp3 --device cpu
+pawn-diarize transcribe large.mp3 -c 300 -o output.txt
+pawn-diarize transcribe large.mp3 --config ./prod.env  # Use custom config
+pawn-diarize transcribe huge.mp3 --device cpu -c 600
 ```
 
 ### `transcribe-diarize`
@@ -202,7 +202,7 @@ When multiple files are given they are treated as ordered chunks of the same con
 **Session Support**: Use `--session` to accumulate results across multiple invocations. Perfect for processing long conversations in parts.
 
 ```bash
-pawnai transcribe-diarize <audio_path> [OPTIONS]
+pawn-diarize transcribe-diarize <audio_path> [OPTIONS]
 
 Arguments:
   audio_path(s)  One or more audio files to process
@@ -224,27 +224,27 @@ Options:
 
 Single file:
 ```bash
-pawnai transcribe-diarize meeting.wav
-pawnai transcribe-diarize meeting.wav -o transcript.txt
-pawnai transcribe-diarize meeting.wav -o transcript.json
+pawn-diarize transcribe-diarize meeting.wav
+pawn-diarize transcribe-diarize meeting.wav -o transcript.txt
+pawn-diarize transcribe-diarize meeting.wav -o transcript.json
 ```
 
 Multiple files (ordered chunks of same conversation):
 ```bash
-pawnai transcribe-diarize part1.wav part2.wav part3.wav -o full_transcript.txt
-pawnai transcribe-diarize part1.wav part2.wav -x 0.9  # Stricter cross-file matching
+pawn-diarize transcribe-diarize part1.wav part2.wav part3.wav -o full_transcript.txt
+pawn-diarize transcribe-diarize part1.wav part2.wav -x 0.9  # Stricter cross-file matching
 ```
 
 Session accumulation (process files separately over time):
 ```bash
 # First session - creates conv.json if it doesn't exist
-pawnai transcribe-diarize part1.wav --session conv.json
+pawn-diarize transcribe-diarize part1.wav --session conv.json
 
 # Second session - appends to existing conversation
-pawnai transcribe-diarize part2.wav --session conv.json
+pawn-diarize transcribe-diarize part2.wav --session conv.json
 
 # Third session - adds more and saves full output
-pawnai transcribe-diarize part3.wav --session conv.json -o full_transcript.txt
+pawn-diarize transcribe-diarize part3.wav --session conv.json -o full_transcript.txt
 ```
 
 **Session Workflow:**
@@ -265,7 +265,7 @@ pawnai transcribe-diarize part3.wav --session conv.json -o full_transcript.txt
 Extract speaker embeddings from audio and store in the database.
 
 ```bash
-pawnai embed <audio_path> --speaker-id SPEAKER_ID [OPTIONS]
+pawn-diarize embed <audio_path> --speaker-id SPEAKER_ID [OPTIONS]
 
 Arguments:
   audio_path      Path to the audio file to process
@@ -279,9 +279,9 @@ Options:
 
 Example:
 ```bash
-pawnai embed person1.wav --speaker-id john_doe
-pawnai embed person2.wav -s alice_smith --db-path ./voices
-pawnai embed person3.wav -s bob --config ./custom.env
+pawn-diarize embed person1.wav --speaker-id john_doe
+pawn-diarize embed person2.wav -s alice_smith --db-path ./voices
+pawn-diarize embed person3.wav -s bob --config ./custom.env
 ```
 
 ### `search`
@@ -289,7 +289,7 @@ pawnai embed person3.wav -s bob --config ./custom.env
 Search for speakers with similar voice characteristics.
 
 ```bash
-pawnai search <speaker_id> [OPTIONS]
+pawn-diarize search <speaker_id> [OPTIONS]
 
 Arguments:
   speaker_id      Speaker ID to search similar speakers for
@@ -302,9 +302,9 @@ Options:
 
 Example:
 ```bash
-pawnai search john_doe
-pawnai search alice_smith --limit 10 --db-path ./voices
-pawnai search bob --config ./custom.env
+pawn-diarize search john_doe
+pawn-diarize search alice_smith --limit 10 --db-path ./voices
+pawn-diarize search bob --config ./custom.env
 ```
 
 ### `label`
@@ -312,7 +312,7 @@ pawnai search bob --config ./custom.env
 Assign human-readable names to speakers for automatic recognition in future diarizations.
 
 ```bash
-pawnai label [OPTIONS]
+pawn-diarize label [OPTIONS]
 
 Options:
   --file TEXT, -f TEXT     Audio file containing the speaker
@@ -326,14 +326,14 @@ Options:
 Example:
 ```bash
 # Label a speaker in a file
-pawnai label -f audio.wav -s SPEAKER_00 -n "John Doe"
+pawn-diarize label -f audio.wav -s SPEAKER_00 -n "John Doe"
 
 # List all labeled speakers
-pawnai label --list
+pawn-diarize label --list
 
 # Use custom config
-pawnai label --list --config ./custom.env
-pawnai label -f audio.wav -s SPEAKER_00 -n "Alice Smith" --config ./prod.env
+pawn-diarize label --list --config ./custom.env
+pawn-diarize label -f audio.wav -s SPEAKER_00 -n "Alice Smith" --config ./prod.env
 ```
 
 **Workflow:**
@@ -349,7 +349,7 @@ Analyze diarization results to generate summaries, extract keywords, or build kn
 This command uses AI to extract insights from transcribed conversations with speaker labels.
 
 ```bash
-pawnai analyze <input_file> [OPTIONS]
+pawn-diarize analyze <input_file> [OPTIONS]
 
 Arguments:
   input_file     Path to diarization JSON/text file, or an audio file to process first
@@ -379,26 +379,26 @@ Options:
 
 Analyze existing diarization output:
 ```bash
-pawnai analyze result.json
-pawnai analyze transcript.txt --mode graph
-pawnai analyze result.json --mode summary -o analysis.txt
+pawn-diarize analyze result.json
+pawn-diarize analyze transcript.txt --mode graph
+pawn-diarize analyze result.json --mode summary -o analysis.txt
 ```
 
 Process audio directly and analyze:
 ```bash
-pawnai analyze meeting.wav
-pawnai analyze meeting.wav --mode graph -o graph.json
-pawnai analyze meeting.wav --mode summary -o analysis.txt
+pawn-diarize analyze meeting.wav
+pawn-diarize analyze meeting.wav --mode graph -o graph.json
+pawn-diarize analyze meeting.wav --mode summary -o analysis.txt
 ```
 
 Output to different formats:
 ```bash
-pawnai analyze result.json --mode graph -o graph.json   # JSON with triples
-pawnai analyze result.json --mode graph -o graph.csv    # CSV table format
-pawnai analyze result.json --mode summary -o analysis.txt  # Text summary
+pawn-diarize analyze result.json --mode graph -o graph.json   # JSON with triples
+pawn-diarize analyze result.json --mode graph -o graph.csv    # CSV table format
+pawn-diarize analyze result.json --mode summary -o analysis.txt  # Text summary
 
 # Custom model
-pawnai analyze result.json --model gpt-4o --mode graph
+pawn-diarize analyze result.json --model gpt-4o --mode graph
 ```
 
 **Output Formats:**
@@ -424,7 +424,7 @@ Graph Mode:
 Display system information and available commands.
 
 ```bash
-pawnai status [--config TEXT]
+pawn-diarize status [--config TEXT]
 
 Options:
   --config TEXT  Path to .env configuration file
@@ -438,15 +438,15 @@ Shows:
 
 Example:
 ```bash
-pawnai status
-pawnai status --config ./custom.env
+pawn-diarize status
+pawn-diarize status --config ./custom.env
 ```
 
 ## Configuration
 
 ### Environment Setup with .env File
 
-PawnAI uses a `.env` file to manage environment variables. This keeps sensitive credentials out of your code and shell history.
+Pawn Diarize uses a `.env` file to manage environment variables. This keeps sensitive credentials out of your code and shell history.
 
 **Setup:**
 
@@ -464,8 +464,8 @@ DEVICE=auto  # Optional: auto, cuda, or cpu
 
 3. The `.env` file is automatically loaded when you run any command:
 ```bash
-pawnai status
-pawnai diarize audio.wav
+pawn-diarize status
+pawn-diarize diarize audio.wav
 ```
 
 **Important**: `.env` is in `.gitignore` and won't be committed to git (protects your credentials).
@@ -476,15 +476,15 @@ You can specify a custom `.env` file using the `--config` flag on any command:
 
 ```bash
 # Use a specific config file
-pawnai diarize audio.wav --config ./configs/prod.env
-pawnai transcribe audio.wav --config /path/to/custom.env
-pawnai transcribe-diarize audio.wav --config ~/.config/pawnai/.env
+pawn-diarize diarize audio.wav --config ./configs/prod.env
+pawn-diarize transcribe audio.wav --config /path/to/custom.env
+pawn-diarize transcribe-diarize audio.wav --config ~/.config/pawn-diarize/.env
 
 # Works with all commands
-pawnai embed audio.wav --speaker-id john --config ./custom.env
-pawnai search alice --config ./custom.env
-pawnai label --list --config ./custom.env
-pawnai status --config ./custom.env
+pawn-diarize embed audio.wav --speaker-id john --config ./custom.env
+pawn-diarize search alice --config ./custom.env
+pawn-diarize label --list --config ./custom.env
+pawn-diarize status --config ./custom.env
 ```
 
 This is useful for:
@@ -519,7 +519,7 @@ Get your HuggingFace token: https://huggingface.co/settings/tokens
 
 ## Multi-File Processing & Session Management
 
-PawnAI supports processing multiple audio files as a single conversation, with intelligent speaker tracking. Two main approaches are available:
+Pawn Diarize supports processing multiple audio files as a single conversation, with intelligent speaker tracking. Two main approaches are available:
 
 ### Multi-File Processing (Batch)
 
@@ -527,10 +527,10 @@ Process multiple files in a single command as chunks of one conversation:
 
 ```bash
 # Diarization
-pawnai diarize part1.wav part2.wav part3.wav -o full_diarization.json
+pawn-diarize diarize part1.wav part2.wav part3.wav -o full_diarization.json
 
 # Transcription with diarization
-pawnai transcribe-diarize chunk1.wav chunk2.wav chunk3.wav -o transcript.txt
+pawn-diarize transcribe-diarize chunk1.wav chunk2.wav chunk3.wav -o transcript.txt
 
 # Key feature: Speaker labels are consistent across all files
 ```
@@ -553,13 +553,13 @@ Process a long conversation in parts over time, with state preserved between inv
 
 ```bash
 # Session 1: Start a new conversation session
-pawnai transcribe-diarize part1.wav --session meeting.json
+pawn-diarize transcribe-diarize part1.wav --session meeting.json
 
 # Session 2: Append to existing session (picks up where it left off)
-pawnai transcribe-diarize part2.wav --session meeting.json
+pawn-diarize transcribe-diarize part2.wav --session meeting.json
 
 # Session 3: Add more and export final output
-pawnai transcribe-diarize part3.wav --session meeting.json -o final_transcript.txt
+pawn-diarize transcribe-diarize part3.wav --session meeting.json -o final_transcript.txt
 ```
 
 **Session File Format** (JSON, auto-created):
@@ -615,16 +615,16 @@ pawnai transcribe-diarize part3.wav --session meeting.json -o final_transcript.t
 
 ```bash
 # More permissive matching
-pawnai transcribe-diarize part1.wav part2.wav -t 0.5 -x 0.70
+pawn-diarize transcribe-diarize part1.wav part2.wav -t 0.5 -x 0.70
 
 # Stricter matching
-pawnai transcribe-diarize part1.wav part2.wav -t 0.85 -x 0.95
+pawn-diarize transcribe-diarize part1.wav part2.wav -t 0.85 -x 0.95
 ```
 
 ## Project Structure
 
 ```
-pawnai/
+pawn-diarize/
 ├── __init__.py           # Package metadata and public API
 ├── __main__.py           # Single CLI entrypoint
 ├── core/
@@ -650,18 +650,18 @@ pawnai/
 pip install -e ".[dev]"
 
 # Format code
-black pawnai tests
-isort pawnai tests
+black pawn-diarize tests
+isort pawn-diarize tests
 
 # Run linting
-flake8 pawnai tests
-mypy pawnai
+flake8 pawn-diarize tests
+mypy pawn-diarize
 
 # Run tests
 pytest
 
 # Generate coverage report
-pytest --cov=pawnai --cov-report=html
+pytest --cov=pawn-diarize --cov-report=html
 ```
 
 ### Running Tests
@@ -677,7 +677,7 @@ pytest tests/test_transcription.py
 pytest -v
 
 # Run with coverage
-pytest --cov=pawnai
+pytest --cov=pawn-diarize
 ```
 
 ## Technologies
@@ -687,7 +687,7 @@ pytest --cov=pawnai
 - **LanceDB**: Vector database for embeddings
 - **Typer**: CLI framework with auto-generated help
 - **Rich**: Beautiful terminal output formatting
-- **PyYAML**: Configuration management from .pawnai.yml files
+- **PyYAML**: Configuration management from .pawn-diarize.yml files
 - **PyTorch**: Deep learning framework
 - **scikit-learn**: Machine learning utilities
 
@@ -716,8 +716,8 @@ HF_TOKEN=hf_your_actual_token_here
 
 3. Or use a custom config file:
 ```bash
-pawnai status --config ./my_config.env
-pawnai diarize audio.wav --config /path/to/config.env
+pawn-diarize status --config ./my_config.env
+pawn-diarize diarize audio.wav --config /path/to/config.env
 ```
 
 Get your token: https://huggingface.co/settings/tokens
@@ -729,7 +729,7 @@ Get your token: https://huggingface.co/settings/tokens
 cat .env | grep HF_TOKEN
 
 # Check system status
-pawnai status
+pawn-diarize status
 ```
 
 ### CUDA Issues
@@ -737,11 +737,11 @@ pawnai status
 ```bash
 # Use CPU instead (can specify via .env or command)
 export DEVICE="cpu"
-pawnai transcribe audio.wav
+pawn-diarize transcribe audio.wav
 
 # Or in custom .env file
 echo "DEVICE=cpu" >> custom.env
-pawnai transcribe audio.wav --config ./custom.env
+pawn-diarize transcribe audio.wav --config ./custom.env
 ```
 
 ### Out of Memory

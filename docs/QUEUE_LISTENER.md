@@ -1,6 +1,6 @@
-# PawnAI Queue Listener
+# Pawn Diarize Queue Listener
 
-PawnAI can operate as a background worker that consumes jobs from a message queue instead of being driven by the command line.  The underlying queue is [pawn-queue](https://github.com/codref/pawn-queue) — a lightweight, S3-backed, at-least-once queue that works with any S3-compatible object store (AWS S3, MinIO, Hetzner Object Storage, Cloudflare R2, …).
+Pawn Diarize can operate as a background worker that consumes jobs from a message queue instead of being driven by the command line.  The underlying queue is [pawn-queue](https://github.com/codref/pawn-queue) — a lightweight, S3-backed, at-least-once queue that works with any S3-compatible object store (AWS S3, MinIO, Hetzner Object Storage, Cloudflare R2, …).
 
 ---
 
@@ -14,13 +14,13 @@ Producer (script / CI / API)
         │
         │  poll every N seconds
         ▼
-  pawnai listen  (consumer worker)
+  pawn-diarize listen  (consumer worker)
         │  reads payload, dispatches to core function
         ▼
   PostgreSQL / audio processing output
 ```
 
-Each message lives as a small JSON object in S3.  When `pawnai listen` picks up a message it writes a **lease** file to claim it; if processing succeeds the message is **acked** (deleted); if it fails the message is moved to a **dead-letter prefix** for manual inspection.  The lease is automatically refreshed in the background so long-running jobs (multi-minute CPU diarization) are never re-queued mid-flight.
+Each message lives as a small JSON object in S3.  When `pawn-diarize listen` picks up a message it writes a **lease** file to claim it; if processing succeeds the message is **acked** (deleted); if it fails the message is moved to a **dead-letter prefix** for manual inspection.  The lease is automatically refreshed in the background so long-running jobs (multi-minute CPU diarization) are never re-queued mid-flight.
 
 ---
 
@@ -51,15 +51,15 @@ s3:
 
 queue:
   # Topic the listener subscribes to (created automatically if absent).
-  topic: pawnai-jobs
+  topic: pawn-diarize-jobs
 
   # Unique name for this consumer instance.
   # Use a different name when running multiple parallel workers.
-  consumer_name: pawnai-listener
+  consumer_name: pawn-diarize-listener
 
   # Dedicated bucket for queue message objects (separate from audio files).
   # Credentials and endpoint are taken from the s3: section above.
-  bucket_name: pawnai-queue
+  bucket_name: pawn-diarize-queue
 
   polling:
     interval_seconds: 5
@@ -83,17 +83,17 @@ queue:
 ## Running the listener
 
 ```bash
-# Uses .pawnai.yml in the current directory
-pawnai listen
+# Uses .pawn-diarize.yml in the current directory
+pawn-diarize listen
 
 # Explicit config file
-pawnai listen --config /etc/pawnai/.pawnai.yml
+pawn-diarize listen --config /etc/pawn-diarize/.pawn-diarize.yml
 
 # Override topic and consumer name without changing the config file
-pawnai listen --topic my-custom-topic --consumer-name worker-02
+pawn-diarize listen --topic my-custom-topic --consumer-name worker-02
 
 # As a Python module
-python -m pawnai listen
+python -m pawn-diarize listen
 ```
 
 Stop with **Ctrl-C** — the listener drains the current message before exiting.
@@ -201,7 +201,7 @@ Every message sent to the queue must be a JSON object with a `command` key.  All
 }
 ```
 
-Override SiYuan connection details when needed (otherwise the `siyuan:` section in `.pawnai.yml` is used):
+Override SiYuan connection details when needed (otherwise the `siyuan:` section in `.pawn-diarize.yml` is used):
 
 ```json
 {
@@ -247,16 +247,16 @@ async def main():
         PawnQueueBuilder()
         .s3(
             endpoint_url="http://localhost:9000",
-            bucket_name="pawnai-queue",
+            bucket_name="pawn-diarize-queue",
             access_key="minioadmin",
             secret_key="minioadmin",
         )
         .build()
     ) as pq:
-        await pq.create_topic("pawnai-jobs")   # idempotent
+        await pq.create_topic("pawn-diarize-jobs")   # idempotent
         producer = await pq.register_producer("my-script")
 
-        message_id = await producer.publish("pawnai-jobs", {
+        message_id = await producer.publish("pawn-diarize-jobs", {
             "command": "transcribe-diarize",
             "audio_paths": ["s3://260305173832/260305173832_*.flac"],
             "threshold": 0.2,
@@ -276,10 +276,10 @@ asyncio.run(main())
 Messages that fail (exception in processing, missing `command` key, unsupported command) are automatically moved to the dead-letter prefix inside the same S3 bucket:
 
 ```
-pawnai-queue/<topic>/dead-letter/<message-id>.json
+pawn-diarize-queue/<topic>/dead-letter/<message-id>.json
 ```
 
-You can inspect them with `pawnai s3-ls` or any S3 browser and re-publish them after investigating the root cause.
+You can inspect them with `pawn-diarize s3-ls` or any S3 browser and re-publish them after investigating the root cause.
 
 ### Replaying dead-letter messages
 
@@ -295,7 +295,7 @@ import yaml
 from pawn_queue import PawnQueueBuilder
 from pawn_queue.client import S3Client
 
-CONFIG_FILE = ".pawnai.yml"
+CONFIG_FILE = ".pawn-diarize.yml"
 TOPIC = "audio-chunks"   # topic whose dead-letter queue to drain
 
 
@@ -349,13 +349,13 @@ asyncio.run(main())
 
 ```ini
 [Unit]
-Description=PawnAI queue listener
+Description=Pawn Diarize queue listener
 After=network.target
 
 [Service]
-User=pawnai
-WorkingDirectory=/opt/pawnai
-ExecStart=pawnai listen --config /etc/pawnai/.pawnai.yml
+User=pawn-diarize
+WorkingDirectory=/opt/pawn-diarize
+ExecStart=pawn-diarize listen --config /etc/pawn-diarize/.pawn-diarize.yml
 Restart=on-failure
 RestartSec=10
 

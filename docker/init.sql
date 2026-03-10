@@ -1,4 +1,4 @@
--- Enable pgvector extension in the pawnai database
+-- Enable pgvector extension in the pawn-diarize database
 CREATE EXTENSION IF NOT EXISTS vector;
 
 -- Speaker segment embeddings

@@ -1,12 +1,12 @@
-"""Configuration management for PawnAI.
+"""Configuration management for Pawn Diarize.
 
 This module provides configuration constants and the :class:`AppConfig` class
 which merges defaults with values from an optional YAML file
-(``.pawnai.yml`` in the working directory or a path supplied at runtime).
+(``.pawn-diarize.yml`` in the working directory or a path supplied at runtime).
 
-Configuration file (``.pawnai.yml``)
+Configuration file (``.pawn-diarize.yml``)
 --------------------------------------
-All settings can be overridden at runtime via ``.pawnai.yml`` placed in the
+All settings can be overridden at runtime via ``.pawn-diarize.yml`` placed in the
 project root (or by passing ``--config path/to/file.yml`` on the CLI):
 
 .. code-block:: yaml
@@ -48,7 +48,7 @@ used as a fallback so that CI/CD pipelines that inject secrets via env vars
 continue to work without a config file.
 
 When the ``s3:`` section is present any audio path starting with ``s3://``
-is transparently downloaded before processing.  See :mod:`pawnai.core.s3`
+is transparently downloaded before processing.  See :mod:`pawn_diarize.core.s3`
 for the supported URI formats.
 """
 
@@ -65,7 +65,7 @@ import yaml
 DEFAULT_DB_PATH = "speakers_db"  # kept for backward compat; prefer DEFAULT_DB_DSN
 DEFAULT_DB_DSN: str = os.getenv(
     "DATABASE_URL",
-    "postgresql+psycopg://postgres:postgres@localhost:5432/pawnai",
+    "postgresql+psycopg://postgres:postgres@localhost:5432/pawn_diarize",
 )
 
 # Model identifiers
@@ -75,7 +75,7 @@ TRANSCRIPTION_MODEL = "nvidia/parakeet-tdt-0.6b-v3"
 TRANSCRIPTION_BACKEND = "nemo"   # "nemo" (Parakeet) or "whisper" (faster-whisper)
 WHISPER_MODEL = "large-v3"       # faster-whisper model size or path
 
-CONFIG_FILE = ".pawnai.yml"
+CONFIG_FILE = ".pawn-diarize.yml"
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -92,7 +92,7 @@ class AppConfig:
 
     Args:
         config_path: Path to a YAML config file.  When *None* the default
-            ``.pawnai.yml`` in the current working directory is used (if it
+            ``.pawn-diarize.yml`` in the current working directory is used (if it
             exists).
     """
 
@@ -209,7 +209,7 @@ class AppConfig:
         """Return the ``s3:`` configuration mapping, or ``None`` if absent.
 
         Returns:
-            Dictionary of S3 settings from ``.pawnai.yml``, or ``None`` when
+            Dictionary of S3 settings from ``.pawn-diarize.yml``, or ``None`` when
             the ``s3:`` section is not present.
         """
         s3_config = self._config.get("s3")
@@ -221,7 +221,7 @@ class AppConfig:
         """Return the ``siyuan:`` configuration mapping, or ``None`` if absent.
 
         Returns:
-            Dictionary of SiYuan settings from ``.pawnai.yml``, or ``None``
+            Dictionary of SiYuan settings from ``.pawn-diarize.yml``, or ``None``
             when the ``siyuan:`` section is not present.
         """
         siyuan_config = self._config.get("siyuan")
@@ -233,7 +233,7 @@ class AppConfig:
         """Return the ``queue:`` configuration mapping, or ``None`` if absent.
 
         Returns:
-            Dictionary of pawn-queue settings from ``.pawnai.yml``, or
+            Dictionary of pawn-queue settings from ``.pawn-diarize.yml``, or
             ``None`` when the ``queue:`` section is not present.
         """
         queue_config = self._config.get("queue")
@@ -244,7 +244,7 @@ class AppConfig:
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Module-level default instance
-# Reads .pawnai.yml from cwd at first import; also seeds os.environ["HF_TOKEN"]
+# Reads .pawn-diarize.yml from cwd at first import; also seeds os.environ["HF_TOKEN"]
 # so that HUGGINGFACE_TOKEN below is populated when the YAML is present.
 # ──────────────────────────────────────────────────────────────────────────────
 

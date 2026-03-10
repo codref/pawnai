@@ -1,4 +1,4 @@
-# PawnAI Development Workflow
+# Pawn Diarize Development Workflow
 
 ## Setup
 
@@ -15,32 +15,32 @@ pip install -e ".[dev]"
 
 ```bash
 # Run as CLI command (after installation)
-pawnai --help
-pawnai status
+pawn-diarize --help
+pawn-diarize status
 
 # Run as Python module
-python -m pawnai --help
-python -m pawnai status
+python -m pawn-diarize --help
+python -m pawn-diarize status
 ```
 
 ## Development Tasks
 
 ```bash
 # Format code
-black pawnai tests
-isort pawnai tests
+black pawn-diarize tests
+isort pawn-diarize tests
 
 # Lint
-flake8 pawnai tests
+flake8 pawn-diarize tests
 
 # Type checking
-mypy pawnai
+mypy pawn-diarize
 
 # Run tests
 pytest
 
 # Run tests with coverage
-pytest --cov=pawnai --cov-report=html
+pytest --cov=pawn-diarize --cov-report=html
 ```
 
 ## Building and Distributing
@@ -55,7 +55,7 @@ python -m twine upload dist/*
 
 ## Project Organization
 
-- **pawnai/**: Main package directory
+- **pawn-diarize/**: Main package directory
   - **__main__.py**: Single CLI entrypoint
   - **__init__.py**: Package metadata and public API
   - **core/**: Core business logic (diarization, transcription, embeddings)
@@ -69,7 +69,7 @@ python -m twine upload dist/*
 
 ## Key Design Patterns
 
-1. **Single Entrypoint**: All CLI commands go through `pawnai/__main__.py`
+1. **Single Entrypoint**: All CLI commands go through `pawn-diarize/__main__.py`
 2. **Lazy Loading**: Models are loaded on first use, not at startup
 3. **Separation of Concerns**: Core logic separated from CLI layer
 4. **Type Hints**: Full type annotations for IDE support and safety

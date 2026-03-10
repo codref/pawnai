@@ -150,7 +150,7 @@ activemq-data/
 # Environments
 .env
 .envrc
-.pawnai.yml
+.pawn-diarize.yml
 .venv
 env/
 venv/

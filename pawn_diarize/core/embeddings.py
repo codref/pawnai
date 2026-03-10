@@ -18,7 +18,7 @@ class EmbeddingManager:
     Args:
         db_dsn: PostgreSQL DSN, e.g.
                 ``"postgresql+psycopg://user:pass@host:5432/db"``.
-                Falls back to :data:`~pawnai.core.config.DEFAULT_DB_DSN`
+                Falls back to :data:`~pawn_diarize.core.config.DEFAULT_DB_DSN`
                 (which respects the ``DATABASE_URL`` environment variable).
     """
 
@@ -123,7 +123,7 @@ class EmbeddingManager:
 
         Returns:
             List of dicts containing all
-            :class:`~pawnai.core.database.Embedding` columns plus a
+            :class:`~pawn_diarize.core.database.Embedding` columns plus a
             ``speaker_id`` alias for ``local_speaker_label``.
         """
         with get_session(self._engine) as session:

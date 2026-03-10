@@ -1,7 +1,7 @@
 """PostgreSQL database layer using SQLAlchemy ORM + pgvector.
 
 This module defines the shared ORM models, engine factory, and session helper
-used across the pawnai package.  All LanceDB operations have been replaced by
+used across the pawn-diarize package.  All LanceDB operations have been replaced by
 their PostgreSQL + pgvector equivalents here.
 
 Tables
@@ -13,7 +13,7 @@ embeddings
 
 speaker_names
     Maps (audio_file, local_speaker_label) pairs to human-readable names
-    assigned via ``pawnai label``.
+    assigned via ``pawn-diarize label``.
 """
 
 from __future__ import annotations
@@ -235,7 +235,7 @@ def get_engine(dsn: str):
 
     Args:
         dsn: PostgreSQL DSN, e.g.
-             ``"postgresql+psycopg://postgres:postgres@localhost:5432/pawnai"``
+             ``"postgresql+psycopg://postgres:postgres@localhost:5432/pawn_diarize"``
 
     Returns:
         A :class:`sqlalchemy.engine.Engine` instance.

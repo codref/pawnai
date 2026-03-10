@@ -1,14 +1,14 @@
-# GitHub Copilot Instructions - PawnAI Project
+# GitHub Copilot Instructions - Pawn Diarize Project
 
 ## Project Overview
 
-**PawnAI** is a professional Python CLI application for speaker diarization, transcription, and speaker embedding management. This document provides project-specific guidelines and architecture for development.
+**Pawn Diarize** is a professional Python CLI application for speaker diarization, transcription, and speaker embedding management. This document provides project-specific guidelines and architecture for development.
 
 ## Project Structure
 
 ```
 /workspaces/parakeet/
-├── pawnai/                          # Main package
+├── pawn-diarize/                          # Main package
 │   ├── __init__.py                     # Package metadata & public API
 │   ├── __main__.py                     # 🎯 SINGLE CLI ENTRYPOINT
 │   ├── core/                           # Core business logic
@@ -47,7 +47,7 @@
 ## Key Architectural Principles
 
 ### 1. Single Entry Point
-All CLI commands route through `pawnai/__main__.py:main()`:
+All CLI commands route through `pawn-diarize/__main__.py:main()`:
 ```python
 def main() -> None:
     """Main entry point function for the CLI."""
@@ -62,12 +62,12 @@ def main() -> None:
 ```
 
 ### 2. Separation of Concerns
-- **Core Layer** (`pawnai/core/`): Pure business logic, no CLI dependencies
-- **CLI Layer** (`pawnai/cli/`): Command definitions, argument parsing, formatting
-- **Utils Layer** (`pawnai/utils/`): Reusable helper functions
+- **Core Layer** (`pawn-diarize/core/`): Pure business logic, no CLI dependencies
+- **CLI Layer** (`pawn-diarize/cli/`): Command definitions, argument parsing, formatting
+- **Utils Layer** (`pawn-diarize/utils/`): Reusable helper functions
 
 ### 3. CLI Framework: Typer
-Commands are defined using Typer decorators in `pawnai/cli/commands.py`:
+Commands are defined using Typer decorators in `pawn-diarize/cli/commands.py`:
 ```python
 @app.command()
 def diarize(
@@ -81,7 +81,7 @@ def diarize(
 ### 4. Rich Output
 Use Rich library for formatted terminal output:
 ```python
-from pawnai.cli.utils import console
+from pawn-diarize.cli.utils import console
 
 console.print("[green]✓ Success[/green]")
 console.print("[red]✗ Error[/red]")
@@ -101,7 +101,7 @@ with console.status("[bold green]Processing..."):
 
 ### Adding New Commands
 
-1. Add command function to `pawnai/cli/commands.py`:
+1. Add command function to `pawn-diarize/cli/commands.py`:
 ```python
 @app.command()
 def new_command(
@@ -113,7 +113,7 @@ def new_command(
     pass
 ```
 
-2. Add corresponding core logic to appropriate module in `pawnai/core/`
+2. Add corresponding core logic to appropriate module in `pawn-diarize/core/`
 
 3. Add tests in `tests/test_cli.py` and `tests/test_core.py`
 
@@ -150,30 +150,30 @@ pip install -e ".[dev]"
 ### Running Commands
 ```bash
 # CLI entry point
-pawnai --help
-pawnai status
-pawnai diarize audio.wav
+pawn-diarize --help
+pawn-diarize status
+pawn-diarize diarize audio.wav
 
 # Python module
-python -m pawnai status
-python -m pawnai transcribe audio.wav
+python -m pawn-diarize status
+python -m pawn-diarize transcribe audio.wav
 ```
 
 ### Code Quality
 ```bash
 # Format code
-black pawnai tests
-isort pawnai tests
+black pawn-diarize tests
+isort pawn-diarize tests
 
 # Lint
-flake8 pawnai tests
+flake8 pawn-diarize tests
 
 # Type check
-mypy pawnai
+mypy pawn-diarize
 
 # Run tests
 pytest
-pytest --cov=pawnai
+pytest --cov=pawn-diarize
 ```
 
 ## Type Hints & IDE Support
@@ -242,7 +242,7 @@ def transcribe(audio_path: str, timestamps: bool = True) -> str:
 ### Test Example
 ```python
 import pytest
-from pawnai.core import diarization
+from pawn-diarize.core import diarization
 
 @pytest.fixture
 def sample_audio():
@@ -262,7 +262,7 @@ def test_diarize(sample_audio):
 ### pyproject.toml Structure
 ```toml
 [project]
-name = "pawnai"
+name = "pawn-diarize"
 version = "1.0.0"  # Or dynamic from __init__.py
 dependencies = [
     "typer[all]>=0.9.0",
@@ -283,7 +283,7 @@ dev = [
 ]
 
 [project.scripts]
-pawnai = "pawnai.__main__:main"
+pawn-diarize = "pawn-diarize.__main__:main"
 ```
 
 ## Common Patterns
@@ -316,7 +316,7 @@ except ValueError as e:
 ### Configuration Management
 ```python
 from pathlib import Path
-from pawnai.core.config import AppConfig
+from pawn-diarize.core.config import AppConfig
 
 config = AppConfig()
 db_path = Path(config.get("db_path", "speakers_db"))
@@ -337,8 +337,8 @@ import typer
 from rich.console import Console
 
 # Local imports last
-from pawnai.core import diarization
-from pawnai.cli.utils import console
+from pawn-diarize.core import diarization
+from pawn-diarize.cli.utils import console
 ```
 
 ### Avoid Circular Imports
@@ -366,19 +366,19 @@ from pawnai.cli.utils import console
 
 ### Enable Verbose Output
 ```python
-from pawnai.cli.utils import console
+from pawn-diarize.cli.utils import console
 
 console.print("[debug][yellow]Debug message[/yellow][/debug]")
 ```
 
 ### Check System Status
 ```bash
-pawnai status
+pawn-diarize status
 ```
 
 ### Inspect Database
 ```python
-from pawnai.core.embeddings import EmbeddingManager
+from pawn-diarize.core.embeddings import EmbeddingManager
 
 manager = EmbeddingManager()
 speakers = manager.list_speakers()
@@ -418,5 +418,5 @@ print(speakers)
 ---
 
 **Last Updated**: February 2026
-**Project**: PawnAI
+**Project**: Pawn Diarize
 **Status**: Production Ready

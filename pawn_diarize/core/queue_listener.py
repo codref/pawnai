@@ -1,8 +1,8 @@
-"""Queue listener for PawnAI.
+"""Queue listener for Pawn Diarize.
 
 Consumes messages from a pawn-queue topic and dispatches them to the
 appropriate core function.  Each message payload is a structured dict with at
-minimum a ``command`` key whose value matches a PawnAI CLI command name
+minimum a ``command`` key whose value matches a Pawn Diarize CLI command name
 (e.g. ``transcribe-diarize``).  Additional keys are the command's parameters.
 Unrecognised keys are silently ignored; omitted parameters fall back to the
 per-command defaults defined in :data:`COMMAND_DEFAULTS`.
@@ -13,13 +13,13 @@ pawn-queue's ``consumer.listen()`` keeps the lease alive via a background
 ``_lease_refresher`` task, so jobs that take several minutes (e.g. CPU-based
 diarization) will not be re-queued while the handler is executing.  Set
 ``visibility_timeout_seconds`` to at least as long as your longest expected
-job in the ``queue:`` section of ``.pawnai.yml``.
+job in the ``queue:`` section of ``.pawn-diarize.yml``.
 
 Usage::
 
     import asyncio
-    from pawnai.core.config import AppConfig
-    from pawnai.core.queue_listener import start_listener
+    from pawn_diarize.core.config import AppConfig
+    from pawn_diarize.core.queue_listener import start_listener
 
     asyncio.run(start_listener(AppConfig()))
 """
@@ -134,9 +134,9 @@ async def dispatch(command: str, params: Dict[str, Any], cfg: Any) -> None:
     run in a thread executor to avoid blocking the asyncio event loop.
 
     Args:
-        command: PawnAI command name (e.g. ``"transcribe-diarize"``).
+        command: Pawn Diarize command name (e.g. ``"transcribe-diarize"``),
         params: Merged parameter dict (defaults already applied).
-        cfg: :class:`~pawnai.core.config.AppConfig` instance.
+        cfg: :class:`~pawn_diarize.core.config.AppConfig` instance.
 
     Raises:
         ValueError: If *command* is not supported.
@@ -177,7 +177,7 @@ def _resolve_audio_paths(paths: List[str], cfg: Any) -> tuple[List[str], List[st
     s3_cfg = cfg.get_s3_config()
     if s3_cfg is None:
         raise RuntimeError(
-            "Message contains s3:// paths but no 's3:' section is configured in .pawnai.yml"
+            "Message contains s3:// paths but no 's3:' section is configured in .pawn-diarize.yml"
         )
 
     client = S3Client.from_dict(s3_cfg)
@@ -186,7 +186,7 @@ def _resolve_audio_paths(paths: List[str], cfg: Any) -> tuple[List[str], List[st
     if base_dir:
         base_dir.mkdir(parents=True, exist_ok=True)
 
-    tmp_dir = Path(tempfile.mkdtemp(prefix="pawnai_queue_", dir=str(base_dir) if base_dir else None))
+    tmp_dir = Path(tempfile.mkdtemp(prefix="pawn_diarize_queue_", dir=str(base_dir) if base_dir else None))
 
     expanded: List[str] = []
     for path in paths:
@@ -423,7 +423,7 @@ def _run_sync_siyuan(params: Dict[str, Any], cfg: Any) -> None:
     daily_note: bool = bool(params.get("daily_note", True))
 
     if not resolved_notebook:
-        raise ValueError("sync-siyuan: 'notebook' is required (or set siyuan.notebook in .pawnai.yml)")
+        raise ValueError("sync-siyuan: 'notebook' is required (or set siyuan.notebook in .pawn-diarize.yml)")
 
     db_dsn = _resolve_db_dsn(params, cfg)
     engine = get_engine(db_dsn)
@@ -474,7 +474,7 @@ def _run_sync_siyuan(params: Dict[str, Any], cfg: Any) -> None:
             session_id=sid,
             title=analysis.title,
         )
-        attrs: Dict[str, str] = {"custom-pawnai-session": sid}
+        attrs: Dict[str, str] = {"custom-pawn-diarize-session": sid}
         all_tags = list(analysis.tags or []) + list(analysis.sentiment_tags or [])
         if all_tags:
             attrs["tags"] = ",".join(all_tags)
@@ -571,7 +571,7 @@ def make_message_handler(
     4. Acks the message on success, nacks (dead-letters) on failure.
 
     Args:
-        cfg: :class:`~pawnai.core.config.AppConfig` instance.
+        cfg: :class:`~pawn_diarize.core.config.AppConfig` instance.
 
     Returns:
         Async callable suitable for ``consumer.listen(handler)``.
@@ -620,9 +620,9 @@ def make_message_handler(
 # ──────────────────────────────────────────────────────────────────────────────
 
 #: Default topic name when none is configured.
-DEFAULT_TOPIC = "pawnai-jobs"
+DEFAULT_TOPIC = "pawn-diarize-jobs"
 #: Default consumer registration name.
-DEFAULT_CONSUMER_NAME = "pawnai-listener"
+DEFAULT_CONSUMER_NAME = "pawn-diarize-listener"
 
 
 async def start_listener(
@@ -632,18 +632,18 @@ async def start_listener(
 ) -> None:
     """Set up pawn-queue and block until cancelled.
 
-    Reads the ``queue:`` section of :class:`~pawnai.core.config.AppConfig` to
+    Reads the ``queue:`` section of :class:`~pawn_diarize.core.config.AppConfig` to
     build the :class:`pawn_queue.PawnQueue` instance, registers a consumer,
     and calls ``consumer.listen(handler)`` which blocks until the asyncio task
     is cancelled (e.g. via ``KeyboardInterrupt``).
 
     Args:
-        cfg: Active :class:`~pawnai.core.config.AppConfig` instance.
+        cfg: Active :class:`~pawn_diarize.core.config.AppConfig` instance.
         topic_override: When supplied, overrides the topic name from config.
         consumer_name_override: When supplied, overrides the consumer name.
 
     Raises:
-        RuntimeError: If the ``queue:`` section is missing from ``.pawnai.yml``.
+        RuntimeError: If the ``queue:`` section is missing from ``.pawn-diarize.yml``.
     """
     try:
         from pawn_queue import PawnQueueBuilder
@@ -655,7 +655,7 @@ async def start_listener(
     queue_cfg: Optional[Dict[str, Any]] = cfg.get_queue_config()
     if queue_cfg is None:
         raise RuntimeError(
-            "No 'queue:' section found in .pawnai.yml. "
+            "No 'queue:' section found in .pawn-diarize.yml. "
             "Add a queue: section with at minimum 'bucket_name'. "
             "S3 credentials are read from the top-level 's3:' section."
         )
@@ -664,7 +664,7 @@ async def start_listener(
     s3_cfg: Dict[str, Any] = cfg.get_s3_config() or {}
     if not s3_cfg:
         raise RuntimeError(
-            "No 's3:' section found in .pawnai.yml. "
+            "No 's3:' section found in .pawn-diarize.yml. "
             "The queue listener requires S3 credentials in the top-level 's3:' section."
         )
 
@@ -672,11 +672,11 @@ async def start_listener(
     consumer_name = consumer_name_override or queue_cfg.get("consumer_name", DEFAULT_CONSUMER_NAME)
 
     # Queue-specific settings: bucket_name, polling, concurrency
-    bucket_name: str = queue_cfg.get("bucket_name", "pawnai-queue")
+    bucket_name: str = queue_cfg.get("bucket_name", "pawn-diarize-queue")
     polling_section: Dict[str, Any] = queue_cfg.get("polling", {})
     concurrency_section: Dict[str, Any] = queue_cfg.get("concurrency", {})
 
-    # Map pawnai s3 field names → pawn-queue builder parameters
+    # Map pawn-diarize s3 field names → pawn-queue builder parameters
     endpoint_url: str = s3_cfg.get("endpoint_url", "http://localhost:9000")
     use_ssl: bool = bool(s3_cfg.get("verify_ssl", s3_cfg.get("use_ssl", False)))
 

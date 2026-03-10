@@ -1,8 +1,8 @@
-"""Main entry point for the PawnAI CLI application.
+"""Main entry point for the Pawn Diarize CLI application.
 
 This module serves as the single entrypoint for the CLI.
-Run with: python -m pawnai [command] [options]
-Or after installation: pawnai [command] [options]
+Run with: python -m pawn_diarize [command] [options]
+Or after installation: pawn-diarize [command] [options]
 """
 
 import sys

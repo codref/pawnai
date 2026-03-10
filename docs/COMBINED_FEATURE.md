@@ -14,7 +14,7 @@ The combined process happens in three steps:
 
 ## New Files Created
 
-### `/workspaces/parakeet/pawnai/core/combined.py`
+### `/workspaces/parakeet/pawn-diarize/core/combined.py`
 
 This module provides two main functions:
 
@@ -34,7 +34,7 @@ This module provides two main functions:
 ### `transcribe-diarize`
 
 ```bash
-python -m pawnai transcribe-diarize audio.wav
+python -m pawn-diarize transcribe-diarize audio.wav
 ```
 
 #### Options
@@ -51,22 +51,22 @@ python -m pawnai transcribe-diarize audio.wav
 
 ```bash
 # Basic usage - output to console
-python -m pawnai transcribe-diarize audio.wav
+python -m pawn-diarize transcribe-diarize audio.wav
 
 # Save to text file
-python -m pawnai transcribe-diarize audio.wav -o transcript.txt
+python -m pawn-diarize transcribe-diarize audio.wav -o transcript.txt
 
 # Save to JSON
-python -m pawnai transcribe-diarize audio.wav -o result.json
+python -m pawn-diarize transcribe-diarize audio.wav -o result.json
 
 # Stricter speaker matching
-python -m pawnai transcribe-diarize audio.wav -t 0.8
+python -m pawn-diarize transcribe-diarize audio.wav -t 0.8
 
 # Don't store new speakers
-python -m pawnai transcribe-diarize audio.wav --no-store
+python -m pawn-diarize transcribe-diarize audio.wav --no-store
 
 # Process large file on CPU with chunks
-python -m pawnai transcribe-diarize large.mp3 --device cpu -c 300
+python -m pawn-diarize transcribe-diarize large.mp3 --device cpu -c 300
 ```
 
 ## Output Format
@@ -145,7 +145,7 @@ The merging process works by:
 ### Example 1: Basic Transcript with Speakers
 
 ```bash
-python -m pawnai transcribe-diarize audio/260216230838_01.mp3
+python -m pawn-diarize transcribe-diarize audio/260216230838_01.mp3
 ```
 
 This will:
@@ -157,7 +157,7 @@ This will:
 ### Example 2: Save Professional Transcript
 
 ```bash
-python -m pawnai transcribe-diarize audio/260216230838_01.mp3 -o meeting_transcript.txt
+python -m pawn-diarize transcribe-diarize audio/260216230838_01.mp3 -o meeting_transcript.txt
 ```
 
 Creates a formatted text file with:
@@ -169,7 +169,7 @@ Creates a formatted text file with:
 ### Example 3: Process Interview with JSON Output
 
 ```bash
-python -m pawnai transcribe-diarize interview.wav -o interview.json
+python -m pawn-diarize transcribe-diarize interview.wav -o interview.json
 ```
 
 Creates a JSON file with:
@@ -181,7 +181,7 @@ Creates a JSON file with:
 ### Example 4: Large File Processing
 
 ```bash
-python -m pawnai transcribe-diarize large_podcast.mp3 --device cpu -c 600 -o podcast.txt
+python -m pawn-diarize transcribe-diarize large_podcast.mp3 --device cpu -c 600 -o podcast.txt
 ```
 
 For large files:
@@ -196,18 +196,18 @@ You can test the new command with any audio file:
 
 ```bash
 # Quick test with a short file
-python -m pawnai transcribe-diarize audio/2086-149220-0033.wav
+python -m pawn-diarize transcribe-diarize audio/2086-149220-0033.wav
 
 # Test with MP3 file and speaker matching
-python -m pawnai transcribe-diarize audio/260216230838_01.mp3 -t 0.75
+python -m pawn-diarize transcribe-diarize audio/260216230838_01.mp3 -t 0.75
 
 # Test with labeled speakers
 # First, label a speaker (if you haven't already)
-python -m pawnai diarize audio/260216230838_01.mp3
-python -m pawnai label -f audio/260216230838_01.mp3 -s SPEAKER_00 -n "Alice"
+python -m pawn-diarize diarize audio/260216230838_01.mp3
+python -m pawn-diarize label -f audio/260216230838_01.mp3 -s SPEAKER_00 -n "Alice"
 
 # Then run combined transcription
-python -m pawnai transcribe-diarize audio/260216230838_02.mp3 -o transcript.txt
+python -m pawn-diarize transcribe-diarize audio/260216230838_02.mp3 -o transcript.txt
 # If the same speaker appears, they'll be recognized as "Alice"
 ```
 
@@ -215,13 +215,13 @@ python -m pawnai transcribe-diarize audio/260216230838_02.mp3 -o transcript.txt
 
 ### File Changes
 
-1. **Created**: `/workspaces/parakeet/pawnai/core/combined.py`
+1. **Created**: `/workspaces/parakeet/pawn-diarize/core/combined.py`
    - New module for combined functionality
 
-2. **Modified**: `/workspaces/parakeet/pawnai/core/__init__.py`
+2. **Modified**: `/workspaces/parakeet/pawn-diarize/core/__init__.py`
    - Added exports for `transcribe_with_diarization` and `format_transcript_with_speakers`
 
-3. **Modified**: `/workspaces/parakeet/pawnai/cli/commands.py`
+3. **Modified**: `/workspaces/parakeet/pawn-diarize/cli/commands.py`
    - Added `transcribe-diarize` command
    - Updated `status` command to list new command
 
@@ -247,7 +247,7 @@ The implementation follows the project's architectural principles:
 
 To use this in production:
 
-1. Label your known speakers using `pawnai label`
+1. Label your known speakers using `pawn-diarize label`
 2. Run `transcribe-diarize` on new audio files
 3. Known speakers will be automatically recognized
 4. New speakers will be stored for future recognition

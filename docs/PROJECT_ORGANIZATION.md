@@ -1,14 +1,14 @@
-# PawnAI Project Organization - Summary
+# Pawn Diarize Project Organization - Summary
 
 ## What Was Done
 
-Your project has been successfully reorganized as a professional Python CLI application named **PawnAI** with a single entrypoint and proper package structure.
+Your project has been successfully reorganized as a professional Python CLI application named **Pawn Diarize** with a single entrypoint and proper package structure.
 
 ## Final Project Structure
 
 ```
 /workspaces/parakeet/
-├── pawnai/                          # Main package
+├── pawn-diarize/                          # Main package
 │   ├── __init__.py                     # Package metadata & public API
 │   ├── __main__.py                     # 🎯 SINGLE CLI ENTRYPOINT
 │   ├── core/                           # Core business logic
@@ -44,11 +44,11 @@ Your project has been successfully reorganized as a professional Python CLI appl
 ## Key Features
 
 ### 1. Single Entrypoint Architecture
-- All commands route through `pawnai/__main__.py:main()`
+- All commands route through `pawn-diarize/__main__.py:main()`
 - Can be invoked as:
   ```bash
-  python -m pawnai [command]
-  pawnai [command]  # After installation
+  python -m pawn-diarize [command]
+  pawn-diarize [command]  # After installation
   ```
 
 ### 2. Command Structure
@@ -79,7 +79,7 @@ Available CLI commands:
 - `pyproject.toml`: Complete project metadata
 - ALL dependencies listed with versions
 - Optional dependency groups for dev/docs
-- Entry point defined: `pawnai = "pawnai.__main__:main"`
+- Entry point defined: `pawn-diarize = "pawn-diarize.__main__:main"`
 
 ### 5. Professional Development Setup
 - Test suite with pytest
@@ -99,32 +99,32 @@ pip install -e ".[dev]"
 ### Run Commands
 ```bash
 # Show status
-python -m pawnai status
+python -m pawn-diarize status
 
 # Diarize audio
-python -m pawnai diarize audio.wav
+python -m pawn-diarize diarize audio.wav
 
 # Transcribe
-python -m pawnai transcribe audio.wav
+python -m pawn-diarize transcribe audio.wav
 
 # Extract embeddings
-python -m pawnai embed audio.wav --speaker-id speaker_001
+python -m pawn-diarize embed audio.wav --speaker-id speaker_001
 
 # Help
-python -m pawnai --help
+python -m pawn-diarize --help
 ```
 
 ### Run Tests
 ```bash
 pytest
-pytest --cov=pawnai
+pytest --cov=pawn-diarize
 ```
 
 ## What Was Kept
 
 ✅ All original functionality preserved:
-- `dbscan.py` → `pawnai/core/diarization.py`
-- `transcribe.py` → `pawnai/core/transcription.py`
+- `dbscan.py` → `pawn-diarize/core/diarization.py`
+- `transcribe.py` → `pawn-diarize/core/transcription.py`
 - Original speaker embeddings and database structure
 - All dependencies from `requirements.txt`
 
@@ -150,11 +150,11 @@ rm -rf old/
 
 2. **Test the CLI**:
    ```bash
-   python -m pawnai status
+   python -m pawn-diarize status
    ```
 
 3. **Customize**:
-   - Update `pawnai/__init__.py` with actual version info
+   - Update `pawn-diarize/__init__.py` with actual version info
    - Update `pyproject.toml` with correct GitHub URLs
    - Expand test coverage for your specific use cases
 

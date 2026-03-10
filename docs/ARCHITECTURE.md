@@ -1,17 +1,17 @@
-# PawnAI CLI Architecture
+# Pawn Diarize CLI Architecture
 
 ## Single Entrypoint Diagram
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
 │  User Commands                                              │
-│  $ pawnai [command]                                      │
-│  $ python -m pawnai [command]                            │
+│  $ pawn-diarize [command]                                      │
+│  $ python -m pawn-diarize [command]                            │
 └────────────────┬────────────────────────────────────────────┘
                  │
                  ▼
 ┌─────────────────────────────────────────────────────────────┐
-│  🎯 pawnai/__main__.py::main()                           │
+│  🎯 pawn-diarize/__main__.py::main()                           │
 │     Single Entry Point                                      │
 │     - Handles keyboard interrupts                           │
 │     - Manages error reporting                               │
@@ -21,7 +21,7 @@
                  ▼
 ┌─────────────────────────────────────────────────────────────┐
 │  CLI Application Router (Typer)                             │
-│  pawnai/cli/commands.py                                  │
+│  pawn-diarize/cli/commands.py                                  │
 │  - diarize <audio>                                          │
 │  - transcribe <audio>                                       │
 │  - embed <audio> --speaker-id ID                            │
@@ -35,8 +35,8 @@
     └────┬────┘     └───┬──────┘  └───┬────┘ └──┬────┘
          │              │             │         │
     ┌────▼──────────────▼──────┬──────▼─────────▼┐
-    │    Core Business Logic    │  pawnai/   │
-    │    pawnai/core/        │  utils/ (CLI) │
+    │    Core Business Logic    │  pawn-diarize/   │
+    │    pawn-diarize/core/        │  utils/ (CLI) │
     ├───────────────────────────┤               │
     │ • diarization.py          │ • Rich output │
     │ • transcription.py        │ • Progress    │
@@ -56,7 +56,7 @@
 
 ## Module Responsibilities
 
-### Entry Point: `pawnai/__main__.py`
+### Entry Point: `pawn-diarize/__main__.py`
 ```python
 main() → app()
 ```
@@ -65,19 +65,19 @@ main() → app()
 - ✅ Sets exit codes properly
 - ✅ Displays user-friendly error messages
 
-### CLI Layer: `pawnai/cli/`
+### CLI Layer: `pawn-diarize/cli/`
 - **commands.py**: Command definitions using Typer decorators
 - **utils.py**: CLI-specific utilities (Rich console, progress bars)
 - **__init__.py**: Exports console for rich output
 
-### Core Layer: `pawnai/core/`
+### Core Layer: `pawn-diarize/core/`
 - **config.py**: Configuration class, paths, constants
 - **diarization.py**: DiarizationEngine for speaker identification
 - **transcription.py**: TranscriptionEngine for speech-to-text
 - **embeddings.py**: EmbeddingManager for vector storage
 - **__init__.py**: Public API exports
 
-### Utilities: `pawnai/utils/`
+### Utilities: `pawn-diarize/utils/`
 - **__init__.py**: General helper functions
 - Audio file discovery, validation, etc.
 
@@ -97,21 +97,21 @@ pip install -e ".[dev]"
 ```bash
 pip install .
 # Then run
-pawnai --help
+pawn-diarize --help
 ```
 
 ### From Git
 ```bash
 git clone <repo>
-cd pawnai
+cd pawn-diarize
 pip install -e ".[dev]"
-python -m pawnai status
+python -m pawn-diarize status
 ```
 
 ## Code Flow Example: Transcribe Command
 
 ```
-$ pawnai transcribe audio.wav
+$ pawn-diarize transcribe audio.wav
          ↓
 __main__.py:main()
          ↓
@@ -133,29 +133,29 @@ sys.exit(0)
 ## Package Metadata Flow
 
 ```
-pawnai/__init__.py
+pawn-diarize/__init__.py
   ├─ __version__ = "1.0.0"
-  ├─ __author__ = "PawnAI Contributors"
+  ├─ __author__ = "Pawn Diarize Contributors"
   └─ __description__ = "..."
          ↓
 pyproject.toml [tool.setuptools.dynamic]
   ├─ reads version from __init__.py
-  ├─ defines entry point: pawnai = pawnai.__main__:main
+  ├─ defines entry point: pawn-diarize = pawn-diarize.__main__:main
   └─ lists dependencies
          ↓
 Installation: pip install -e .
-  ├─ Creates command: pawnai
+  ├─ Creates command: pawn-diarize
   └─ Installs dependencies
 ```
 
 ## Dependency Layers
 
 ```
-pawnai/cli/commands.py
+pawn-diarize/cli/commands.py
     ↓
-pawnai/core/[diarization|transcription|embeddings].py
+pawn-diarize/core/[diarization|transcription|embeddings].py
     ↓ (only imports from)
-pawnai/core/config.py
+pawn-diarize/core/config.py
     (no dependencies between core modules)
     ↓
 External: torch, pyannote, nemo, lancedb
@@ -176,34 +176,34 @@ External: torch, pyannote, nemo, lancedb
 ### Basic Usage
 ```bash
 # Show help
-python -m pawnai --help
+python -m pawn-diarize --help
 
 # Show status
-python -m pawnai status
+python -m pawn-diarize status
 
 # Diarize audio
-python -m pawnai diarize meeting.wav
+python -m pawn-diarize diarize meeting.wav
 
 # Transcribe
-python -m pawnai transcribe speech.wav
+python -m pawn-diarize transcribe speech.wav
 
 # Store embeddings
-python -m pawnai embed audio.wav -s speaker_001
+python -m pawn-diarize embed audio.wav -s speaker_001
 
 # Search similar
-python -m pawnai search speaker_001
+python -m pawn-diarize search speaker_001
 ```
 
 ### With Configuration
 ```bash
 # Use custom database
-python -m pawnai diarize audio.wav --db-path ./my_db
+python -m pawn-diarize diarize audio.wav --db-path ./my_db
 
 # No timestamps
-python -m pawnai transcribe audio.wav --no-timestamps
+python -m pawn-diarize transcribe audio.wav --no-timestamps
 
 # Limit search results
-python -m pawnai search speaker_001 --limit 10
+python -m pawn-diarize search speaker_001 --limit 10
 ```
 
 ### Development
@@ -212,19 +212,19 @@ python -m pawnai search speaker_001 --limit 10
 pytest
 
 # Run with coverage
-pytest --cov=pawnai
+pytest --cov=pawn-diarize
 
 # Format code
-black pawnai tests
-isort pawnai tests
+black pawn-diarize tests
+isort pawn-diarize tests
 
 # Type check
-mypy pawnai
+mypy pawn-diarize
 ```
 
 ---
 
-**This architecture ensures PawnAI is:**
+**This architecture ensures Pawn Diarize is:**
 - 🎯 Easy to use with a single entry point
 - 🏗️ Well-organized with clear separation of concerns
 - 📦 Professional and distributable
