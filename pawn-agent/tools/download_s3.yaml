@@ -1,0 +1,20 @@
+name: download_s3
+description: Download an audio file from an S3 URI to a local temporary directory. Pass-through for local paths.
+function: s3.download
+enabled: true
+input_schema:
+  type: object
+  required: [audio_path]
+  properties:
+    audio_path:
+      type: string
+      description: "Local file path or s3:// URI"
+output_schema:
+  type: object
+  properties:
+    local_path:
+      type: string
+      description: Absolute local path to the downloaded file
+    temp_dir:
+      type: [string, "null"]
+      description: Temporary directory created for the download (null for local paths)

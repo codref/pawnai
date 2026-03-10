@@ -1,0 +1,59 @@
+[build-system]
+requires = ["setuptools>=45", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pawn-agent"
+version = "0.1.0"
+description = "DSPy-powered agentic queue listener that routes natural-language requests to PawnAI skills"
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "MIT"}
+authors = [
+    {name = "PawnAI Contributors"},
+]
+keywords = ["agent", "dspy", "queue", "skills", "diarization", "transcription"]
+
+dependencies = [
+    "dspy>=2.5.0",
+    "pydantic>=2.0.0",
+    "PyYAML>=6.0",
+    "jsonschema>=4.0.0",
+    "typer>=0.9.0",
+    "rich>=13.0.0",
+    "github-copilot-sdk",
+    "pawn-queue>=0.1",
+    "aioboto3>=13.0",
+    "pawnai",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0",
+    "pytest-asyncio>=0.21",
+    "pytest-cov>=4.0",
+    "black>=23.0",
+    "isort>=5.0",
+    "mypy>=1.0",
+]
+
+[project.scripts]
+pawn-agent = "pawn_agent.__main__:main"
+
+[tool.setuptools]
+packages = [
+    "pawn_agent",
+    "pawn_agent.skills",
+    "pawn_agent.agent",
+    "pawn_agent.executors",
+]
+
+[tool.setuptools.package-data]
+"*" = ["*.yaml", "*.yml"]
+
+[tool.black]
+line-length = 100
+target-version = ["py310"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"

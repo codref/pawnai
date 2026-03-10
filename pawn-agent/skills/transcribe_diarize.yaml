@@ -1,0 +1,43 @@
+name: transcribe_diarize
+description: Download audio and run the full combined transcription + speaker diarization pipeline, producing a complete speaker-attributed transcript persisted in the database.
+enabled: true
+input_schema:
+  type: object
+  required: [audio_path]
+  properties:
+    audio_path:
+      type: string
+    threshold:
+      type: number
+      default: 0.7
+    device:
+      type: string
+      default: cuda
+    backend:
+      type: string
+      default: nemo
+    store_new:
+      type: boolean
+      default: true
+tools:
+  - step: 1
+    tool: download_s3
+    params:
+      audio_path: "{{input.audio_path}}"
+  - step: 2
+    tool: run_combined
+    params:
+      local_path: "{{steps.1.local_path}}"
+      threshold: "{{input.threshold}}"
+      device: "{{input.device}}"
+      backend: "{{input.backend}}"
+      store_new: "{{input.store_new}}"
+  - step: 3
+    tool: cleanup_temp
+    params:
+      temp_dir: "{{steps.1.temp_dir}}"
+output:
+  transcript: "{{steps.2.transcript}}"
+  session_id: "{{steps.2.session_id}}"
+  segments: "{{steps.2.segments}}"
+  output_path: "{{steps.2.output_path}}"

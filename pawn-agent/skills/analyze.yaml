@@ -1,0 +1,27 @@
+name: analyze
+description: Analyse a transcript or session using the Copilot LLM. Accepts a plain-text transcript (e.g. from a prior transcription step), a file path, or a session ID. Returns a structured analysis covering summary, key topics, speaker highlights, and sentiment.
+enabled: true
+input_schema:
+  type: object
+  properties:
+    transcript:
+      type: [string, "null"]
+      description: Plain-text transcript (use when chaining after a transcription step)
+    input_path:
+      type: [string, "null"]
+    session:
+      type: [string, "null"]
+    analysis_type:
+      type: string
+      default: all
+tools:
+  - step: 1
+    tool: run_analysis
+    params:
+      transcript: "{{input.transcript}}"
+      input_path: "{{input.input_path}}"
+      session: "{{input.session}}"
+      analysis_type: "{{input.analysis_type}}"
+output:
+  analysis: "{{steps.1.analysis}}"
+  session_id: "{{steps.1.session_id}}"

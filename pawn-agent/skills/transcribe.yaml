@@ -1,0 +1,39 @@
+name: transcribe
+description: Download an audio file (local or S3) and convert it to text with word-level timestamps using the configured ASR engine.
+enabled: true
+input_schema:
+  type: object
+  required: [audio_path]
+  properties:
+    audio_path:
+      type: string
+      description: "Local path or s3:// URI"
+    timestamps:
+      type: boolean
+      default: true
+    device:
+      type: string
+      default: cuda
+    backend:
+      type: string
+      default: nemo
+tools:
+  - step: 1
+    tool: download_s3
+    params:
+      audio_path: "{{input.audio_path}}"
+  - step: 2
+    tool: run_transcription
+    params:
+      local_path: "{{steps.1.local_path}}"
+      timestamps: "{{input.timestamps}}"
+      device: "{{input.device}}"
+      backend: "{{input.backend}}"
+  - step: 3
+    tool: cleanup_temp
+    params:
+      temp_dir: "{{steps.1.temp_dir}}"
+output:
+  transcript: "{{steps.2.transcript}}"
+  session_id: "{{steps.2.session_id}}"
+  output_path: "{{steps.2.output_path}}"

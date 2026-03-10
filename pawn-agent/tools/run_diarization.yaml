@@ -1,0 +1,33 @@
+name: run_diarization
+description: Identify and label speakers in a local audio file using pyannote.audio. Stores speaker embeddings in the vector database.
+function: diarization.run
+enabled: true
+input_schema:
+  type: object
+  required: [local_path]
+  properties:
+    local_path:
+      type: string
+    threshold:
+      type: number
+      default: 0.7
+      description: Speaker similarity threshold (0-1); lower = more speakers detected
+    store_new:
+      type: boolean
+      default: true
+    db_dsn:
+      type: [string, "null"]
+      default: null
+    output:
+      type: [string, "null"]
+      default: null
+output_schema:
+  type: object
+  properties:
+    segments:
+      type: array
+      description: List of diarization segment dicts
+    session_id:
+      type: [string, "null"]
+    output_path:
+      type: [string, "null"]

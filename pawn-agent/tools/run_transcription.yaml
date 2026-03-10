@@ -1,0 +1,44 @@
+name: run_transcription
+description: Convert a local audio file to text using the configured ASR engine (NeMo Parakeet or faster-whisper). Produces word-level timestamps.
+function: transcription.run
+enabled: true
+input_schema:
+  type: object
+  required: [local_path]
+  properties:
+    local_path:
+      type: string
+      description: Absolute local path to the audio file
+    timestamps:
+      type: boolean
+      default: true
+    device:
+      type: string
+      enum: [cuda, cpu, auto]
+      default: cuda
+    backend:
+      type: string
+      enum: [nemo, whisper]
+      default: nemo
+    chunk_duration:
+      type: [number, "null"]
+      default: null
+    session:
+      type: [string, "null"]
+      default: null
+    db_dsn:
+      type: [string, "null"]
+      default: null
+    output:
+      type: [string, "null"]
+      default: null
+output_schema:
+  type: object
+  properties:
+    transcript:
+      type: string
+      description: Full transcribed text
+    session_id:
+      type: [string, "null"]
+    output_path:
+      type: [string, "null"]

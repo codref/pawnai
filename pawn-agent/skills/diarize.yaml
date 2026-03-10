@@ -1,0 +1,34 @@
+name: diarize
+description: Download an audio file and identify distinct speakers using pyannote.audio, storing their embeddings in the vector database.
+enabled: true
+input_schema:
+  type: object
+  required: [audio_path]
+  properties:
+    audio_path:
+      type: string
+    threshold:
+      type: number
+      default: 0.7
+    store_new:
+      type: boolean
+      default: true
+tools:
+  - step: 1
+    tool: download_s3
+    params:
+      audio_path: "{{input.audio_path}}"
+  - step: 2
+    tool: run_diarization
+    params:
+      local_path: "{{steps.1.local_path}}"
+      threshold: "{{input.threshold}}"
+      store_new: "{{input.store_new}}"
+  - step: 3
+    tool: cleanup_temp
+    params:
+      temp_dir: "{{steps.1.temp_dir}}"
+output:
+  segments: "{{steps.2.segments}}"
+  session_id: "{{steps.2.session_id}}"
+  output_path: "{{steps.2.output_path}}"

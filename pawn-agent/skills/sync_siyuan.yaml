@@ -1,0 +1,20 @@
+name: sync_siyuan
+description: Push a session's analysis to SiYuan Notes as a new page, creating a backlink in the daily note.
+enabled: true
+input_schema:
+  type: object
+  properties:
+    session_id:
+      type: [string, "null"]
+    analysis:
+      type: [string, "null"]
+      description: Pre-generated analysis text (if not loading from DB)
+tools:
+  - step: 1
+    tool: sync_siyuan
+    params:
+      session_id: "{{input.session_id}}"
+      analysis: "{{input.analysis}}"
+output:
+  siyuan_block_id: "{{steps.1.siyuan_block_id}}"
+  synced: "{{steps.1.synced}}"

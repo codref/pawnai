@@ -1,0 +1,23 @@
+name: sync_siyuan
+description: Push a session's analysis as a new page to SiYuan Notes, optionally appending a backlink to the daily note.
+function: siyuan.sync
+enabled: true
+input_schema:
+  type: object
+  properties:
+    session_id:
+      type: [string, "null"]
+      description: Session ID whose analysis is fetched from the database
+    analysis:
+      type: [string, "null"]
+      description: Pre-generated analysis markdown text (overrides DB lookup)
+    db_dsn:
+      type: [string, "null"]
+      default: null
+output_schema:
+  type: object
+  properties:
+    siyuan_block_id:
+      type: [string, "null"]
+    synced:
+      type: boolean

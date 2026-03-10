@@ -1,0 +1,35 @@
+name: run_analysis
+description: Analyse a transcript (plain text, file, or DB session) using the GitHub Copilot LLM. Produces summaries, topics, sentiment, tags, or knowledge-graph triples.
+function: analysis.run
+enabled: true
+input_schema:
+  type: object
+  properties:
+    transcript:
+      type: [string, "null"]
+      description: Plain-text transcript string (e.g. from a prior step)
+    input_path:
+      type: [string, "null"]
+      description: Path to a transcript file or audio file
+    session:
+      type: [string, "null"]
+      description: Session ID to load from the database
+    analysis_type:
+      type: string
+      enum: [summary, topics, sentiment, tags, knowledge_graph, all]
+      default: all
+    db_dsn:
+      type: [string, "null"]
+      default: null
+    model:
+      type: [string, "null"]
+      default: null
+      description: Copilot model to use (null = use agent default)
+output_schema:
+  type: object
+  properties:
+    analysis:
+      type: string
+      description: Structured analysis text produced by the LLM
+    session_id:
+      type: [string, "null"]

@@ -1,0 +1,13 @@
+name: cleanup_temp
+description: Remove a temporary directory created during audio download. Safe to call even when temp_dir is null.
+function: s3.cleanup
+enabled: true
+input_schema:
+  type: object
+  properties:
+    temp_dir:
+      type: [string, "null"]
+      description: Path to the temporary directory to remove
+output_schema:
+  type: object
+  properties: {}

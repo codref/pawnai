@@ -1,0 +1,55 @@
+name: run_combined
+description: Run the combined transcription + speaker diarization pipeline on a local audio file. Produces a speaker-attributed transcript persisted in the database.
+function: combined.run
+enabled: true
+input_schema:
+  type: object
+  required: [local_path]
+  properties:
+    local_path:
+      type: string
+    threshold:
+      type: number
+      default: 0.7
+    store_new:
+      type: boolean
+      default: true
+    device:
+      type: string
+      default: cuda
+    backend:
+      type: string
+      enum: [nemo, whisper]
+      default: nemo
+    chunk_duration:
+      type: [number, "null"]
+      default: null
+    cross_file_threshold:
+      type: number
+      default: 0.85
+    no_timestamps:
+      type: boolean
+      default: false
+    session:
+      type: [string, "null"]
+      default: null
+    db_dsn:
+      type: [string, "null"]
+      default: null
+    output:
+      type: [string, "null"]
+      default: null
+    verbose:
+      type: boolean
+      default: false
+output_schema:
+  type: object
+  properties:
+    transcript:
+      type: string
+    session_id:
+      type: [string, "null"]
+    segments:
+      type: array
+    output_path:
+      type: [string, "null"]
