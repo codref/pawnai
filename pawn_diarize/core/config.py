@@ -162,6 +162,10 @@ class AppConfig:
                 if key in paths:
                     self._config[key] = paths[key]
 
+        # top-level db_dsn overrides paths.db_dsn when present
+        if "db_dsn" in content:
+            self._config["db_dsn"] = content["db_dsn"]
+
         # device: section
         device = content.get("device", {})
         if isinstance(device, dict) and "type" in device:

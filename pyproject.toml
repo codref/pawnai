@@ -43,7 +43,6 @@ dependencies = [
     "alembic>=1.13.0",
     "pawn-queue>=0.1",
     "aioboto3>=13.0",
-    "dspy-ai>=2.5",
 ]
 
 [project.optional-dependencies]

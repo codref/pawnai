@@ -8,10 +8,7 @@ Config file schema (all keys optional)::
     db_dsn: postgresql+psycopg://postgres:postgres@localhost:5432/pawn_diarize
 
     agent:
-      backend: copilot          # "copilot" | "openai"
-      model: gpt-4o
-      openai_base_url: http://localhost:11434/v1
-      openai_api_key: ollama
+      model: gpt-4o          # Copilot model identifier
 
     siyuan:
       url: http://127.0.0.1:6806
@@ -44,11 +41,8 @@ class AgentConfig:
     # Database
     db_dsn: str = field(default_factory=lambda: os.environ.get("DATABASE_URL", _DEFAULT_DSN))
 
-    # LM backend
-    backend: str = "copilot"          # "copilot" | "openai"
-    model: str = "gpt-4o"
-    openai_base_url: Optional[str] = None
-    openai_api_key: Optional[str] = None
+    # Copilot model
+    model: str = "claude-sonnet-4.6"
 
     # SiYuan
     siyuan_url: str = _DEFAULT_SIYUAN_URL
@@ -88,14 +82,8 @@ def load_config(config_path: Optional[str] = None) -> AgentConfig:
             cfg.db_dsn = data["db_dsn"]
 
         agent_sec = data.get("agent", {}) or {}
-        if "backend" in agent_sec:
-            cfg.backend = agent_sec["backend"]
         if "model" in agent_sec:
             cfg.model = agent_sec["model"]
-        if "openai_base_url" in agent_sec:
-            cfg.openai_base_url = agent_sec["openai_base_url"]
-        if "openai_api_key" in agent_sec:
-            cfg.openai_api_key = agent_sec["openai_api_key"]
 
         sy = data.get("siyuan", {}) or {}
         if "url" in sy:

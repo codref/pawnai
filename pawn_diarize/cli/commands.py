@@ -117,8 +117,8 @@ def diarize(
     config: Optional[str] = typer.Option(
         None, "--config", help="Path to YAML configuration file (pawnai.yaml)"
     ),
-    db_dsn: str = typer.Option(
-        DEFAULT_DB_DSN, help="PostgreSQL DSN for speaker database"
+    db_dsn: Optional[str] = typer.Option(
+        None, help="PostgreSQL DSN for speaker database"
     ),
     threshold: float = typer.Option(
         0.7, "--threshold", "-t", help="Similarity threshold for speaker matching (0-1, default: 0.7)"
@@ -150,6 +150,7 @@ def diarize(
 
     # Load config; capture instance so S3 config is accessible
     app_cfg = AppConfig(config_path=config) if config else AppConfig()
+    db_dsn = db_dsn or app_cfg.get("db_dsn")
     _s3_temps: List[str] = []
     try:
         audio_paths, _s3_temps, _path_map = _resolve_s3_paths(audio_paths, app_cfg)
@@ -264,8 +265,8 @@ def transcribe(
         None, "--session", "-s",
         help="Session name for grouping transcript segments in the database."
     ),
-    db_dsn: str = typer.Option(
-        DEFAULT_DB_DSN, help="PostgreSQL DSN for speaker database"
+    db_dsn: Optional[str] = typer.Option(
+        None, help="PostgreSQL DSN for speaker database"
     ),
     with_timestamps: bool = typer.Option(
         True, "--timestamps/--no-timestamps", help="Include word-level timestamps"
@@ -311,6 +312,7 @@ def transcribe(
 
     # Load config; capture instance so S3 config is accessible
     app_cfg = AppConfig(config_path=config) if config else AppConfig()
+    db_dsn = db_dsn or app_cfg.get("db_dsn")
     _s3_temps: List[str] = []
     try:
         audio_paths, _s3_temps, _path_map = _resolve_s3_paths(audio_paths, app_cfg)
@@ -424,8 +426,8 @@ def transcribe_diarize(
              "Speaker state and timestamps are loaded from the database and updated "
              "after processing so new audio is appended to the same conversation."
     ),
-    db_dsn: str = typer.Option(
-        DEFAULT_DB_DSN, help="PostgreSQL DSN for speaker database"
+    db_dsn: Optional[str] = typer.Option(
+        None, help="PostgreSQL DSN for speaker database"
     ),
     threshold: float = typer.Option(
         0.7, "--threshold", "-t", help="Similarity threshold for speaker matching (0-1)"
@@ -500,6 +502,7 @@ def transcribe_diarize(
 
     # Load config; capture instance so S3 config is accessible
     app_cfg = AppConfig(config_path=config) if config else AppConfig()
+    db_dsn = db_dsn or app_cfg.get("db_dsn")
     _s3_temps: List[str] = []
     try:
         audio_paths, _s3_temps, _path_map = _resolve_s3_paths(audio_paths, app_cfg)
@@ -711,8 +714,8 @@ def embed(
     config: Optional[str] = typer.Option(
         None, "--config", help="Path to YAML configuration file (pawnai.yaml)"
     ),
-    db_dsn: str = typer.Option(
-        DEFAULT_DB_DSN, help="PostgreSQL DSN for speaker database"
+    db_dsn: Optional[str] = typer.Option(
+        None, help="PostgreSQL DSN for speaker database"
     ),
 ) -> None:
     """Extract and store speaker embeddings.
@@ -733,6 +736,7 @@ def embed(
 
     # Load config; capture instance so S3 config is accessible
     app_cfg = AppConfig(config_path=config) if config else AppConfig()
+    db_dsn = db_dsn or app_cfg.get("db_dsn")
     _s3_temps: List[str] = []
     try:
         audio_paths, _s3_temps, _path_map = _resolve_s3_paths(audio_paths, app_cfg)
@@ -775,8 +779,8 @@ def search(
     config: Optional[str] = typer.Option(
         None, "--config", help="Path to YAML configuration file (pawnai.yaml)"
     ),
-    db_dsn: str = typer.Option(
-        DEFAULT_DB_DSN, help="PostgreSQL DSN for speaker database"
+    db_dsn: Optional[str] = typer.Option(
+        None, help="PostgreSQL DSN for speaker database"
     ),
     limit: int = typer.Option(
         5, help="Maximum number of results to return"
@@ -795,9 +799,9 @@ def search(
     from ..core.config import AppConfig
     
     # Load config from specified file if provided
-    if config:
-        AppConfig(config_path=config)
-    
+    app_cfg = AppConfig(config_path=config) if config else AppConfig()
+    db_dsn = db_dsn or app_cfg.get("db_dsn")
+
     try:
         embedding_manager = EmbeddingManager(db_dsn=db_dsn)
         speaker_names = embedding_manager.get_speaker_names()
@@ -842,8 +846,8 @@ def label(
     list_all: bool = typer.Option(
         False, "--list", "-l", help="List speaker mappings (all sessions, or full session view with --session)"
     ),
-    db_dsn: str = typer.Option(
-        DEFAULT_DB_DSN, help="PostgreSQL DSN for speaker database"
+    db_dsn: Optional[str] = typer.Option(
+        None, help="PostgreSQL DSN for speaker database"
     ),
 ) -> None:
     """Assign human-readable names to speakers.
@@ -876,8 +880,8 @@ def label(
     from ..core.database import SpeakerName, TranscriptionSegment, get_engine, get_session, init_db
     from sqlalchemy import select
 
-    if config:
-        AppConfig(config_path=config)
+    app_cfg = AppConfig(config_path=config) if config else AppConfig()
+    db_dsn = db_dsn or app_cfg.get("db_dsn")
 
     try:
         engine = get_engine(db_dsn)
@@ -1033,8 +1037,8 @@ def session_relabel(
     yes: bool = typer.Option(
         False, "--yes", "-y", help="Skip the confirmation prompt and apply changes immediately."
     ),
-    db_dsn: str = typer.Option(
-        DEFAULT_DB_DSN, help="PostgreSQL DSN for the speaker database."
+    db_dsn: Optional[str] = typer.Option(
+        None, help="PostgreSQL DSN for the speaker database."
     ),
     config: Optional[str] = typer.Option(
         None, "--config", help="Path to YAML configuration file (pawnai.yaml)."
@@ -1070,8 +1074,8 @@ def session_relabel(
     )
     from ..core.config import AppConfig
 
-    if config:
-        AppConfig(config_path=config)
+    app_cfg = AppConfig(config_path=config) if config else AppConfig()
+    db_dsn = db_dsn or app_cfg.get("db_dsn")
 
     try:
         engine = get_engine(db_dsn)
@@ -1201,8 +1205,8 @@ def session_relabel(
 @app.command(name="session-info")
 def session_info(
     session: str = typer.Argument(..., help="Session ID to inspect."),
-    db_dsn: str = typer.Option(
-        DEFAULT_DB_DSN, help="PostgreSQL DSN for the speaker database."
+    db_dsn: Optional[str] = typer.Option(
+        None, help="PostgreSQL DSN for the speaker database."
     ),
     config: Optional[str] = typer.Option(
         None, "--config", help="Path to YAML configuration file (pawnai.yaml)."
@@ -1234,8 +1238,8 @@ def session_info(
     )
     from ..core.config import AppConfig
 
-    if config:
-        AppConfig(config_path=config)
+    app_cfg = AppConfig(config_path=config) if config else AppConfig()
+    db_dsn = db_dsn or app_cfg.get("db_dsn")
 
     try:
         engine = get_engine(db_dsn)
@@ -1425,8 +1429,8 @@ def analyze(
     model: str = typer.Option(
         "gpt-4o", "--model", "-m", help="Copilot model to use for analysis"
     ),
-    db_dsn: str = typer.Option(
-        DEFAULT_DB_DSN, help="PostgreSQL DSN for speaker database (used when processing audio directly or loading from DB)"
+    db_dsn: Optional[str] = typer.Option(
+        None, help="PostgreSQL DSN for speaker database (used when processing audio directly or loading from DB)"
     ),
     device: str = typer.Option(
         "cuda", "--device", "-d", help="Device for audio processing: cuda or cpu"
@@ -1464,6 +1468,10 @@ def analyze(
     from rich.table import Table
 
     from ..core import AnalysisEngine
+    from ..core.config import AppConfig
+
+    app_cfg = AppConfig()
+    db_dsn = db_dsn or app_cfg.get("db_dsn")
 
     VALID_MODES = ("summary", "graph")
     if mode not in VALID_MODES:
@@ -1628,8 +1636,8 @@ def sync_siyuan(
             "Defaults to /daily note/{year}/{month}/{date}."
         ),
     ),
-    db_dsn: str = typer.Option(
-        DEFAULT_DB_DSN, help="PostgreSQL DSN for speaker database."
+    db_dsn: Optional[str] = typer.Option(
+        None, help="PostgreSQL DSN for speaker database."
     ),
     config: Optional[str] = typer.Option(
         None, "--config", help="Path to YAML configuration file (pawnai.yaml)."
@@ -1675,6 +1683,7 @@ def sync_siyuan(
 
     # ── Load YAML config ───────────────────────────────────────────────────────
     app_cfg = AppConfig(config_path=config)
+    db_dsn = db_dsn or app_cfg.get("db_dsn")
     sy_cfg = app_cfg.get_siyuan_config() or {}
 
     resolved_url = url or sy_cfg.get("url", "http://127.0.0.1:6806")
@@ -1877,8 +1886,8 @@ def sessions(
         None, "--session", "-s",
         help="Session ID to inspect. Shows head/tail of transcript, files, speakers, and timing."
     ),
-    db_dsn: str = typer.Option(
-        DEFAULT_DB_DSN, help="PostgreSQL DSN for speaker database"
+    db_dsn: Optional[str] = typer.Option(
+        None, help="PostgreSQL DSN for speaker database"
     ),
     head: int = typer.Option(
         5, "--head", help="Number of first segments to show in detail view"
@@ -1922,8 +1931,8 @@ def sessions(
     )
     from ..core.config import AppConfig
 
-    if config:
-        AppConfig(config_path=config)
+    app_cfg = AppConfig(config_path=config) if config else AppConfig()
+    db_dsn = db_dsn or app_cfg.get("db_dsn")
 
     # --output requires --session
     if output is not None and not session:

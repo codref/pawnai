@@ -1,30 +1,32 @@
 """Agent tools for pawn-agent.
 
-Each tool is a plain Python function with typed parameters and a docstring
-so DSPy can describe it to the LLM during the ReAct loop.  Tools are wired
-into a closure over :class:`~pawn_agent.utils.config.AgentConfig` via
-:func:`build_tools` so their signatures stay clean.
+Tools are registered with the Copilot SDK via :func:`~copilot.define_tool`.
+Each tool function takes a Pydantic params model and returns a plain string.
+They are wired into a closure over :class:`~pawn_agent.utils.config.AgentConfig`
+and a shared :class:`~copilot.CopilotClient` via :func:`build_tools`.
 
 Tools
 -----
-- ``query_conversation`` – fetch and format a transcript from the DB
-- ``analyze_conversation`` – LLM analysis of a transcript, stored in DB
-- ``save_to_siyuan`` – create/update a document in SiYuan
+- ``query_conversation``  – fetch and format a transcript from the DB
+- ``analyze_conversation`` – standard structured analysis (title/summary/topics/sentiment), stored in DB
+- ``analyze_custom``      – free-form analysis of a transcript grounded exclusively on its content
+- ``save_to_siyuan``      – create/update a document in SiYuan
 """
 
 from __future__ import annotations
 
-import asyncio
 import re
 import uuid
 from datetime import datetime, timezone
-from typing import Callable, List, Optional
+from typing import List, Optional
 
 import requests
-from sqlalchemy import create_engine, select, text
-from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sessionmaker
-from sqlalchemy import String, Float, Integer, Text, DateTime
+from pydantic import BaseModel, Field
+from sqlalchemy import DateTime, Float, Integer, String, Text, create_engine, select
 from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sessionmaker
+
+from copilot import CopilotClient, MessageOptions, PermissionHandler, Tool, define_tool
 
 from pawn_agent.utils.config import AgentConfig
 
@@ -224,35 +226,121 @@ def _build_siyuan_markdown(sections: dict, session_id: str, transcript: str, mod
 # ──────────────────────────────────────────────────────────────────────────────
 
 
-def build_tools(cfg: AgentConfig) -> List[Callable]:
-    """Return the list of DSPy-compatible tool functions for the given config.
+# ──────────────────────────────────────────────────────────────────────────────
+# Pydantic params models
+# ──────────────────────────────────────────────────────────────────────────────
 
-    Each tool is a plain Python callable with type annotations and a docstring.
-    DSPy's ``ReAct`` module uses these attributes to describe the tools to the
-    LLM automatically.
+
+class QueryConversationParams(BaseModel):
+    session_id: str = Field(description="Unique session identifier stored in the database.")
+
+
+class AnalyzeConversationParams(BaseModel):
+    session_id: str = Field(description="Unique session identifier stored in the database.")
+
+
+class AnalyzeCustomParams(BaseModel):
+    session_id: str = Field(description="Unique session identifier stored in the database.")
+    instruction: str = Field(
+        description="The analysis task to perform on the transcript, e.g. "
+                    "'extract epics and user stories', 'list action items', "
+                    "'identify decisions made'."
+    )
+
+
+class AnalyzeAndSaveCustomParams(BaseModel):
+    session_id: str = Field(description="Unique session identifier stored in the database.")
+    instruction: str = Field(
+        description="The analysis task to perform on the transcript, e.g. "
+                    "'extract epics and user stories', 'list action items'."
+    )
+    title: str = Field(description="Document title used in the SiYuan path and as the page heading.")
+    path: Optional[str] = Field(
+        default=None,
+        description="Optional explicit SiYuan path (e.g. '/Notes/2026-03-13/epics'). "
+                    "When the user asks to save to a *new* or *specific* note, derive a "
+                    "unique path from the title and today's date.",
+    )
+
+
+class SaveToSiyuanParams(BaseModel):
+    session_id: str = Field(description="Session identifier used to resolve the document path.")
+    title: str = Field(description="Document title used in the path and as the page heading.")
+    content: str = Field(description="Full Markdown content to store (e.g. from analyze_conversation).")
+    path: Optional[str] = Field(
+        default=None,
+        description="Optional explicit SiYuan path (e.g. '/Notes/2026-03-13/epics'). "
+                    "When provided it overrides the configured path template so that each "
+                    "call creates a distinct document. Use this whenever the user asks to "
+                    "save to a *new* note or a specific location.",
+    )
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Tool factory
+# ──────────────────────────────────────────────────────────────────────────────
+
+
+def build_tools(cfg: AgentConfig, client: CopilotClient) -> List[Tool]:
+    """Return the list of Copilot SDK :class:`~copilot.Tool` objects for the given config.
+
+    Each tool is defined with :func:`~copilot.define_tool` and a Pydantic params
+    model so the SDK can auto-generate a JSON schema for the LLM.
 
     Args:
         cfg: Populated :class:`~pawn_agent.utils.config.AgentConfig`.
+        client: Active :class:`~copilot.CopilotClient` (reused for the analysis
+            LLM call inside ``analyze_conversation``).
 
     Returns:
-        List of callables: ``[query_conversation, analyze_conversation, save_to_siyuan]``.
+        List of :class:`~copilot.Tool` objects.
     """
 
-    # ── Tool 1: query_conversation ────────────────────────────────────────────
+    # ── Shared internal helper: siyuan save (not a tool) ─────────────────────
 
-    def query_conversation(session_id: str) -> str:
-        """Retrieve and return the full transcript for a session from the database.
+    def _do_save_to_siyuan(session_id: str, title: str, content: str, path: Optional[str]) -> str:
+        url = cfg.siyuan_url
+        token = cfg.siyuan_token
+        notebook = cfg.siyuan_notebook
+        if not notebook:
+            return "SiYuan notebook ID is not configured (set siyuan.notebook in config)."
+        resolved_path = path or _resolve_path(cfg.siyuan_path_template, session_id, title)
+        try:
+            ids_data = _siyuan_post(url, token, "/api/filetree/getIDsByHPath",
+                                    {"path": resolved_path, "notebook": notebook})
+            for doc_id in (ids_data if isinstance(ids_data, list) else []):
+                _siyuan_post(url, token, "/api/filetree/removeDocByID", {"id": doc_id})
+        except Exception:
+            pass
+        doc_id = _siyuan_post(url, token, "/api/filetree/createDocWithMd",
+                              {"notebook": notebook, "path": resolved_path, "markdown": content})
+        if doc_id:
+            try:
+                _siyuan_post(url, token, "/api/attr/setBlockAttrs",
+                             {"id": doc_id, "attrs": {"custom-session-id": session_id}})
+            except Exception:
+                pass
+        try:
+            daily_path = _resolve_path(cfg.siyuan_daily_template, session_id, None)
+            daily_ids = _siyuan_post(url, token, "/api/filetree/getIDsByHPath",
+                                     {"path": daily_path, "notebook": notebook})
+            if isinstance(daily_ids, list) and daily_ids:
+                daily_doc_id = daily_ids[0]
+            else:
+                daily_doc_id = _siyuan_post(url, token, "/api/filetree/createDocWithMd",
+                                            {"notebook": notebook, "path": daily_path, "markdown": ""})
+            if daily_doc_id and doc_id:
+                _siyuan_post(url, token, "/api/block/appendBlock",
+                             {"dataType": "markdown", "data": f'(({doc_id} "{title}"))',
+                              "parentID": daily_doc_id})
+        except Exception:
+            pass
+        return str(doc_id) if doc_id else "Document created (no ID returned)."
 
-        Use this tool first when the user asks about the content of a conversation
-        or wants to analyse a specific session.
+    # ── Private helper (shared by query and analyze tools) ───────────────────
 
-        Args:
-            session_id: Unique session identifier stored in the database.
-
-        Returns:
-            Formatted transcript text with timestamps and speaker names, or an
-            error message if the session is not found.
-        """
+    def _fetch_transcript(session_id: str) -> str:
+        """Fetch and format a transcript from the database (no tool decorator)."""
         try:
             db = _make_db_session(cfg.db_dsn)
             segments = db.scalars(
@@ -264,7 +352,6 @@ def build_tools(cfg: AgentConfig) -> List[Callable]:
             if not segments:
                 return f"No transcript found for session: {session_id!r}"
 
-            # Batch-fetch speaker names
             audio_files = list({s.audio_file for s in segments if s.audio_file})
             labels = list({s.original_speaker_label for s in segments if s.original_speaker_label})
             name_lookup: dict = {}
@@ -299,36 +386,65 @@ def build_tools(cfg: AgentConfig) -> List[Callable]:
         except Exception as exc:
             return f"Error retrieving transcript: {exc}"
 
+    # ── Tool 1: query_conversation ────────────────────────────────────────────
+
+    @define_tool(
+        description=(
+            "Retrieve and return the full transcript for a session from the database. "
+            "Use this first when the user asks about the content of a conversation "
+            "or wants to analyse a specific session."
+        )
+    )
+    def query_conversation(params: QueryConversationParams) -> str:
+        return _fetch_transcript(params.session_id)
+
     # ── Tool 2: analyze_conversation ─────────────────────────────────────────
 
-    def analyze_conversation(session_id: str) -> str:
-        """Analyse a conversation session and save the analysis to the database.
-
-        Fetches the transcript from the database, sends it to the LLM for a
-        structured analysis (title, summary, key topics, speaker highlights,
-        sentiment, tags), persists the result in the ``session_analysis`` table,
-        and returns the full analysis text.
-
-        Args:
-            session_id: Unique session identifier stored in the database.
-
-        Returns:
-            Full structured analysis in Markdown, or an error message if the
-            session cannot be found or analysed.
-        """
+    @define_tool(
+        description=(
+            "Run the STANDARD structured analysis on a conversation session and persist it to "
+            "the database. Produces exactly these fixed sections: Title, Summary, Key Topics, "
+            "Speaker Highlights, Sentiment, Sentiment Tags, Tags. "
+            "Use this ONLY when the user explicitly asks for a full conversation analysis or "
+            "summary. For any other task (epics, user stories, action items, decisions, risks, "
+            "custom extraction, etc.) use analyze_custom instead."
+        )
+    )
+    async def analyze_conversation(params: AnalyzeConversationParams) -> str:
+        session_id = params.session_id
         try:
-            # Fetch transcript
-            transcript = query_conversation(session_id)
+            transcript = _fetch_transcript(session_id)
             if transcript.startswith("Error") or transcript.startswith("No transcript"):
                 return transcript
 
-            # Build and call the LLM via the currently configured DSPy LM
-            import dspy  # noqa: PLC0415
-            lm = dspy.settings.lm
             prompt = _ANALYSIS_PROMPT.format(transcript=transcript)
-            completions = lm(messages=[{"role": "user", "content": prompt}])
-            analysis_text = completions[0] if isinstance(completions, list) else str(completions)
 
+            # Use a dedicated Copilot session for the analysis LLM call
+            analysis_session = await client.create_session(
+                {
+                    "model": cfg.model,
+                    "on_permission_request": PermissionHandler.approve_all,
+                    "system_message": {
+                        "mode": "replace",
+                        "content": (
+                            "You are an expert conversation analyst. "
+                            "Analyse only the transcript provided in the user message. "
+                            "Do not use any knowledge about the user's codebase, tools, "
+                            "or environment."
+                        ),
+                    },
+                }
+            )
+            try:
+                response = await analysis_session.send_and_wait(
+                    MessageOptions(prompt=prompt),
+                    timeout=120,
+                )
+                analysis_text = response.data.content if (response is not None and response.data.content is not None) else ""
+            finally:
+                await analysis_session.disconnect()
+
+            analysis_text = analysis_text or ""
             sections = _parse_sections(analysis_text)
 
             # Persist to DB
@@ -337,7 +453,7 @@ def build_tools(cfg: AgentConfig) -> List[Callable]:
                 id=str(uuid.uuid4()),
                 session_id=session_id,
                 source=f"session:{session_id}",
-                model=getattr(dspy.settings.lm, "_copilot_model", getattr(dspy.settings.lm, "model", "unknown")),
+                model=cfg.model,
                 title=sections.get("title"),
                 summary=sections.get("summary"),
                 key_topics=sections.get("key_topics"),
@@ -355,71 +471,158 @@ def build_tools(cfg: AgentConfig) -> List[Callable]:
         except Exception as exc:
             return f"Error analysing conversation: {exc}"
 
-    # ── Tool 3: save_to_siyuan ────────────────────────────────────────────────
+    # ── Tool 3: analyze_custom ────────────────────────────────────────────────
 
-    def save_to_siyuan(session_id: str, title: str, content: str) -> str:
-        """Save a conversation analysis to SiYuan Notes as a structured document.
-
-        Creates or replaces a document in SiYuan under the configured notebook
-        and path template.  Also appends a backlink to today's daily note.
-
-        Args:
-            session_id: Session identifier used to resolve the document path.
-            title: Document title (used in the path and as the page heading).
-            content: Full Markdown content to store (e.g. from analyze_conversation).
-
-        Returns:
-            The SiYuan block ID of the created document, or an error message.
-        """
+    @define_tool(
+        description=(
+            "Perform a custom analysis of a conversation session's transcript and return "
+            "the result. Use this for ANY request that is not the standard structured "
+            "analysis (title/summary/topics/sentiment), such as extracting epics, user "
+            "stories, action items, decisions, risks, or any other bespoke task. "
+            "The analysis is grounded EXCLUSIVELY on the stored transcript — no other "
+            "context is used. "
+            "IMPORTANT: if the user also wants the result saved to SiYuan, use "
+            "analyze_and_save_custom instead of this tool — that avoids passing the "
+            "content back through this session."
+        )
+    )
+    async def analyze_custom(params: AnalyzeCustomParams) -> str:
+        session_id = params.session_id
+        instruction = params.instruction
         try:
-            url = cfg.siyuan_url
-            token = cfg.siyuan_token
-            notebook = cfg.siyuan_notebook
+            transcript = _fetch_transcript(session_id)
+            if transcript.startswith("Error") or transcript.startswith("No transcript"):
+                return transcript
 
-            if not notebook:
-                return "SiYuan notebook ID is not configured (set siyuan.notebook in config)."
+            prompt = (
+                "You are a helpful assistant. Your task is to analyse the conversation "
+                "transcript below and nothing else. Do NOT use any knowledge outside of "
+                "this transcript.\n"
+                "\n"
+                f"Task: {instruction}\n"
+                "\n"
+                "---\n"
+                "TRANSCRIPT:\n"
+                f"{transcript}\n"
+                "---\n"
+                "Respond only with the result of the task above. "
+                "Do not repeat the transcript or the instructions."
+            )
 
-            path = _resolve_path(cfg.siyuan_path_template, session_id, title)
-
-            # Remove existing doc at same path if any
+            analysis_session = await client.create_session(
+                {
+                    "model": cfg.model,
+                    "on_permission_request": PermissionHandler.approve_all,
+                    "system_message": {
+                        "mode": "replace",
+                        "content": (
+                            "You are a helpful assistant. "
+                            "Analyse only the transcript provided in the user message. "
+                            "Do not use any knowledge about the user's codebase, tools, "
+                            "or environment."
+                        ),
+                    },
+                }
+            )
             try:
-                ids_data = _siyuan_post(url, token, "/api/filetree/getIDsByHPath",
-                                        {"path": path, "notebook": notebook})
-                for doc_id in (ids_data if isinstance(ids_data, list) else []):
-                    _siyuan_post(url, token, "/api/filetree/removeDocByID", {"id": doc_id})
-            except Exception:
-                pass  # path may not exist yet
+                response = await analysis_session.send_and_wait(
+                    MessageOptions(prompt=prompt),
+                    timeout=120,
+                )
+                return response.data.content if (response is not None and response.data.content is not None) else ""
+            finally:
+                await analysis_session.disconnect()
+        except Exception as exc:
+            return f"Error performing custom analysis: {exc}"
 
-            doc_id = _siyuan_post(url, token, "/api/filetree/createDocWithMd",
-                                  {"notebook": notebook, "path": path, "markdown": content})
+    # ── Tool 4: analyze_and_save_custom ──────────────────────────────────────
 
-            # Set custom block attributes for querying
-            if doc_id:
-                try:
-                    _siyuan_post(url, token, "/api/attr/setBlockAttrs",
-                                 {"id": doc_id, "attrs": {"custom-session-id": session_id}})
-                except Exception:
-                    pass
+    @define_tool(
+        description=(
+            "Perform a custom analysis of a session transcript AND save the result "
+            "directly to SiYuan Notes in one step, WITHOUT passing the content back "
+            "through this session. "
+            "USE THIS whenever the user asks to both analyse a transcript AND save/store "
+            "the result (e.g. 'extract epics and save to a new note', 'list action items "
+            "and put them in SiYuan'). "
+            "The analysis is grounded EXCLUSIVELY on the stored transcript — no other "
+            "context is used. Provide 'path' with a unique value (e.g. "
+            "'/Notes/YYYY-MM-DD/title-slug') so a new document is created each time."
+        )
+    )
+    async def analyze_and_save_custom(params: AnalyzeAndSaveCustomParams) -> str:
+        session_id = params.session_id
+        instruction = params.instruction
+        title = params.title
+        try:
+            transcript = _fetch_transcript(session_id)
+            if transcript.startswith("Error") or transcript.startswith("No transcript"):
+                return transcript
 
-            # Append daily note backlink
+            prompt = (
+                "You are a helpful assistant. Your task is to analyse the conversation "
+                "transcript below and nothing else. Do NOT use any knowledge outside of "
+                "this transcript.\n"
+                "\n"
+                f"Task: {instruction}\n"
+                "\n"
+                "---\n"
+                "TRANSCRIPT:\n"
+                f"{transcript}\n"
+                "---\n"
+                "Respond only with the result of the task above. "
+                "Do not repeat the transcript or the instructions."
+            )
+
+            analysis_session = await client.create_session(
+                {
+                    "model": cfg.model,
+                    "on_permission_request": PermissionHandler.approve_all,
+                    "system_message": {
+                        "mode": "replace",
+                        "content": (
+                            "You are a helpful assistant. "
+                            "Analyse only the transcript provided in the user message. "
+                            "Do not use any knowledge about the user's codebase, tools, "
+                            "or environment."
+                        ),
+                    },
+                }
+            )
             try:
-                daily_path = _resolve_path(cfg.siyuan_daily_template, session_id, None)
-                daily_ids = _siyuan_post(url, token, "/api/filetree/getIDsByHPath",
-                                         {"path": daily_path, "notebook": notebook})
-                if isinstance(daily_ids, list) and daily_ids:
-                    daily_doc_id = daily_ids[0]
-                else:
-                    daily_doc_id = _siyuan_post(url, token, "/api/filetree/createDocWithMd",
-                                                {"notebook": notebook, "path": daily_path, "markdown": ""})
-                if daily_doc_id and doc_id:
-                    _siyuan_post(url, token, "/api/block/appendBlock",
-                                 {"dataType": "markdown", "data": f'(({doc_id} "{title}"))',
-                                  "parentID": daily_doc_id})
-            except Exception:
-                pass  # daily note link is best-effort
+                response = await analysis_session.send_and_wait(
+                    MessageOptions(prompt=prompt),
+                    timeout=120,
+                )
+                content = response.data.content if (response is not None and response.data.content is not None) else ""
+            finally:
+                await analysis_session.disconnect()
 
-            return str(doc_id) if doc_id else "Document created (no ID returned)."
+            doc_id = _do_save_to_siyuan(session_id, title, content, params.path)
+            return f"Saved to SiYuan (doc id: {doc_id})"
+        except Exception as exc:
+            return f"Error in analyze_and_save_custom: {exc}"
+
+    # ── Tool 5: save_to_siyuan ────────────────────────────────────────────────
+
+    @define_tool(
+        description=(
+            "Save already-generated content to SiYuan Notes as a structured document. "
+            "Use this ONLY when you already have the final content as a string (e.g. "
+            "from analyze_conversation). If you still need to run an analysis first, "
+            "use analyze_and_save_custom instead so the content never passes through "
+            "this session. "
+            "Pass 'path' to specify an explicit document path so a new document is "
+            "created each time; otherwise the configured path template is used."
+        )
+    )
+    def save_to_siyuan(params: SaveToSiyuanParams) -> str:
+        session_id = params.session_id
+        title = params.title
+        content = params.content
+        try:
+            return _do_save_to_siyuan(session_id, title, content, params.path)
         except Exception as exc:
             return f"Error saving to SiYuan: {exc}"
 
-    return [query_conversation, analyze_conversation, save_to_siyuan]
+    return [query_conversation, analyze_conversation, analyze_custom, analyze_and_save_custom, save_to_siyuan]  # type: ignore[list-item]
