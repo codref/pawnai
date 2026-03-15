@@ -134,6 +134,12 @@ class ConversationAgent:
         anima = self._load_anima()
         if anima:
             cfg["system_message"] = SystemMessageAppendConfig(mode="append", content=anima)
+        if self.cfg.backend == "openai" and self.cfg.openai_base_url:
+            cfg["provider"] = {
+                "type": "openai",
+                "base_url": self.cfg.openai_base_url,
+                "api_key": self.cfg.openai_api_key,
+            }
         return cfg
 
     async def _async_run(self, user_prompt: str) -> str:

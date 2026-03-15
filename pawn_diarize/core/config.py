@@ -186,6 +186,11 @@ class AppConfig:
         if isinstance(queue, dict):
             self._config["queue"] = queue
 
+        # rag: section – text embedding / RAG configuration
+        rag = content.get("rag")
+        if isinstance(rag, dict):
+            self._config["rag"] = rag
+
         # Propagate HF token to env var so any code using os.getenv("HF_TOKEN")
         # picks it up (including module-level constants evaluated after this call).
         hf_token = self._config.get("hf_token")
@@ -237,6 +242,18 @@ class AppConfig:
         siyuan_config = self._config.get("siyuan")
         if isinstance(siyuan_config, dict):
             return siyuan_config
+        return None
+
+    def get_rag_config(self) -> Optional[Dict[str, Any]]:
+        """Return the ``rag:`` configuration mapping, or ``None`` if absent.
+
+        Returns:
+            Dictionary of RAG/embedding settings from ``pawnai.yaml``, or
+            ``None`` when the ``rag:`` section is not present.
+        """
+        rag_config = self._config.get("rag")
+        if isinstance(rag_config, dict):
+            return rag_config
         return None
 
     def get_queue_config(self) -> Optional[Dict[str, Any]]:

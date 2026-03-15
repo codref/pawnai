@@ -60,6 +60,16 @@ class AgentConfig:
     siyuan_path_template: str = _DEFAULT_PATH_TEMPLATE
     siyuan_daily_template: str = _DEFAULT_DAILY_TEMPLATE
 
+    # OpenAI-compatible backend (used when backend == "openai")
+    backend: str = "copilot"
+    openai_base_url: Optional[str] = None
+    openai_api_key: str = "ollama"
+
+    # RAG / text embedding
+    embed_model: str = "Qwen/Qwen3-Embedding-0.6B"
+    embed_dim: int = 1024
+    embed_device: str = "cpu"
+
 
 def load_config(config_path: Optional[str] = None) -> AgentConfig:
     """Load AgentConfig from a YAML file and environment variables.
@@ -97,6 +107,12 @@ def load_config(config_path: Optional[str] = None) -> AgentConfig:
             cfg.agent_name = agent_sec["name"]
         if "anima" in agent_sec:
             cfg.anima_path = agent_sec["anima"]
+        if "backend" in agent_sec:
+            cfg.backend = agent_sec["backend"]
+        if "openai_base_url" in agent_sec:
+            cfg.openai_base_url = agent_sec["openai_base_url"]
+        if "openai_api_key" in agent_sec:
+            cfg.openai_api_key = agent_sec["openai_api_key"]
 
         sy = data.get("siyuan", {}) or {}
         if "url" in sy:
@@ -109,6 +125,14 @@ def load_config(config_path: Optional[str] = None) -> AgentConfig:
             cfg.siyuan_path_template = sy["path_template"]
         if "daily_note_path" in sy:
             cfg.siyuan_daily_template = sy["daily_note_path"]
+
+        rag = data.get("rag", {}) or {}
+        if "embed_model" in rag:
+            cfg.embed_model = rag["embed_model"]
+        if "embed_dim" in rag:
+            cfg.embed_dim = int(rag["embed_dim"])
+        if "embed_device" in rag:
+            cfg.embed_device = rag["embed_device"]
 
     return cfg
 

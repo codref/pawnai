@@ -34,6 +34,10 @@ from pgvector.sqlalchemy import Vector
 # Dimension produced by pyannote/embedding model.
 EMBEDDING_DIM = 512
 
+# Dimension for text chunk embeddings (sentence-transformers).
+# Read from env so the value matches whatever was used when running the migration.
+TEXT_CHUNK_DIM: int = int(os.environ.get("PAWN_EMBED_DIM", "1024"))
+
 
 # ──────────────────────────────────────────────────────────────────────────────
 # ORM Models
@@ -220,6 +224,84 @@ class SessionAnalysis(Base):
     tags: Mapped[Optional[Any]] = mapped_column(JSONB, nullable=True)
     analyzed_at: Mapped[datetime] = mapped_column(
         DateTime, nullable=False, default=lambda: datetime.now(timezone.utc)
+    )
+
+
+class RagSource(Base):
+    """A source document registered in the RAG index.
+
+    One row per indexed source — a session transcript, a SiYuan page, or any
+    future source type.  ``text_chunks`` rows reference this table via
+    ``source_id``.  Adding a new source type requires no schema changes.
+
+    Columns
+    -------
+    id:
+        Deterministic primary key: ``"<source_type>:<external_id>"``.
+    source_type:
+        Category label: ``"transcript"``, ``"siyuan"``, or future types.
+    external_id:
+        The natural identifier within the source system — a session_id for
+        transcripts, a SiYuan block ID for notes, etc.
+    display_name:
+        Human-readable label shown in ``rag-stats`` and search results.
+    metadata:
+        Auxiliary data: ``{audio_files, path, notebook, ...}``.
+    created_at:
+        UTC timestamp of the last vectorize run.
+    """
+
+    __tablename__ = "rag_sources"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    source_type: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    external_id: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    display_name: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    extra_data: Mapped[Optional[Any]] = mapped_column("metadata", JSONB, nullable=True)
+    created_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime, nullable=True, default=lambda: datetime.now(timezone.utc)
+    )
+
+
+class TextChunk(Base):
+    """A text chunk with a sentence-transformer embedding for RAG retrieval.
+
+    Each row is one chunk of content from a ``RagSource``.  For transcript
+    sources the speaker/timing fields are populated; for other sources they
+    are left ``NULL``.
+
+    Columns
+    -------
+    id:
+        Deterministic prefix of a SHA-256 hash.
+    source_id:
+        FK to ``rag_sources.id``.
+    speaker_name:
+        Resolved display name of the speaker (transcript chunks only).
+    start_time / end_time:
+        Chunk boundaries in seconds (transcript chunks only).
+    text:
+        The chunk content that was embedded.
+    embedding:
+        Sentence-transformer vector; dimension = ``TEXT_CHUNK_DIM``.
+    metadata:
+        Auxiliary data: ``{segment_ids, audio_file, block_id, ...}``.
+    created_at:
+        UTC timestamp when the chunk was stored.
+    """
+
+    __tablename__ = "text_chunks"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    source_id: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    speaker_name: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    start_time: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    end_time: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    text: Mapped[str] = mapped_column(Text, nullable=False)
+    embedding: Mapped[list] = mapped_column(Vector(TEXT_CHUNK_DIM), nullable=False)
+    extra_data: Mapped[Optional[Any]] = mapped_column("metadata", JSONB, nullable=True)
+    created_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime, nullable=True, default=lambda: datetime.now(timezone.utc)
     )
 
 

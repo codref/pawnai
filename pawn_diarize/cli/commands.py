@@ -2349,3 +2349,208 @@ def _fmt_size(num_bytes: int) -> str:
         num_bytes //= 1024
     return f"{num_bytes:.1f} PB"
 
+
+# ──────────────────────────────────────────────────────────────────────────────
+# RAG / vectorization commands
+# ──────────────────────────────────────────────────────────────────────────────
+
+
+@app.command()
+def vectorize(
+    session: Optional[str] = typer.Option(
+        None, "--session", "-s", help="Session ID to vectorize (transcript chunks)"
+    ),
+    page_id: Optional[str] = typer.Option(
+        None, "--page-id", "-p", help="SiYuan document block ID to vectorize"
+    ),
+    config: Optional[str] = typer.Option(
+        None, "--config", help="Path to YAML configuration file (pawnai.yaml)"
+    ),
+    db_dsn: Optional[str] = typer.Option(None, help="PostgreSQL DSN (overrides config)"),
+    embed_model: Optional[str] = typer.Option(
+        None, "--embed-model", help="Sentence-transformer model name or path"
+    ),
+    embed_device: Optional[str] = typer.Option(
+        None, "--device", "-d", help="Embedding device: cpu or cuda"
+    ),
+) -> None:
+    """Embed content into the RAG index.
+
+    Pass --session to index a transcript (speaker-turn chunking), --page-id to
+    index a SiYuan page (block-level chunking), or both in a single call.
+    Idempotent — re-running replaces existing chunks for each source.
+
+    Example::
+
+        pawn-diarize vectorize --session standup-2026-03-10
+        pawn-diarize vectorize --page-id 20260301222402-35jxzyu
+        pawn-diarize vectorize --session standup-2026-03-10 --page-id 20260301222402-35jxzyu
+    """
+    from ..core.config import AppConfig
+    from ..core.vectorize import vectorize_session, vectorize_siyuan_page
+
+    if not session and not page_id:
+        console.print("[red]Error: provide at least one of --session or --page-id[/red]")
+        raise typer.Exit(1)
+
+    app_cfg = AppConfig(config_path=config) if config else AppConfig()
+    resolved_dsn = db_dsn or app_cfg.get("db_dsn", DEFAULT_DB_DSN)
+
+    rag_cfg = app_cfg.get_rag_config() or {}
+    resolved_model = embed_model or rag_cfg.get("embed_model", "Qwen/Qwen3-Embedding-0.6B")
+    resolved_device = embed_device or rag_cfg.get("embed_device", "cpu")
+    resolved_dim = int(rag_cfg.get("embed_dim", 1024))
+
+    console.print(f"[cyan]Loading embedding model: {resolved_model} ({resolved_device}, {resolved_dim}-dim)[/cyan]")
+
+    if session:
+        try:
+            n = vectorize_session(
+                session_id=session,
+                db_dsn=resolved_dsn,
+                embed_model=resolved_model,
+                embed_device=resolved_device,
+                embed_dim=resolved_dim,
+            )
+            console.print(f"[green]Vectorized {n} chunks for session '{session}'[/green]")
+        except ValueError as exc:
+            console.print(f"[red]{exc}[/red]")
+            raise typer.Exit(1)
+        except Exception as exc:
+            console.print(f"[red]Error (session): {exc}[/red]")
+            raise typer.Exit(1)
+
+    if page_id:
+        sy_cfg = app_cfg.get_siyuan_config() or {}
+        siyuan_url = sy_cfg.get("url", "http://127.0.0.1:6806")
+        siyuan_token = sy_cfg.get("token", "")
+        try:
+            n = vectorize_siyuan_page(
+                page_id=page_id,
+                siyuan_url=siyuan_url,
+                siyuan_token=siyuan_token,
+                db_dsn=resolved_dsn,
+                embed_model=resolved_model,
+                embed_device=resolved_device,
+                embed_dim=resolved_dim,
+            )
+            console.print(f"[green]Vectorized {n} chunks for SiYuan page '{page_id}'[/green]")
+        except ValueError as exc:
+            console.print(f"[red]{exc}[/red]")
+            raise typer.Exit(1)
+        except Exception as exc:
+            console.print(f"[red]Error (page): {exc}[/red]")
+            raise typer.Exit(1)
+
+
+@app.command(name="rag-stats")
+def rag_stats(
+    config: Optional[str] = typer.Option(
+        None, "--config", help="Path to YAML configuration file (pawnai.yaml)"
+    ),
+    db_dsn: Optional[str] = typer.Option(None, help="PostgreSQL DSN (overrides config)"),
+) -> None:
+    """Display a summary of the current RAG index.
+
+    Shows total sources and chunks by type, followed by a per-source detail
+    table with chunk counts and last-indexed timestamps.
+
+    Example::
+
+        pawn-diarize rag-stats
+    """
+    from rich.table import Table
+
+    from ..core.config import AppConfig
+    from ..core.database import RagSource, TextChunk, get_engine, init_db
+
+    from sqlalchemy.orm import Session
+    from sqlalchemy import func, select
+
+    app_cfg = AppConfig(config_path=config) if config else AppConfig()
+    resolved_dsn = db_dsn or app_cfg.get("db_dsn", DEFAULT_DB_DSN)
+    rag_cfg = app_cfg.get_rag_config() or {}
+    model_name = rag_cfg.get("embed_model", "Qwen/Qwen3-Embedding-0.6B")
+    embed_dim = rag_cfg.get("embed_dim", 2048)
+    embed_device = rag_cfg.get("embed_device", "cpu")
+
+    engine = get_engine(resolved_dsn)
+    init_db(engine)
+
+    with Session(engine) as db:
+        # Summary by source type
+        summary_rows = db.execute(
+            select(
+                RagSource.source_type,
+                func.count(RagSource.id.distinct()).label("sources"),
+                func.count(TextChunk.id).label("chunks"),
+            )
+            .outerjoin(TextChunk, TextChunk.source_id == RagSource.id)
+            .group_by(RagSource.source_type)
+            .order_by(RagSource.source_type)
+        ).all()
+
+        # Per-source detail
+        detail_rows = db.execute(
+            select(
+                RagSource.id,
+                RagSource.source_type,
+                RagSource.display_name,
+                func.count(TextChunk.id).label("chunks"),
+                RagSource.created_at,
+            )
+            .outerjoin(TextChunk, TextChunk.source_id == RagSource.id)
+            .group_by(RagSource.id)
+            .order_by(RagSource.created_at.desc())
+        ).all()
+
+    total_sources = sum(r.sources for r in summary_rows)
+    total_chunks = sum(r.chunks for r in summary_rows)
+
+    console.print()
+    console.print("[bold]RAG Index Statistics[/bold]")
+    console.print(
+        f"Embedding model : [cyan]{model_name}[/cyan]  "
+        f"([cyan]{embed_dim}-dim, {embed_device}[/cyan])"
+    )
+    console.print()
+
+    if not summary_rows:
+        console.print("[yellow]No sources indexed yet.[/yellow]")
+        console.print(
+            "Use [bold]pawn-diarize vectorize <session_id>[/bold] to index a session."
+        )
+        return
+
+    # Summary table
+    summary_tbl = Table(show_header=True, header_style="bold")
+    summary_tbl.add_column("Source type", style="cyan")
+    summary_tbl.add_column("Sources", justify="right")
+    summary_tbl.add_column("Chunks", justify="right")
+    for r in summary_rows:
+        summary_tbl.add_row(r.source_type, str(r.sources), str(r.chunks))
+    summary_tbl.add_section()
+    summary_tbl.add_row("[bold]TOTAL[/bold]", str(total_sources), str(total_chunks))
+    console.print(summary_tbl)
+    console.print()
+
+    # Per-source detail table
+    detail_tbl = Table(show_header=True, header_style="bold", show_lines=False)
+    detail_tbl.add_column("Source ID", style="dim")
+    detail_tbl.add_column("Type", style="cyan")
+    detail_tbl.add_column("Chunks", justify="right")
+    detail_tbl.add_column("Display Name")
+    detail_tbl.add_column("Indexed At")
+    for r in detail_rows:
+        indexed = (
+            r.created_at.strftime("%Y-%m-%d %H:%M") if r.created_at else "—"
+        )
+        detail_tbl.add_row(
+            r.id,
+            r.source_type,
+            str(r.chunks),
+            r.display_name or "—",
+            indexed,
+        )
+    console.print(detail_tbl)
+

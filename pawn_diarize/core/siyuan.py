@@ -309,6 +309,40 @@ class SiyuanClient:
 
     # ── blocks ────────────────────────────────────────────────────────────────
 
+    def get_child_blocks(self, parent_id: str) -> List[Dict[str, Any]]:
+        """Return the immediate child blocks of a document or container block.
+
+        Args:
+            parent_id: Block ID of the parent document or block.
+
+        Returns:
+            List of block dicts with at minimum ``id``, ``type``, and
+            ``markdown`` fields.  Returns an empty list on error.
+        """
+        try:
+            data = self._post("/api/block/getChildBlocks", {"id": parent_id})
+            return data if isinstance(data, list) else []
+        except SiyuanError:
+            return []
+
+    def get_block_info(self, block_id: str) -> Dict[str, Any]:
+        """Return metadata for a block (typically a document root block).
+
+        Useful for fetching ``rootTitle`` and ``rootID`` for a page.
+
+        Args:
+            block_id: Block ID to inspect.
+
+        Returns:
+            Dict with at minimum ``rootID``, ``rootTitle``, and ``path`` keys,
+            or an empty dict on error.
+        """
+        try:
+            data = self._post("/api/block/getBlockInfo", {"id": block_id})
+            return data if isinstance(data, dict) else {}
+        except SiyuanError:
+            return {}
+
     def append_block(self, parent_id: str, markdown: str) -> str:
         """Append a Markdown block to a parent block (document or container).
 
