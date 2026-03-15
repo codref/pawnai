@@ -83,6 +83,104 @@ def run(
 
 
 @app.command()
+def chat(
+    session: Optional[str] = typer.Option(
+        None, "--session", "-s",
+        help="Session ID hint. Injected into the first message so the agent "
+             "knows which conversation to reference."
+    ),
+    config: Optional[str] = typer.Option(
+        None, "--config", "-c",
+        help="Path to YAML config file. Defaults to pawnai.yaml in cwd."
+    ),
+    model: Optional[str] = typer.Option(
+        None, "--model", "-m",
+        help="Copilot model name. Overrides config (e.g. 'gpt-4o', 'claude-sonnet-4')."
+    ),
+    db_dsn: Optional[str] = typer.Option(
+        None, "--db-dsn",
+        help="PostgreSQL DSN. Overrides DATABASE_URL env var and config."
+    ),
+) -> None:
+    """Start an interactive multi-turn [bold]CHAT[/bold] session.
+
+    The session stays alive across turns so the model retains context.
+    Type [bold]/exit[/bold] or [bold]/quit[/bold] to end, or press Ctrl-D / Ctrl-C.
+
+    \b
+    Examples
+    --------
+    pawn-agent chat
+    pawn-agent chat --session my-meeting --model gpt-4o
+    """
+    from pawn_agent.utils.config import load_config  # noqa: PLC0415
+    from pawn_agent.core.agent import ConversationAgent  # noqa: PLC0415
+    from rich.markdown import Markdown  # noqa: PLC0415
+
+    cfg = load_config(config)
+    if model:
+        cfg.model = model
+    if db_dsn:
+        cfg.db_dsn = db_dsn
+
+    name = cfg.agent_name
+    status = console.status(f"[dim]{name} is thinking…[/dim]")
+
+    def _on_thinking() -> None:
+        status.start()
+
+    def _rich_emit(text: str) -> None:
+        status.stop()
+        console.print(f"\n[bold magenta]{name}[/bold magenta]")
+        console.print(Markdown(text))
+        console.print()
+
+    agent = ConversationAgent(cfg=cfg, emit=_rich_emit, on_thinking=_on_thinking)
+
+    console.print(
+        f"\n[bold cyan]pawn-agent chat[/bold cyan] "
+        f"[dim]model={cfg.model}  agent={name}[/dim]\n"
+        "[dim]Type /exit or /quit to end. Ctrl-D also exits.[/dim]\n"
+    )
+
+    first_message: Optional[str] = None
+    if session:
+        try:
+            console.print("[dim]You (first message):[/dim] ", end="")
+            raw = input("").strip()
+        except (EOFError, KeyboardInterrupt):
+            return
+        turn = raw or "Hello, let's discuss this session."
+        first_message = f"[Session ID: {session}]\n{turn}"
+
+    try:
+        agent.chat(first_message=first_message)
+    except Exception as exc:
+        status.stop()
+        console.print(f"[red]Agent error:[/red] {exc}")
+        raise typer.Exit(1)
+
+    console.print("\n[dim]Session ended.[/dim]")
+
+
+@app.command(name="tools")
+def list_tools() -> None:
+    """List available agent tools and a brief description of each."""
+    from rich.table import Table  # noqa: PLC0415
+    from pawn_agent.tools import get_registry  # noqa: PLC0415
+
+    table = Table(title="Available Tools", show_lines=True, show_header=True)
+    table.add_column("#", justify="right", style="dim", no_wrap=True)
+    table.add_column("Tool", style="cyan", no_wrap=True)
+    table.add_column("Description")
+
+    for i, (name, description) in enumerate(get_registry(), start=1):
+        table.add_row(str(i), name, description)
+
+    console.print(table)
+
+
+@app.command()
 def models() -> None:
     """List available Copilot models."""
     import asyncio  # noqa: PLC0415

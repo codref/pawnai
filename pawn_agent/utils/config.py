@@ -9,6 +9,8 @@ Config file schema (all keys optional)::
 
     agent:
       model: gpt-4o          # Copilot model identifier
+      name: Bob              # Display name shown before agent responses in chat
+      anima: anima.md        # Path to Markdown file injected as system prompt personality
 
     siyuan:
       url: http://127.0.0.1:6806
@@ -43,6 +45,13 @@ class AgentConfig:
 
     # Copilot model
     model: str = "claude-sonnet-4.6"
+
+    # Chat display name shown before agent responses
+    agent_name: str = "Bob"
+
+    # Path to a Markdown file that defines the agent's personality (system prompt addition).
+    # If None or the file does not exist, no personality is injected.
+    anima_path: Optional[str] = None
 
     # SiYuan
     siyuan_url: str = _DEFAULT_SIYUAN_URL
@@ -84,6 +93,10 @@ def load_config(config_path: Optional[str] = None) -> AgentConfig:
         agent_sec = data.get("agent", {}) or {}
         if "model" in agent_sec:
             cfg.model = agent_sec["model"]
+        if "name" in agent_sec:
+            cfg.agent_name = agent_sec["name"]
+        if "anima" in agent_sec:
+            cfg.anima_path = agent_sec["anima"]
 
         sy = data.get("siyuan", {}) or {}
         if "url" in sy:
