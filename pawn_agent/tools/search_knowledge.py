@@ -4,8 +4,7 @@ from __future__ import annotations
 
 from typing import Optional
 
-from copilot import CopilotClient, Tool, define_tool
-from pydantic import BaseModel, Field
+from pydantic_ai import Tool
 
 from pawn_agent.utils.config import AgentConfig
 
@@ -17,35 +16,7 @@ DESCRIPTION = (
 )
 
 
-class SearchKnowledgeParams(BaseModel):
-    query: str = Field(
-        description=(
-            "Natural language search query.  The query is embedded and matched "
-            "semantically against all indexed transcript chunks and SiYuan page "
-            "blocks."
-        )
-    )
-    source_type: Optional[str] = Field(
-        default=None,
-        description=(
-            "Filter by source type: 'transcript' for conversation chunks, "
-            "'siyuan' for note page chunks, or omit to search both."
-        ),
-    )
-    session_id: Optional[str] = Field(
-        default=None,
-        description=(
-            "Restrict the search to a specific session (transcript chunks only). "
-            "Omit to search across all sessions."
-        ),
-    )
-    top_k: int = Field(
-        default=5,
-        description="Number of top results to return (1–20).",
-    )
-
-
-def build(cfg: AgentConfig, client: CopilotClient) -> Tool:
+def build(cfg: AgentConfig) -> Tool:
     # Load the embedding model once at session startup, shared across all calls.
     from sentence_transformers import SentenceTransformer
 
@@ -55,38 +26,47 @@ def build(cfg: AgentConfig, client: CopilotClient) -> Tool:
         truncate_dim=cfg.embed_dim if cfg.embed_dim else None,
     )
 
-    @define_tool(
-        description=(
-            "Perform a semantic similarity search over the RAG index of stored "
-            "transcript chunks and SiYuan note blocks.  Use this when the user "
-            "asks a question about past conversations or notes that may span "
-            "multiple sessions, or when you need context beyond a single transcript. "
-            "Returns the most relevant text chunks with source, speaker, timestamps, "
-            "and similarity scores."
-        )
-    )
-    def search_knowledge(params: SearchKnowledgeParams) -> str:
+    def search_knowledge(
+        query: str,
+        source_type: Optional[str] = None,
+        session_id: Optional[str] = None,
+        top_k: int = 5,
+    ) -> str:
+        """Perform a semantic similarity search over the RAG index of stored
+        transcript chunks and SiYuan note blocks. Use this when the user
+        asks a question about past conversations or notes that may span
+        multiple sessions, or when you need context beyond a single transcript.
+        Returns the most relevant text chunks with source, speaker, timestamps,
+        and similarity scores.
+
+        Args:
+            query: Natural language search query. The query is embedded and matched
+                semantically against all indexed transcript chunks and SiYuan page blocks.
+            source_type: Filter by source type: 'transcript' for conversation chunks,
+                'siyuan' for note page chunks, or omit to search both.
+            session_id: Restrict the search to a specific session (transcript chunks only).
+                Omit to search across all sessions.
+            top_k: Number of top results to return (1-20).
+        """
         from sqlalchemy import text as sa_text
 
         from pawn_agent.utils.db import make_db_session
 
-        top_k = max(1, min(20, params.top_k))
+        top_k = max(1, min(20, top_k))
 
-        # Embed the query
-        query_vec = _model.encode(params.query, show_progress_bar=False).tolist()
+        query_vec = _model.encode(query, show_progress_bar=False).tolist()
         query_vec_str = "[" + ",".join(str(v) for v in query_vec) + "]"
 
-        # Build WHERE clause based on optional filters
         where_parts: list[str] = []
         bind: dict = {"query_vec": query_vec_str, "top_k": top_k}
 
-        if params.source_type:
+        if source_type:
             where_parts.append("rs.source_type = :source_type")
-            bind["source_type"] = params.source_type
+            bind["source_type"] = source_type
 
-        if params.session_id:
+        if session_id:
             where_parts.append("rs.external_id = :session_id")
-            bind["session_id"] = params.session_id
+            bind["session_id"] = session_id
 
         where_sql = ("WHERE " + " AND ".join(where_parts)) if where_parts else ""
 
@@ -153,4 +133,4 @@ def build(cfg: AgentConfig, client: CopilotClient) -> Tool:
 
         return "\n\n---\n\n".join(parts)
 
-    return search_knowledge  # type: ignore[return-value]
+    return Tool(search_knowledge)

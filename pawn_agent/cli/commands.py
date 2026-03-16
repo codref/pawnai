@@ -16,6 +16,25 @@ app = typer.Typer(
 )
 console = Console()
 
+# PydanticAI provider prefixes — anything else is treated as a bare model name.
+_PYDANTIC_PREFIXES = ("openai:", "anthropic:", "google-gla:", "google-vertex:", "groq:", "mistral:", "bedrock:", "cohere:")
+
+
+def _apply_model_override(cfg, model: str) -> None:
+    """Set cfg.pydantic_model from a CLI --model value.
+
+    If the value already carries a PydanticAI provider prefix (e.g. 'openai:gpt-4o')
+    it is used as-is.  Otherwise the current provider prefix is preserved and only
+    the model name is replaced — so '--model qwen3.5:9b' keeps 'openai:' when the
+    config points at an Ollama/OpenAI-compatible endpoint.
+    """
+    if any(model.startswith(p) for p in _PYDANTIC_PREFIXES):
+        cfg.pydantic_model = model
+    else:
+        # Bare model name (e.g. "qwen3.5:9b") — keep the configured provider prefix
+        current_prefix = cfg.pydantic_model.split(":")[0] + ":"
+        cfg.pydantic_model = f"{current_prefix}{model}"
+
 
 @app.command()
 def run(
@@ -31,7 +50,7 @@ def run(
     ),
     model: Optional[str] = typer.Option(
         None, "--model", "-m",
-        help="Copilot model name. Overrides config (e.g. 'gpt-4o', 'claude-sonnet-4')."
+        help="PydanticAI model string. Overrides config (e.g. 'openai:gpt-4o', 'anthropic:claude-sonnet-4-5-20251001')."
     ),
     db_dsn: Optional[str] = typer.Option(
         None, "--db-dsn",
@@ -50,12 +69,12 @@ def run(
     pawn-agent "Analyse session abc123 and push it to SiYuan" --model claude-sonnet-4
     """
     from pawn_agent.utils.config import load_config  # noqa: PLC0415
-    from pawn_agent.core.agent import ConversationAgent  # noqa: PLC0415
+    from pawn_agent.core.pydantic_agent import PydanticAgent  # noqa: PLC0415
 
     # ── Load and patch config ─────────────────────────────────────────────────
     cfg = load_config(config)
     if model:
-        cfg.model = model
+        _apply_model_override(cfg, model)
     if db_dsn:
         cfg.db_dsn = db_dsn
 
@@ -65,12 +84,12 @@ def run(
         effective_prompt = f"[Session ID: {session}]\n{prompt}"
 
     # ── Wire agent ────────────────────────────────────────────────────────────
-    agent = ConversationAgent(cfg=cfg)
+    agent = PydanticAgent(cfg=cfg)
 
     # ── Run ───────────────────────────────────────────────────────────────────
     console.print(
         f"\n[bold cyan]pawn-agent[/bold cyan] "
-        f"[dim]model={cfg.model}[/dim]\n"
+        f"[dim]model={cfg.pydantic_model}[/dim]\n"
     )
     with console.status("[bold green]Thinking…[/bold green]"):
         try:
@@ -95,7 +114,7 @@ def chat(
     ),
     model: Optional[str] = typer.Option(
         None, "--model", "-m",
-        help="Copilot model name. Overrides config (e.g. 'gpt-4o', 'claude-sonnet-4')."
+        help="PydanticAI model string. Overrides config (e.g. 'openai:gpt-4o', 'anthropic:claude-sonnet-4-5-20251001')."
     ),
     db_dsn: Optional[str] = typer.Option(
         None, "--db-dsn",
@@ -114,12 +133,12 @@ def chat(
     pawn-agent chat --session my-meeting --model gpt-4o
     """
     from pawn_agent.utils.config import load_config  # noqa: PLC0415
-    from pawn_agent.core.agent import ConversationAgent  # noqa: PLC0415
+    from pawn_agent.core.pydantic_agent import PydanticAgent  # noqa: PLC0415
     from rich.markdown import Markdown  # noqa: PLC0415
 
     cfg = load_config(config)
     if model:
-        cfg.model = model
+        _apply_model_override(cfg, model)
     if db_dsn:
         cfg.db_dsn = db_dsn
 
@@ -135,11 +154,11 @@ def chat(
         console.print(Markdown(text))
         console.print()
 
-    agent = ConversationAgent(cfg=cfg, emit=_rich_emit, on_thinking=_on_thinking)
+    agent = PydanticAgent(cfg=cfg, emit=_rich_emit, on_thinking=_on_thinking)
 
     console.print(
         f"\n[bold cyan]pawn-agent chat[/bold cyan] "
-        f"[dim]model={cfg.model}  agent={name}[/dim]\n"
+        f"[dim]model={cfg.pydantic_model}  agent={name}[/dim]\n"
         "[dim]Type /exit or /quit to end. Ctrl-D also exits.[/dim]\n"
     )
 

@@ -1,10 +1,10 @@
-"""pawn_agent.tools — auto-discovered agent tool registry.
+"""pawn_agent.tools — auto-discovered agent tool registry (PydanticAI).
 
 Drop any Python module into this package that exports:
 
-    NAME: str          — tool name shown to the LLM and in ``pawn-agent tools``
+    NAME: str          — tool name shown in ``pawn-agent tools``
     DESCRIPTION: str   — one-line description
-    build(cfg, client) — returns a Copilot SDK Tool
+    build(cfg)         — returns a pydantic_ai.Tool instance
 
 Private modules (names starting with ``_``) are ignored.
 """
@@ -16,7 +16,7 @@ import pkgutil
 from pathlib import Path
 from typing import Any, List, Tuple
 
-from copilot import CopilotClient, Tool
+from pydantic_ai import Tool
 
 from pawn_agent.utils.config import AgentConfig
 
@@ -42,6 +42,6 @@ def get_registry() -> List[Tuple[str, str]]:
     ]
 
 
-def build_tools(cfg: AgentConfig, client: CopilotClient) -> List[Tool]:
-    """Return all discovered tools, built for the given config and client."""
-    return [mod.build(cfg, client) for mod in _load_tool_modules()]
+def build_tools(cfg: AgentConfig) -> List[Tool]:
+    """Return all discovered tools, built for the given config."""
+    return [mod.build(cfg) for mod in _load_tool_modules()]
