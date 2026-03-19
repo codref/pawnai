@@ -227,6 +227,40 @@ class SessionAnalysis(Base):
     )
 
 
+class GraphTriple(Base):
+    """A knowledge-graph triple extracted from a session transcript.
+
+    Columns
+    -------
+    id:
+        UUID4 primary key generated at insert time.
+    session_id:
+        Matches ``TranscriptionSegment.session_id`` the triple was extracted from.
+    subject:
+        The subject entity of the triple.
+    relation:
+        The relation / predicate verb.
+    object:
+        The object entity of the triple.
+    model:
+        Copilot model used to produce the extraction (e.g. ``"gpt-4o"``).
+    extracted_at:
+        UTC timestamp of when the extraction was performed.
+    """
+
+    __tablename__ = "graph_triples"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    session_id: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    subject: Mapped[str] = mapped_column(Text, nullable=False)
+    relation: Mapped[str] = mapped_column(Text, nullable=False)
+    object: Mapped[str] = mapped_column(Text, nullable=False)
+    model: Mapped[str] = mapped_column(String, nullable=False)
+    extracted_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, default=lambda: datetime.now(timezone.utc)
+    )
+
+
 class RagSource(Base):
     """A source document registered in the RAG index.
 
@@ -555,3 +589,72 @@ def get_session_analysis(
         from sqlalchemy.orm import make_transient
         make_transient(row)
         return row
+
+
+def save_graph_triples(
+    session_id: str,
+    triples: List[Tuple[str, str, str]],
+    model: str,
+    engine,
+) -> int:
+    """Bulk-insert knowledge-graph triples for *session_id*.
+
+    Deletes any previously stored triples for the session before inserting
+    so that re-running the tool gives a fresh result rather than duplicates.
+
+    Args:
+        session_id: Session identifier the triples were extracted from.
+        triples: List of ``(subject, relation, object)`` tuples.
+        model: Copilot model name used (e.g. ``"gpt-4o"``).
+        engine: A SQLAlchemy engine connected to the target database.
+
+    Returns:
+        Number of triples inserted.
+    """
+    from sqlalchemy import delete
+
+    now = datetime.now(timezone.utc)
+    rows = [
+        GraphTriple(
+            id=str(uuid.uuid4()),
+            session_id=session_id,
+            subject=s,
+            relation=r,
+            object=o,
+            model=model,
+            extracted_at=now,
+        )
+        for s, r, o in triples
+    ]
+    with get_session(engine) as db:
+        db.execute(delete(GraphTriple).where(GraphTriple.session_id == session_id))
+        db.add_all(rows)
+    return len(rows)
+
+
+def get_graph_triples(
+    session_id: str,
+    engine,
+) -> List["GraphTriple"]:
+    """Return all :class:`GraphTriple` rows for *session_id*.
+
+    Args:
+        session_id: Session identifier to look up.
+        engine: A SQLAlchemy engine connected to the target database.
+
+    Returns:
+        List of :class:`GraphTriple` instances (may be empty).
+    """
+    from sqlalchemy import select
+    from sqlalchemy.orm import make_transient
+
+    with Session(engine) as db:
+        rows = list(
+            db.scalars(
+                select(GraphTriple).where(GraphTriple.session_id == session_id)
+            ).all()
+        )
+        for row in rows:
+            db.expunge(row)
+            make_transient(row)
+    return rows

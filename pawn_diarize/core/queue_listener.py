@@ -75,14 +75,6 @@ COMMAND_DEFAULTS: Dict[str, Dict[str, Any]] = {
         "speaker_id": None,         # required for embed
         "db_dsn": None,
     },
-    "analyze": {
-        "input_path": None,
-        "session": None,
-        "output": None,
-        "mode": "summary",
-        "model": "gpt-4o",
-        "db_dsn": None,
-    },
     "sync-siyuan": {
         "session": None,           # required unless all_sessions=True
         "all_sessions": False,
@@ -152,8 +144,6 @@ async def dispatch(command: str, params: Dict[str, Any], cfg: Any) -> None:
         await loop.run_in_executor(None, _run_diarize, params, cfg)
     elif command == "embed":
         await loop.run_in_executor(None, _run_embed, params, cfg)
-    elif command == "analyze":
-        await loop.run_in_executor(None, _run_analyze, params, cfg)
     elif command == "sync-siyuan":
         await loop.run_in_executor(None, _run_sync_siyuan, params, cfg)
     else:
@@ -507,51 +497,6 @@ def _run_sync_siyuan(params: Dict[str, Any], cfg: Any) -> None:
                 logger.info("sync-siyuan: backlink added to daily note %s", daily_path)
             except Exception as exc:
                 logger.warning("sync-siyuan: could not write daily note backlink: %s", exc)
-
-
-def _run_analyze(params: Dict[str, Any], cfg: Any) -> None:
-    from pathlib import Path as _Path
-    import json as _json
-    from .analysis import AnalysisEngine
-
-    db_dsn = _resolve_db_dsn(params, cfg)
-    session = params.get("session")
-    input_path = params.get("input_path") or ""
-    output = params.get("output")
-    mode = params.get("mode", "summary")
-    model = params.get("model", "gpt-4o")
-    device = params.get("device", "cpu")
-
-    if not session and not input_path:
-        raise ValueError("analyze: 'session' or 'input_path' is required")
-
-    engine = AnalysisEngine(model=model)
-
-    if mode == "graph":
-        result = engine.extract_graph_from_file(
-            input_path,
-            db_dsn=db_dsn,
-            device=device,
-            session_id=session,
-        )
-        text = _json.dumps(
-            [{"subject": s, "relation": r, "object": o} for s, r, o in result],
-            indent=2,
-        )
-    else:
-        text = engine.analyze_from_file(
-            input_path,
-            db_dsn=db_dsn,
-            device=device,
-            session_id=session,
-        )
-
-    if output:
-        _Path(output).parent.mkdir(parents=True, exist_ok=True)
-        _Path(output).write_text(text)
-        logger.info("Analysis written to %s", output)
-    else:
-        logger.info("Analysis result:\n%s", text)
 
 
 # ──────────────────────────────────────────────────────────────────────────────

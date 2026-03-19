@@ -64,7 +64,14 @@ def build_siyuan_markdown(sections: dict, session_id: str, transcript: str, mode
     return "\n\n".join(parts)
 
 
-def do_save_to_siyuan(cfg: AgentConfig, session_id: str, title: str, content: str, path: Optional[str]) -> str:
+def do_save_to_siyuan(
+    cfg: AgentConfig,
+    session_id: str,
+    title: str,
+    content: str,
+    path: Optional[str],
+    tags: Optional[list] = None,
+) -> str:
     url = cfg.siyuan_url
     token = cfg.siyuan_token
     notebook = cfg.siyuan_notebook
@@ -82,8 +89,11 @@ def do_save_to_siyuan(cfg: AgentConfig, session_id: str, title: str, content: st
                          {"notebook": notebook, "path": resolved_path, "markdown": content})
     if doc_id:
         try:
+            attrs: dict = {"custom-session-id": session_id}
+            if tags:
+                attrs["tags"] = ",".join(tags)
             siyuan_post(url, token, "/api/attr/setBlockAttrs",
-                        {"id": doc_id, "attrs": {"custom-session-id": session_id}})
+                        {"id": doc_id, "attrs": attrs})
         except Exception:
             pass
     try:
