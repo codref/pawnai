@@ -243,3 +243,84 @@ def models() -> None:
 
     console.print(table)
     console.print(f"[dim]{len(model_list)} model(s)[/dim]")
+
+
+@app.command()
+def listen(
+    config: Optional[str] = typer.Option(
+        None, "--config", "-c",
+        help="Path to YAML config file. Defaults to pawnai.yaml in cwd."
+    ),
+    topic: Optional[str] = typer.Option(
+        None, "--topic", "-T",
+        help="Topic name to subscribe to. Overrides the value in the queue: config section."
+    ),
+    consumer_name: Optional[str] = typer.Option(
+        None, "--consumer-name", "-n",
+        help="Consumer registration name. Overrides the value in the queue: config section."
+    ),
+) -> None:
+    """Listen for commands on a pawn-queue topic and execute them.
+
+    Connects to the S3-backed pawn-queue configured in the ``queue:`` section
+    of ``pawnai.yaml`` and blocks until interrupted.  Each incoming message
+    must be a JSON object with a ``command`` key:
+
+    \b
+      {
+        "command": "run",
+        "prompt": "Summarise session abc123 and push to SiYuan",
+        "session_id": "abc123",
+        "model": "openai:gpt-4o"
+      }
+
+    Results are persisted in the ``agent_runs`` database table.
+    On success the message is acked; on failure it is sent to the dead-letter
+    queue.  Stop with Ctrl-C.
+    """
+    import asyncio  # noqa: PLC0415
+    import logging  # noqa: PLC0415
+
+    from pawn_agent.utils.config import load_config  # noqa: PLC0415
+    from pawn_agent.core.queue_listener import (  # noqa: PLC0415
+        start_listener,
+        DEFAULT_TOPIC,
+        DEFAULT_CONSUMER_NAME,
+    )
+
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+    )
+
+    cfg = load_config(config)
+
+    queue_cfg = cfg.queue_config or {}
+    effective_topic = topic or queue_cfg.get("topic", DEFAULT_TOPIC)
+    effective_consumer = consumer_name or queue_cfg.get("consumer_name", DEFAULT_CONSUMER_NAME)
+
+    console.print(
+        f"[bold green]pawn-agent queue listener starting[/bold green]\n"
+        f"  topic    : [cyan]{effective_topic}[/cyan]\n"
+        f"  consumer : [cyan]{effective_consumer}[/cyan]\n"
+        f"  model    : [dim]{cfg.pydantic_model}[/dim]"
+    )
+    console.print("[dim]Press Ctrl-C to stop.[/dim]\n")
+
+    try:
+        asyncio.run(
+            start_listener(
+                cfg=cfg,
+                topic_override=topic,
+                consumer_name_override=consumer_name,
+            )
+        )
+    except KeyboardInterrupt:
+        console.print("\n[yellow]Listener stopped by user.[/yellow]")
+    except RuntimeError as exc:
+        console.print(f"[red]Configuration error: {exc}[/red]")
+        raise typer.Exit(1)
+    except Exception as exc:
+        console.print(f"[red]Listener error: {exc}[/red]")
+        raise typer.Exit(1)

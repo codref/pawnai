@@ -93,6 +93,24 @@ class TextChunk(_Base):
     created_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
 
 
+class AgentRun(_Base):
+    """Persists every queue-initiated agent execution for history / auditability."""
+
+    __tablename__ = "agent_runs"
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    message_id: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    command: Mapped[str] = mapped_column(String, nullable=False)
+    prompt: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    session_id: Mapped[Optional[str]] = mapped_column(String, nullable=True, index=True)
+    model: Mapped[str] = mapped_column(String, nullable=False)
+    status: Mapped[str] = mapped_column(String, nullable=False, default="pending")
+    response: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    error: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    created_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    started_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    completed_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+
+
 def make_db_session(dsn: str) -> Session:
     engine = create_engine(dsn)
     SessionLocal = sessionmaker(bind=engine)
@@ -194,3 +212,58 @@ def save_graph_triples(
         db.execute(delete(GraphTriple).where(GraphTriple.session_id == session_id))
         db.add_all(rows)
     return len(rows)
+
+
+# ---------------------------------------------------------------------------
+# AgentRun helpers
+# ---------------------------------------------------------------------------
+
+def create_agent_run(
+    dsn: str,
+    *,
+    message_id: Optional[str] = None,
+    command: str,
+    prompt: Optional[str] = None,
+    session_id: Optional[str] = None,
+    model: str,
+) -> str:
+    """Insert a new ``agent_runs`` row with status ``pending``. Returns the UUID."""
+    row_id = str(uuid.uuid4())
+    row = AgentRun(
+        id=row_id,
+        message_id=message_id,
+        command=command,
+        prompt=prompt,
+        session_id=session_id,
+        model=model,
+        status="pending",
+        created_at=datetime.now(timezone.utc),
+    )
+    with _get_session(dsn) as db:
+        db.add(row)
+    return row_id
+
+
+def update_agent_run(
+    dsn: str,
+    run_id: str,
+    status: str,
+    *,
+    response: Optional[str] = None,
+    error: Optional[str] = None,
+) -> None:
+    """Update an ``agent_runs`` row's status and optional response/error."""
+    now = datetime.now(timezone.utc)
+    with _get_session(dsn) as db:
+        row = db.get(AgentRun, run_id)
+        if row is None:
+            return
+        row.status = status
+        if status == "running":
+            row.started_at = now
+        if status in ("completed", "failed"):
+            row.completed_at = now
+        if response is not None:
+            row.response = response
+        if error is not None:
+            row.error = error

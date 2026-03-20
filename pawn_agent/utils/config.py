@@ -42,7 +42,7 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional
+from typing import Any, Dict, Optional
 
 try:
     import yaml
@@ -101,6 +101,10 @@ class AgentConfig:
     embed_model: str = "Qwen/Qwen3-Embedding-0.6B"
     embed_dim: int = 1024
     embed_device: str = "cpu"
+
+    # S3 and queue configuration (populated from pawnai.yaml s3:/queue: sections)
+    s3_config: Optional[Dict[str, Any]] = None
+    queue_config: Optional[Dict[str, Any]] = None
 
 
 def load_config(config_path: Optional[str] = None) -> AgentConfig:
@@ -189,6 +193,11 @@ def load_config(config_path: Optional[str] = None) -> AgentConfig:
             cfg.embed_dim = int(rag["embed_dim"])
         if "embed_device" in rag:
             cfg.embed_device = rag["embed_device"]
+
+        if "s3" in data:
+            cfg.s3_config = data["s3"]
+        if "queue" in data:
+            cfg.queue_config = data["queue"]
 
     return cfg
 
