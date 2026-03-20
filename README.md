@@ -1,778 +1,536 @@
-# Pawn Diarize
+# PawnAI
 
-A command-line application for speaker diarization, transcription, and speaker embedding management. Pawn Diarize provides a unified interface for audio analysis, speaker identification, and voice clustering.
+A Python monolith for speaker diarization, audio transcription, and LLM-powered conversation analysis. Provides two CLI applications: **pawn-diarize** for audio processing and embedding management, and **pawn-agent** for conversational analysis of recorded sessions.
 
 ## Features
 
-- **Speaker Diarization**: Identify and separate multiple speakers in audio
-- **Audio Transcription**: Convert speech to text using Nvidia Parakeet model
+- **Speaker Diarization**: Identify and separate multiple speakers using pyannote.audio
+- **Audio Transcription**: Convert speech to text via NeMo Parakeet or faster-whisper backends
 - **Combined Transcription & Diarization**: Transcribe and label speakers in one command
-- **Multi-file Processing**: Process multiple files as one conversation with speaker alignment
+- **Multi-file Processing**: Process multiple files as one conversation with cross-file speaker alignment
 - **Session Accumulation**: Process long conversations in parts across multiple invocations
-- **Conversation Analysis**: Generate summaries, extract keywords, or build knowledge graphs
-- **Speaker Embeddings**: Extract and manage speaker voice embeddings
-- **Speaker Search**: Find similar speakers based on voice characteristics
-- **LanceDB Integration**: Persistent vector database for embeddings
+- **Speaker Embeddings**: Extract and store 512-dim speaker vectors in PostgreSQL with pgvector
+- **Conversation Analysis**: Generate titles, summaries, key topics, sentiment, and per-speaker highlights
+- **Knowledge Graph Extraction**: Extract semantic triples (subject, relation, object) from transcripts
+- **RAG Index**: Embed transcripts and SiYuan notes for semantic similarity search
+- **S3 Storage Management**: List, filter, and delete objects in S3-compatible storage
+- **SiYuan Notes Integration**: Push analysis documents back to a SiYuan Notes instance
+- **Background Queue Worker**: S3-backed job queue with lease-based concurrency
 - **GPU Support**: Accelerated processing on CUDA-enabled devices
-- **Environment Configuration**: Flexible `.env` file support with custom config paths
-- **Secure Credentials**: Built-in .gitignore protection for sensitive tokens
 
 ## Installation
 
 ### From Source
 
 ```bash
-# Clone the repository
 git clone <repository-url>
-cd pawn-diarize
-
-# Install in development mode with dependencies
+cd parakeet
 pip install -e ".[dev]"
 ```
 
 ### System Requirements
 
 - Python 3.10+
+- PostgreSQL with the `pgvector` extension
 - CUDA 11.0+ (optional, for GPU acceleration)
-- 8GB+ RAM recommended
-- 500MB+ disk space for models
+- 8 GB+ RAM recommended for ML models
 
-## Quick Start
-
-### 1. Configure Credentials
-
-Save your HuggingFace token in a `.env` file:
+### Database Setup
 
 ```bash
-# Copy the example config
-cp .env.example .env
-
-# Edit .env and add your token (get it from https://huggingface.co/settings/tokens)
-# HF_TOKEN=hf_your_token_here
+# Apply all migrations
+alembic upgrade head
 ```
 
-### 2. Verify Installation
+## Configuration
 
-```bash
-pawn-diarize status
+All settings live in `pawnai.yaml` (auto-discovered in the current directory, or passed via `--config`).
+Precedence: **CLI flags → `pawnai.yaml` → environment variables → defaults**.
+
+```yaml
+models:
+  hf_token: hf_your_token_here        # HuggingFace token for gated models
+  # asr_model: nvidia/parakeet-tdt-0.6b-v3
+  # diarization_model: pyannote/speaker-diarization-3.1
+
+db_dsn: postgresql+psycopg://user:pass@localhost:5433/pawnai
+
+paths:
+  db_path: speakers_db
+  audio_dir: audio/
+
+device: auto    # auto | cuda | cpu
+
+s3:
+  bucket: my-audio-bucket
+  endpoint_url: https://s3.amazonaws.com
+  access_key: AKIAIOSFODNN7EXAMPLE
+  secret_key: wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY
+  region: us-east-1
+  prefix: ""
+  verify_ssl: true
+  path_style: true
+
+siyuan:
+  url: http://localhost:6806
+  token: your-siyuan-token
+  notebook: Meetings
+
+agent:
+  name: Bob
+  anima: anima.md                     # optional personality/system-prompt file
+  openai:
+    model: qwen3:8b
+    base_url: http://localhost:11434/v1
+    api_key: ollama
+  copilot:
+    model: gpt-4o
+
+rag:
+  embed_model: Qwen/Qwen3-Embedding-0.6B
+  embed_dim: 1024
+  embed_device: cpu
+
+queue:
+  topic: pawn-jobs
+  consumer_name: worker-1
+  bucket_name: my-audio-bucket
 ```
 
-### 3. Basic Commands
+---
+
+## pawn-diarize
+
+### Quick Start
 
 ```bash
-# Show system status
+# Check system status
 pawn-diarize status
 
-# Perform speaker identification
-pawn-diarize diarize meeting.wav -o speakers.json
-
-# Transcribe and identify speakers together
+# Transcribe and diarize a meeting
 pawn-diarize transcribe-diarize meeting.wav -o transcript.txt
 
 # Label a speaker for future recognition
-pawn-diarize label -f audio.wav -s SPEAKER_00 -n "John Doe"
-
-# Transcribe audio to text
-pawn-diarize transcribe audio.wav -o transcript.txt
-
-# Analyze a conversation (summaries, keywords, knowledge graphs)
-pawn-diarize analyze result.json --mode summary
-
-# Extract speaker embeddings for database
-pawn-diarize embed speaker_audio.wav --speaker-id john_doe
-
-# Search for similar speakers
-pawn-diarize search john_doe
+pawn-diarize label -f audio.wav -s SPEAKER_00 -n "Alice Smith"
 ```
 
-### 4. Advanced: Multi-File & Session Processing
+### Commands Reference
 
-**Process multiple audio files as one conversation:**
+#### `diarize`
 
-```bash
-# Diarize multiple files with speaker alignment
-pawn-diarize diarize part1.wav part2.wav part3.wav -o full_speakers.json
-
-# Transcribe multiple files together
-pawn-diarize transcribe-diarize chunk1.wav chunk2.wav -o transcript.txt
-```
-
-**Process a long conversation in parts over time (session mode):**
+Perform speaker diarization on one or more audio files. Automatically recognizes known speakers from the database and replaces generic labels with names.
 
 ```bash
-# First part - creates session
-pawn-diarize transcribe-diarize part1.wav --session meeting.json
-
-# Second part - appends to session
-pawn-diarize transcribe-diarize part2.wav --session meeting.json
-
-# Final part - add remaining audio and save output
-pawn-diarize transcribe-diarize part3.wav --session meeting.json -o final_transcript.txt
-```
-
-### Using Python Module
-
-```bash
-# Run as Python module
-python -m pawn-diarize status
-python -m pawn-diarize transcribe audio.wav
-```
-
-## Commands Reference
-
-### `diarize`
-
-Perform speaker diarization on an audio file or multiple files. Identifies and separates different speakers with timestamps showing when each speaker talks. **Automatically recognizes speakers from the database and replaces generic labels with actual names.** Only stores embeddings for new/unknown speakers to avoid database clutter.
-
-```bash
-pawn-diarize diarize <audio_path> [<audio_path>...] [OPTIONS]
-
-Arguments:
-  audio_path(s)  One or more audio files to diarize (multiple treated as one conversation)
+pawn-diarize diarize <audio_path>... [OPTIONS]
 
 Options:
-  --output TEXT, -o TEXT       Output file path (format inferred from extension: .txt or .json)
-  --config TEXT                Path to .env configuration file
-  --db-path TEXT               Path to speaker database (default: speakers_db)
-  --threshold FLOAT, -t FLOAT  Similarity threshold for speaker matching (0-1, default: 0.7)
-  --store-new/--no-store       Store embeddings for unknown speakers (default: enabled)
+  --output, -o TEXT        Output file (.txt or .json)
+  --config TEXT            Path to pawnai.yaml
+  --db-dsn TEXT            PostgreSQL DSN
+  --threshold, -t FLOAT    Similarity threshold for speaker matching (default: 0.7)
+  --store-new/--no-store   Store embeddings for unknown speakers (default: enabled)
 ```
 
-Example:
 ```bash
-# Single file
-pawn-diarize diarize meeting.wav
 pawn-diarize diarize meeting.wav -o speakers.json
-pawn-diarize diarize meeting.wav --no-store  # Don't save new speakers
-
-# Multiple files (ordered chunks of same conversation)
 pawn-diarize diarize part1.wav part2.wav part3.wav -o full_diarization.json
-pawn-diarize diarize chunk1.wav chunk2.wav -t 0.8  # Stricter matching
+pawn-diarize diarize meeting.wav --no-store
 ```
 
-Features:
-- **Automatic Recognition**: Searches database for known speakers (0.7 similarity threshold)
-- **Smart Storage**: Only stores embeddings for new/unknown speakers (prevents duplicates)
-- **Name Replacement**: Displays actual names instead of SPEAKER_00, SPEAKER_01, etc.
-- **Custom Configuration**: Load credentials from custom `.env` file
+#### `transcribe`
 
-Output includes:
-- List of detected speakers (with actual names if recognized)
-- Timeline of speaker segments with start/end times
-- Duration of each speaking segment
-- Matched speakers (original label → actual name)
-- New/unknown speakers that were stored
-
-### `transcribe`
-
-Convert speech to text using the Nvidia Parakeet model.
+Transcribe audio to text. Supports two backends: `nemo` (Nvidia Parakeet) and `whisper` (faster-whisper).
 
 ```bash
 pawn-diarize transcribe <audio_path> [OPTIONS]
 
-Arguments:
-  audio_path  Path to the audio file to transcribe
-
 Options:
-  --output TEXT, -o TEXT          Output file path (format inferred from extension: .txt or .json)
-  --config TEXT                   Path to .env configuration file
-  --timestamps/--no-timestamps    Include word-level timestamps (default: enabled)
-  --device TEXT, -d TEXT          Device to use: cuda or cpu (default: cuda)
-  --chunk-duration FLOAT, -c      Split audio into chunks of N seconds (helps avoid OOM on long files)
+  --output, -o TEXT          Output file (.txt or .json)
+  --config TEXT              Path to pawnai.yaml
+  --db-dsn TEXT              PostgreSQL DSN
+  --timestamps/--no-timestamps  Include word-level timestamps (default: enabled)
+  --device, -d TEXT          cuda or cpu (default: auto)
+  --chunk-duration, -c FLOAT Split audio into N-second chunks (helps avoid OOM)
+  --backend TEXT             nemo or whisper (default: nemo)
 ```
 
-Example:
 ```bash
-pawn-diarize transcribe speech.wav
-pawn-diarize transcribe speech.wav --no-timestamps
 pawn-diarize transcribe speech.wav -o transcript.txt
-pawn-diarize transcribe speech.wav -o transcript.json
-pawn-diarize transcribe large.mp3 --device cpu
-pawn-diarize transcribe large.mp3 -c 300 -o output.txt
-pawn-diarize transcribe large.mp3 --config ./prod.env  # Use custom config
-pawn-diarize transcribe huge.mp3 --device cpu -c 600
+pawn-diarize transcribe large.mp3 --backend whisper --device cpu -c 300
 ```
 
-### `transcribe-diarize`
+#### `transcribe-diarize`
 
-Transcribe audio with automatic speaker diarization and labeling in one command. Combines transcription with speaker identification.
-
-When multiple files are given they are treated as ordered chunks of the same conversation. Each file is diarized independently, and speaker labels are aligned across files using embedding similarity so the same person gets the same label throughout.
-
-**Session Support**: Use `--session` to accumulate results across multiple invocations. Perfect for processing long conversations in parts.
+Combined transcription + diarization with speaker labels in a single pass. When multiple files are given they are treated as ordered chunks of the same conversation, with speaker labels aligned across files.
 
 ```bash
-pawn-diarize transcribe-diarize <audio_path> [OPTIONS]
-
-Arguments:
-  audio_path(s)  One or more audio files to process
+pawn-diarize transcribe-diarize <audio_path>... [OPTIONS]
 
 Options:
-  --output TEXT, -o TEXT              Output file path (.txt or .json)
-  --config TEXT                       Path to .env configuration file
-  --session TEXT, -s TEXT             Path to session JSON file for accumulative processing
-  --db-path TEXT                      Path to speaker database (default: speakers_db)
-  --threshold FLOAT, -t FLOAT         Similarity threshold for speaker matching (0-1, default: 0.7)
-  --store-new/--no-store              Store embeddings for unknown speakers (default: enabled)
-  --device TEXT, -d TEXT              Device to use: cuda or cpu (default: cuda)
-  --chunk-duration FLOAT, -c FLOAT    Split audio into chunks (helps avoid OOM)
-  --cross-threshold FLOAT, -x FLOAT   Threshold for matching speakers across files (0-1, default: 0.85)
-  --no-timestamps                     Hide timestamps in output
+  --output, -o TEXT             Output file (.txt or .json)
+  --config TEXT                 Path to pawnai.yaml
+  --session, -s TEXT            Session JSON file for accumulative processing
+  --db-dsn TEXT                 PostgreSQL DSN
+  --threshold, -t FLOAT         Speaker matching threshold (default: 0.7)
+  --store-new/--no-store        Store unknown speaker embeddings (default: enabled)
+  --device, -d TEXT             cuda or cpu
+  --chunk-duration, -c FLOAT    Split audio into chunks
+  --cross-threshold, -x FLOAT   Cross-file speaker alignment threshold (default: 0.85)
+  --no-timestamps               Hide timestamps in output
+  --backend TEXT                nemo or whisper (default: nemo)
 ```
 
-**Examples:**
-
-Single file:
 ```bash
-pawn-diarize transcribe-diarize meeting.wav
+# Single file
 pawn-diarize transcribe-diarize meeting.wav -o transcript.txt
-pawn-diarize transcribe-diarize meeting.wav -o transcript.json
-```
 
-Multiple files (ordered chunks of same conversation):
-```bash
-pawn-diarize transcribe-diarize part1.wav part2.wav part3.wav -o full_transcript.txt
-pawn-diarize transcribe-diarize part1.wav part2.wav -x 0.9  # Stricter cross-file matching
-```
+# Multiple files (ordered chunks of same conversation)
+pawn-diarize transcribe-diarize part1.wav part2.wav part3.wav -o full.txt
 
-Session accumulation (process files separately over time):
-```bash
-# First session - creates conv.json if it doesn't exist
+# Accumulate across invocations
 pawn-diarize transcribe-diarize part1.wav --session conv.json
-
-# Second session - appends to existing conversation
 pawn-diarize transcribe-diarize part2.wav --session conv.json
-
-# Third session - adds more and saves full output
-pawn-diarize transcribe-diarize part3.wav --session conv.json -o full_transcript.txt
+pawn-diarize transcribe-diarize part3.wav --session conv.json -o final.txt
 ```
 
-**Session Workflow:**
-1. First call with `--session file.json` creates or initializes the session
-2. Subsequent calls append new audio while preserving speaker labels
-3. Speaker state and timestamps are loaded and continued from previous sessions
-4. Final output contains accumulated results from all sessions
+#### `embed`
 
-**Features:**
-- **Combined Analysis**: Single command for transcription + diarization
-- **Multi-file Support**: Process multiple files as one conversation (no concatenation)
-- **Session Persistence**: Accumulate results across separate command invocations
-- **Cross-file Speaker Alignment**: Automatically matches the same speaker across files
-- **Automatic Recognition**: Uses speaker database for identification
-
-### `embed`
-
-Extract speaker embeddings from audio and store in the database.
+Extract and store speaker embeddings (512-dim) in PostgreSQL for future recognition.
 
 ```bash
 pawn-diarize embed <audio_path> --speaker-id SPEAKER_ID [OPTIONS]
 
-Arguments:
-  audio_path      Path to the audio file to process
-
 Options:
-  --speaker-id    Unique speaker identifier (required)
-  -s              Short form of --speaker-id
-  --config TEXT   Path to .env configuration file
-  --db-path TEXT  Path to speaker database (default: speakers_db)
+  --speaker-id, -s TEXT   Unique speaker identifier (required)
+  --config TEXT           Path to pawnai.yaml
+  --db-dsn TEXT           PostgreSQL DSN
 ```
 
-Example:
 ```bash
-pawn-diarize embed person1.wav --speaker-id john_doe
-pawn-diarize embed person2.wav -s alice_smith --db-path ./voices
-pawn-diarize embed person3.wav -s bob --config ./custom.env
+pawn-diarize embed person.wav --speaker-id alice_smith
 ```
 
-### `search`
+#### `search`
 
-Search for speakers with similar voice characteristics.
+Find speakers with similar voice characteristics via cosine similarity on stored embeddings.
 
 ```bash
 pawn-diarize search <speaker_id> [OPTIONS]
 
-Arguments:
-  speaker_id      Speaker ID to search similar speakers for
-
 Options:
-  --config TEXT   Path to .env configuration file
-  --db-path TEXT  Path to speaker database (default: speakers_db)
-  --limit INT     Maximum number of results (default: 5)
+  --limit INT    Maximum results (default: 5)
+  --db-dsn TEXT  PostgreSQL DSN
 ```
 
-Example:
-```bash
-pawn-diarize search john_doe
-pawn-diarize search alice_smith --limit 10 --db-path ./voices
-pawn-diarize search bob --config ./custom.env
-```
+#### `label`
 
-### `label`
-
-Assign human-readable names to speakers for automatic recognition in future diarizations.
+Assign a human-readable name to a speaker for automatic recognition in future diarizations.
 
 ```bash
 pawn-diarize label [OPTIONS]
 
 Options:
-  --file TEXT, -f TEXT     Audio file containing the speaker
-  --speaker TEXT, -s TEXT  Speaker label (e.g., SPEAKER_00)
-  --name TEXT, -n TEXT     Human-readable name for the speaker
-  --config TEXT            Path to .env configuration file
-  --list, -l               List all speaker name mappings
-  --db-path TEXT           Path to speaker database (default: speakers_db)
+  --file, -f TEXT      Audio file containing the speaker
+  --speaker, -s TEXT   Speaker label (e.g. SPEAKER_00)
+  --name, -n TEXT      Human-readable name
+  --session TEXT       Session ID to scope the labeling
+  --list, -l           List all speaker name mappings
+  --config TEXT        Path to pawnai.yaml
+  --db-dsn TEXT        PostgreSQL DSN
 ```
 
-Example:
 ```bash
-# Label a speaker in a file
-pawn-diarize label -f audio.wav -s SPEAKER_00 -n "John Doe"
-
-# List all labeled speakers
+pawn-diarize label -f audio.wav -s SPEAKER_00 -n "Alice Smith"
 pawn-diarize label --list
-
-# Use custom config
-pawn-diarize label --list --config ./custom.env
-pawn-diarize label -f audio.wav -s SPEAKER_00 -n "Alice Smith" --config ./prod.env
 ```
 
-**Workflow:**
-1. Run `diarize` on an audio file → Detects speakers and stores embeddings for unknown ones
-2. Run `label` to assign names → Associates names with speaker embeddings
-3. Run `diarize` on new audio → Automatically recognizes and labels known speakers
-4. New speakers are automatically stored for future recognition (use `--no-store` to disable)
+**Typical workflow:**
+1. `transcribe-diarize` → transcript with SPEAKER_00, SPEAKER_01, …
+2. `label` → assign names to those labels
+3. Future `transcribe-diarize` runs → names appear automatically
 
-### `analyze`
+#### `session-relabel`
 
-Analyze diarization results to generate summaries, extract keywords, or build knowledge graphs. Accepts diarization output or processes audio directly.
-
-This command uses AI to extract insights from transcribed conversations with speaker labels.
+Bulk-rename a mis-identified speaker across an entire session.
 
 ```bash
-pawn-diarize analyze <input_file> [OPTIONS]
-
-Arguments:
-  input_file     Path to diarization JSON/text file, or an audio file to process first
+pawn-diarize session-relabel --session SESSION_ID --from OLD_NAME --to NEW_NAME [OPTIONS]
 
 Options:
-  --output TEXT, -o TEXT       Output file path (.txt, .json, or .csv)
-  --mode TEXT                  Analysis mode: 'summary' (default) or 'graph'
-  --model TEXT, -m TEXT        Copilot model to use for analysis (default: gpt-4o)
-  --db-path TEXT               Path to speaker database (default: speakers_db)
-  --device TEXT, -d TEXT       Device for audio processing: cuda or cpu (default: cuda)
+  --yes, -y    Skip confirmation prompt
+  --db-dsn TEXT
+  --config TEXT
 ```
 
-**Analysis Modes:**
+#### `session-info`
 
-**Summary Mode** (default):
-- Structured analysis with conversation summary
-- Key topics and keywords extraction
-- Per-speaker highlights and insights
-- Sentiment analysis
+Show speakers and their embedding source files for a session.
 
-**Graph Mode**:
-- Extracts knowledge graph triples (subject, relation, object)
-- Perfect for visualizing conversations as networks
-- Useful for semantic analysis and relationship mapping
-
-**Examples:**
-
-Analyze existing diarization output:
 ```bash
-pawn-diarize analyze result.json
-pawn-diarize analyze transcript.txt --mode graph
-pawn-diarize analyze result.json --mode summary -o analysis.txt
+pawn-diarize session-info <session_id> [OPTIONS]
 ```
 
-Process audio directly and analyze:
+#### `sessions`
+
+List all sessions or inspect a specific one.
+
 ```bash
-pawn-diarize analyze meeting.wav
-pawn-diarize analyze meeting.wav --mode graph -o graph.json
-pawn-diarize analyze meeting.wav --mode summary -o analysis.txt
+pawn-diarize sessions [OPTIONS]
+
+Options:
+  --session TEXT    Inspect a specific session
+  --head INT        Show first N segments
+  --tail INT        Show last N segments
+  --output TEXT     Save output to file
+  --config TEXT     Path to pawnai.yaml
 ```
 
-Output to different formats:
+#### `sync-siyuan`
+
+Push a session's analysis to a SiYuan Notes instance as a new document.
+
 ```bash
-pawn-diarize analyze result.json --mode graph -o graph.json   # JSON with triples
-pawn-diarize analyze result.json --mode graph -o graph.csv    # CSV table format
-pawn-diarize analyze result.json --mode summary -o analysis.txt  # Text summary
+pawn-diarize sync-siyuan [OPTIONS]
 
-# Custom model
-pawn-diarize analyze result.json --model gpt-4o --mode graph
+Options:
+  --session TEXT          Session ID to sync
+  --all                   Sync all sessions with stored analysis
+  --notebook TEXT         Target SiYuan notebook
+  --token TEXT            SiYuan API token
+  --url TEXT              SiYuan instance URL
+  --path-template TEXT    Document path template
+  --daily-note            Insert into today's daily note
+  --db-dsn TEXT
+  --config TEXT
 ```
 
-**Output Formats:**
+#### `s3 ls`
 
-Summary Mode:
-- **Text** (.txt): Formatted text report with sections
-- **JSON** (.json): Structured JSON with model metadata
+List objects in the configured S3 bucket with POSIX-style output (timestamp and size always shown).
 
-Graph Mode:
-- **JSON** (.json): Array of {subject, relation, object} triples
-- **CSV** (.csv): Three-column table format
-- **Text** (.txt): Tab-separated values
+```bash
+pawn-diarize s3 ls [PREFIX] [OPTIONS]
 
-**Features:**
-- **AI-Powered**: Uses Copilot models for intelligent analysis
-- **Multi-format Input**: Works with diarization JSON, text files, or raw audio
-- **Flexible Output**: Save as text, JSON, or CSV
-- **Knowledge Graphs**: Extract semantic relationships from conversations
-- **Speaker Insights**: Per-speaker analysis and sentiment
+Options:
+  --config TEXT           Path to pawnai.yaml
+  --recursive, -r         Flat listing (no directory grouping)
+  --time, -t              Sort by modification time, newest first
+  --reverse               Reverse sort order
+  --older-than INTEGER    Show only objects older than N days
+```
 
-### `status`
+```bash
+pawn-diarize s3 ls
+pawn-diarize s3 ls recordings/ -t
+pawn-diarize s3 ls recordings/ -r -t --reverse
+pawn-diarize s3 ls --older-than 30
+```
 
-Display system information and available commands.
+Output format:
+```
+2024-03-15 14:32:10    45.2 MB  recordings/2024/meeting.wav
+                PRE             recordings/archive/
+```
+
+#### `s3 rm`
+
+Delete objects from S3 by key or by age. Always prefer `--dry-run` first.
+
+```bash
+pawn-diarize s3 rm [PATH] [OPTIONS]
+
+Options:
+  --config TEXT           Path to pawnai.yaml
+  --older-than INTEGER    Delete all objects older than N days
+  --prefix TEXT           Limit --older-than to this key prefix
+  --dry-run, -n           Show what would be deleted without making changes
+  --yes, -y               Skip confirmation prompt for bulk deletions
+```
+
+```bash
+# Delete a specific file
+pawn-diarize s3 rm recordings/2024/old.wav
+
+# Preview bulk deletion
+pawn-diarize s3 rm --older-than 30 --dry-run
+
+# Delete all objects older than 90 days under a prefix
+pawn-diarize s3 rm --older-than 90 --prefix recordings/ --yes
+```
+
+#### `listen`
+
+Background worker that polls a pawn-queue topic and executes jobs (transcribe-diarize, transcribe, diarize, embed, analyze, sync-siyuan).
+
+```bash
+pawn-diarize listen [OPTIONS]
+
+Options:
+  --config TEXT          Path to pawnai.yaml
+  --topic TEXT           Queue topic name
+  --consumer-name TEXT   Worker identity for lease-based concurrency
+```
+
+#### `status`
+
+Show system status: device, CUDA availability, GPU info, configured models.
 
 ```bash
 pawn-diarize status [--config TEXT]
+```
+
+### S3 Audio Paths
+
+All audio processing commands accept `s3://` URIs directly — files are downloaded to a temp location, processed, then cleaned up automatically.
+
+```bash
+pawn-diarize transcribe s3://my-bucket/recordings/meeting.wav -o transcript.txt
+pawn-diarize transcribe-diarize s3://my-bucket/recordings/*.wav
+```
+
+---
+
+## pawn-agent
+
+LLM-powered conversational agent for analyzing pawn-diarize sessions. Backed by PydanticAI and supports multiple providers (OpenAI-compatible, GitHub Copilot, Anthropic, Google, Groq, Mistral, and others).
+
+Tools are **auto-discovered** from `pawn_agent/tools/` — any module that exports `NAME`, `DESCRIPTION`, and `build(cfg)` is registered automatically.
+
+### Commands Reference
+
+#### `chat`
+
+Start an interactive multi-turn conversation session.
+
+```bash
+pawn-agent chat [OPTIONS]
 
 Options:
-  --config TEXT  Path to .env configuration file
+  --config TEXT    Path to pawnai.yaml
+  --model TEXT     Override the configured LLM model
+  --session TEXT   Session hint for context (e.g. a session ID to analyze)
 ```
 
-Shows:
-- Device type (CPU/GPU)
-- CUDA availability
-- Available GPU information
-- List of available commands
+#### `run`
 
-Example:
-```bash
-pawn-diarize status
-pawn-diarize status --config ./custom.env
-```
-
-## Configuration
-
-### Environment Setup with .env File
-
-Pawn Diarize uses a `.env` file to manage environment variables. This keeps sensitive credentials out of your code and shell history.
-
-**Setup:**
-
-1. Copy the example configuration:
-```bash
-cp .env.example .env
-```
-
-2. Edit `.env` and add your HuggingFace token:
-```bash
-# .env file
-HF_TOKEN=hf_your_actual_token_here
-DEVICE=auto  # Optional: auto, cuda, or cpu
-```
-
-3. The `.env` file is automatically loaded when you run any command:
-```bash
-pawn-diarize status
-pawn-diarize diarize audio.wav
-```
-
-**Important**: `.env` is in `.gitignore` and won't be committed to git (protects your credentials).
-
-### Custom Configuration File
-
-You can specify a custom `.env` file using the `--config` flag on any command:
+Execute a single prompt and exit (useful for scripting).
 
 ```bash
-# Use a specific config file
-pawn-diarize diarize audio.wav --config ./configs/prod.env
-pawn-diarize transcribe audio.wav --config /path/to/custom.env
-pawn-diarize transcribe-diarize audio.wav --config ~/.config/pawn-diarize/.env
+pawn-agent run "<prompt>" [OPTIONS]
 
-# Works with all commands
-pawn-diarize embed audio.wav --speaker-id john --config ./custom.env
-pawn-diarize search alice --config ./custom.env
-pawn-diarize label --list --config ./custom.env
-pawn-diarize status --config ./custom.env
+Options:
+  --config TEXT    Path to pawnai.yaml
+  --model TEXT     Override the configured LLM model
+  --session TEXT   Session hint
 ```
-
-This is useful for:
-- **Multiple environments**: Production, staging, development configs
-- **Different tokens**: Separate tokens for different users
-- **CI/CD pipelines**: Pass config path as environment variable
-- **Docker containers**: Mount config from external volume
-
-### Environment Variables
 
 ```bash
-# Required: Hugging Face API token for model access
-HF_TOKEN=hf_your_token_here
-
-# Optional: Device selection (auto, cuda, cpu) - default: auto
-DEVICE=auto
-
-# Optional: Database path - default: speakers_db (from CLI)
-# DB_PATH=./my_speakers_db
-
-# Optional: Audio directory - default: audio (from CLI)
-# AUDIO_DIR=./audio_files
+pawn-agent run "Summarize session abc123 and save to SiYuan"
 ```
 
-Get your HuggingFace token: https://huggingface.co/settings/tokens
+#### `tools`
 
-### Configuration Precedence
-
-1. `.env` file in current directory (auto-loaded)
-2. Custom `.env` file via `--config` flag (overrides default)
-3. CLI options like `--db-path` (take highest precedence)
-
-## Multi-File Processing & Session Management
-
-Pawn Diarize supports processing multiple audio files as a single conversation, with intelligent speaker tracking. Two main approaches are available:
-
-### Multi-File Processing (Batch)
-
-Process multiple files in a single command as chunks of one conversation:
+List all registered agent tools with their descriptions.
 
 ```bash
-# Diarization
-pawn-diarize diarize part1.wav part2.wav part3.wav -o full_diarization.json
-
-# Transcription with diarization
-pawn-diarize transcribe-diarize chunk1.wav chunk2.wav chunk3.wav -o transcript.txt
-
-# Key feature: Speaker labels are consistent across all files
+pawn-agent tools [--config TEXT]
 ```
 
-**How it works:**
-1. Each file is processed independently
-2. Speaker embeddings from each file are compared
-3. Same speaker gets the same label across all files
-4. Results are merged into a single output
-5. **Cross-file threshold** (`-x`, default 0.85) controls matching strictness
+#### `models`
 
-**Use Cases:**
-- Recording broken into multiple files due to technical limitations
-- Long meetings split into separate audio files
-- Processing multiple audio segments of the same conversation
-
-### Session Accumulation (Streaming)
-
-Process a long conversation in parts over time, with state preserved between invocations:
+List available Copilot models with billing and reasoning effort details.
 
 ```bash
-# Session 1: Start a new conversation session
-pawn-diarize transcribe-diarize part1.wav --session meeting.json
-
-# Session 2: Append to existing session (picks up where it left off)
-pawn-diarize transcribe-diarize part2.wav --session meeting.json
-
-# Session 3: Add more and export final output
-pawn-diarize transcribe-diarize part3.wav --session meeting.json -o final_transcript.txt
+pawn-agent models [--config TEXT]
 ```
 
-**Session File Format** (JSON, auto-created):
-```json
-{
-  "speaker_embeddings": { "SPEAKER_00": [...], "SPEAKER_01": [...] },
-  "speaker_names": { "SPEAKER_00": "John", "SPEAKER_01": "Alice" },
-  "segments": [ 
-    { "speaker": "SPEAKER_00", "text": "Hello...", "start": 0.0, "end": 2.5 },
-    { "speaker": "SPEAKER_01", "text": "Hi there...", "start": 2.6, "end": 5.0 }
-  ],
-  "time_cursor": 5.0
-}
-```
+### Available Tools
 
-**How it works:**
-1. **First call**: Creates session file with initial speaker state
-2. **Subsequent calls**: Load existing session, process new audio, align speakers
-3. **Time cursor**: Automatically tracks position for proper timestamp continuity
-4. **Speaker persistence**: Same speakers matched across all sessions
-5. **Final export**: Use `-o` flag to save complete transcript
+| Tool | Description |
+|------|-------------|
+| `query_conversation` | Fetch the full transcript for a session from the database |
+| `analyze_summary` | Run structured analysis (title, summary, topics, sentiment, tags) and persist to DB |
+| `get_analysis` | Retrieve the most recent stored analysis for a session |
+| `extract_graph` | Extract knowledge-graph triples from a transcript and persist to DB |
+| `vectorize` | Embed session transcripts or SiYuan pages into the RAG index |
+| `search_knowledge` | Semantic similarity search over transcript chunks and SiYuan notes |
+| `save_to_siyuan` | Save Markdown content to SiYuan Notes as a new document |
+| `fetch_siyuan_page` | Fetch the text content of a SiYuan page by path |
+| `rag_stats` | Show a summary of the RAG vector index (sources and chunk counts) |
 
-**Use Cases:**
-- Long conversations processed in parts as they arrive
-- Real-time transcription with periodic output
-- Distributed file processing across multiple machines
-- Processing files from different sources over time
-
-**Session vs Batch Comparison:**
-
-| Feature | Batch | Session |
-|---------|-------|---------|
-| **Command** | Single command | Multiple commands |
-| **All files provided** | Yes | No, incremental |
-| **State persistence** | None | In JSON file |
-| **Speaker alignment** | Cross-file threshold | Embeddings + state |
-| **Timeline** | Merged timestamps | Continuous cursor |
-| **Use case** | Pre-recorded chunks | Streaming arrival |
-
-### Threshold Options
-
-**`--threshold` / `-t`** (default: 0.7):
-- Controls speaker matching within a file
-- Range: 0.0 - 1.0
-- Higher = stricter matching (fewer false positives)
-- Used for diarize and transcribe-diarize
-
-**`--cross-threshold` / `-x`** (default: 0.85):
-- Controls speaker matching across multiple files
-- Only used when processing multiple files
-- Higher = stricter cross-file alignment
-- Use higher values (0.85-0.95) for very strict matching
-
-```bash
-# More permissive matching
-pawn-diarize transcribe-diarize part1.wav part2.wav -t 0.5 -x 0.70
-
-# Stricter matching
-pawn-diarize transcribe-diarize part1.wav part2.wav -t 0.85 -x 0.95
-```
+---
 
 ## Project Structure
 
 ```
-pawn-diarize/
-├── __init__.py           # Package metadata and public API
-├── __main__.py           # Single CLI entrypoint
-├── core/
-│   ├── __init__.py
-│   ├── config.py         # Configuration management
-│   ├── diarization.py    # Speaker diarization engine
-│   ├── transcription.py  # Audio transcription engine
-│   └── embeddings.py     # Speaker embedding management
-├── cli/
-│   ├── __init__.py
-│   ├── commands.py       # CLI command definitions
-│   └── utils.py          # CLI utilities
-└── utils/
-    └── __init__.py       # General utilities
-```
-
-## Development
-
-### Setup Development Environment
-
-```bash
-# Install development dependencies
-pip install -e ".[dev]"
-
-# Format code
-black pawn-diarize tests
-isort pawn-diarize tests
-
-# Run linting
-flake8 pawn-diarize tests
-mypy pawn-diarize
-
-# Run tests
-pytest
-
-# Generate coverage report
-pytest --cov=pawn-diarize --cov-report=html
-```
-
-### Running Tests
-
-```bash
-# Run all tests
-pytest
-
-# Run specific test file
-pytest tests/test_transcription.py
-
-# Run with verbose output
-pytest -v
-
-# Run with coverage
-pytest --cov=pawn-diarize
+parakeet/
+├── pawn_diarize/
+│   ├── __main__.py           # Entry point → pawn-diarize
+│   ├── cli/
+│   │   ├── commands.py       # All CLI command definitions
+│   │   └── utils.py          # Console, helpers
+│   ├── core/
+│   │   ├── config.py         # pawnai.yaml loader
+│   │   ├── diarization.py    # pyannote.audio + DBSCAN clustering
+│   │   ├── transcription.py  # NeMo Parakeet / faster-whisper backends
+│   │   ├── embeddings.py     # Speaker embeddings (PostgreSQL + pgvector)
+│   │   ├── combined.py       # Multi-file transcription+diarization
+│   │   ├── database.py       # SQLAlchemy ORM (embeddings, segments, analysis, RAG, graph)
+│   │   ├── analysis.py       # Session analysis via Copilot
+│   │   ├── s3.py             # S3/MinIO client and transparent download helpers
+│   │   ├── siyuan.py         # SiYuan Notes API client
+│   │   └── queue_listener.py # Background job worker
+│   └── utils/
+├── pawn_agent/
+│   ├── __main__.py           # Entry point → pawn-agent
+│   ├── cli/commands.py       # run, chat, tools, models
+│   ├── core/
+│   │   ├── agent.py          # ConversationAgent (Copilot SDK)
+│   │   └── pydantic_agent.py # PydanticAI multi-provider agent
+│   ├── tools/                # Auto-discovered tool modules
+│   └── utils/
+│       ├── config.py         # AgentConfig loader
+│       ├── db.py             # DB session factory + RAG tables
+│       ├── transcript.py     # Fetch/format session transcripts
+│       ├── siyuan.py         # SiYuan helpers
+│       ├── analysis.py       # Analysis runner
+│       └── vectorize.py      # RAG vectorization
+├── migrations/               # Alembic schema versions
+├── pawnai.yaml               # Project configuration
+└── alembic.ini
 ```
 
 ## Technologies
 
-- **pyannote.audio**: Speaker diarization and embedding extraction
-- **Nvidia NeMo**: ASR transcription with Parakeet model
-- **LanceDB**: Vector database for embeddings
-- **Typer**: CLI framework with auto-generated help
-- **Rich**: Beautiful terminal output formatting
-- **PyYAML**: Configuration management from .pawn-diarize.yml files
-- **PyTorch**: Deep learning framework
-- **scikit-learn**: Machine learning utilities
+| Category | Technology |
+|----------|-----------|
+| Speaker diarization | pyannote.audio 4.0+ |
+| Transcription | NeMo Parakeet (nvidia/parakeet-tdt-0.6b-v3), faster-whisper |
+| Speaker embeddings | PostgreSQL + pgvector (512-dim cosine similarity) |
+| RAG embeddings | sentence-transformers / Qwen3-Embedding-0.6B (1024-dim) |
+| Database ORM | SQLAlchemy 2.0 + Alembic migrations |
+| LLM agent | PydanticAI (multi-provider) + GitHub Copilot SDK |
+| S3 storage | boto3 / aioboto3 |
+| Job queue | pawn-queue (S3-backed) |
+| Notes integration | SiYuan Notes API |
+| CLI | Typer + Rich |
 
-## Performance Tips
-
-- **GPU Acceleration**: Models automatically use CUDA if available
-- **Batch Processing**: Process multiple files for efficiency
-- **Model Caching**: Models are loaded once and reused
-- **Database Indexing**: LanceDB automatically indexes embeddings
-
-## Troubleshooting
-
-### HuggingFace Token Error
-
-If you see "HuggingFace token not found" errors:
-
-1. Create a `.env` file from the example:
-```bash
-cp .env.example .env
-```
-
-2. Add your token:
-```
-HF_TOKEN=hf_your_actual_token_here
-```
-
-3. Or use a custom config file:
-```bash
-pawn-diarize status --config ./my_config.env
-pawn-diarize diarize audio.wav --config /path/to/config.env
-```
-
-Get your token: https://huggingface.co/settings/tokens
-
-### Models Not Loading
+## Development
 
 ```bash
-# Ensure HuggingFace token is set correctly
-cat .env | grep HF_TOKEN
+# Install with dev dependencies
+pip install -e ".[dev]"
 
-# Check system status
-pawn-diarize status
+# Format
+black pawn_diarize pawn_agent tests
+isort pawn_diarize pawn_agent tests
+
+# Lint
+flake8 pawn_diarize pawn_agent tests
+mypy pawn_diarize pawn_agent
+
+# Test
+pytest
+pytest tests/test_cli.py::test_status
+pytest --cov=pawn_diarize --cov-report=html
 ```
-
-### CUDA Issues
-
-```bash
-# Use CPU instead (can specify via .env or command)
-export DEVICE="cpu"
-pawn-diarize transcribe audio.wav
-
-# Or in custom .env file
-echo "DEVICE=cpu" >> custom.env
-pawn-diarize transcribe audio.wav --config ./custom.env
-```
-
-### Out of Memory
-
-- Reduce batch size or process files individually
-- Use CPU mode for lower memory consumption
-- Ensure no other GPU processes are running
-
-## Contributing
-
-Contributions are welcome! Please:
-
-1. Fork the repository
-2. Create a feature branch
-3. Make your changes
-4. Add tests for new functionality
-5. Submit a pull request
-
-## License
-
-MIT License - See LICENSE file for details
-
-## Support
-
-For issues, feature requests, or questions:
-- Open an issue on GitHub
-- Check existing documentation
-- Review example commands
-
-## Acknowledgments
-
-- pyannote.audio for speaker diarization models
-- Nvidia NeMo for transcription models
-- LanceDB for vector database functionality

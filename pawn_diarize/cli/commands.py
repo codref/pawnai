@@ -13,6 +13,9 @@ app = typer.Typer(
     rich_markup_mode="rich",
 )
 
+s3_app = typer.Typer(help="S3 storage management commands.")
+app.add_typer(s3_app, name="s3")
+
 
 def _resolve_s3_paths(
     paths: List[str],
@@ -1966,7 +1969,7 @@ def status(
     console.print("  status             - Show this status message")
 
 
-@app.command(name="s3-ls")
+@s3_app.command(name="ls")
 def s3_ls(
     prefix: Optional[str] = typer.Argument(
         None, help="Optional key prefix to filter results (e.g. 'recordings/2024/')"
@@ -1977,26 +1980,37 @@ def s3_ls(
     recursive: bool = typer.Option(
         False, "--recursive", "-r", help="List all objects recursively (no common-prefix grouping)"
     ),
-    long: bool = typer.Option(
-        False, "--long", "-l", help="Show size and last-modified date for each object"
+    sort_time: bool = typer.Option(
+        False, "--time", "-t", help="Sort by modification time, newest first"
+    ),
+    reverse: bool = typer.Option(
+        False, "--reverse", help="Reverse the sort order"
+    ),
+    older_than: Optional[int] = typer.Option(
+        None, "--older-than", help="Show only objects older than N days"
     ),
 ) -> None:
-    """List objects in the configured S3 bucket.
+    """List objects in the configured S3 bucket (POSIX-style).
 
     Reads S3 credentials from the ``s3:`` section of ``pawnai.yaml`` (or the
     file passed via ``--config``).  Without a prefix all top-level keys are
     listed; with a prefix only keys that start with that prefix are shown.
 
     By default the listing uses delimiter ``/`` so that common prefixes
-    (virtual directories) are grouped, similar to ``aws s3 ls``.  Pass
-    ``--recursive`` to list every object under the prefix without grouping.
+    (virtual directories) are grouped.  Pass ``--recursive`` to list every
+    object under the prefix without grouping.
+
+    Timestamp and size are always shown.  Use ``-t`` to sort by modification
+    time (newest first) and ``--reverse`` to flip the order.
 
     Example:
-        pawn-diarize s3-ls
-        pawn-diarize s3-ls recordings/
-        pawn-diarize s3-ls recordings/2024/ --long
-        pawn-diarize s3-ls --recursive --long
+        pawn-diarize s3 ls
+        pawn-diarize s3 ls recordings/
+        pawn-diarize s3 ls -t
+        pawn-diarize s3 ls recordings/ -r -t --reverse
+        pawn-diarize s3 ls --older-than 30
     """
+    import datetime
     from ..core.config import AppConfig
     from ..core.s3 import S3Client
 
@@ -2006,7 +2020,7 @@ def s3_ls(
     if s3_cfg is None:
         console.print(
             "[red]Error: no 's3:' section found in pawnai.yaml – "
-            "add S3 credentials before using s3-ls[/red]"
+            "add S3 credentials before using s3 ls[/red]"
         )
         raise typer.Exit(1)
 
@@ -2019,7 +2033,6 @@ def s3_ls(
         )
         raise typer.Exit(1)
 
-    # ── Build list_objects_v2 kwargs ─────────────────────────────────────────
     list_kwargs: dict = {"Bucket": client.bucket}
     if prefix:
         list_kwargs["Prefix"] = prefix
@@ -2031,44 +2044,233 @@ def s3_ls(
         f"{'/' + prefix.lstrip('/') if prefix else ''}[/bold cyan]\n"
     )
 
-    # ── Paginate ─────────────────────────────────────────────────────────────
-    # Access the underlying boto3 client via the private attribute (same pattern
-    # used in pawn-diarize_recorder's S3Uploader for head_bucket / upload_file).
     boto_client = client._client  # noqa: SLF001
-
     paginator = boto_client.get_paginator("list_objects_v2")
 
-    total_objects = 0
-    total_bytes = 0
+    now = datetime.datetime.now(tz=datetime.timezone.utc)
+    cutoff = now - datetime.timedelta(days=older_than) if older_than is not None else None
+
+    # Collect everything so we can sort / filter
+    common_prefixes: list = []
+    objects: list = []
 
     try:
         for page in paginator.paginate(**list_kwargs):
-            # Virtual directories (common prefixes)
             for cp in page.get("CommonPrefixes") or []:
-                console.print(f"  [bold blue]{cp['Prefix']}[/bold blue]")
-
-            # Objects
+                common_prefixes.append(cp["Prefix"])
             for obj in page.get("Contents") or []:
-                total_objects += 1
-                total_bytes += obj["Size"]
-                key = obj["Key"]
-
-                if long:
-                    size_str = _fmt_size(obj["Size"])
-                    modified = obj["LastModified"].strftime("%Y-%m-%d %H:%M:%S")
-                    console.print(
-                        f"  [green]{modified}[/green]  "
-                        f"[yellow]{size_str:>10}[/yellow]  {key}"
-                    )
-                else:
-                    console.print(f"  {key}")
-
+                objects.append(obj)
     except Exception as e:
         console.print(f"[red]Error listing bucket: {e}[/red]")
         raise typer.Exit(1)
 
+    # Apply age filter
+    if cutoff is not None:
+        objects = [o for o in objects if o["LastModified"] < cutoff]
+        # Hide virtual dirs when filtering by age (they have no timestamp)
+        common_prefixes = []
+
+    # Sort objects
+    if sort_time:
+        objects.sort(key=lambda o: o["LastModified"], reverse=not reverse)
+    elif reverse:
+        objects.sort(key=lambda o: o["Key"], reverse=True)
+    # else: already in lexicographic order from S3
+
+    total_bytes = 0
+
+    # Print virtual directories first (only when no age filter)
+    for cp in sorted(common_prefixes, reverse=reverse):
+        console.print(f"  [dim]{'PRE':>19}[/dim]  [bold blue]{cp}[/bold blue]")
+
+    # Print objects
+    for obj in objects:
+        total_bytes += obj["Size"]
+        size_str = _fmt_size(obj["Size"])
+        modified = obj["LastModified"].strftime("%Y-%m-%d %H:%M:%S")
+        console.print(
+            f"  [green]{modified}[/green]  "
+            f"[yellow]{size_str:>10}[/yellow]  {obj['Key']}"
+        )
+
     console.print(
-        f"\n[dim]Total: {total_objects} object(s), {_fmt_size(total_bytes)}[/dim]"
+        f"\n[dim]Total: {len(objects)} object(s), {_fmt_size(total_bytes)}[/dim]"
+    )
+
+
+@s3_app.command(name="rm")
+def s3_rm(
+    path: Optional[str] = typer.Argument(
+        None, help="S3 key or s3:// URI of the object to delete"
+    ),
+    config: Optional[str] = typer.Option(
+        None, "--config", help="Path to YAML configuration file (pawnai.yaml)"
+    ),
+    older_than: Optional[int] = typer.Option(
+        None, "--older-than", help="Delete all objects older than N days"
+    ),
+    prefix: Optional[str] = typer.Option(
+        None, "--prefix", help="Limit --older-than deletion to this key prefix"
+    ),
+    dry_run: bool = typer.Option(
+        False, "--dry-run", "-n", help="Show what would be deleted without actually deleting"
+    ),
+    yes: bool = typer.Option(
+        False, "--yes", "-y", help="Skip confirmation prompt for bulk deletions"
+    ),
+) -> None:
+    """Delete objects from the configured S3 bucket.
+
+    Two modes of operation:
+
+    \b
+    Direct path:   pawn-diarize s3 rm recordings/2024/audio.wav
+    Age-based:     pawn-diarize s3 rm --older-than 30
+    Combined:      pawn-diarize s3 rm --older-than 30 --prefix recordings/
+
+    The ``--dry-run`` flag shows what would be deleted without making any
+    changes.  Age-based deletions prompt for confirmation unless ``--yes``
+    or ``--dry-run`` is given.
+
+    Example:
+        pawn-diarize s3 rm recordings/2024/old.wav
+        pawn-diarize s3 rm --older-than 30 --dry-run
+        pawn-diarize s3 rm --older-than 90 --prefix recordings/ --yes
+    """
+    import datetime
+    from ..core.config import AppConfig
+    from ..core.s3 import S3Client
+
+    # Validate argument combination
+    if path and older_than is not None:
+        console.print(
+            "[red]Error: provide either a path or --older-than, not both.\n"
+            "To limit --older-than to a prefix, use --prefix instead.[/red]"
+        )
+        raise typer.Exit(1)
+
+    if path is None and older_than is None:
+        console.print(
+            "[red]Error: provide a path to delete or --older-than N to delete by age.[/red]"
+        )
+        raise typer.Exit(1)
+
+    app_cfg = AppConfig(config_path=config) if config else AppConfig()
+    s3_cfg = app_cfg.get_s3_config()
+    if s3_cfg is None:
+        console.print(
+            "[red]Error: no 's3:' section found in pawnai.yaml – "
+            "add S3 credentials before using s3 rm[/red]"
+        )
+        raise typer.Exit(1)
+
+    client = S3Client.from_dict(s3_cfg)
+    boto_client = client._client  # noqa: SLF001
+
+    if not client.check_bucket():
+        console.print(
+            f"[red]Error: bucket '{client.bucket}' is not accessible – "
+            "check credentials and endpoint_url[/red]"
+        )
+        raise typer.Exit(1)
+
+    # ── Mode 1: direct path ───────────────────────────────────────────────────
+    if path is not None:
+        from ..core.s3 import is_s3_path, parse_s3_uri
+
+        if is_s3_path(path):
+            bucket, key = parse_s3_uri(path, configured_bucket=client.bucket)
+        else:
+            bucket, key = client.bucket, path
+
+        if dry_run:
+            console.print(f"[dim][dry-run] would delete:[/dim] {key}")
+        else:
+            try:
+                boto_client.delete_object(Bucket=bucket, Key=key)
+                console.print(f"[green]Deleted:[/green] {key}")
+            except Exception as e:
+                console.print(f"[red]Error deleting {key}: {e}[/red]")
+                raise typer.Exit(1)
+        return
+
+    # ── Mode 2: age-based ─────────────────────────────────────────────────────
+    now = datetime.datetime.now(tz=datetime.timezone.utc)
+    cutoff = now - datetime.timedelta(days=older_than)  # type: ignore[arg-type]
+
+    list_kwargs: dict = {"Bucket": client.bucket}
+    if prefix:
+        list_kwargs["Prefix"] = prefix
+
+    paginator = boto_client.get_paginator("list_objects_v2")
+    candidates: list = []
+
+    try:
+        for page in paginator.paginate(**list_kwargs):
+            for obj in page.get("Contents") or []:
+                if obj["LastModified"] < cutoff:
+                    candidates.append(obj)
+    except Exception as e:
+        console.print(f"[red]Error listing bucket: {e}[/red]")
+        raise typer.Exit(1)
+
+    if not candidates:
+        console.print(
+            f"[dim]No objects older than {older_than} day(s) found"
+            f"{' under ' + prefix if prefix else ''}.[/dim]"
+        )
+        return
+
+    total_bytes = sum(o["Size"] for o in candidates)
+
+    if dry_run:
+        for obj in candidates:
+            modified = obj["LastModified"].strftime("%Y-%m-%d %H:%M:%S")
+            size_str = _fmt_size(obj["Size"])
+            console.print(
+                f"[dim][dry-run] would delete:[/dim] {obj['Key']}  "
+                f"[dim]({modified}, {size_str})[/dim]"
+            )
+        console.print(
+            f"\n[dim][dry-run] {len(candidates)} object(s) would be deleted, "
+            f"{_fmt_size(total_bytes)} freed.[/dim]"
+        )
+        return
+
+    # Confirm before bulk deletion
+    if not yes:
+        console.print(
+            f"[yellow]About to delete {len(candidates)} object(s) "
+            f"({_fmt_size(total_bytes)}) from s3://{client.bucket}"
+            f"{'/' + prefix if prefix else ''}.[/yellow]"
+        )
+        confirmed = typer.confirm("Proceed?", default=False)
+        if not confirmed:
+            console.print("[dim]Aborted.[/dim]")
+            return
+
+    # Batch delete (up to 1000 per request)
+    keys = [{"Key": o["Key"]} for o in candidates]
+    deleted_count = 0
+    errors: list = []
+    for i in range(0, len(keys), 1000):
+        batch = keys[i : i + 1000]
+        try:
+            resp = boto_client.delete_objects(
+                Bucket=client.bucket, Delete={"Objects": batch, "Quiet": False}
+            )
+            deleted_count += len(resp.get("Deleted") or [])
+            errors.extend(resp.get("Errors") or [])
+        except Exception as e:
+            console.print(f"[red]Error during batch delete: {e}[/red]")
+            raise typer.Exit(1)
+
+    if errors:
+        for err in errors:
+            console.print(f"[red]Failed to delete {err['Key']}: {err['Message']}[/red]")
+
+    console.print(
+        f"[green]Deleted {deleted_count} object(s), {_fmt_size(total_bytes)} freed.[/green]"
     )
 
 
