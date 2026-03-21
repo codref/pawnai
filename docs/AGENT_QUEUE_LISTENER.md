@@ -28,10 +28,10 @@ Each message lives as a small JSON object in S3.  When `pawn-agent listen` picks
 
 ## Configuration
 
-The queue listener reuses the same `s3:` and `queue:` sections from `pawnai.yaml` that pawn-diarize uses.  No duplicate credentials needed — just ensure the sections exist:
+The queue listener reuses the top-level `s3:` section for credentials and has its own dedicated `agent_queue:` section — separate from the `queue:` section used by pawn-diarize, so both listeners can run independently with different topics:
 
 ```yaml
-# Shared S3 connection
+# Shared S3 connection — used by both pawn-diarize and pawn-agent
 s3:
   bucket: my-bucket
   endpoint_url: https://s3.amazonaws.com
@@ -40,8 +40,14 @@ s3:
   region: us-east-1
   verify_ssl: true
 
-# Queue settings
-queue:
+# pawn-diarize queue (separate section)
+diarize_queue:
+  topic: audio-chunks
+  consumer_name: pawn-diarize-listener
+  bucket_name: my-bucket
+
+# pawn-agent queue
+agent_queue:
   topic: pawn-agent-jobs              # default: pawn-agent-jobs
   consumer_name: pawn-agent-listener  # default: pawn-agent-listener
   bucket_name: my-bucket              # S3 bucket for queue storage
@@ -62,8 +68,6 @@ agent:
     base_url: http://localhost:11434/v1
     api_key: ollama
 ```
-
-> **Note:** If you already have a `queue:` section for pawn-diarize, you can share it — just override the topic via `--topic` on the command line, or use a separate topic name.
 
 ---
 

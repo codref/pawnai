@@ -20,6 +20,8 @@ def transcribe_with_diarization(
     verbose: bool = False,
     backend: str = "nemo",
     source_map: Optional[Dict[str, str]] = None,
+    transcription_engine: Optional["TranscriptionEngine"] = None,
+    diarization_engine: Optional["DiarizationEngine"] = None,
 ) -> Dict[str, Any]:
     """Transcribe audio with speaker diarization labels.
 
@@ -32,7 +34,7 @@ def transcribe_with_diarization(
     Args:
         audio_path: Path to audio file, or ordered list of paths treated as
                     sequential chunks of the same conversation.
-        db_path: PostgreSQL DSN for speaker database (None to skip).
+        db_dsn: PostgreSQL DSN for speaker database (None to skip).
         similarity_threshold: Minimum similarity to match speakers against
                               the database (0-1).
         store_new_speakers: Whether to store embeddings for unknown speakers.
@@ -69,7 +71,8 @@ def transcribe_with_diarization(
     resume_note = f" (resuming from t={time_cursor:.1f}s)" if time_cursor > 0 else ""
 
     print(f"[1/2] Running transcription{'  (' + str(len(audio_paths)) + ' files)' if multiple else ''}{resume_note}...")
-    transcription_engine = TranscriptionEngine(device=device, verbose=verbose, backend=backend)
+    if transcription_engine is None:
+        transcription_engine = TranscriptionEngine(device=device, verbose=verbose, backend=backend)
 
     if multiple:
         transcription = transcription_engine.transcribe_conversation(
@@ -100,7 +103,8 @@ def transcribe_with_diarization(
                 fo["end"] = fo.get("end", 0.0) + time_cursor
 
     print(f"[2/2] Running speaker diarization{'  (' + str(len(audio_paths)) + ' files)' if multiple else ''}{resume_note}...")
-    diarization_engine = DiarizationEngine(device=device if device != "cpu" else None)
+    if diarization_engine is None:
+        diarization_engine = DiarizationEngine(device=device if device != "cpu" else None)
     diarization = diarization_engine.diarize(
         audio_paths if multiple else audio_paths[0],
         db_dsn=db_dsn,

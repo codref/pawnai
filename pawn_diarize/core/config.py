@@ -18,9 +18,9 @@ project root (or by passing ``--config path/to/file.yml`` on the CLI):
       transcription_model: nvidia/parakeet-tdt-0.6b-v3
       transcription_backend: nemo   # nemo | whisper
       whisper_model: large-v3       # used when transcription_backend: whisper
+      model_idle_timeout_minutes: 10  # release ML models after N minutes idle (default: 10)
 
     paths:
-      db_path: speakers_db
       audio_dir: audio/
 
     device:
@@ -43,6 +43,9 @@ project root (or by passing ``--config path/to/file.yml`` on the CLI):
       path_template: "/Conversations/{date}/{session_id}"  # {date}, {session_id}, {title}
       daily_note_path: "/daily note/{year}/{month}/{date}"  # for daily-note backLink
 
+    diarize_queue:
+      bucket_name: pawn-diarize-queue
+
 If ``models.hf_token`` is absent the ``HF_TOKEN`` environment variable is
 used as a fallback so that CI/CD pipelines that inject secrets via env vars
 continue to work without a config file.
@@ -62,7 +65,6 @@ import yaml
 # Module-level defaults
 # ──────────────────────────────────────────────────────────────────────────────
 
-DEFAULT_DB_PATH = "speakers_db"  # kept for backward compat; prefer DEFAULT_DB_DSN
 DEFAULT_DB_DSN: str = os.getenv(
     "DATABASE_URL",
     "postgresql+psycopg://postgres:postgres@localhost:5432/pawnai",
@@ -108,7 +110,6 @@ class AppConfig:
             "transcription_backend": TRANSCRIPTION_BACKEND,
             "whisper_model": WHISPER_MODEL,
             # paths
-            "db_path": DEFAULT_DB_PATH,   # legacy – prefer db_dsn
             "db_dsn": DEFAULT_DB_DSN,
             "audio_dir": "audio/",
             # device
@@ -151,6 +152,7 @@ class AppConfig:
                 "transcription_model",
                 "transcription_backend",
                 "whisper_model",
+                "model_idle_timeout_minutes",
             ):
                 if key in models:
                     self._config[key] = models[key]
@@ -158,7 +160,7 @@ class AppConfig:
         # paths: section
         paths = content.get("paths", {})
         if isinstance(paths, dict):
-            for key in ("db_path", "db_dsn", "audio_dir"):
+            for key in ("db_dsn", "audio_dir"):
                 if key in paths:
                     self._config[key] = paths[key]
 
@@ -181,8 +183,8 @@ class AppConfig:
         if isinstance(siyuan, dict):
             self._config["siyuan"] = siyuan
 
-        # queue: section – pawn-queue listener configuration
-        queue = content.get("queue")
+        # diarize_queue: section – pawn-queue listener configuration
+        queue = content.get("diarize_queue") or content.get("queue")
         if isinstance(queue, dict):
             self._config["queue"] = queue
 
@@ -257,11 +259,11 @@ class AppConfig:
         return None
 
     def get_queue_config(self) -> Optional[Dict[str, Any]]:
-        """Return the ``queue:`` configuration mapping, or ``None`` if absent.
+        """Return the ``diarize_queue:`` configuration mapping, or ``None`` if absent.
 
         Returns:
-            Dictionary of pawn-queue settings from ``.pawn-diarize.yml``, or
-            ``None`` when the ``queue:`` section is not present.
+            Dictionary of pawn-queue settings from ``pawnai.yaml``, or
+            ``None`` when the ``diarize_queue:`` section is not present.
         """
         queue_config = self._config.get("queue")
         if isinstance(queue_config, dict):

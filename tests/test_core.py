@@ -32,6 +32,5 @@ def test_cluster_speakers_empty_list():
 
 def test_config_initialization():
     """Test Config class initialization."""
-    config = Config(db_path="test_db", audio_dir="test_audio")
-    assert config.db_path.name == "test_db"
-    assert config.audio_dir.name == "test_audio"
+    config = Config(db_dsn="postgresql+psycopg://localhost/test_db")
+    assert config.db_dsn == "postgresql+psycopg://localhost/test_db"

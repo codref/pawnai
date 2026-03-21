@@ -13,7 +13,7 @@ pawn-queue's ``consumer.listen()`` keeps the lease alive via a background
 ``_lease_refresher`` task, so jobs that take several minutes (e.g. CPU-based
 diarization) will not be re-queued while the handler is executing.  Set
 ``visibility_timeout_seconds`` to at least as long as your longest expected
-job in the ``queue:`` section of ``.pawn-diarize.yml``.
+job in the ``diarize_queue:`` section of ``pawnai.yaml``.
 
 Usage::
 
@@ -27,10 +27,82 @@ Usage::
 from __future__ import annotations
 
 import asyncio
+import gc
 import logging
-from typing import Any, Callable, Coroutine, Dict, List, Optional
+from typing import Any, Callable, Coroutine, Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Model cache — keeps loaded engine instances alive between jobs and releases
+# them after a configurable idle period.
+# ──────────────────────────────────────────────────────────────────────────────
+
+
+class ModelCache:
+    """Cache loaded ML engine instances between queue jobs.
+
+    Engines are created on first use and reused for subsequent jobs with
+    matching parameters.  Call :meth:`release` to free GPU/CPU memory.
+    """
+
+    def __init__(self) -> None:
+        self._transcription_engine: Optional[Any] = None
+        self._transcription_key: Optional[Tuple[str, str]] = None
+        self._diarization_engine: Optional[Any] = None
+        self._diarization_key: Optional[Optional[str]] = None
+
+    @property
+    def has_models(self) -> bool:
+        return (
+            self._transcription_engine is not None
+            or self._diarization_engine is not None
+        )
+
+    def get_transcription_engine(self, device: str, backend: str) -> Any:
+        """Return a cached (or newly created) :class:`TranscriptionEngine`."""
+        key: Tuple[str, str] = (device, backend)
+        if self._transcription_engine is None or self._transcription_key != key:
+            from .transcription import TranscriptionEngine
+            logger.info(
+                "ModelCache: loading TranscriptionEngine (device=%s, backend=%s)",
+                device, backend,
+            )
+            self._transcription_engine = TranscriptionEngine(device=device, backend=backend)
+            self._transcription_key = key
+        return self._transcription_engine
+
+    def get_diarization_engine(self, device: str) -> Any:
+        """Return a cached (or newly created) :class:`DiarizationEngine`."""
+        diarize_device: Optional[str] = device if device != "cpu" else None
+        if self._diarization_engine is None or self._diarization_key != diarize_device:
+            from .diarization import DiarizationEngine
+            logger.info(
+                "ModelCache: loading DiarizationEngine (device=%s)",
+                diarize_device,
+            )
+            self._diarization_engine = DiarizationEngine(device=diarize_device)
+            self._diarization_key = diarize_device
+        return self._diarization_engine
+
+    def release(self) -> None:
+        """Drop all cached engine references and free GPU memory."""
+        if not self.has_models:
+            return
+        logger.info("ModelCache: releasing ML models from memory")
+        self._transcription_engine = None
+        self._transcription_key = None
+        self._diarization_engine = None
+        self._diarization_key = None
+        gc.collect()
+        try:
+            import torch
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+                logger.info("ModelCache: CUDA memory cache cleared")
+        except ImportError:
+            pass
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Per-command parameter defaults
@@ -119,7 +191,12 @@ def _resolve_db_dsn(params: Dict[str, Any], cfg: Any) -> str:
 # ──────────────────────────────────────────────────────────────────────────────
 
 
-async def dispatch(command: str, params: Dict[str, Any], cfg: Any) -> None:
+async def dispatch(
+    command: str,
+    params: Dict[str, Any],
+    cfg: Any,
+    model_cache: Optional[ModelCache] = None,
+) -> None:
     """Dispatch a single command to the appropriate core function.
 
     All execution is synchronous inside the core modules, so the heavy call is
@@ -129,6 +206,8 @@ async def dispatch(command: str, params: Dict[str, Any], cfg: Any) -> None:
         command: Pawn Diarize command name (e.g. ``"transcribe-diarize"``),
         params: Merged parameter dict (defaults already applied).
         cfg: :class:`~pawn_diarize.core.config.AppConfig` instance.
+        model_cache: Optional :class:`ModelCache` for reusing loaded engines
+            across jobs and releasing them after an idle period.
 
     Raises:
         ValueError: If *command* is not supported.
@@ -137,11 +216,11 @@ async def dispatch(command: str, params: Dict[str, Any], cfg: Any) -> None:
     loop = asyncio.get_event_loop()
 
     if command == "transcribe-diarize":
-        await loop.run_in_executor(None, _run_transcribe_diarize, params, cfg)
+        await loop.run_in_executor(None, _run_transcribe_diarize, params, cfg, model_cache)
     elif command == "transcribe":
-        await loop.run_in_executor(None, _run_transcribe, params, cfg)
+        await loop.run_in_executor(None, _run_transcribe, params, cfg, model_cache)
     elif command == "diarize":
-        await loop.run_in_executor(None, _run_diarize, params, cfg)
+        await loop.run_in_executor(None, _run_diarize, params, cfg, model_cache)
     elif command == "embed":
         await loop.run_in_executor(None, _run_embed, params, cfg)
     elif command == "sync-siyuan":
@@ -209,7 +288,9 @@ def _cleanup(temp_dirs: List[str]) -> None:
             pass
 
 
-def _run_transcribe_diarize(params: Dict[str, Any], cfg: Any) -> None:
+def _run_transcribe_diarize(
+    params: Dict[str, Any], cfg: Any, model_cache: Optional[ModelCache] = None
+) -> None:
     import json as _json
     from pathlib import Path as _Path
     from .combined import transcribe_with_diarization, format_transcript_with_speakers
@@ -262,6 +343,14 @@ def _run_transcribe_diarize(params: Dict[str, Any], cfg: Any) -> None:
             backend=backend,
             prior_speaker_embeddings=prior_embeddings,
             time_cursor=time_cursor,
+            transcription_engine=(
+                model_cache.get_transcription_engine(device, backend)
+                if model_cache is not None else None
+            ),
+            diarization_engine=(
+                model_cache.get_diarization_engine(device)
+                if model_cache is not None else None
+            ),
         )
 
         # Save session state
@@ -296,10 +385,11 @@ def _run_transcribe_diarize(params: Dict[str, Any], cfg: Any) -> None:
         _cleanup(temps)
 
 
-def _run_transcribe(params: Dict[str, Any], cfg: Any) -> None:
+def _run_transcribe(
+    params: Dict[str, Any], cfg: Any, model_cache: Optional[ModelCache] = None
+) -> None:
     import json as _json
     from pathlib import Path as _Path
-    from .transcription import TranscriptionEngine
 
     audio_paths: List[str] = params.get("audio_paths") or []
     if not audio_paths:
@@ -313,7 +403,11 @@ def _run_transcribe(params: Dict[str, Any], cfg: Any) -> None:
         chunk_duration = params.get("chunk_duration")
         output = params.get("output")
 
-        engine = TranscriptionEngine(device=device, backend=backend)
+        if model_cache is not None:
+            engine = model_cache.get_transcription_engine(device, backend)
+        else:
+            from .transcription import TranscriptionEngine
+            engine = TranscriptionEngine(device=device, backend=backend)
         results = engine.transcribe(
             resolved,
             include_timestamps=timestamps,
@@ -331,10 +425,11 @@ def _run_transcribe(params: Dict[str, Any], cfg: Any) -> None:
         _cleanup(temps)
 
 
-def _run_diarize(params: Dict[str, Any], cfg: Any) -> None:
+def _run_diarize(
+    params: Dict[str, Any], cfg: Any, model_cache: Optional[ModelCache] = None
+) -> None:
     import json as _json
     from pathlib import Path as _Path
-    from .diarization import DiarizationEngine
 
     audio_paths: List[str] = params.get("audio_paths") or []
     if not audio_paths:
@@ -346,8 +441,13 @@ def _run_diarize(params: Dict[str, Any], cfg: Any) -> None:
         threshold = float(params.get("threshold", 0.7))
         store_new = bool(params.get("store_new", True))
         output = params.get("output")
+        device = params.get("device", "cuda")
 
-        engine = DiarizationEngine()
+        if model_cache is not None:
+            engine = model_cache.get_diarization_engine(device)
+        else:
+            from .diarization import DiarizationEngine
+            engine = DiarizationEngine()
         result = engine.diarize(
             resolved,
             db_dsn=db_dsn,
@@ -506,6 +606,8 @@ def _run_sync_siyuan(params: Dict[str, Any], cfg: Any) -> None:
 
 def make_message_handler(
     cfg: Any,
+    model_cache: Optional[ModelCache] = None,
+    model_idle_timeout_seconds: float = 600.0,
 ) -> Callable[..., Coroutine[Any, Any, None]]:
     """Return the async message handler coroutine for pawn-queue.
 
@@ -514,13 +616,41 @@ def make_message_handler(
     2. Merges the remaining payload keys over per-command defaults.
     3. Calls :func:`dispatch` (CPU-bound work runs in a thread executor).
     4. Acks the message on success, nacks (dead-letters) on failure.
+    5. After each successful job, resets the model idle timer.  When no job
+       arrives within *model_idle_timeout_seconds*, :meth:`ModelCache.release`
+       is called to free GPU/CPU memory.
 
     Args:
         cfg: :class:`~pawn_diarize.core.config.AppConfig` instance.
+        model_cache: Optional :class:`ModelCache` for engine reuse and
+            idle-based release.  When *None* each job creates its own engines.
+        model_idle_timeout_seconds: Seconds of inactivity after which cached
+            models are released.  Defaults to 600 (10 minutes).
 
     Returns:
         Async callable suitable for ``consumer.listen(handler)``.
     """
+    _idle_task: Optional[asyncio.Task] = None  # type: ignore[type-arg]
+
+    async def _idle_timeout() -> None:
+        try:
+            await asyncio.sleep(model_idle_timeout_seconds)
+            if model_cache is not None and model_cache.has_models:
+                logger.info(
+                    "Model idle timeout (%.0f s) reached — releasing models from memory",
+                    model_idle_timeout_seconds,
+                )
+                model_cache.release()
+        except asyncio.CancelledError:
+            pass
+
+    def _reset_idle_timer() -> None:
+        nonlocal _idle_task
+        if model_cache is None:
+            return
+        if _idle_task is not None and not _idle_task.done():
+            _idle_task.cancel()
+        _idle_task = asyncio.create_task(_idle_timeout())
 
     async def handler(msg: Any) -> None:  # msg: pawn_queue.Message
         payload: Dict[str, Any] = dict(msg.payload)
@@ -547,9 +677,10 @@ def make_message_handler(
         logger.info("Processing message %s: command=%r", msg.id, command)
 
         try:
-            await dispatch(command, params, cfg)
+            await dispatch(command, params, cfg, model_cache)
             logger.info("Message %s completed successfully — ack", msg.id)
             await msg.ack()
+            _reset_idle_timer()
         except Exception as exc:
             logger.error(
                 "Message %s failed: %s — sending to dead-letter", msg.id, exc,
@@ -577,7 +708,7 @@ async def start_listener(
 ) -> None:
     """Set up pawn-queue and block until cancelled.
 
-    Reads the ``queue:`` section of :class:`~pawn_diarize.core.config.AppConfig` to
+    Reads the ``diarize_queue:`` section of :class:`~pawn_diarize.core.config.AppConfig` to
     build the :class:`pawn_queue.PawnQueue` instance, registers a consumer,
     and calls ``consumer.listen(handler)`` which blocks until the asyncio task
     is cancelled (e.g. via ``KeyboardInterrupt``).
@@ -588,7 +719,7 @@ async def start_listener(
         consumer_name_override: When supplied, overrides the consumer name.
 
     Raises:
-        RuntimeError: If the ``queue:`` section is missing from ``.pawn-diarize.yml``.
+        RuntimeError: If the ``diarize_queue:`` section is missing from ``pawnai.yaml``.
     """
     try:
         from pawn_queue import PawnQueueBuilder
@@ -600,8 +731,8 @@ async def start_listener(
     queue_cfg: Optional[Dict[str, Any]] = cfg.get_queue_config()
     if queue_cfg is None:
         raise RuntimeError(
-            "No 'queue:' section found in .pawn-diarize.yml. "
-            "Add a queue: section with at minimum 'bucket_name'. "
+            "No 'diarize_queue:' section found in pawnai.yaml. "
+            "Add a diarize_queue: section with at minimum 'bucket_name'. "
             "S3 credentials are read from the top-level 's3:' section."
         )
 
@@ -650,12 +781,22 @@ async def start_listener(
     if concurrency_section.get("strategy"):
         builder = builder.concurrency(strategy=concurrency_section["strategy"])
 
+    # Model idle timeout: release loaded engines after N minutes of inactivity.
+    # Configured under models.model_idle_timeout_minutes in pawnai.yaml.
+    model_idle_timeout_minutes: float = float(
+        cfg.get("model_idle_timeout_minutes", 10)
+    )
+    model_idle_timeout_seconds: float = model_idle_timeout_minutes * 60.0
+    model_cache = ModelCache()
+
     logger.info(
-        "Starting pawn-queue listener | topic=%r consumer=%r endpoint=%s bucket=%s",
+        "Starting pawn-queue listener | topic=%r consumer=%r endpoint=%s bucket=%s "
+        "model_idle_timeout=%.0f min",
         topic,
         consumer_name,
         endpoint_url,
         bucket_name,
+        model_idle_timeout_minutes,
     )
 
     async with await builder.build() as pq:
@@ -667,10 +808,15 @@ async def start_listener(
             logger.warning("Could not create topic %r: %s", topic, exc)
 
         consumer = await pq.register_consumer(consumer_name, topics=[topic])
-        handler = make_message_handler(cfg)
+        handler = make_message_handler(
+            cfg,
+            model_cache=model_cache,
+            model_idle_timeout_seconds=model_idle_timeout_seconds,
+        )
 
         logger.info("Listening on topic %r as consumer %r …", topic, consumer_name)
         try:
             await consumer.listen(handler)
         except asyncio.CancelledError:
             logger.info("Listener cancelled — shutting down cleanly")
+            model_cache.release()

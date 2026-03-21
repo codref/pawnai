@@ -35,6 +35,12 @@ Config file schema (all keys optional)::
       notebook: ""
       path_template: "/Conversations/{date}/{title}"
       daily_note_path: "/daily note/{year}/{month}/{date}"
+
+    # Agent queue listener (separate from the pawn-diarize queue: section)
+    agent_queue:
+      topic: pawn-agent-jobs
+      consumer_name: pawn-agent-listener
+      bucket_name: my-bucket
 """
 
 from __future__ import annotations
@@ -196,8 +202,8 @@ def load_config(config_path: Optional[str] = None) -> AgentConfig:
 
         if "s3" in data:
             cfg.s3_config = data["s3"]
-        if "queue" in data:
-            cfg.queue_config = data["queue"]
+        if "agent_queue" in data:
+            cfg.queue_config = data["agent_queue"]
 
     return cfg
 

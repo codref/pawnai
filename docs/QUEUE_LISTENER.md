@@ -36,7 +36,7 @@ uv pip install pawn-queue
 ## Configuration
 
 The queue listener reuses the top-level `s3:` section already configured for
-audio downloads — no duplicate credentials needed.  Add only a `queue:` section
+audio downloads — no duplicate credentials needed.  Add only a `diarize_queue:` section
 with the queue-specific settings:
 
 ```yaml
@@ -49,7 +49,7 @@ s3:
   region: us-east-1
   verify_ssl: true
 
-queue:
+diarize_queue:
   # Topic the listener subscribes to (created automatically if absent).
   topic: pawn-diarize-jobs
 

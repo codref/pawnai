@@ -222,8 +222,8 @@ async def start_listener(
     queue_cfg: Optional[Dict[str, Any]] = cfg.queue_config
     if queue_cfg is None:
         raise RuntimeError(
-            "No 'queue:' section found in pawnai.yaml. "
-            "Add a queue: section with at minimum 'bucket_name'. "
+            "No 'agent_queue:' section found in pawnai.yaml. "
+            "Add an agent_queue: section with at minimum 'bucket_name'. "
             "S3 credentials are read from the top-level 's3:' section."
         )
 

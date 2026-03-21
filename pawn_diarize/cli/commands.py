@@ -1706,11 +1706,11 @@ def sessions(
     db_dsn: Optional[str] = typer.Option(
         None, help="PostgreSQL DSN for speaker database"
     ),
-    head: int = typer.Option(
-        5, "--head", help="Number of first segments to show in detail view"
+    head: Optional[int] = typer.Option(
+        None, "--head", help="Limit rows: in list view caps sessions shown; in detail view caps first segments"
     ),
-    tail: int = typer.Option(
-        5, "--tail", help="Number of last segments to show in detail view"
+    tail: Optional[int] = typer.Option(
+        None, "--tail", help="Limit rows: in list view shows oldest sessions; in detail view caps last segments"
     ),
     output: Optional[Path] = typer.Option(
         None, "--output", "-o",
@@ -1817,13 +1817,15 @@ def sessions(
 
         # ── Head ──────────────────────────────────────────────────────────
         console.print()
-        head_segs = segs[:head]
+        head_n = head if head is not None else 5
+        tail_n = tail if tail is not None else 5
+        head_segs = segs[:head_n]
         _print_segments(f"First {len(head_segs)} segment(s)", head_segs)
 
         # ── Tail (only if non-overlapping) ────────────────────────────────
-        if len(segs) > head:
-            tail_segs = segs[max(head, len(segs) - tail):]
-            omitted = len(segs) - head - len(tail_segs)
+        if len(segs) > head_n:
+            tail_segs = segs[max(head_n, len(segs) - tail_n):]
+            omitted = len(segs) - head_n - len(tail_segs)
             if omitted > 0:
                 console.print(f"\n[dim]  … {omitted} segment(s) omitted …[/dim]\n")
             _print_segments(f"Last {len(tail_segs)} segment(s)", tail_segs)
@@ -1866,7 +1868,7 @@ def sessions(
 
     # ── List view ─────────────────────────────────────────────────────────────
     with OrmSession(db_engine) as db:
-        agg = db.execute(
+        stmt = (
             select(
                 TranscriptionSegment.session_id,
                 sqlfunc.count(TranscriptionSegment.id).label("segments"),
@@ -1875,7 +1877,12 @@ def sessions(
                 sqlfunc.max(TranscriptionSegment.created_at).label("last_updated"),
             ).group_by(TranscriptionSegment.session_id)
             .order_by(sqlfunc.max(TranscriptionSegment.created_at).desc())
-        ).all()
+        )
+        if head:
+            stmt = stmt.limit(head)
+        agg = db.execute(stmt).all()
+        if not head and tail:
+            agg = agg[-tail:]
 
         if not agg:
             console.print("[yellow]No sessions found in the database.[/yellow]")
@@ -2290,8 +2297,8 @@ def listen(
 ) -> None:
     """Listen for commands on a pawn-queue topic and execute them.
 
-    Connects to the S3-backed pawn-queue configured in the ``queue:`` section
-    of ``pawnai.yaml`` and blocks until interrupted.  Each incoming message
+    Connects to the S3-backed pawn-queue configured in the ``diarize_queue:``
+    section of ``pawnai.yaml`` and blocks until interrupted.  Each incoming message
     must be a JSON object with at minimum a ``command`` key:
 
     \b
