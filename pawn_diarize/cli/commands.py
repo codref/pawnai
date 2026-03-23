@@ -459,6 +459,11 @@ def transcribe_diarize(
         "nemo", "--backend", "-b",
         help="Transcription backend: 'nemo' (Parakeet/NeMo) or 'whisper' (faster-whisper large-v3)"
     ),
+    overwrite: bool = typer.Option(
+        False, "--overwrite",
+        help="Delete all existing data for --session before processing. "
+             "Requires --session. Clears segments, session state, and any analyses."
+    ),
 ) -> None:
     """Transcribe audio with speaker diarization labels.
 
@@ -501,6 +506,7 @@ def transcribe_diarize(
     from ..core.database import (
         get_engine, init_db,
         load_session_state, save_session_state, save_transcription_segments,
+        TranscriptionSegment, SessionState, SessionAnalysis,
     )
 
     # Load config; capture instance so S3 config is accessible
@@ -532,6 +538,32 @@ def transcribe_diarize(
         prior_matched: dict = {}
         prior_processed_files: list = []
         prior_segment_count: int = 0
+
+        if overwrite and not session:
+            console.print("[red]Error: --overwrite requires --session.[/red]")
+            raise typer.Exit(1)
+
+        if overwrite and session:
+            from sqlalchemy import delete as sql_delete
+            from sqlalchemy.orm import Session as OrmSession
+            with OrmSession(db_engine) as _db:
+                seg_del = _db.execute(
+                    sql_delete(TranscriptionSegment)
+                    .where(TranscriptionSegment.session_id == session_id)
+                )
+                _db.execute(
+                    sql_delete(SessionAnalysis)
+                    .where(SessionAnalysis.session_id == session_id)
+                )
+                _db.execute(
+                    sql_delete(SessionState)
+                    .where(SessionState.session_id == session_id)
+                )
+                _db.commit()
+            console.print(
+                f"[yellow]⚠ Overwrite: deleted {seg_del.rowcount} segment(s) "
+                f"and session state for '{session_id}'[/yellow]"
+            )
 
         if session:
             prior_speaker_embeddings, prior_time_cursor, prior_processed_files, prior_segment_count = \
@@ -1069,11 +1101,13 @@ def session_relabel(
         # Apply without prompting
         pawn-diarize session-relabel --session my-session -F "Edo" -T "John" --yes
     """
+    import os
+    from datetime import datetime, timezone
     from sqlalchemy import select, update
     from sqlalchemy.orm import Session as OrmSession
     from rich.table import Table
     from ..core.database import (
-        get_engine, init_db, TranscriptionSegment, SpeakerName,
+        get_engine, init_db, TranscriptionSegment, SpeakerName, Embedding, SessionState,
     )
     from ..core.config import AppConfig
 
@@ -1110,6 +1144,34 @@ def session_relabel(
                     SpeakerName.speaker_name == wrong_speaker,
                 )
             ).scalars().all() if session_files else []
+
+            # ── 3. Embedding labels that lack a SpeakerName entry ─────────
+            # When a speaker was first detected (no prior DB match), only
+            # Embedding rows are stored — no SpeakerName row is created.
+            # Collect (audio_file, local_speaker_label) pairs from the
+            # embeddings table that match wrong_speaker but have no
+            # corresponding SpeakerName, so we can create them below.
+            missing_sn_pairs: list = []
+            if session_files:
+                existing_sn_keys = set(
+                    db.execute(
+                        select(SpeakerName.audio_file, SpeakerName.local_speaker_label)
+                        .where(SpeakerName.audio_file.in_(session_files))
+                    ).all()
+                )
+                emb_label_rows = db.execute(
+                    select(Embedding.audio_file, Embedding.local_speaker_label)
+                    .where(
+                        Embedding.audio_file.in_(session_files),
+                        Embedding.local_speaker_label == wrong_speaker,
+                    )
+                    .distinct()
+                ).all()
+                missing_sn_pairs = [
+                    (af, lbl)
+                    for af, lbl in emb_label_rows
+                    if (af, lbl) not in existing_sn_keys
+                ]
 
         # ── Preview ───────────────────────────────────────────────────────
         console.print()
@@ -1154,12 +1216,18 @@ def session_relabel(
                 f"\n[bold]Also updating {len(affected_names)} speaker_names row(s)[/bold] "
                 f"in: {', '.join(Path(f).name for f in session_files)}"
             )
+        if missing_sn_pairs:
+            console.print(
+                f"\n[bold yellow]Creating {len(missing_sn_pairs)} missing speaker_names row(s)[/bold yellow] "
+                f"(speaker was detected but never explicitly labeled)"
+            )
 
         # ── Confirm ───────────────────────────────────────────────────────
         if not yes:
             confirm = typer.confirm(
-                f"\nApply {len(affected_segs)} segment update(s) "
-                + (f"and {len(affected_names)} speaker-name update(s) " if affected_names else "")
+                f"\nApply {len(affected_segs)} segment update(s)"
+                + (f", {len(affected_names)} speaker-name update(s)" if affected_names else "")
+                + (f", {len(missing_sn_pairs)} new speaker-name row(s)" if missing_sn_pairs else "")
                 + "?",
                 default=False,
             )
@@ -1190,11 +1258,35 @@ def session_relabel(
                     .values(speaker_name=correct_speaker)
                 )
 
+            # Create missing SpeakerName entries for speakers that were
+            # detected (embeddings stored) but never explicitly labeled.
+            # Without this, the relabeled name would never be found by
+            # future diarization runs that search speaker_names by
+            # (audio_file, local_speaker_label) from the embeddings table.
+            for emb_af, emb_label in missing_sn_pairs:
+                db.merge(SpeakerName(
+                    id=f"{os.path.basename(emb_af)}_{emb_label}",
+                    audio_file=emb_af,
+                    local_speaker_label=emb_label,
+                    speaker_name=correct_speaker,
+                    labeled_at=datetime.now(timezone.utc),
+                ))
+
+            # Update SessionState.speaker_embeddings keys so the next
+            # incremental run seeds its prior-speaker pool with the new
+            # name rather than the old one.
+            state = db.get(SessionState, session)
+            if state and state.speaker_embeddings and wrong_speaker in state.speaker_embeddings:
+                new_embs = dict(state.speaker_embeddings)
+                new_embs[correct_speaker] = new_embs.pop(wrong_speaker)
+                state.speaker_embeddings = new_embs
+
             db.commit()
 
         console.print(
             f"\n[green]✓ Relabeled {len(affected_segs)} segment(s)"
-            + (f" and {len(affected_names)} speaker-name record(s)" if affected_names else "")
+            + (f", updated {len(affected_names)} speaker-name record(s)" if affected_names else "")
+            + (f", created {len(missing_sn_pairs)} new speaker-name record(s)" if missing_sn_pairs else "")
             + f" — '{wrong_speaker}' → '{correct_speaker}' in session '{session}'[/green]"
         )
 
@@ -1208,6 +1300,10 @@ def session_relabel(
 @app.command(name="session-info")
 def session_info(
     session: str = typer.Argument(..., help="Session ID to inspect."),
+    speaker: Optional[str] = typer.Option(
+        None, "--speaker", "-s",
+        help="Print the full transcript for this speaker only (name or SPEAKER_XX label)."
+    ),
     db_dsn: Optional[str] = typer.Option(
         None, help="PostgreSQL DSN for the speaker database."
     ),
@@ -1227,9 +1323,14 @@ def session_info(
     • The embedding records stored in the database for that speaker, including
       how many embedding segments exist and in which file(s) they were captured.
 
+    Use --speaker to print only that speaker's transcript lines instead of the
+    full stats overview.
+
     \b
     Example:
         pawn-diarize session-info my-session
+        pawn-diarize session-info my-session --speaker Alice
+        pawn-diarize session-info my-session --speaker SPEAKER_00
         pawn-diarize session-info ef11c094-0d8d-41fe-93c0-c6bf1f2e8663
     """
     from sqlalchemy import select, func as sqlfunc
@@ -1240,9 +1341,48 @@ def session_info(
         get_engine, init_db, TranscriptionSegment, SpeakerName, Embedding, SessionState,
     )
     from ..core.config import AppConfig
+    from ..core.s3 import S3Client, is_s3_path
 
     app_cfg = AppConfig(config_path=config) if config else AppConfig()
     db_dsn = db_dsn or app_cfg.get("db_dsn")
+
+    # Build S3 client (optional – used to resolve local /tmp/ paths back to URIs)
+    _s3_client: Optional[S3Client] = None
+    _s3_cfg = app_cfg.get("s3") or {}
+    if _s3_cfg.get("bucket") and _s3_cfg.get("endpoint_url"):
+        try:
+            _s3_client = S3Client.from_dict(_s3_cfg)
+        except Exception:
+            pass  # S3 not configured – fall back to local paths
+
+    def _resolve_display_path(local_path: str) -> str:
+        """Return the S3 URI for *local_path* if it can be found in the bucket.
+
+        When the file was downloaded from S3 to /tmp/ (e.g. by the queue
+        listener) the DB stores the local path.  We search S3 for any object
+        whose key ends with the filename; if exactly one match is found we
+        show the canonical S3 URI, otherwise we show the original path.
+        """
+        if is_s3_path(local_path):
+            return local_path
+        if _s3_client is None:
+            return local_path
+        filename = Path(local_path).name
+        try:
+            paginator = _s3_client._client.get_paginator("list_objects_v2")
+            matches = []
+            for page in paginator.paginate(Bucket=_s3_client.bucket):
+                for obj in page.get("Contents") or []:
+                    if obj["Key"].endswith(f"/{filename}") or obj["Key"] == filename:
+                        matches.append(f"s3://{_s3_client.bucket}/{obj['Key']}")
+            if len(matches) == 1:
+                return matches[0]
+            if len(matches) > 1:
+                # Multiple keys share the same filename – can't resolve unambiguously
+                return local_path
+        except Exception:
+            pass
+        return local_path
 
     try:
         engine = get_engine(db_dsn)
@@ -1316,6 +1456,42 @@ def session_info(
             m, s = divmod(secs, 60)
             return f"{int(m)}m {s:.1f}s" if m else f"{s:.1f}s"
 
+        def _fmt_ts(secs: float) -> str:
+            m, s = divmod(int(secs), 60)
+            h, m = divmod(m, 60)
+            return f"{h:02d}:{m:02d}:{s:02d}" if h else f"{m:02d}:{s:02d}"
+
+        # ── Speaker transcript mode ───────────────────────────────────────────
+        if speaker:
+            speaker_segs = [
+                s for s in segs
+                if s.original_speaker_label == speaker
+            ]
+            if not speaker_segs:
+                console.print(
+                    f"[yellow]No segments found for speaker '{speaker}' in session '{session}'.[/yellow]"
+                )
+                console.print(
+                    f"[dim]Known speakers: {', '.join(sorted(speaker_stats))}[/dim]"
+                )
+                raise typer.Exit(1)
+
+            console.print()
+            console.print(Rule(f"[bold cyan]{speaker}[/bold cyan] — session {session}"))
+            total_dur = sum(
+                max(0.0, (s.end_time or 0.0) - (s.start_time or 0.0))
+                for s in speaker_segs
+            )
+            console.print(
+                f"  [dim]{len(speaker_segs)} segment(s) · {_fmt_dur(total_dur)} speaking time[/dim]\n"
+            )
+            for seg in speaker_segs:
+                ts = f"[dim]{_fmt_ts(seg.start_time or 0.0)}[/dim]"
+                text = (seg.text or "").strip()
+                console.print(f"  {ts}  {text}")
+            console.print()
+            return
+
         console.print()
         console.print(Rule(f"[bold cyan]Session info: {session}[/bold cyan]"))
         console.print(
@@ -1323,6 +1499,24 @@ def session_info(
             f"[dim]Files:[/dim] {len(session_files)}   "
             f"[dim]Speakers:[/dim] {len(speaker_stats)}\n"
         )
+
+        # ── File index ────────────────────────────────────────────────────────
+        if session_files:
+            ftbl = Table(
+                title="Audio files",
+                show_header=True,
+                header_style="bold",
+                show_lines=False,
+                box=None,
+                padding=(0, 2),
+            )
+            ftbl.add_column("#", style="dim", justify="right", width=3)
+            ftbl.add_column("Name", style="cyan", no_wrap=True)
+            ftbl.add_column("Full path / S3 URI")
+            for i, f in enumerate(sorted(session_files), 1):
+                ftbl.add_row(str(i), Path(f).name, _resolve_display_path(f))
+            console.print(ftbl)
+            console.print()
 
         for spk_name, stats in sorted(speaker_stats.items()):
             seg_count = stats["segments"]

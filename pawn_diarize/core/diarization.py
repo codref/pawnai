@@ -591,6 +591,7 @@ class DiarizationEngine:
                     print(f"Warning: Could not connect to database: {e}")
 
             matched_speakers: Dict[str, str] = {}
+            matched_raw_labels: Dict[str, str] = {}  # speaker_label → raw embedding label (e.g., "SPEAKER_00")
             new_speakers: List[str] = []
 
             if has_embeddings and engine is not None:
@@ -654,18 +655,23 @@ class DiarizationEngine:
                                         f"(similarity={similarity:.3f})"
                                     )
                                     matched_speakers[speaker_label] = speaker_name
+                                    matched_raw_labels[speaker_label] = matched_label
                                     # Persist the resolved name for every audio file in
                                     # this run so _load_transcript_from_db can find it via
                                     # the speaker_names table (enables SiYuan sync to show
                                     # real names instead of SPEAKER_XX labels).
+                                    # Use the raw embedding label (e.g., "SPEAKER_00") not
+                                    # the speaker_embeddings key which may be a display name
+                                    # when resuming a session (e.g., "Alice").
                                     try:
                                         with get_session(engine) as _sn_sess:
                                             for _af in audio_paths:
                                                 _canonical_af = source_map.get(str(_af), str(_af)) if source_map else str(_af)
+                                                _raw_label = matched_label  # from matched embedding row
                                                 _sn_sess.merge(SpeakerName(
-                                                    id=f"{os.path.basename(_canonical_af)}_{speaker_label}",
+                                                    id=f"{os.path.basename(_canonical_af)}_{_raw_label}",
                                                     audio_file=_canonical_af,
-                                                    local_speaker_label=speaker_label,
+                                                    local_speaker_label=_raw_label,
                                                     speaker_name=speaker_name,
                                                     labeled_at=None,
                                                 ))
@@ -696,14 +702,28 @@ class DiarizationEngine:
             # ------------------------------------------------------------------
             if store_new_speakers and new_speakers and db_dsn and engine:
                 print(f"Storing embeddings for {len(new_speakers)} new speaker(s)...")
-                source_file = audio_paths[0]
-                canonical_source = source_map.get(str(source_file), str(source_file)) if source_map else str(source_file)
                 records_to_add = []
+
+                # Resolve the canonical source file for a given timestamp using
+                # chunk_offsets so each embedding is attributed to the correct
+                # audio file rather than always pointing at audio_paths[0].
+                def _source_for_time(t: float) -> str:
+                    if chunk_offsets:
+                        for co in chunk_offsets:
+                            if co["start"] <= t < co["end"]:
+                                p = co["path"]
+                                return source_map.get(str(p), str(p)) if source_map else str(p)
+                    fallback = str(audio_paths[0])
+                    return source_map.get(fallback, fallback) if source_map else fallback
 
                 for speaker_label in new_speakers:
                     if speaker_label not in speaker_embeddings:
                         continue
                     for idx, emb_data in enumerate(speaker_embeddings[speaker_label]):
+                        # Skip synthetic prior-session entries — they already exist in DB
+                        if emb_data.get("synthetic", False):
+                            continue
+                        canonical_source = _source_for_time(emb_data["start"])
                         records_to_add.append(
                             Embedding(
                                 id=f"{os.path.basename(canonical_source)}_{speaker_label}_{idx}",
