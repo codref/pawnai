@@ -1,12 +1,13 @@
-# Pawn Diarize configuration file
+# PawnAI configuration file
 #
-# 1. Copy this file to .pawn-diarize.yml and fill in your values:
-#      cp .pawn-diarize.yml.example .pawn-diarize.yml
+# 1. Copy this file to pawnai.yaml and fill in your values:
+#      cp .pawn-diarize.yml.example pawnai.yaml
 #
 # 2. Or point to any YAML file with --config:
 #      pawn-diarize diarize audio.wav --config /path/to/config.yml
+#      pawn-agent "Summarise session abc123" --config /path/to/config.yml
 #
-# NOTE: .pawn-diarize.yml is listed in .gitignore – never commit your tokens!
+# NOTE: pawnai.yaml is listed in .gitignore – never commit your tokens!
 # HF_TOKEN is also read from the environment variable as a fallback,
 # which is the recommended approach for CI/CD pipelines.
 
@@ -21,11 +22,16 @@ models:
   # embedding_model: pyannote/embedding
   # transcription_model: nvidia/parakeet-tdt-0.6b-v3
 
+  # Release loaded ML models from memory after this many minutes of queue inactivity.
+  # model_idle_timeout_minutes: 10
+
+# ── Database ──────────────────────────────────────────────────────────────────
+# PostgreSQL DSN for the main pawn-diarize / pawn-agent database.
+# Overridden by the DATABASE_URL environment variable when set.
+db_dsn: postgresql+psycopg://postgres:postgres@localhost:5433/pawnai
+
 # ── Path settings ─────────────────────────────────────────────────────────────
 paths:
-  # Directory for the LanceDB speaker-embedding database.
-  # db_path: speakers_db
-
   # Directory where audio files are stored.
   # audio_dir: audio/
 
@@ -65,7 +71,6 @@ device:
 #   1. Open SiYuan → Settings (top-right gear icon)
 #   2. Go to "About"
 #   3. Copy the value under "API token"
-#
 
 siyuan:
   url: http://127.0.0.1:6806
@@ -85,7 +90,50 @@ siyuan:
   daily_note_path: "/daily note/{year}/{month}/{date}"
 
 
-# ── Queue listener (pawn-queue) ───────────────────────────────────────────────
+# ── Agent (pawn-agent) ────────────────────────────────────────────────────────
+# Configuration for the pawn-agent CLI and its LLM backend.
+#
+# agent:
+#   name: Bob
+#   anima: anima.md
+#
+#   # OpenAI (or any OpenAI-compatible endpoint such as Ollama):
+#   openai:
+#     model: gpt-4o
+#     # base_url: http://localhost:11434/v1   # remove for standard OpenAI API
+#     # api_key: ollama                       # or set OPENAI_API_KEY env var
+#
+#   # Anthropic (uncomment to switch):
+#   # anthropic:
+#   #   model: claude-sonnet-4-5-20251001
+#   #   api_key: sk-ant-...               # or set ANTHROPIC_API_KEY env var
+#
+#   # Copilot sub-agent used by the analyze_custom tool:
+#   copilot:
+#     model: gpt-4.1
+
+
+# ── RAG / text embedding ──────────────────────────────────────────────────────
+# Sentence-transformer model used for embedding transcript chunks and SiYuan
+# page blocks into the RAG index.
+#
+# Workflow:
+#   1. Run the migration once:  alembic upgrade head
+#   2. Index a session:         pawn-diarize vectorize <session_id>
+#   3. Index a SiYuan page:     pawn-diarize vectorize-siyuan <page_block_id>
+#   4. Check the index:         pawn-diarize rag-stats
+#   5. Ask the agent:           pawn-agent "What did Tom say about Riccardo?"
+#
+# IMPORTANT: embed_dim must match the model output and the value used when
+# running the Alembic migration.
+#
+# rag:
+#   embed_model: Qwen/Qwen3-Embedding-0.6B
+#   embed_dim: 1024   # matryoshka truncation — stays within pgvector's 2000-dim limit
+#   embed_device: cpu
+
+
+# ── Diarize queue listener (pawn-queue) ───────────────────────────────────────
 # When present, `pawn-diarize listen` connects to this S3-backed queue and waits
 # for job messages. Each message payload must contain a "command" key and
 # the relevant parameters for that command.
@@ -96,7 +144,7 @@ siyuan:
 #
 # See docs/QUEUE_LISTENER.md for the full message format reference.
 
-# queue:
+# diarize_queue:
 #   # Topic the listener subscribes to (created automatically if absent).
 #   topic: pawn-diarize-jobs
 #
@@ -113,11 +161,50 @@ siyuan:
 #     max_messages_per_poll: 1               # process one job at a time
 #     # Must be longer than the slowest expected job (e.g. CPU diarization).
 #     visibility_timeout_seconds: 300        # 5 minutes
-#     lease_refresh_interval_seconds: 60    # keep lease alive every 60 s
+#     lease_refresh_interval_seconds: 60     # keep lease alive every 60 s
 #     jitter_max_ms: 200
 #
 #   concurrency:
 #     # auto  → detect at startup (works everywhere)
 #     # conditional_write → requires AWS S3 or Cloudflare R2
 #     # csprng_verify     → works on MinIO / Ceph / Hetzner
+#     strategy: auto
+#
+#   # After a successful transcribe-diarize job, automatically publish a "run"
+#   # message to the agent queue so `pawn-agent listen` picks it up.
+#   # Requires the message to include a "session" field.
+#   #
+#   # Per-message overrides (add to the diarize job payload):
+#   #   "chain_agent": false          → skip for this job
+#   #   "chain_agent": true           → use the prompt below
+#   #   "chain_agent": "Custom text"  → use a custom prompt
+#   #
+#   # chain_agent:
+#   #   enabled: true
+#   #   topic: pawn-agent-jobs      # optional; defaults to agent_queue.topic
+#   #   prompt: "Analyze this conversation and save the analysis to SiYuan."
+
+
+# ── Agent queue listener (pawn-queue) ─────────────────────────────────────────
+# Separate queue configuration for `pawn-agent listen`. Uses the same
+# S3 credentials from the top-level s3: section but subscribes to its own
+# topic so agent jobs and diarize jobs are independent.
+#
+# Run a worker with:
+#   pawn-agent listen
+#   pawn-agent listen --topic my-topic --consumer-name worker-02
+
+# agent_queue:
+#   topic: pawn-agent-jobs
+#   consumer_name: pawn-agent-listener
+#   bucket_name: pawn-agent-queue
+#
+#   polling:
+#     interval_seconds: 5
+#     max_messages_per_poll: 1
+#     visibility_timeout_seconds: 300
+#     lease_refresh_interval_seconds: 60
+#     jitter_max_ms: 200
+#
+#   concurrency:
 #     strategy: auto

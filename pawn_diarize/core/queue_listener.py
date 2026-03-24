@@ -124,6 +124,7 @@ COMMAND_DEFAULTS: Dict[str, Dict[str, Any]] = {
         "no_timestamps": False,
         "verbose": False,
         "backend": "nemo",
+        "chain_agent": None,        # None = use config; True = enable; str = custom prompt; False = disable
     },
     "transcribe": {
         "audio_paths": [],
@@ -604,10 +605,40 @@ def _run_sync_siyuan(params: Dict[str, Any], cfg: Any) -> None:
 # ──────────────────────────────────────────────────────────────────────────────
 
 
+def _resolve_chain_cfg(
+    params: Dict[str, Any], queue_cfg: Dict[str, Any]
+) -> Optional[Dict[str, Any]]:
+    """Return effective chain-agent config, or *None* to skip chaining.
+
+    Resolution order (first match wins):
+    - ``params["chain_agent"] is False``  → skip
+    - ``params["chain_agent"]`` is a str  → use as prompt
+    - ``params["chain_agent"] is True``   → use config default prompt
+    - ``params["chain_agent"] is None``   → fall back to ``queue_cfg["chain_agent"]``
+    - ``queue_cfg["chain_agent"]["enabled"]`` is falsy → skip
+    """
+    msg_override = params.get("chain_agent")
+    config_chain: Dict[str, Any] = queue_cfg.get("chain_agent") or {}
+
+    if msg_override is False or str(msg_override).lower() == "false":
+        return None
+    if not msg_override and not config_chain.get("enabled"):
+        return None
+
+    prompt = (
+        msg_override
+        if isinstance(msg_override, str)
+        else config_chain.get("prompt", "Analyze this session and save the analysis to SiYuan.")
+    )
+    return {"prompt": prompt}
+
+
 def make_message_handler(
     cfg: Any,
     model_cache: Optional[ModelCache] = None,
     model_idle_timeout_seconds: float = 600.0,
+    publisher: Optional[Any] = None,
+    agent_topic: Optional[str] = None,
 ) -> Callable[..., Coroutine[Any, Any, None]]:
     """Return the async message handler coroutine for pawn-queue.
 
@@ -619,6 +650,9 @@ def make_message_handler(
     5. After each successful job, resets the model idle timer.  When no job
        arrives within *model_idle_timeout_seconds*, :meth:`ModelCache.release`
        is called to free GPU/CPU memory.
+    6. If *publisher* and *agent_topic* are set, a successful
+       ``transcribe-diarize`` job publishes a ``run`` message to *agent_topic*
+       so ``pawn-agent listen`` can pick it up automatically.
 
     Args:
         cfg: :class:`~pawn_diarize.core.config.AppConfig` instance.
@@ -626,6 +660,10 @@ def make_message_handler(
             idle-based release.  When *None* each job creates its own engines.
         model_idle_timeout_seconds: Seconds of inactivity after which cached
             models are released.  Defaults to 600 (10 minutes).
+        publisher: Optional :class:`pawn_queue.PawnQueue` instance used to
+            publish chained agent jobs.  Passed in from :func:`start_listener`
+            when ``chain_agent.enabled`` is set in ``pawnai.yaml``.
+        agent_topic: Topic name to publish agent jobs to.
 
     Returns:
         Async callable suitable for ``consumer.listen(handler)``.
@@ -681,6 +719,35 @@ def make_message_handler(
             logger.info("Message %s completed successfully — ack", msg.id)
             await msg.ack()
             _reset_idle_timer()
+
+            # Chain to pawn-agent if configured and the job has a session
+            if command == "transcribe-diarize" and publisher and agent_topic:
+                session = params.get("session")
+                queue_cfg = cfg.get_queue_config() or {}
+                chain_cfg = _resolve_chain_cfg(params, queue_cfg)
+                if chain_cfg and session:
+                    agent_payload = {
+                        "command": "run",
+                        "session_id": session,
+                        "prompt": chain_cfg["prompt"],
+                    }
+                    try:
+                        await publisher.publish(agent_topic, agent_payload)
+                        logger.info(
+                            "Chained agent job for session %r on topic %r",
+                            session, agent_topic,
+                        )
+                    except Exception as chain_exc:
+                        # Diarize job already succeeded — log but don't nack
+                        logger.error(
+                            "Failed to publish agent chain job for session %r: %s",
+                            session, chain_exc,
+                        )
+                elif chain_cfg and not session:
+                    logger.debug(
+                        "chain_agent is enabled but message has no 'session' — skipping"
+                    )
+
         except Exception as exc:
             logger.error(
                 "Message %s failed: %s — sending to dead-letter", msg.id, exc,
@@ -807,11 +874,39 @@ async def start_listener(
         except Exception as exc:
             logger.warning("Could not create topic %r: %s", topic, exc)
 
+        # Detect chain_agent config: after a successful transcribe-diarize job,
+        # publish a "run" message to the agent queue topic automatically.
+        chain_section: Dict[str, Any] = queue_cfg.get("chain_agent") or {}
+        agent_topic_for_chain: Optional[str] = None
+        if chain_section.get("enabled"):
+            agent_queue_cfg: Dict[str, Any] = cfg.get("agent_queue") or {}
+            agent_topic_for_chain = (
+                chain_section.get("topic")
+                or agent_queue_cfg.get("topic")
+                or "pawn-agent-jobs"
+            )
+            try:
+                await pq.create_topic(agent_topic_for_chain)
+                logger.info(
+                    "chain_agent enabled — agent topic %r ready", agent_topic_for_chain
+                )
+            except Exception as exc:
+                logger.warning(
+                    "Could not create agent chain topic %r: %s", agent_topic_for_chain, exc
+                )
+
         consumer = await pq.register_consumer(consumer_name, topics=[topic])
+        producer = (
+            await pq.register_producer(f"{consumer_name}-chain")
+            if agent_topic_for_chain
+            else None
+        )
         handler = make_message_handler(
             cfg,
             model_cache=model_cache,
             model_idle_timeout_seconds=model_idle_timeout_seconds,
+            publisher=producer,
+            agent_topic=agent_topic_for_chain,
         )
 
         logger.info("Listening on topic %r as consumer %r …", topic, consumer_name)

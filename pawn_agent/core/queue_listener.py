@@ -100,15 +100,12 @@ def _run_prompt(
     from pawn_agent.utils.db import create_agent_run, update_agent_run  # noqa: PLC0415
 
     prompt: str = params.get("prompt", "")
-    if not prompt:
-        raise ValueError("Message is missing required 'prompt' field")
-
     session_id: Optional[str] = params.get("session_id")
     model_override: Optional[str] = params.get("model")
 
     effective_model = model_override or cfg.pydantic_model
 
-    # Create a history record
+    # Create a history record before any validation so every message is traceable
     run_id = create_agent_run(
         cfg.db_dsn,
         message_id=message_id,
@@ -117,6 +114,15 @@ def _run_prompt(
         session_id=session_id,
         model=effective_model,
     )
+
+    if not prompt:
+        update_agent_run(
+            cfg.db_dsn,
+            run_id,
+            "failed",
+            error="Message is missing required 'prompt' field",
+        )
+        raise ValueError("Message is missing required 'prompt' field")
 
     # Mark as running
     update_agent_run(cfg.db_dsn, run_id, "running")
