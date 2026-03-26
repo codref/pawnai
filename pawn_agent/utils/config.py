@@ -112,6 +112,12 @@ class AgentConfig:
     s3_config: Optional[Dict[str, Any]] = None
     queue_config: Optional[Dict[str, Any]] = None
 
+    # HTTP API server (pawn-agent serve)
+    api_token: Optional[str] = None
+    api_host: str = "0.0.0.0"
+    api_port: int = 8000
+    api_model_idle_timeout_minutes: float = 10.0
+
 
 def load_config(config_path: Optional[str] = None) -> AgentConfig:
     """Load AgentConfig from a YAML file and environment variables.
@@ -204,6 +210,16 @@ def load_config(config_path: Optional[str] = None) -> AgentConfig:
             cfg.s3_config = data["s3"]
         if "agent_queue" in data:
             cfg.queue_config = data["agent_queue"]
+
+        api_sec = data.get("api", {}) or {}
+        if "token" in api_sec:
+            cfg.api_token = api_sec["token"]
+        if "host" in api_sec:
+            cfg.api_host = api_sec["host"]
+        if "port" in api_sec:
+            cfg.api_port = int(api_sec["port"])
+        if "model_idle_timeout_minutes" in api_sec:
+            cfg.api_model_idle_timeout_minutes = float(api_sec["model_idle_timeout_minutes"])
 
     return cfg
 

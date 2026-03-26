@@ -20,7 +20,7 @@ from __future__ import annotations
 import asyncio
 import os
 from pathlib import Path
-from typing import Callable, Optional
+from typing import Callable, List, Optional
 
 from pydantic_ai import Agent
 
@@ -119,7 +119,12 @@ class PydanticAgent:
         result = self._agent.run_sync(user_prompt)
         return result.output
 
-    def chat(self, first_message: str | None = None) -> None:
+    def chat(
+        self,
+        first_message: str | None = None,
+        initial_history: List | None = None,
+        on_turn_complete: Callable[[list], None] | None = None,
+    ) -> None:
         """Start an interactive multi-turn chat session.
 
         Threads ``message_history`` across turns so the model retains context.
@@ -129,11 +134,20 @@ class PydanticAgent:
             first_message: Optional pre-built first turn (e.g. with a session
                 hint already prepended). If ``None`` the REPL prompts the user
                 immediately.
+            initial_history: Optional message history to seed the session with
+                (e.g. loaded from the session store). Defaults to empty.
+            on_turn_complete: Optional callback invoked with ``result.new_messages()``
+                after each turn completes. Used to persist turns to the session store.
         """
-        asyncio.run(self._repl_loop(first_message))
+        asyncio.run(self._repl_loop(first_message, initial_history, on_turn_complete))
 
-    async def _repl_loop(self, first_message: str | None) -> None:
-        message_history: list = []
+    async def _repl_loop(
+        self,
+        first_message: str | None,
+        initial_history: List | None = None,
+        on_turn_complete: Callable[[list], None] | None = None,
+    ) -> None:
+        message_history: list = list(initial_history or [])
         pending = first_message
         while True:
             if pending is None:
@@ -151,4 +165,6 @@ class PydanticAgent:
                 self._on_thinking()
             result = await self._agent.run(text, message_history=message_history)
             message_history = list(result.all_messages())
+            if on_turn_complete is not None:
+                on_turn_complete(list(result.new_messages()))
             self._emit_fn(result.output)

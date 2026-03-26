@@ -172,8 +172,32 @@ def chat(
         turn = raw or "Hello, let's discuss this session."
         first_message = f"[Session ID: {session}]\n{turn}"
 
+    # Wire session store if a session ID was given
+    initial_history = None
+    on_turn_complete = None
+    if session:
+        import uuid as _uuid  # noqa: PLC0415
+        from pawn_agent.core.session_store import (  # noqa: PLC0415
+            append_turn,
+            load_history,
+        )
+
+        initial_history = load_history(session, cfg.db_dsn)
+        if initial_history:
+            console.print(
+                f"[dim]Resuming session {session!r} "
+                f"({len(initial_history)} stored message(s))[/dim]\n"
+            )
+
+        def on_turn_complete(new_msgs: list) -> None:
+            append_turn(str(_uuid.uuid4()), session, new_msgs, cfg.db_dsn)
+
     try:
-        agent.chat(first_message=first_message)
+        agent.chat(
+            first_message=first_message,
+            initial_history=initial_history,
+            on_turn_complete=on_turn_complete,
+        )
     except Exception as exc:
         status.stop()
         console.print(f"[red]Agent error:[/red] {exc}")
@@ -324,3 +348,62 @@ def listen(
     except Exception as exc:
         console.print(f"[red]Listener error: {exc}[/red]")
         raise typer.Exit(1)
+
+
+@app.command()
+def serve(
+    config: Optional[str] = typer.Option(
+        None, "--config", "-c",
+        help="Path to YAML config file. Defaults to pawnai.yaml in cwd."
+    ),
+    host: Optional[str] = typer.Option(
+        None, "--host", "-H",
+        help="Bind host. Overrides api.host in config (default 0.0.0.0)."
+    ),
+    port: Optional[int] = typer.Option(
+        None, "--port", "-p",
+        help="Bind port. Overrides api.port in config (default 8000)."
+    ),
+    model: Optional[str] = typer.Option(
+        None, "--model", "-m",
+        help="PydanticAI model string. Overrides config."
+    ),
+) -> None:
+    """Start the HTTP API server.
+
+    Exposes the pawn-agent as a REST API for external clients (e.g. a
+    Matrix chatbot).  Session history is persisted in PostgreSQL and shared
+    with the queue listener.
+
+    \b
+    Endpoints
+    ---------
+    POST   /chat                   Send a prompt (Bearer token required)
+    DELETE /sessions/{session_id}  Clear a session (Bearer token required)
+    GET    /health                 Liveness probe (no auth)
+    GET    /docs                   Swagger UI
+    GET    /openapi.json           OpenAPI spec
+    """
+    import uvicorn  # noqa: PLC0415
+
+    from pawn_agent.utils.config import load_config  # noqa: PLC0415
+    from pawn_agent.core.api_server import create_app  # noqa: PLC0415
+
+    cfg = load_config(config)
+    if model:
+        _apply_model_override(cfg, model)
+
+    effective_host = host or cfg.api_host
+    effective_port = port or cfg.api_port
+
+    console.print(
+        f"[bold green]pawn-agent serve starting[/bold green]\n"
+        f"  host    : [cyan]{effective_host}[/cyan]\n"
+        f"  port    : [cyan]{effective_port}[/cyan]\n"
+        f"  model   : [dim]{cfg.pydantic_model}[/dim]\n"
+        f"  idle    : [dim]{cfg.api_model_idle_timeout_minutes} min[/dim]\n"
+        f"  auth    : [dim]{'token set' if cfg.api_token else 'NO TOKEN — open access'}[/dim]"
+    )
+
+    fastapi_app = create_app(cfg)
+    uvicorn.run(fastapi_app, host=effective_host, port=effective_port)

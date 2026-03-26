@@ -45,6 +45,8 @@ dependencies = [
     "sentence-transformers>=2.7.0",
     "pawn-queue>=0.1",
     "aioboto3>=13.0",
+    "fastapi>=0.110.0",
+    "uvicorn[standard]>=0.29.0",
 ]
 
 [project.optional-dependencies]

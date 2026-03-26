@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import uuid
 from copy import deepcopy
 from typing import Any, Callable, Coroutine, Dict, Optional
 
@@ -98,6 +99,7 @@ def _run_prompt(
 ) -> None:
     """Execute a prompt through the PydanticAgent and persist the result."""
     from pawn_agent.utils.db import create_agent_run, update_agent_run  # noqa: PLC0415
+    from pawn_agent.core.session_store import load_history, append_turn  # noqa: PLC0415
 
     prompt: str = params.get("prompt", "")
     session_id: Optional[str] = params.get("session_id")
@@ -127,14 +129,23 @@ def _run_prompt(
     # Mark as running
     update_agent_run(cfg.db_dsn, run_id, "running")
 
-    # Prepend session hint (same as CLI --session)
+    # Prepend session hint so the agent can locate the right conversation
     effective_prompt = prompt
     if session_id:
         effective_prompt = f"[Session ID: {session_id}]\n{prompt}"
 
+    # Load conversation history from the session store
+    history = load_history(session_id or "", cfg.db_dsn)
+
     try:
         agent = _get_or_create_agent(cfg, model_override)
-        response = agent.run(effective_prompt)
+        result = agent._agent.run_sync(effective_prompt, message_history=history)
+        response = result.output
+
+        # Persist this turn — idempotent via source_id = message_id
+        source_id = message_id or str(uuid.uuid4())
+        append_turn(source_id, session_id or "", list(result.new_messages()), cfg.db_dsn)
+
         update_agent_run(cfg.db_dsn, run_id, "completed", response=response)
         logger.info("Run %s completed (%d chars)", run_id, len(response))
     except Exception as exc:
