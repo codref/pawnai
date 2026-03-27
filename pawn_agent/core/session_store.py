@@ -98,6 +98,24 @@ def append_turn(source_id: str, session_id: str, messages: list, dsn: str) -> No
         db.execute(stmt)
 
 
+def context_size(messages: list) -> tuple[float, int]:
+    """Return ``(kb, tokens)`` for *messages*.
+
+    *kb* is the UTF-8 byte size of the JSON-serialised history.
+    *tokens* is a rough estimate (chars / 4 — the standard rule of thumb).
+    Both are 0 when *messages* is empty.
+    """
+    from pydantic_ai.messages import ModelMessagesTypeAdapter  # noqa: PLC0415
+
+    if not messages:
+        return 0.0, 0
+    serialized = ModelMessagesTypeAdapter.dump_python(messages, mode="json")
+    text = json.dumps(serialized)
+    kb = len(text.encode()) / 1024
+    tokens = len(text) // 4
+    return kb, tokens
+
+
 def delete_session(session_id: str, dsn: str) -> int:
     """Delete all turns for *session_id*.
 

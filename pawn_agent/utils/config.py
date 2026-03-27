@@ -57,7 +57,7 @@ except ImportError:  # pragma: no cover
 
 _DEFAULT_DSN = "postgresql+psycopg://postgres:postgres@localhost:5432/pawnai"
 _DEFAULT_SIYUAN_URL = "http://127.0.0.1:6806"
-_DEFAULT_PATH_TEMPLATE = "/Conversations/{date}/{title}"
+_DEFAULT_PATH_TEMPLATE = "/Conversations/{date}/{session_id}/{title}"
 _DEFAULT_DAILY_TEMPLATE = "/daily note/{year}/{month}/{date}"
 
 # Provider key → PydanticAI model string prefix mapping.

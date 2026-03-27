@@ -25,6 +25,24 @@ def siyuan_post(base_url: str, token: str, endpoint: str, payload: dict) -> dict
     return body.get("data") or {}
 
 
+def infer_title(content: str, fallback: str) -> str:
+    """Infer a document title from Markdown content.
+
+    Returns the text of the first ``# Heading``, or the first non-empty
+    non-heading line (truncated to 80 chars), or *fallback* if content is empty.
+    """
+    first_text: str | None = None
+    for line in content.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        if stripped.startswith("# "):
+            return stripped[2:].strip()
+        if first_text is None and not stripped.startswith("#"):
+            first_text = stripped[:80]
+    return first_text or fallback
+
+
 def resolve_path(template: str, session_id: str, title: Optional[str]) -> str:
     now = datetime.now(timezone.utc)
     slug = re.sub(r"[^\w\-]", "-", (title or session_id).lower()).strip("-")
@@ -67,7 +85,7 @@ def build_siyuan_markdown(sections: dict, session_id: str, transcript: str, mode
 def do_save_to_siyuan(
     cfg: AgentConfig,
     session_id: str,
-    title: str,
+    title: Optional[str],
     content: str,
     path: Optional[str],
     tags: Optional[list] = None,
@@ -77,6 +95,7 @@ def do_save_to_siyuan(
     notebook = cfg.siyuan_notebook
     if not notebook:
         return "SiYuan notebook ID is not configured (set siyuan.notebook in config)."
+    title = title or infer_title(content, session_id)
     resolved_path = path or resolve_path(cfg.siyuan_path_template, session_id, title)
     try:
         ids_data = siyuan_post(url, token, "/api/filetree/getIDsByHPath",

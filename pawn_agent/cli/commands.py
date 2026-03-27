@@ -125,6 +125,7 @@ def chat(
 
     The session stays alive across turns so the model retains context.
     Type [bold]/exit[/bold] or [bold]/quit[/bold] to end, or press Ctrl-D / Ctrl-C.
+    Type [bold]/reset[/bold] to clear the conversation history and start fresh.
 
     \b
     Examples
@@ -159,44 +160,61 @@ def chat(
     console.print(
         f"\n[bold cyan]pawn-agent chat[/bold cyan] "
         f"[dim]model={cfg.pydantic_model}  agent={name}[/dim]\n"
-        "[dim]Type /exit or /quit to end. Ctrl-D also exits.[/dim]\n"
+        "[dim]Type /exit or /quit to end. /reset to clear history. Ctrl-D also exits.[/dim]\n"
     )
 
     first_message: Optional[str] = None
-    if session:
-        try:
-            console.print("[dim]You (first message):[/dim] ", end="")
-            raw = input("").strip()
-        except (EOFError, KeyboardInterrupt):
-            return
-        turn = raw or "Hello, let's discuss this session."
-        first_message = f"[Session ID: {session}]\n{turn}"
-
-    # Wire session store if a session ID was given
     initial_history = None
     on_turn_complete = None
     if session:
         import uuid as _uuid  # noqa: PLC0415
+        from prompt_toolkit import PromptSession as _PromptSession  # noqa: PLC0415
         from pawn_agent.core.session_store import (  # noqa: PLC0415
             append_turn,
+            context_size,
+            delete_session,
             load_history,
         )
 
         initial_history = load_history(session, cfg.db_dsn)
+        kb, tok = context_size(initial_history)
+        tok_str = f"{tok // 1000}k" if tok >= 1000 else str(tok)
         if initial_history:
             console.print(
                 f"[dim]Resuming session {session!r} "
-                f"({len(initial_history)} stored message(s))[/dim]\n"
+                f"({len(initial_history)} stored message(s) · "
+                f"{kb:.1f} KB · ~{tok_str} tok)[/dim]\n"
             )
+
+        try:
+            raw = _PromptSession().prompt(f"You [{kb:.1f} KB · ~{tok_str} tok]: ").strip()
+        except (EOFError, KeyboardInterrupt):
+            return
+        if raw.startswith("/"):
+            # Slash commands must reach _repl_loop unmodified so they are
+            # intercepted there.  Do not prepend the session ID hint.
+            first_message = raw or None
+        else:
+            turn = raw or "Hello, let's discuss this session."
+            first_message = f"[Session ID: {session}]\n{turn}"
 
         def on_turn_complete(new_msgs: list) -> None:
             append_turn(str(_uuid.uuid4()), session, new_msgs, cfg.db_dsn)
+
+        def on_reset() -> None:
+            delete_session(session, cfg.db_dsn)
+            console.print("\n[dim]Conversation reset.[/dim]\n")
+
+    else:
+        def on_reset() -> None:
+            console.print("\n[dim]Conversation reset.[/dim]\n")
 
     try:
         agent.chat(
             first_message=first_message,
             initial_history=initial_history,
             on_turn_complete=on_turn_complete,
+            on_reset=on_reset,
         )
     except Exception as exc:
         status.stop()

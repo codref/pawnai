@@ -17,25 +17,27 @@ DESCRIPTION = "Save already-generated Markdown content to SiYuan Notes as a new 
 def build(cfg: AgentConfig) -> Tool:
     def save_to_siyuan(
         session_id: str,
-        title: str,
         content: str,
+        title: Optional[str] = None,
         path: Optional[str] = None,
     ) -> str:
-        """Save already-generated content to SiYuan Notes as a structured document.
+        """Save already-generated content to SiYuan Notes as a new child document
+        under the session page (conversations/{date}/{session_id}/{title}).
 
         Use this ONLY when you already have the final content as a string (e.g.
         from analyze_conversation). If you still need to run an analysis first,
         use analyze_custom with save=true instead.
-        Pass 'path' to specify an explicit document path so a new document is
-        created each time; otherwise the configured path template is used.
+
+        Each call creates a distinct document nested under the session page, so
+        multiple focused analyses accumulate rather than overwriting each other.
 
         Args:
-            session_id: Session identifier used to resolve the document path.
-            title: Document title used in the path and as the page heading.
+            session_id: Session identifier; determines the parent page in the tree.
             content: Full Markdown content to store.
-            path: Optional explicit SiYuan path (e.g. '/Notes/2026-03-13/epics').
-                When provided it overrides the configured path template so that each
-                call creates a distinct document.
+            title: Document title. Inferred from the first ``# Heading`` in
+                *content* when omitted.
+            path: Optional explicit SiYuan path override. Bypasses the template
+                entirely — use sparingly.
         """
         try:
             return do_save_to_siyuan(cfg, session_id, title, content, path)

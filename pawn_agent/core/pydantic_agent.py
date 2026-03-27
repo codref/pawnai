@@ -22,8 +22,10 @@ import os
 from pathlib import Path
 from typing import Callable, List, Optional
 
+from prompt_toolkit import PromptSession
 from pydantic_ai import Agent
 
+from pawn_agent.core.session_store import context_size
 from pawn_agent.tools import build_tools
 from pawn_agent.utils.config import AgentConfig
 
@@ -124,6 +126,7 @@ class PydanticAgent:
         first_message: str | None = None,
         initial_history: List | None = None,
         on_turn_complete: Callable[[list], None] | None = None,
+        on_reset: Callable[[], None] | None = None,
     ) -> None:
         """Start an interactive multi-turn chat session.
 
@@ -138,21 +141,28 @@ class PydanticAgent:
                 (e.g. loaded from the session store). Defaults to empty.
             on_turn_complete: Optional callback invoked with ``result.new_messages()``
                 after each turn completes. Used to persist turns to the session store.
+            on_reset: Optional callback invoked when the user runs ``/reset``.
+                Called after in-memory history is cleared; use it to also wipe
+                persistent storage.
         """
-        asyncio.run(self._repl_loop(first_message, initial_history, on_turn_complete))
+        asyncio.run(self._repl_loop(first_message, initial_history, on_turn_complete, on_reset))
 
     async def _repl_loop(
         self,
         first_message: str | None,
         initial_history: List | None = None,
         on_turn_complete: Callable[[list], None] | None = None,
+        on_reset: Callable[[], None] | None = None,
     ) -> None:
         message_history: list = list(initial_history or [])
         pending = first_message
+        pt_session: PromptSession = PromptSession()
         while True:
             if pending is None:
                 try:
-                    pending = input("You: ")
+                    kb, tok = context_size(message_history)
+                    tok_str = f"{tok // 1000}k" if tok >= 1000 else str(tok)
+                    pending = await pt_session.prompt_async(f"You [{kb:.1f} KB · ~{tok_str} tok]: ")
                 except (EOFError, KeyboardInterrupt):
                     return
             text = pending.strip()
@@ -161,6 +171,11 @@ class PydanticAgent:
                 continue
             if text.lower() in {"/exit", "/quit"}:
                 return
+            if text.lower() == "/reset":
+                message_history = []
+                if on_reset is not None:
+                    on_reset()
+                continue
             if self._on_thinking is not None:
                 self._on_thinking()
             result = await self._agent.run(text, message_history=message_history)
