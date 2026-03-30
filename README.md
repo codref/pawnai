@@ -75,6 +75,7 @@ siyuan:
   url: http://localhost:6806
   token: your-siyuan-token
   notebook: Meetings
+  path_template: "/conversations/{date}/{session_id}/{title}"  # child page per analysis
 
 agent:
   name: Bob
@@ -400,16 +401,39 @@ Tools are **auto-discovered** from `pawn_agent/tools/` — any module that expor
 
 #### `chat`
 
-Start an interactive multi-turn conversation session.
+Start an interactive multi-turn conversation session with persistent history.
 
 ```bash
 pawn-agent chat [OPTIONS]
 
 Options:
   --config TEXT    Path to pawnai.yaml
-  --model TEXT     Override the configured LLM model
-  --session TEXT   Session hint for context (e.g. a session ID to analyze)
+  --model TEXT     Override the configured LLM model (e.g. openai:gpt-4o)
+  --session TEXT   Session ID to load and continue a stored conversation
+  --db-dsn TEXT    PostgreSQL DSN override
 ```
+
+**Terminal features:**
+
+- **Multi-line paste**: pasted text is buffered as a single message (no spurious multi-turn splits)
+- **Context size indicator**: the prompt shows serialized history size and a token estimate after every turn:
+  ```
+  You [18.3 KB · ~4k tok]:
+  ```
+  On session load the same figures are printed next to the resume banner:
+  ```
+  Resuming session 'warren-20260325' (42 stored message(s) · 18.3 KB · ~4k tok)
+  ```
+- **Slash commands:**
+
+  | Command | Effect |
+  |---------|--------|
+  | `/exit` or `/quit` | End the session |
+  | `/reset` | Clear in-memory history and wipe stored turns from the database |
+
+  `Ctrl-D` and `Ctrl-C` also exit cleanly.
+
+**Session persistence**: when `--session` is given, every turn is appended to `agent_session_turns` in PostgreSQL. Resuming the same session replays the full stored history so the model retains context across invocations. `/reset` deletes all stored turns so the next message starts fresh.
 
 #### `run`
 
@@ -454,7 +478,7 @@ pawn-agent models [--config TEXT]
 | `extract_graph` | Extract knowledge-graph triples from a transcript and persist to DB |
 | `vectorize` | Embed session transcripts or SiYuan pages into the RAG index |
 | `search_knowledge` | Semantic similarity search over transcript chunks and SiYuan notes |
-| `save_to_siyuan` | Save Markdown content to SiYuan Notes as a new document |
+| `save_to_siyuan` | Save Markdown content to SiYuan Notes as a child page under the session node; title inferred from the first `# Heading` |
 | `fetch_siyuan_page` | Fetch the text content of a SiYuan page by path |
 | `rag_stats` | Show a summary of the RAG vector index (sources and chunk counts) |
 
