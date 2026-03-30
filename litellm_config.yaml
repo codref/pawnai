@@ -1,0 +1,46 @@
+# litellm proxy configuration for pawn-agent
+#
+# Start the proxy:
+#   litellm --config litellm_config.yaml
+#
+# The proxy listens on http://localhost:4000 and exposes an OpenAI-compatible API.
+# Requests are forwarded to the pawn-agent FastAPI server (default: http://localhost:8000).
+#
+# Model naming convention: pawn_agent/{pawn_model}
+#   pawn_agent/default                            → use server-configured model
+#   pawn_agent/openai:gpt-4o                      → override to openai:gpt-4o
+#   pawn_agent/anthropic:claude-3-5-sonnet-latest → override to that model
+#
+# Session management: set the OpenAI `user` field to your session ID.
+# The same session_id resumes the conversation stored in pawn-agent's PostgreSQL.
+
+model_list:
+  # Default entry — uses whatever model pawn-agent is configured with.
+  # api_base is read from the PAWN_AGENT_URL env var (fallback: http://localhost:8000).
+  # When running inside Docker set: -e PAWN_AGENT_URL=http://host.docker.internal:8000
+  - model_name: pawn-agent
+    litellm_params:
+      model: pawn_agent/default
+      api_base: "os.environ/PAWN_AGENT_URL"
+      api_key: ""          # set to match api.token in pawnai.yaml; leave empty for open access
+
+  # Named aliases for specific model overrides (add as many as needed)
+  # - model_name: pawn-agent-gpt4o
+  #   litellm_params:
+  #     model: pawn_agent/openai:gpt-4o
+  #     api_base: "os.environ/PAWN_AGENT_URL"
+  #     api_key: ""
+
+  # - model_name: pawn-agent-claude
+  #   litellm_params:
+  #     model: pawn_agent/anthropic:claude-3-5-sonnet-latest
+  #     api_base: "os.environ/PAWN_AGENT_URL"
+  #     api_key: ""
+
+litellm_settings:
+  custom_provider_map:
+    - provider: "pawn_agent"
+      custom_handler: pawn_agent.core.litellm_custom.pawn_agent_llm
+
+  # Silently drop OpenAI params unsupported by pawn-agent (temperature, max_tokens, etc.)
+  drop_params: true

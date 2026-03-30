@@ -62,6 +62,7 @@ _security = HTTPBearer(auto_error=False)
 class ChatRequest(BaseModel):
     session_id: str
     prompt: str
+    model: Optional[str] = None  # override the configured model for this request
 
 
 class ChatResponse(BaseModel):
@@ -163,7 +164,7 @@ async def chat(
     source_id = str(uuid.uuid4())
     history = load_history(req.session_id, cfg.db_dsn)
 
-    agent = _get_or_create_agent(cfg)
+    agent = _get_or_create_agent(cfg, model_override=req.model)
 
     try:
         result = await loop.run_in_executor(None, _run_turn, agent, req.prompt, history)

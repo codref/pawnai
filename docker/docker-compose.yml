@@ -33,6 +33,16 @@ services:
       #- PUID=${YOUR_USER_PUID}  # Customize user ID
       #- PGID=${YOUR_USER_PGID}  # Customize group ID
 
+  litellm:
+    build:
+      context: ..
+      dockerfile: docker/litellm/Dockerfile
+    ports:
+      - "4000:4000"
+    environment:
+      - LITELLM_MASTER_KEY=${LITELLM_MASTER_KEY:-}
+    restart: unless-stopped
+
 volumes:
   pgdata:
     driver: local
