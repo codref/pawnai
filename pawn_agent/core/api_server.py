@@ -1,7 +1,8 @@
 """FastAPI HTTP interface for pawn-agent.
 
-Exposes the PydanticAI agent over a simple REST API so external clients
-(e.g. a Matrix chatbot) can drive conversations without queue access.
+Exposes the PydanticAI agent over a REST API with an OpenAI-compatible
+``POST /v1/chat/completions`` endpoint so any OpenAI client can drive
+conversations directly — no litellm proxy required.
 
 Session history is persisted in PostgreSQL via :mod:`pawn_agent.core.session_store`
 and is shared with the queue listener — conversations started via the queue
@@ -9,11 +10,16 @@ can be continued through the API and vice versa.
 
 Endpoints
 ---------
-POST /chat
-    Send a prompt for a session.  History is loaded automatically.
+POST /v1/chat/completions
+    OpenAI-compatible chat completions.  Handles the ``/reset`` sentinel
+    inline.  Supports ``stream=true`` (SSE, word-by-word after full generation).
 
 DELETE /sessions/{session_id}
     Clear all stored turns for a session (start fresh).
+
+POST /knowledge
+    Index content into the RAG vector store (inline text, session transcript,
+    or SiYuan page).
 
 GET /health
     Liveness probe — no auth required.
@@ -29,18 +35,46 @@ Authentication
 All endpoints except ``/health`` require ``Authorization: Bearer <token>``.
 If ``api.token`` is not set in ``pawnai.yaml`` the server starts in open
 mode with a warning — useful for local development.
+
+Model selection / session mode
+------------------------------
+The ``model`` field controls both the backend model and whether history is
+loaded from the database (stateful) or taken from the request (stateless):
+
+    ``pawn-agent``                           — stateful,  default model
+    ``pawn-agent/openai:gpt-4o``             — stateful,  gpt-4o
+    ``pawn-agent/stateless``                 — stateless, default model
+    ``pawn-agent/stateless/openai:gpt-4o``   — stateless, gpt-4o
+
+Stateless mode uses the ``messages`` array from the request as history
+directly, without touching the database.  Useful with clients that manage
+conversation history themselves (e.g. Open WebUI, Continue).
+
+Session management
+------------------
+Set the ``user`` field to your session ID.  If omitted, a stable UUID is
+derived from the MD5 of the first user message so the same conversation
+always maps to the same session.
+
+Reset
+-----
+Send ``/reset`` as the last user message to clear the session history.
 """
 
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import json
 import logging
+import time
 import uuid
-from typing import Any, Optional
+from typing import Any, AsyncIterator, Dict, List, Optional, Union
 
 from fastapi import Depends, FastAPI, HTTPException, Response
+from fastapi.responses import StreamingResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 logger = logging.getLogger(__name__)
 
@@ -53,20 +87,72 @@ _idle_handle: Optional[asyncio.TimerHandle] = None
 
 _security = HTTPBearer(auto_error=False)
 
+_RESET_SENTINEL = "/reset"
+
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Pydantic schemas
+# Pydantic schemas — OpenAI-compatible chat completions
 # ──────────────────────────────────────────────────────────────────────────────
 
 
-class ChatRequest(BaseModel):
-    session_id: str
-    prompt: str
-    model: Optional[str] = None  # override the configured model for this request
+class ChatCompletionMessage(BaseModel):
+    role: str
+    content: str
 
 
-class ChatResponse(BaseModel):
-    reply: str
+class ChatCompletionRequest(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    model: str
+    messages: List[ChatCompletionMessage]
+    user: Optional[str] = None
+    stream: Optional[bool] = False
+    # pydantic_ai ModelSettings passthrough
+    temperature: Optional[float] = None
+    max_tokens: Optional[int] = None
+    top_p: Optional[float] = None
+    stop: Optional[List[str]] = None  # maps to stop_sequences
+    frequency_penalty: Optional[float] = None
+    logit_bias: Optional[Dict[str, int]] = None
+
+
+class ChatCompletionChoice(BaseModel):
+    index: int
+    message: ChatCompletionMessage
+    finish_reason: str
+
+
+class ChatCompletionUsage(BaseModel):
+    prompt_tokens: int
+    completion_tokens: int
+    total_tokens: int
+
+
+class ChatCompletionResponse(BaseModel):
+    id: str
+    object: str
+    created: int
+    model: str
+    choices: List[ChatCompletionChoice]
+    usage: ChatCompletionUsage
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Pydantic schemas — RAG ingestion
+# ──────────────────────────────────────────────────────────────────────────────
+
+
+class KnowledgeIngestRequest(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    text: Optional[str] = None          # inline plain text
+    session_id: Optional[str] = None    # index an existing session transcript
+    siyuan_path: Optional[str] = None   # index a SiYuan page by path
+
+
+class KnowledgeIngestResponse(BaseModel):
+    chunks: int
+    message: str
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -86,7 +172,6 @@ def _require_token(
 ) -> None:
     token = cfg.api_token
     if not token:
-        # No token configured — open access (dev mode)
         return
     if credentials is None or credentials.credentials != token:
         raise HTTPException(status_code=401, detail="Invalid or missing Bearer token")
@@ -114,13 +199,161 @@ def _schedule_idle_reset(loop: asyncio.AbstractEventLoop, timeout_seconds: float
 
 
 # ──────────────────────────────────────────────────────────────────────────────
+# Helpers
+# ──────────────────────────────────────────────────────────────────────────────
+
+
+def _last_user_message(messages: List[dict]) -> str:
+    for m in reversed(messages):
+        if m.get("role") == "user" and m.get("content"):
+            return m["content"]
+    return ""
+
+
+def _is_reset(messages: List[dict]) -> bool:
+    return _last_user_message(messages).strip() == _RESET_SENTINEL
+
+
+def _session_id(messages: List[dict], user: Optional[str]) -> str:
+    if user:
+        return user
+    first = next((m["content"] for m in messages if m.get("role") == "user"), "")
+    if first:
+        return str(uuid.UUID(hashlib.md5(first.encode()).hexdigest()))
+    return str(uuid.uuid4())
+
+
+def _parse_model(model_str: str) -> tuple:
+    """Parse the model string into (stateless, model_override).
+
+    Supported forms:
+        pawn-agent                      → stateful,  no override
+        pawn-agent/openai:gpt-4o        → stateful,  override = openai:gpt-4o
+        pawn-agent/stateless            → stateless, no override
+        pawn-agent/stateless/openai:gpt-4o → stateless, override = openai:gpt-4o
+    """
+    # strip the leading component (pawn-agent / pawn_agent / default / …)
+    first_slash = model_str.find("/")
+    remainder = model_str[first_slash + 1:] if first_slash != -1 else ""
+
+    if remainder.startswith("stateless"):
+        after = remainder[len("stateless"):]
+        override_str = after.lstrip("/") or None
+        return True, override_str or None
+    else:
+        override_str = remainder or None
+        return False, override_str or None
+
+
+def _openai_messages_to_history(messages: List[dict]) -> list:
+    """Convert an OpenAI messages array to pydantic_ai ModelMessage history.
+
+    Skips system messages (handled by the agent's own system prompt).
+    """
+    from pydantic_ai.messages import ModelRequest, ModelResponse, TextPart, UserPromptPart  # noqa: PLC0415
+
+    history = []
+    for msg in messages:
+        role = msg.get("role")
+        content = msg.get("content") or ""
+        if role == "user":
+            history.append(ModelRequest(parts=[UserPromptPart(content=content)]))
+        elif role == "assistant":
+            history.append(ModelResponse(parts=[TextPart(content=content)]))
+    return history
+
+
+def _build_model_settings(req: ChatCompletionRequest) -> dict:
+    s: dict = {}
+    if req.temperature is not None:
+        s["temperature"] = req.temperature
+    if req.max_tokens is not None:
+        s["max_tokens"] = req.max_tokens
+    if req.top_p is not None:
+        s["top_p"] = req.top_p
+    if req.stop:
+        s["stop_sequences"] = req.stop
+    if req.frequency_penalty is not None:
+        s["frequency_penalty"] = req.frequency_penalty
+    if req.logit_bias is not None:
+        s["logit_bias"] = req.logit_bias
+    return s
+
+
+def _build_openai_response(reply: str, model: str) -> ChatCompletionResponse:
+    completion_tokens = len(reply) // 4
+    return ChatCompletionResponse(
+        id=f"chatcmpl-{uuid.uuid4().hex}",
+        object="chat.completion",
+        created=int(time.time()),
+        model=model,
+        choices=[
+            ChatCompletionChoice(
+                index=0,
+                message=ChatCompletionMessage(role="assistant", content=reply),
+                finish_reason="stop",
+            )
+        ],
+        usage=ChatCompletionUsage(
+            prompt_tokens=0,
+            completion_tokens=completion_tokens,
+            total_tokens=completion_tokens,
+        ),
+    )
+
+
+async def _stream_sse(reply: str, model: str) -> AsyncIterator[str]:
+    """Yield OpenAI-compatible SSE chunks for *reply*, word by word."""
+    completion_id = f"chatcmpl-{uuid.uuid4().hex}"
+    created = int(time.time())
+
+    # Opening chunk carries the role
+    opening = {
+        "id": completion_id,
+        "object": "chat.completion.chunk",
+        "created": created,
+        "model": model,
+        "choices": [{"index": 0, "delta": {"role": "assistant", "content": ""}, "finish_reason": None}],
+    }
+    yield f"data: {json.dumps(opening)}\n\n"
+
+    # Stream word by word, preserving spacing
+    words = reply.split(" ")
+    for i, word in enumerate(words):
+        content = word if i == 0 else f" {word}"
+        chunk = {
+            "id": completion_id,
+            "object": "chat.completion.chunk",
+            "created": created,
+            "model": model,
+            "choices": [{"index": 0, "delta": {"content": content}, "finish_reason": None}],
+        }
+        yield f"data: {json.dumps(chunk)}\n\n"
+
+    # Final chunk
+    final = {
+        "id": completion_id,
+        "object": "chat.completion.chunk",
+        "created": created,
+        "model": model,
+        "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
+    }
+    yield f"data: {json.dumps(final)}\n\n"
+    yield "data: [DONE]\n\n"
+
+
+# ──────────────────────────────────────────────────────────────────────────────
 # Thread-executor helper
 # ──────────────────────────────────────────────────────────────────────────────
 
 
-def _run_turn(agent: Any, prompt: str, history: list) -> Any:
+def _run_turn(agent: Any, prompt: str, history: list, model_settings: dict) -> Any:
     """Synchronous wrapper — runs in a thread executor from the async endpoint."""
-    return agent._agent.run_sync(prompt, message_history=history)
+    return agent.run_sync(
+        prompt,
+        message_history=history,
+        model_settings=model_settings or None,
+    )
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -141,39 +374,69 @@ async def health() -> dict:
 
 
 @app.post(
-    "/chat",
-    response_model=ChatResponse,
+    "/v1/chat/completions",
+    response_model=ChatCompletionResponse,
     dependencies=[Depends(_require_token)],
 )
-async def chat(
-    req: ChatRequest,
+async def chat_completions(
+    req: ChatCompletionRequest,
     cfg: Any = Depends(_get_cfg),
-) -> ChatResponse:
-    """Send a prompt to the agent for the given session.
+) -> Union[ChatCompletionResponse, StreamingResponse]:
+    """OpenAI-compatible chat completions endpoint.
 
-    The server loads the full conversation history from the database,
-    runs the agent, appends the new turn, and returns the reply.
-    Use the same ``session_id`` across calls to maintain context.
+    Send ``/reset`` as the last user message to clear the session history
+    instead of running the agent.  ``stream=true`` is accepted but ignored —
+    the response is always a complete JSON object.
     """
     from pawn_agent.core.queue_listener import _get_or_create_agent  # noqa: PLC0415
-    from pawn_agent.core.session_store import append_turn, load_history  # noqa: PLC0415
+    from pawn_agent.core.session_store import (  # noqa: PLC0415
+        append_turn,
+        delete_session as _delete_session,
+        load_history,
+    )
 
+    messages = [m.model_dump() for m in req.messages]
+    session_id = _session_id(messages, req.user)
     loop = asyncio.get_running_loop()
     _schedule_idle_reset(loop, cfg.api_model_idle_timeout_minutes * 60)
 
-    source_id = str(uuid.uuid4())
-    history = load_history(req.session_id, cfg.db_dsn)
+    if _is_reset(messages):
+        deleted = _delete_session(session_id, cfg.db_dsn)
+        reply = f"Session reset. ({deleted} turn{'s' if deleted != 1 else ''} deleted)"
+        if req.stream:
+            return StreamingResponse(_stream_sse(reply, req.model), media_type="text/event-stream")
+        return _build_openai_response(reply, req.model)
 
-    agent = _get_or_create_agent(cfg, model_override=req.model)
+    prompt = _last_user_message(messages)
+    if not prompt:
+        raise HTTPException(status_code=422, detail="No user message found in messages")
+
+    stateless, model_override = _parse_model(req.model)
+    model_settings = _build_model_settings(req)
+
+    if stateless:
+        # Use the client-provided messages as history (all but the last user message)
+        history = _openai_messages_to_history(messages[:-1])
+    else:
+        history = load_history(session_id, cfg.db_dsn)
+
+    agent = _get_or_create_agent(cfg, model_override=model_override)
+    source_id = str(uuid.uuid4())
 
     try:
-        result = await loop.run_in_executor(None, _run_turn, agent, req.prompt, history)
+        result = await loop.run_in_executor(
+            None, _run_turn, agent, prompt, history, model_settings
+        )
     except Exception as exc:
-        logger.error("Agent error for session %r: %s", req.session_id, exc, exc_info=True)
+        logger.error("Agent error for session %r: %s", session_id, exc, exc_info=True)
         raise HTTPException(status_code=500, detail=f"Agent error: {exc}") from exc
 
-    append_turn(source_id, req.session_id, list(result.new_messages()), cfg.db_dsn)
-    return ChatResponse(reply=result.output)
+    if not stateless:
+        append_turn(source_id, session_id, list(result.new_messages()), cfg.db_dsn)
+
+    if req.stream:
+        return StreamingResponse(_stream_sse(result.output, req.model), media_type="text/event-stream")
+    return _build_openai_response(result.output, req.model)
 
 
 @app.delete(
@@ -187,8 +450,9 @@ async def delete_session(
 ) -> Response:
     """Clear all stored turns for a session.
 
-    The next ``/chat`` call with the same ``session_id`` will start fresh.
-    Returns 404 if the session does not exist.
+    The next ``/v1/chat/completions`` call with the same ``session_id`` (via
+    the ``user`` field) will start fresh.  Returns 404 if the session does not
+    exist.
     """
     from pawn_agent.core.session_store import delete_session as _delete  # noqa: PLC0415
 
@@ -196,6 +460,127 @@ async def delete_session(
     if deleted == 0:
         raise HTTPException(status_code=404, detail=f"Session {session_id!r} not found")
     return Response(status_code=204)
+
+
+@app.post(
+    "/knowledge",
+    response_model=KnowledgeIngestResponse,
+    status_code=201,
+    dependencies=[Depends(_require_token)],
+)
+async def ingest_knowledge(
+    req: KnowledgeIngestRequest,
+    cfg: Any = Depends(_get_cfg),
+) -> KnowledgeIngestResponse:
+    """Index content into the RAG vector store.
+
+    Provide exactly one source field:
+
+    - **text** — embed inline plain text directly.
+    - **session_id** — index an existing session's analysis.  The session must
+      have a stored analysis; run ``analyze_summary`` via the agent first if
+      needed.
+    - **siyuan_path** — index a SiYuan page by its human-readable path
+      (e.g. ``/Notes/MyPage``).
+    """
+    sources = [x for x in (req.text, req.session_id, req.siyuan_path) if x]
+    if len(sources) != 1:
+        raise HTTPException(
+            status_code=422,
+            detail="Provide exactly one of: text, session_id, siyuan_path",
+        )
+
+    loop = asyncio.get_running_loop()
+
+    if req.session_id:
+        from pawn_agent.utils.vectorize import vectorize_session  # noqa: PLC0415
+
+        session_id = req.session_id
+        try:
+            n, _ = await loop.run_in_executor(
+                None,
+                lambda: vectorize_session(
+                    session_id=session_id,
+                    db_dsn=cfg.db_dsn,
+                    embed_model=cfg.embed_model,
+                    embed_device=cfg.embed_device,
+                    embed_dim=cfg.embed_dim,
+                ),
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        return KnowledgeIngestResponse(
+            chunks=n,
+            message=f"Indexed {n} chunks for session '{session_id}'.",
+        )
+
+    if req.siyuan_path:
+        from pawn_agent.utils.siyuan import siyuan_post  # noqa: PLC0415
+        from pawn_agent.utils.vectorize import vectorize_siyuan_page  # noqa: PLC0415
+
+        if not cfg.siyuan_notebook:
+            raise HTTPException(status_code=400, detail="siyuan.notebook is not configured")
+
+        siyuan_path = req.siyuan_path
+        try:
+            ids = siyuan_post(
+                cfg.siyuan_url,
+                cfg.siyuan_token,
+                "/api/filetree/getIDsByHPath",
+                {"path": siyuan_path, "notebook": cfg.siyuan_notebook},
+            )
+        except Exception as exc:
+            raise HTTPException(
+                status_code=502, detail=f"SiYuan error: {exc}"
+            ) from exc
+
+        if not isinstance(ids, list) or not ids:
+            raise HTTPException(
+                status_code=404, detail=f"No SiYuan page found at '{siyuan_path}'"
+            )
+
+        page_id = ids[0]
+        try:
+            n = await loop.run_in_executor(
+                None,
+                lambda: vectorize_siyuan_page(
+                    page_id=page_id,
+                    siyuan_url=cfg.siyuan_url,
+                    siyuan_token=cfg.siyuan_token,
+                    db_dsn=cfg.db_dsn,
+                    embed_model=cfg.embed_model,
+                    embed_device=cfg.embed_device,
+                    embed_dim=cfg.embed_dim,
+                ),
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        return KnowledgeIngestResponse(
+            chunks=n,
+            message=f"Indexed {n} chunks for SiYuan page '{siyuan_path}'.",
+        )
+
+    # text branch
+    from pawn_agent.utils.vectorize import vectorize_text  # noqa: PLC0415
+
+    text_content = req.text
+    try:
+        n = await loop.run_in_executor(
+            None,
+            lambda: vectorize_text(
+                content=text_content,
+                db_dsn=cfg.db_dsn,
+                embed_model=cfg.embed_model,
+                embed_device=cfg.embed_device,
+                embed_dim=cfg.embed_dim,
+            ),
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return KnowledgeIngestResponse(
+        chunks=n,
+        message=f"Indexed {n} chunk{'s' if n != 1 else ''} from inline text.",
+    )
 
 
 # ──────────────────────────────────────────────────────────────────────────────

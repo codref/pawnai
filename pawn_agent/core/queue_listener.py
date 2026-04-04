@@ -139,7 +139,7 @@ def _run_prompt(
 
     try:
         agent = _get_or_create_agent(cfg, model_override)
-        result = agent._agent.run_sync(effective_prompt, message_history=history)
+        result = agent.run_sync(effective_prompt, message_history=history)
         response = result.output
 
         # Persist this turn — idempotent via source_id = message_id

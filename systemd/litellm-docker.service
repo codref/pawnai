@@ -1,0 +1,16 @@
+[Unit]
+Description=LiteLLM proxy for pawn-agent (Docker Compose)
+After=network.target docker.service
+Requires=docker.service
+
+[Service]
+Type=simple
+User=%u
+WorkingDirectory={{PROJECT_DIR}}/docker
+ExecStart=docker compose up litellm
+ExecStop=docker compose stop litellm
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target

@@ -1,0 +1,14 @@
+[Unit]
+Description=pawn-agent HTTP API and queue listener
+After=network.target postgresql.service
+
+[Service]
+Type=simple
+User=%u
+WorkingDirectory={{PROJECT_DIR}}
+ExecStart={{BIN_DIR}}/pawn-agent serve --config {{PROJECT_DIR}}/pawnai.yaml
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target

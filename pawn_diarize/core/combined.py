@@ -104,7 +104,7 @@ def transcribe_with_diarization(
 
     print(f"[2/2] Running speaker diarization{'  (' + str(len(audio_paths)) + ' files)' if multiple else ''}{resume_note}...")
     if diarization_engine is None:
-        diarization_engine = DiarizationEngine(device=device if device != "cpu" else None)
+        diarization_engine = DiarizationEngine(device=device)
     diarization = diarization_engine.diarize(
         audio_paths if multiple else audio_paths[0],
         db_dsn=db_dsn,
