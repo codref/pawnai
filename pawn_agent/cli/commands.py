@@ -330,8 +330,9 @@ def serve(
     \b
     API Endpoints
     -------------
-    POST   /chat                   Send a prompt (Bearer token required)
+    POST   /v1/chat/completions    OpenAI-compatible chat (Bearer token required)
     DELETE /sessions/{session_id}  Clear a session (Bearer token required)
+    POST   /knowledge              Index content into RAG (Bearer token required)
     GET    /health                 Liveness probe (no auth)
     GET    /docs                   Swagger UI
     GET    /openapi.json           OpenAPI spec

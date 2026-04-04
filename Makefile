@@ -1,12 +1,14 @@
 IMAGE           ?= pawn-litellm-proxy
 TAG             ?= latest
 DOCKERFILE       = docker/litellm/Dockerfile
+MLFLOW_HOST     ?= 127.0.0.1
+MLFLOW_PORT     ?= 5000
 # URL of the pawn-agent server reachable from inside the container.
 # On Linux Docker Engine use host.docker.internal (requires --add-host below)
 # or the machine's LAN IP.  On Docker Desktop it resolves automatically.
 PAWN_AGENT_URL  ?= http://host.docker.internal:8000
 
-.PHONY: build push run clean
+.PHONY: build push run mlflow clean
 
 build:
 	docker build -f $(DOCKERFILE) -t $(IMAGE):$(TAG) .
@@ -20,6 +22,9 @@ run:
 		-e LITELLM_MASTER_KEY=$(LITELLM_MASTER_KEY) \
 		-e PAWN_AGENT_URL=$(PAWN_AGENT_URL) \
 		$(IMAGE):$(TAG)
+
+mlflow:
+	mlflow server --host $(MLFLOW_HOST) --port $(MLFLOW_PORT)
 
 clean:
 	docker rmi $(IMAGE):$(TAG)

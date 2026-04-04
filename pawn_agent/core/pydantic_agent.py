@@ -18,6 +18,7 @@ Usage::
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 from pathlib import Path
 from typing import Callable, List, Optional
@@ -28,6 +29,8 @@ from pydantic_ai import Agent
 from pawn_agent.core.session_store import context_size
 from pawn_agent.tools import build_tools
 from pawn_agent.utils.config import AgentConfig
+
+logger = logging.getLogger(__name__)
 
 
 class PydanticAgent:
@@ -50,7 +53,43 @@ class PydanticAgent:
         self.cfg = cfg
         self._emit_fn = emit or print
         self._on_thinking = on_thinking
+        self._configure_mlflow()
         self._agent = self._build_agent()
+
+    _mlflow_configured = False
+
+    def _configure_mlflow(self) -> None:
+        """Enable optional MLflow tracing for PydanticAI runs."""
+        if not self.cfg.mlflow_enabled or PydanticAgent._mlflow_configured:
+            return
+        try:
+            import mlflow
+        except ImportError:
+            logger.warning(
+                "MLflow tracing is enabled but mlflow is not installed; continuing without tracing."
+            )
+            return
+
+        if self.cfg.mlflow_tracking_uri:
+            mlflow.set_tracking_uri(self.cfg.mlflow_tracking_uri)
+        if self.cfg.mlflow_experiment:
+            mlflow.set_experiment(self.cfg.mlflow_experiment)
+
+        pydantic_ai_integration = getattr(mlflow, "pydantic_ai", None)
+        if pydantic_ai_integration is None:
+            logger.warning(
+                "MLflow is installed but does not expose pydantic_ai autologging; "
+                "install a newer mlflow[genai] to enable tracing."
+            )
+            return
+
+        pydantic_ai_integration.autolog()
+        PydanticAgent._mlflow_configured = True
+        logger.info(
+            "Enabled MLflow tracing for PydanticAI (tracking_uri=%r, experiment=%r)",
+            self.cfg.mlflow_tracking_uri,
+            self.cfg.mlflow_experiment,
+        )
 
     def _build_agent(self) -> Agent:
         model = self._resolve_model()
@@ -118,8 +157,36 @@ class PydanticAgent:
         """
         if self._on_thinking is not None:
             self._on_thinking()
-        result = self._agent.run_sync(user_prompt)
+        result = self.run_sync(user_prompt)
         return result.output
+
+    def run_sync(
+        self,
+        user_prompt: str,
+        *,
+        message_history: List | None = None,
+        model_settings: dict | None = None,
+    ):
+        """Run one synchronous agent turn and return the full PydanticAI result."""
+        return self._agent.run_sync(
+            user_prompt,
+            message_history=message_history,
+            model_settings=model_settings,
+        )
+
+    async def run_async(
+        self,
+        user_prompt: str,
+        *,
+        message_history: List | None = None,
+        model_settings: dict | None = None,
+    ):
+        """Run one async agent turn and return the full PydanticAI result."""
+        return await self._agent.run(
+            user_prompt,
+            message_history=message_history,
+            model_settings=model_settings,
+        )
 
     def chat(
         self,
@@ -178,7 +245,7 @@ class PydanticAgent:
                 continue
             if self._on_thinking is not None:
                 self._on_thinking()
-            result = await self._agent.run(text, message_history=message_history)
+            result = await self.run_async(text, message_history=message_history)
             message_history = list(result.all_messages())
             if on_turn_complete is not None:
                 on_turn_complete(list(result.new_messages()))

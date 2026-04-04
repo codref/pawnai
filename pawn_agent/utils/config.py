@@ -118,6 +118,18 @@ class AgentConfig:
     api_port: int = 8000
     api_model_idle_timeout_minutes: float = 10.0
 
+    # Optional MLflow tracing for PydanticAI runs.
+    mlflow_enabled: bool = field(
+        default_factory=lambda: os.environ.get("PAWN_AGENT_MLFLOW_ENABLED", "").lower()
+        in {"1", "true", "yes", "on"}
+    )
+    mlflow_tracking_uri: Optional[str] = field(
+        default_factory=lambda: os.environ.get("MLFLOW_TRACKING_URI")
+    )
+    mlflow_experiment: Optional[str] = field(
+        default_factory=lambda: os.environ.get("MLFLOW_EXPERIMENT_NAME", "pawn-agent")
+    )
+
 
 def load_config(config_path: Optional[str] = None) -> AgentConfig:
     """Load AgentConfig from a YAML file and environment variables.
@@ -220,6 +232,15 @@ def load_config(config_path: Optional[str] = None) -> AgentConfig:
             cfg.api_port = int(api_sec["port"])
         if "model_idle_timeout_minutes" in api_sec:
             cfg.api_model_idle_timeout_minutes = float(api_sec["model_idle_timeout_minutes"])
+
+        obs = data.get("observability", {}) or {}
+        mlflow_sec = obs.get("mlflow", data.get("mlflow", {})) or {}
+        if "enabled" in mlflow_sec:
+            cfg.mlflow_enabled = bool(mlflow_sec["enabled"])
+        if "tracking_uri" in mlflow_sec:
+            cfg.mlflow_tracking_uri = mlflow_sec["tracking_uri"]
+        if "experiment" in mlflow_sec:
+            cfg.mlflow_experiment = mlflow_sec["experiment"]
 
     return cfg
 

@@ -281,3 +281,74 @@ def vectorize_siyuan_page(
         db.commit()
 
     return len(content_blocks)
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Inline text vectorization
+# ──────────────────────────────────────────────────────────────────────────────
+
+
+def vectorize_text(
+    content: str,
+    db_dsn: str,
+    embed_model: str = "Qwen/Qwen3-Embedding-0.6B",
+    embed_device: str = "cpu",
+    embed_dim: Optional[int] = None,
+) -> int:
+    """Embed inline text and store as RAG chunks.
+
+    The content is split on blank lines; each paragraph becomes one chunk if it
+    exceeds ``_MIN_CHUNK_CHARS``.  If the entire text is a single paragraph it
+    is stored as one chunk.
+
+    Idempotent — the source_id is derived from the SHA-256 of the content, so
+    re-submitting the same text replaces the existing chunks.
+
+    Returns:
+        Number of chunks stored.
+
+    Raises:
+        ValueError: If no usable chunks are found in *content*.
+    """
+    paragraphs = [p.strip() for p in re.split(r"\n\s*\n", content) if p.strip()]
+    chunks = [p for p in paragraphs if len(p) >= _MIN_CHUNK_CHARS]
+
+    if not chunks:
+        cleaned = content.strip()
+        if len(cleaned) < _MIN_CHUNK_CHARS:
+            raise ValueError("Content is too short to index (minimum 20 characters).")
+        chunks = [cleaned]
+
+    model = load_embedding_model(embed_model, embed_device, truncate_dim=embed_dim)
+    embeddings = model.encode(chunks, batch_size=32, show_progress_bar=False)
+
+    content_hash = hashlib.sha256(content.encode()).hexdigest()[:16]
+    src_id = _source_id("api", content_hash)
+    now = datetime.now(timezone.utc)
+    engine = create_engine(db_dsn)
+
+    with Session(engine) as db:
+        for ch in db.scalars(select(TextChunk).where(TextChunk.source_id == src_id)).all():
+            db.delete(ch)
+
+        db.merge(RagSource(
+            id=src_id,
+            source_type="api",
+            external_id=content_hash,
+            display_name=chunks[0][:60],
+            extra_data={},
+            created_at=now,
+        ))
+
+        for i, (chunk_text, emb) in enumerate(zip(chunks, embeddings)):
+            db.add(TextChunk(
+                id=_chunk_id(f"api:{content_hash}:{i}"),
+                source_id=src_id,
+                text=chunk_text,
+                embedding=emb.tolist(),
+                extra_data={"chunk_index": i},
+                created_at=now,
+            ))
+        db.commit()
+
+    return len(chunks)
