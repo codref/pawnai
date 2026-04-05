@@ -48,6 +48,7 @@ dependencies = [
     "fastapi>=0.110.0",
     "uvicorn[standard]>=0.29.0",
     "mlflow[genai]>=3.0.0",
+    "pydantic-settings[yaml]>=2.3.0",
 ]
 
 [project.optional-dependencies]
@@ -83,6 +84,7 @@ Repository = "https://github.com/example/pawn-diarize.git"
 
 [tool.setuptools]
 packages = [
+    "pawn_core",
     "pawn_diarize", "pawn_diarize.core", "pawn_diarize.cli", "pawn_diarize.utils",
     "pawn_agent", "pawn_agent.core", "pawn_agent.cli", "pawn_agent.utils", "pawn_agent.tools",
 ]
