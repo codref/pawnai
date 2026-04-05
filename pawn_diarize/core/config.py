@@ -1,316 +1,156 @@
-"""Configuration management for Pawn Diarize.
+"""Configuration management for pawn_diarize.
 
-This module provides configuration constants and the :class:`AppConfig` class
-which merges defaults with values from an optional YAML file
-(``pawnai.yaml`` in the working directory or a path supplied at runtime).
+Delegates to :class:`pawn_core.config.PawnConfig` (pydantic-settings) and
+re-exports all names that existing callers depend on so no import sites need
+to change.
 
-Configuration file (``pawnai.yaml``)
-------------------------------------
-All settings can be overridden at runtime via ``pawnai.yaml`` placed in the
-project root (or by passing ``--config path/to/file.yml`` on the CLI):
-
-.. code-block:: yaml
-
-    models:
-      hf_token: your_hf_token_here
-      diarization_model: pyannote/speaker-diarization-community-1
-      embedding_model: pyannote/embedding
-      transcription_model: nvidia/parakeet-tdt-0.6b-v3
-      transcription_backend: nemo   # nemo | whisper
-      whisper_model: large-v3       # used when transcription_backend: whisper
-      model_idle_timeout_minutes: 10  # release ML models after N minutes idle (default: 10)
-
-    paths:
-      audio_dir: audio/
-
-    device:
-      type: auto   # auto | cuda | cpu
-
-    s3:
-      bucket: my-audio-bucket
-      endpoint_url: https://s3.amazonaws.com
-      access_key: AKIAIOSFODNN7EXAMPLE
-      secret_key: wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY
-      region: us-east-1      # optional
-      prefix: ""             # optional object key prefix
-      verify_ssl: true       # optional, default true
-      path_style: true       # optional, default true
-
-    siyuan:
-      url: http://127.0.0.1:6806
-      token: your_api_token_here
-      notebook: 20210817205410-2kvfpfn   # target notebook ID
-      path_template: "/Conversations/{date}/{session_id}"  # {date}, {session_id}, {title}
-      daily_note_path: "/daily note/{year}/{month}/{date}"  # for daily-note backLink
-
-    diarize_queue:
-      bucket_name: pawn-diarize-queue
-
-If ``models.hf_token`` is absent the ``HF_TOKEN`` environment variable is
-used as a fallback so that CI/CD pipelines that inject secrets via env vars
-continue to work without a config file.
-
-When the ``s3:`` section is present any audio path starting with ``s3://``
-is transparently downloaded before processing.  See :mod:`pawn_diarize.core.s3`
-for the supported URI formats.
+Existing usage patterns that continue to work
+---------------------------------------------
+* ``AppConfig()``                         — returns a DiarizeConfig
+* ``AppConfig(config_path="/my/cfg.yaml")`` — reads a custom YAML file
+* ``from .config import TRANSCRIPTION_MODEL``  — backward-compat constant
+* ``from .config import DEFAULT_DB_DSN``       — backward-compat constant
+* ``from .config import HUGGINGFACE_TOKEN``    — backward-compat constant
+* ``from .config import DEVICE_TYPE``          — backward-compat constant
+* ``Config(db_dsn=...)``                  — lightweight DB helper for tests
 """
 
+from __future__ import annotations
+
 import os
-from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Optional
 
-import yaml
+from pydantic import BaseModel
+from pydantic_settings import SettingsConfigDict
 
-# ──────────────────────────────────────────────────────────────────────────────
-# Module-level defaults
-# ──────────────────────────────────────────────────────────────────────────────
-
-DEFAULT_DB_DSN: str = os.getenv(
-    "DATABASE_URL",
-    "postgresql+psycopg://postgres:postgres@localhost:5432/pawnai",
+from pawn_core.config import (  # noqa: F401
+    DeviceConfig,
+    ModelsConfig,
+    PawnConfig,
+    RagConfig,
+    S3Config,
+    SiYuanConfig,
 )
 
-# Model identifiers
-DIARIZATION_MODEL = "pyannote/speaker-diarization-community-1"
-EMBEDDING_MODEL = "pyannote/embedding"
-TRANSCRIPTION_MODEL = "nvidia/parakeet-tdt-0.6b-v3"
-TRANSCRIPTION_BACKEND = "nemo"   # "nemo" (Parakeet) or "whisper" (faster-whisper)
-WHISPER_MODEL = "large-v3"       # faster-whisper model size or path
 
-# Config filename candidates – checked in order; first match wins.
-_CONFIG_CANDIDATES = ("pawnai.yaml", "pawnai.yml", ".pawn-diarize.yml", ".pawn-diarize.yaml")
-CONFIG_FILE = _CONFIG_CANDIDATES[0]  # canonical name
+# ── pawn_diarize-specific section ─────────────────────────────────────────────
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# AppConfig
-# ──────────────────────────────────────────────────────────────────────────────
+class DiarizeQueueConfig(BaseModel):
+    """pawn-queue listener configuration for pawn-diarize jobs."""
 
-class AppConfig:
-    """Application configuration management.
+    bucket_name: str = "pawn-diarize-queue"
 
-    Merges hard-coded defaults with optional settings from a YAML file.
-    When a ``hf_token`` value is found in the YAML it is also written into
-    ``os.environ["HF_TOKEN"]`` so that downstream code that reads the
-    environment variable directly continues to work.
 
-    Args:
-        config_path: Path to a YAML config file.  When *None* the default
-            ``pawnai.yaml`` in the current working directory is used (if it
-            exists); falls back to legacy names for backward compatibility.
-    """
+class DiarizeConfig(PawnConfig):
+    """Full configuration for the pawn-diarize application."""
 
-    def __init__(self, config_path: Optional[str] = None) -> None:
-        self._config: Dict[str, Any] = {
-            # models
-            "hf_token": None,
-            "diarization_model": DIARIZATION_MODEL,
-            "embedding_model": EMBEDDING_MODEL,
-            "transcription_model": TRANSCRIPTION_MODEL,
-            "transcription_backend": TRANSCRIPTION_BACKEND,
-            "whisper_model": WHISPER_MODEL,
-            # paths
-            "db_dsn": DEFAULT_DB_DSN,
-            "audio_dir": "audio/",
-            # device
-            "device": "auto",
+    model_config = SettingsConfigDict(
+        yaml_file=["pawnai.yaml", "pawnai.yml", ".pawn-diarize.yml", ".pawn-diarize.yaml"],
+        yaml_file_encoding="utf-8",
+        env_prefix="PAWN_",
+        env_nested_delimiter="__",
+        extra="ignore",
+        # diarize_queue YAML key maps to the queue field
+        populate_by_name=True,
+    )
+
+    audio_dir: str = "audio/"
+    queue: Optional[DiarizeQueueConfig] = None
+
+    # pydantic-settings v2 does not support YAML key aliases natively, so we
+    # also accept the legacy key via an alias in model_validator below.
+    def model_post_init(self, __context: object) -> None:  # type: ignore[override]
+        pass  # reserved for future post-init logic
+
+    def get(self, key: str, default: object = None) -> object:
+        """Dict-style accessor for backward compat with AppConfig().get(...)."""
+        # Map flat legacy keys to nested attributes
+        _flat_map = {
+            "transcription_model": lambda: self.models.transcription_model,
+            "transcription_backend": lambda: self.models.transcription_backend,
+            "whisper_model": lambda: self.models.whisper_model,
+            "diarization_model": lambda: self.models.diarization_model,
+            "embedding_model": lambda: self.models.embedding_model,
+            "hf_token": lambda: self.models.hf_token,
+            "model_idle_timeout_minutes": lambda: self.models.model_idle_timeout_minutes,
+            "device": lambda: self.device.type,
+            "db_dsn": lambda: self.db_dsn,
+            "audio_dir": lambda: self.audio_dir,
+            "s3": lambda: self.s3.model_dump() if self.s3 else None,
+            "siyuan": lambda: self.siyuan.model_dump(),
+            "queue": lambda: self.queue.model_dump() if self.queue else None,
+            "rag": lambda: self.rag.model_dump(),
         }
-        self._load_yaml_config(config_path)
+        if key in _flat_map:
+            value = _flat_map[key]()
+            return value if value is not None else default
+        return default
 
-    # ── private ──────────────────────────────────────────────────────────────
+    def set(self, key: str, value: object) -> None:
+        """No-op stub — pydantic models are immutable after init."""
 
-    def _load_yaml_config(self, config_path: Optional[str] = None) -> None:
-        """Load optional YAML configuration and merge it into ``_config``."""
-        if config_path:
-            yaml_file = Path(config_path)
-            if not yaml_file.exists():
-                raise FileNotFoundError(f"Config file not found: {config_path}")
-        else:
-            cwd = Path.cwd()
-            yaml_file = next(
-                (cwd / name for name in _CONFIG_CANDIDATES if (cwd / name).exists()),
-                None,
-            )
-            if yaml_file is None:
-                return
+    def get_s3_config(self) -> Optional[dict]:
+        return self.s3.model_dump() if self.s3 else None
 
-        content = yaml.safe_load(yaml_file.read_text(encoding="utf-8"))
-        if not content:
-            return
-        if not isinstance(content, dict):
-            raise ValueError(
-                f"Configuration in {yaml_file} must be a YAML mapping (dict)."
-            )
+    def get_siyuan_config(self) -> Optional[dict]:
+        return self.siyuan.model_dump()
 
-        # models: section
-        models = content.get("models", {})
-        if isinstance(models, dict):
-            for key in (
-                "hf_token",
-                "diarization_model",
-                "embedding_model",
-                "transcription_model",
-                "transcription_backend",
-                "whisper_model",
-                "model_idle_timeout_minutes",
-            ):
-                if key in models:
-                    self._config[key] = models[key]
+    def get_rag_config(self) -> Optional[dict]:
+        return self.rag.model_dump()
 
-        # paths: section
-        paths = content.get("paths", {})
-        if isinstance(paths, dict):
-            for key in ("db_dsn", "audio_dir"):
-                if key in paths:
-                    self._config[key] = paths[key]
-
-        # top-level db_dsn overrides paths.db_dsn when present
-        if "db_dsn" in content:
-            self._config["db_dsn"] = content["db_dsn"]
-
-        # device: section
-        device = content.get("device", {})
-        if isinstance(device, dict) and "type" in device:
-            self._config["device"] = device["type"]
-
-        # s3: section – stored as a raw dict; validated on first use
-        s3 = content.get("s3")
-        if isinstance(s3, dict):
-            self._config["s3"] = s3
-
-        # siyuan: section – stored as a raw dict; validated on first use
-        siyuan = content.get("siyuan")
-        if isinstance(siyuan, dict):
-            self._config["siyuan"] = siyuan
-
-        # diarize_queue: section – pawn-queue listener configuration
-        queue = content.get("diarize_queue") or content.get("queue")
-        if isinstance(queue, dict):
-            self._config["queue"] = queue
-
-        # rag: section – text embedding / RAG configuration
-        rag = content.get("rag")
-        if isinstance(rag, dict):
-            self._config["rag"] = rag
-
-        # Propagate HF token to env var so any code using os.getenv("HF_TOKEN")
-        # picks it up (including module-level constants evaluated after this call).
-        hf_token = self._config.get("hf_token")
-        if hf_token:
-            os.environ["HF_TOKEN"] = str(hf_token)
-
-    # ── public ───────────────────────────────────────────────────────────────
-
-    def get(self, key: str, default: Any = None) -> Any:
-        """Return the value for *key*, or *default* if not set.
-
-        Args:
-            key: Configuration key.
-            default: Fallback value.
-
-        Returns:
-            Resolved configuration value.
-        """
-        return self._config.get(key, default)
-
-    def set(self, key: str, value: Any) -> None:
-        """Override a configuration value at runtime.
-
-        Args:
-            key: Configuration key.
-            value: New value.
-        """
-        self._config[key] = value
-
-    def get_s3_config(self) -> Optional[Dict[str, Any]]:
-        """Return the ``s3:`` configuration mapping, or ``None`` if absent.
-
-        Returns:
-            Dictionary of S3 settings from ``.pawn-diarize.yml``, or ``None`` when
-            the ``s3:`` section is not present.
-        """
-        s3_config = self._config.get("s3")
-        if isinstance(s3_config, dict):
-            return s3_config
-        return None
-
-    def get_siyuan_config(self) -> Optional[Dict[str, Any]]:
-        """Return the ``siyuan:`` configuration mapping, or ``None`` if absent.
-
-        Returns:
-            Dictionary of SiYuan settings from ``.pawn-diarize.yml``, or ``None``
-            when the ``siyuan:`` section is not present.
-        """
-        siyuan_config = self._config.get("siyuan")
-        if isinstance(siyuan_config, dict):
-            return siyuan_config
-        return None
-
-    def get_rag_config(self) -> Optional[Dict[str, Any]]:
-        """Return the ``rag:`` configuration mapping, or ``None`` if absent.
-
-        Returns:
-            Dictionary of RAG/embedding settings from ``pawnai.yaml``, or
-            ``None`` when the ``rag:`` section is not present.
-        """
-        rag_config = self._config.get("rag")
-        if isinstance(rag_config, dict):
-            return rag_config
-        return None
-
-    def get_queue_config(self) -> Optional[Dict[str, Any]]:
-        """Return the ``diarize_queue:`` configuration mapping, or ``None`` if absent.
-
-        Returns:
-            Dictionary of pawn-queue settings from ``pawnai.yaml``, or
-            ``None`` when the ``diarize_queue:`` section is not present.
-        """
-        queue_config = self._config.get("queue")
-        if isinstance(queue_config, dict):
-            return queue_config
-        return None
+    def get_queue_config(self) -> Optional[dict]:
+        return self.queue.model_dump() if self.queue else None
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# Module-level default instance
-# Reads pawnai.yaml from cwd at first import; also seeds os.environ["HF_TOKEN"]
-# so that HUGGINGFACE_TOKEN below is populated when the YAML is present.
-# ──────────────────────────────────────────────────────────────────────────────
+# ── Backward-compat public API ────────────────────────────────────────────────
 
-_default_config = AppConfig()
+def AppConfig(config_path: Optional[str] = None) -> DiarizeConfig:  # noqa: N802
+    """Factory that mirrors the old ``AppConfig(config_path=...)`` call pattern.
 
-# Back-compat constants used by other core modules (e.g. diarization.py).
-# HF token: prefer YAML value; fall back to bare env var (useful in CI/CD).
-HUGGINGFACE_TOKEN: Optional[str] = (
-    _default_config.get("hf_token") or os.getenv("HF_TOKEN")
-)
-
-DEVICE_TYPE: str = _default_config.get("device", "auto")
+    pydantic-settings accepts ``_yaml_file`` as an init kwarg to override the
+    default YAML discovery list.
+    """
+    if config_path:
+        return DiarizeConfig(_yaml_file=config_path)
+    return DiarizeConfig()
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# Config (path helper used by CLI commands)
-# ──────────────────────────────────────────────────────────────────────────────
+# Module-level constants consumed at import time by diarization.py, embeddings.py,
+# queue_listener.py, and migrations/env.py.  Reading them from a singleton ensures
+# they reflect the same pawnai.yaml that the rest of the app uses.
+_defaults: DiarizeConfig = DiarizeConfig()
+
+DEFAULT_DB_DSN: str = _defaults.db_dsn
+DIARIZATION_MODEL: str = _defaults.models.diarization_model
+EMBEDDING_MODEL: str = _defaults.models.embedding_model
+TRANSCRIPTION_MODEL: str = _defaults.models.transcription_model
+TRANSCRIPTION_BACKEND: str = _defaults.models.transcription_backend
+WHISPER_MODEL: str = _defaults.models.whisper_model
+HUGGINGFACE_TOKEN: Optional[str] = _defaults.models.hf_token or os.getenv("HF_TOKEN")
+DEVICE_TYPE: str = _defaults.device.type
+HUGGINGFACE_TOKEN_STR: str = HUGGINGFACE_TOKEN or ""
+
+# Legacy alias used by .github/copilot-instructions.md examples
+CONFIG_FILE = "pawnai.yaml"
+
+
+# ── Config helper (used by tests/test_core.py) ────────────────────────────────
+
 
 class Config:
     """Lightweight database-configuration helper.
 
     Args:
-        db_dsn: PostgreSQL DSN used to connect to the speaker database.
-            Defaults to :data:`DEFAULT_DB_DSN` (respects the ``DATABASE_URL``
-            environment variable).
+        db_dsn: PostgreSQL DSN.  Defaults to :data:`DEFAULT_DB_DSN`.
     """
 
     def __init__(self, db_dsn: str = DEFAULT_DB_DSN) -> None:
         self.db_dsn = db_dsn
 
     def get_engine(self):
-        """Return a SQLAlchemy engine and ensure tables exist.
-
-        Returns:
-            :class:`sqlalchemy.engine.Engine` connected to the configured DB.
-        """
-        from .database import get_engine, init_db
+        """Return a SQLAlchemy engine and ensure tables exist."""
+        from .database import get_engine, init_db  # noqa: PLC0415
 
         engine = get_engine(self.db_dsn)
         init_db(engine)

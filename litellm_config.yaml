@@ -34,6 +34,25 @@ model_list:
   #     api_base: "os.environ/PAWN_AGENT_URL"
   #     api_key: "os.environ/PAWN_AGENT_TOKEN"
 
+  # Audio transcription — routes POST /v1/audio/transcriptions to pawn-agent.
+  # litellm forwards multipart uploads unchanged; pawn-agent always uses Parakeet.
+  # The model string must start with "openai/" so litellm takes the OpenAI path.
+  #
+  # curl example:
+  #   curl http://localhost:4000/v1/audio/transcriptions \
+  #     -F "file=@recording.wav" -F "model=pawn-transcribe"
+  #
+  # OpenAI Python SDK:
+  #   client = OpenAI(base_url="http://localhost:4000/v1", api_key="...")
+  #   t = client.audio.transcriptions.create(model="pawn-transcribe", file=open("recording.wav","rb"))
+  #   print(t.text)
+  - model_name: pawn-transcribe
+    litellm_params:
+      model: openai/whisper-1            # any value; pawn-agent ignores it
+      api_base: "os.environ/PAWN_AGENT_URL"
+      api_key: "os.environ/PAWN_AGENT_TOKEN"
+      mode: audio_transcription          # tells litellm to POST to /v1/audio/transcriptions
+
 litellm_settings:
   # Silently drop OpenAI params unsupported by pawn-agent (presence_penalty, seed, etc.)
   drop_params: true

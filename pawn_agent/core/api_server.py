@@ -67,12 +67,14 @@ import asyncio
 import hashlib
 import json
 import logging
+import threading
 import time
 import uuid
+from pathlib import Path
 from typing import Any, AsyncIterator, Dict, List, Optional, Union
 
-from fastapi import Depends, FastAPI, HTTPException, Response
-from fastapi.responses import StreamingResponse
+from fastapi import Depends, FastAPI, File, Form, HTTPException, Response, UploadFile
+from fastapi.responses import PlainTextResponse, StreamingResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, ConfigDict
 
@@ -84,6 +86,8 @@ logger = logging.getLogger(__name__)
 
 _cfg: Optional[Any] = None  # AgentConfig, set by create_app()
 _idle_handle: Optional[asyncio.TimerHandle] = None
+_transcription_engine: Optional[Any] = None  # pawn_core.TranscriptionEngine, lazy-loaded
+_transcription_lock = threading.Lock()
 
 _security = HTTPBearer(auto_error=False)
 
@@ -155,6 +159,12 @@ class KnowledgeIngestResponse(BaseModel):
     message: str
 
 
+class TranscriptionResponse(BaseModel):
+    """OpenAI-compatible transcription response (response_format=json)."""
+
+    text: str
+
+
 # ──────────────────────────────────────────────────────────────────────────────
 # Dependencies
 # ──────────────────────────────────────────────────────────────────────────────
@@ -164,6 +174,22 @@ def _get_cfg() -> Any:
     if _cfg is None:  # pragma: no cover
         raise RuntimeError("Server not initialised — call create_app(cfg) first")
     return _cfg
+
+
+def _get_transcription_engine(cfg: Any) -> Any:
+    """Return the module-level TranscriptionEngine, creating it on first call."""
+    global _transcription_engine
+    if _transcription_engine is None:
+        with _transcription_lock:
+            if _transcription_engine is None:
+                from pawn_core.transcription import TranscriptionEngine  # noqa: PLC0415
+
+                _transcription_engine = TranscriptionEngine(
+                    device=cfg.transcription_device,
+                    backend=cfg.transcription_backend,
+                    model_name=cfg.transcription_model,
+                )
+    return _transcription_engine
 
 
 def _require_token(
@@ -581,6 +607,110 @@ async def ingest_knowledge(
         chunks=n,
         message=f"Indexed {n} chunk{'s' if n != 1 else ''} from inline text.",
     )
+
+
+@app.post(
+    "/v1/audio/transcriptions",
+    response_model=None,
+    dependencies=[Depends(_require_token)],
+)
+async def audio_transcriptions(
+    file: UploadFile = File(...),
+    model: str = Form(default="whisper-1"),       # accepted for OpenAI compat; always uses parakeet
+    response_format: str = Form(default="json"),  # "json" | "text"
+    cfg: Any = Depends(_get_cfg),
+) -> Union[TranscriptionResponse, PlainTextResponse, dict]:
+    """OpenAI-compatible audio transcription endpoint.
+
+    Accepts WAV, FLAC, and any format convertible by ffmpeg (OGG Opus from
+    Matrix, MP3, M4A, WebM, …).  Files not natively supported by libsndfile
+    are transparently converted to 16 kHz mono WAV before transcription.
+
+    The ``model`` parameter is accepted for protocol compatibility with OpenAI
+    clients (e.g. ``whisper-1``, ``pawn-transcribe``) but is ignored — the
+    engine is always configured via ``pawnai.yaml`` (``models.transcription_model``).
+
+    ``response_format`` controls the response body:
+
+    * ``json`` (default) — ``{"text": "…"}``
+    * ``verbose_json`` — ``{"text": "…", "words": […]}`` with word-level timestamps
+    * ``text`` — bare string, Content-Type: text/plain
+    """
+    import os  # noqa: PLC0415
+    import subprocess  # noqa: PLC0415
+    import tempfile  # noqa: PLC0415
+
+    # libsndfile handles WAV/FLAC/AIFF natively; everything else (OGG Opus,
+    # MP3, M4A, WebM …) must be re-encoded to WAV via ffmpeg first.
+    _NATIVE_FORMATS = {".wav", ".flac", ".aiff", ".aif"}
+
+    verbose = response_format == "verbose_json"
+
+    suffix = Path(file.filename).suffix if file.filename else ".wav"
+    with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+        tmp_path = tmp.name
+        tmp.write(await file.read())
+
+    # Convert to WAV when the format is not supported by libsndfile (e.g. OGG Opus).
+    wav_path: Optional[str] = None
+    transcribe_path = tmp_path
+    if suffix.lower() not in _NATIVE_FORMATS:
+        fd, wav_path = tempfile.mkstemp(suffix=".wav")
+        os.close(fd)
+        try:
+            subprocess.run(
+                ["ffmpeg", "-y", "-i", tmp_path, "-ar", "16000", "-ac", "1", wav_path],
+                check=True,
+                capture_output=True,
+            )
+            transcribe_path = wav_path
+        except subprocess.CalledProcessError as exc:
+            try:
+                os.unlink(wav_path)
+            except OSError:
+                pass
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+            stderr = exc.stderr.decode(errors="replace") if exc.stderr else ""
+            raise HTTPException(
+                status_code=422, detail=f"Audio conversion failed: {stderr}"
+            ) from exc
+
+    loop = asyncio.get_running_loop()
+    try:
+        def _do_transcribe() -> dict:
+            engine = _get_transcription_engine(cfg)
+            results = engine.transcribe([transcribe_path], include_timestamps=verbose)
+            return results[0] if results else {"text": ""}
+
+        result = await loop.run_in_executor(None, _do_transcribe)
+    except Exception as exc:
+        logger.error("Transcription error: %s", exc, exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Transcription failed: {exc}") from exc
+    finally:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        if wav_path:
+            try:
+                os.unlink(wav_path)
+            except OSError:
+                pass
+
+    text = result.get("text", "")
+
+    if response_format == "text":
+        return PlainTextResponse(content=text)
+    if response_format == "verbose_json":
+        words = [
+            {"word": w["word"], "start": w.get("start"), "end": w.get("end")}
+            for w in result.get("word_timestamps", [])
+        ]
+        return {"text": text, "words": words} if words else {"text": text}
+    return TranscriptionResponse(text=text)
 
 
 # ──────────────────────────────────────────────────────────────────────────────
