@@ -234,6 +234,23 @@ class AgentConfig(PawnConfig):
     def transcription_device(self) -> str:
         return self.device.resolved
 
+    # TTS (consumed by api_server.py speech endpoint)
+    @property
+    def tts_language(self) -> str:
+        return self.models.tts_language
+
+    @property
+    def tts_voice(self) -> str:
+        return self.models.tts_voice
+
+    @property
+    def tts_device(self) -> str:
+        return self.models.tts_device or self.device.resolved
+
+    @property
+    def tts_idle_timeout_minutes(self) -> float:
+        return self.models.tts_idle_timeout_minutes
+
     # Primary PydanticAI provider — resolved from first non-None provider section
     @property
     def pydantic_model(self) -> str:
