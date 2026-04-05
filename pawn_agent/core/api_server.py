@@ -21,6 +21,20 @@ POST /knowledge
     Index content into the RAG vector store (inline text, session transcript,
     or SiYuan page).
 
+POST /v1/audio/transcriptions
+    OpenAI-compatible audio transcription.  Accepts WAV, FLAC, and any format
+    convertible by ffmpeg (OGG Opus, MP3, M4A, WebM, …).  ``response_format``
+    controls the response: ``json`` (default), ``verbose_json`` (with
+    word-level timestamps), or ``text`` (bare string).
+
+POST /v1/audio/speech
+    OpenAI-compatible text-to-speech.  Uses NeMo FastPitch + HiFi-GAN.
+    ``response_format`` controls audio encoding: ``wav`` (default), ``mp3``,
+    ``opus``, ``aac``, ``flac``, or ``pcm``.  ``speed`` (0.25 – 4.0) maps to
+    FastPitch *pace*.  Models are lazily loaded on the first call and
+    automatically evicted after ``models.tts_idle_timeout_minutes`` of
+    inactivity.
+
 GET /health
     Liveness probe — no auth required.
 
@@ -88,6 +102,9 @@ _cfg: Optional[Any] = None  # AgentConfig, set by create_app()
 _idle_handle: Optional[asyncio.TimerHandle] = None
 _transcription_engine: Optional[Any] = None  # pawn_core.TranscriptionEngine, lazy-loaded
 _transcription_lock = threading.Lock()
+_tts_engine: Optional[Any] = None  # pawn_core.TTSEngine, lazy-loaded
+_tts_lock = threading.Lock()
+_tts_idle_handle: Optional[asyncio.TimerHandle] = None
 
 _security = HTTPBearer(auto_error=False)
 
@@ -165,6 +182,19 @@ class TranscriptionResponse(BaseModel):
     text: str
 
 
+class SpeechRequest(BaseModel):
+    """OpenAI-compatible TTS request body for POST /v1/audio/speech."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    model: str
+    input: str
+    voice: str = "alloy"                  # accepted for OpenAI compat; ignored
+    response_format: str = "wav"          # wav | mp3 | opus | aac | flac | pcm
+    speed: float = 1.0                    # 0.25 – 4.0
+    language: Optional[str] = None        # BCP-47 code, e.g. "en", "it", "fr"; falls back to config
+
+
 # ──────────────────────────────────────────────────────────────────────────────
 # Dependencies
 # ──────────────────────────────────────────────────────────────────────────────
@@ -190,6 +220,22 @@ def _get_transcription_engine(cfg: Any) -> Any:
                     model_name=cfg.transcription_model,
                 )
     return _transcription_engine
+
+
+def _get_tts_engine(cfg: Any) -> Any:
+    """Return the module-level TTSEngine, creating it on first call (no model loaded yet)."""
+    global _tts_engine
+    if _tts_engine is None:
+        with _tts_lock:
+            if _tts_engine is None:
+                from pawn_core.tts import TTSEngine  # noqa: PLC0415
+
+                _tts_engine = TTSEngine(
+                    device=cfg.tts_device,
+                    language_id=cfg.tts_language,
+                    voice=cfg.tts_voice,
+                )
+    return _tts_engine
 
 
 def _require_token(
@@ -222,6 +268,29 @@ def _schedule_idle_reset(loop: asyncio.AbstractEventLoop, timeout_seconds: float
     if _idle_handle is not None:
         _idle_handle.cancel()
     _idle_handle = loop.call_later(timeout_seconds, _clear_agent_cache)
+
+
+def _clear_tts_models() -> None:
+    """Unload TTS models from memory after the idle timeout fires.
+
+    Runs on the event loop thread — kept intentionally short.  ``unload()``
+    only sets references to None and clears the CUDA cache; it acquires the
+    engine's internal lock, which should be uncontended at idle time.
+    """
+    global _tts_engine
+    if _tts_engine is not None:
+        try:
+            _tts_engine.unload()
+            logger.info("TTS idle timeout reached — models unloaded from memory")
+        except Exception:
+            logger.warning("TTS idle unload failed", exc_info=True)
+
+
+def _schedule_tts_idle_reset(loop: asyncio.AbstractEventLoop, timeout_seconds: float) -> None:
+    global _tts_idle_handle
+    if _tts_idle_handle is not None:
+        _tts_idle_handle.cancel()
+    _tts_idle_handle = loop.call_later(timeout_seconds, _clear_tts_models)
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -711,6 +780,93 @@ async def audio_transcriptions(
         ]
         return {"text": text, "words": words} if words else {"text": text}
     return TranscriptionResponse(text=text)
+
+
+_SPEECH_FORMATS: dict = {
+    # format → (ffmpeg output args, media_type)
+    "mp3":  (["-f", "mp3"],                           "audio/mpeg"),
+    "opus": (["-f", "opus"],                          "audio/ogg"),
+    "aac":  (["-f", "adts"],                          "audio/aac"),
+    "flac": (["-f", "flac"],                          "audio/flac"),
+    "pcm":  (["-f", "s16le", "-ac", "1"], "audio/pcm"),
+}
+
+
+@app.post(
+    "/v1/audio/speech",
+    response_model=None,
+    dependencies=[Depends(_require_token)],
+)
+async def audio_speech(
+    body: SpeechRequest,
+    cfg: Any = Depends(_get_cfg),
+) -> Response:
+    """OpenAI-compatible text-to-speech endpoint.
+
+    Synthesises *body.input* with Kokoro TTS and returns audio.  Pipelines are
+    loaded lazily per language and evicted after
+    ``models.tts_idle_timeout_minutes`` of inactivity.
+
+    ``language`` defaults to ``models.tts_language`` in ``pawnai.yaml`` and can
+    be overridden per-request (BCP-47, e.g. ``"en"``, ``"it"``, ``"fr"``).
+    ``voice`` accepts OpenAI aliases (``"alloy"``, ``"echo"`` …) or native
+    Kokoro IDs (``"af_heart"``, ``"am_echo"`` …); defaults to
+    ``models.tts_voice``.  ``model`` is accepted for OpenAI compat but ignored.
+
+    ``response_format`` controls audio encoding:
+
+    * ``wav`` (default) — uncompressed PCM, returned directly
+    * ``mp3`` / ``opus`` / ``aac`` / ``flac`` / ``pcm`` — converted via ffmpeg
+    """
+    import subprocess  # noqa: PLC0415
+
+    if not (0.25 <= body.speed <= 4.0):
+        raise HTTPException(status_code=422, detail="speed must be between 0.25 and 4.0")
+
+    loop = asyncio.get_running_loop()
+    _schedule_tts_idle_reset(loop, cfg.tts_idle_timeout_minutes * 60)
+
+    try:
+        engine = _get_tts_engine(cfg)
+        wav_bytes: bytes = await loop.run_in_executor(
+            None,
+            lambda: engine.synthesize(
+                body.input,
+                speed=body.speed,
+                language_id=body.language or cfg.tts_language,
+                voice=body.voice,
+            ),
+        )
+    except Exception as exc:
+        logger.error("TTS synthesis error: %s", exc, exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Speech synthesis failed: {exc}") from exc
+
+    fmt = body.response_format.lower()
+    if fmt == "wav":
+        return Response(content=wav_bytes, media_type="audio/wav")
+
+    if fmt not in _SPEECH_FORMATS:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Unsupported response_format '{fmt}'. Use: wav, mp3, opus, aac, flac, pcm",
+        )
+
+    ffmpeg_args, media_type = _SPEECH_FORMATS[fmt]
+    cmd = ["ffmpeg", "-y", "-f", "wav", "-i", "pipe:0"] + ffmpeg_args + ["pipe:1"]
+    try:
+        proc = subprocess.run(
+            cmd,
+            input=wav_bytes,
+            capture_output=True,
+            check=True,
+        )
+    except subprocess.CalledProcessError as exc:
+        stderr = exc.stderr.decode(errors="replace") if exc.stderr else ""
+        raise HTTPException(
+            status_code=500, detail=f"Audio conversion failed: {stderr}"
+        ) from exc
+
+    return Response(content=proc.stdout, media_type=media_type)
 
 
 # ──────────────────────────────────────────────────────────────────────────────

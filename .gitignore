@@ -233,3 +233,7 @@ pawn_queue
 output
 
 pawnai.db*
+
+.hf
+.hf_cache
+hf_cache

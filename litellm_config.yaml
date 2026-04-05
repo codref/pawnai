@@ -53,6 +53,36 @@ model_list:
       api_key: "os.environ/PAWN_AGENT_TOKEN"
       mode: audio_transcription          # tells litellm to POST to /v1/audio/transcriptions
 
+  # Text-to-speech — routes POST /v1/audio/speech to pawn-agent (Kokoro TTS).
+  # Supports languages via the non-standard `language` field in extra_body.
+  #
+  # curl example (direct to pawn-agent, no proxy needed for TTS):
+  #   curl http://localhost:8000/v1/audio/speech \
+  #     -H "Content-Type: application/json" \
+  #     -d '{"model":"tts-1","input":"Hello world","voice":"alloy","response_format":"wav"}' \
+  #     -o out.wav
+  #
+  # Python SDK (direct):
+  #   client = OpenAI(base_url="http://localhost:8000/v1", api_key="...")
+  #   resp = client.audio.speech.create(model="tts-1", input="Hello", voice="alloy",
+  #                                     extra_body={"language": "en"})
+  #   resp.stream_to_file("out.wav")
+  #
+  # Python SDK (via proxy):
+  #   client = OpenAI(base_url="http://localhost:4000/v1", api_key="...")
+  #   resp = client.audio.speech.create(model="pawn-tts", input="Hello", voice="alloy")
+  #   resp.stream_to_file("out.wav")
+  #
+  # Italian example:
+  #   resp = client.audio.speech.create(model="pawn-tts", input="Ciao mondo",
+  #                                     voice="alloy", extra_body={"language": "it"})
+  - model_name: pawn-tts
+    litellm_params:
+      model: openai/tts-1                # any value; pawn-agent ignores it
+      api_base: "os.environ/PAWN_AGENT_URL"
+      api_key: "os.environ/PAWN_AGENT_TOKEN"
+      mode: audio_speech                 # tells litellm to POST to /v1/audio/speech
+
 litellm_settings:
   # Silently drop OpenAI params unsupported by pawn-agent (presence_penalty, seed, etc.)
   drop_params: true

@@ -44,11 +44,16 @@ class ModelsConfig(BaseModel):
     diarization_model: str = "pyannote/speaker-diarization-community-1"
     embedding_model: str = "pyannote/embedding"
     hf_token: Optional[str] = None
+    hf_cache_dir: Optional[str] = None  # override HF_HUB_CACHE; applies to all HF model downloads
     model_idle_timeout_minutes: float = 10.0
+    tts_language: str = "en"           # BCP-47 code, e.g. "en", "it", "fr"
+    tts_voice: str = "af_heart"        # Kokoro voice ID or OpenAI alias
+    tts_device: Optional[str] = None  # None → fall back to global device.type; use "cpu" if CUDA unavailable
+    tts_idle_timeout_minutes: float = 10.0
 
     @model_validator(mode="after")
-    def _propagate_hf_token(self) -> "ModelsConfig":
-        """Mirror hf_token → HF_TOKEN env var (pyannote reads it directly)."""
+    def _propagate_hf_settings(self) -> "ModelsConfig":
+        """Mirror hf_token/hf_cache_dir → environment variables read by HF Hub."""
         if self.hf_token:
             os.environ["HF_TOKEN"] = self.hf_token
         elif not self.hf_token:
@@ -56,6 +61,8 @@ class ModelsConfig(BaseModel):
             env_token = os.environ.get("HF_TOKEN")
             if env_token:
                 object.__setattr__(self, "hf_token", env_token)
+        if self.hf_cache_dir:
+            os.environ["HF_HUB_CACHE"] = self.hf_cache_dir
         return self
 
 
