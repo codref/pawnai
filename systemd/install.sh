@@ -26,13 +26,13 @@ fi
 # ---------------------------------------------------------------------------
 usage() {
     echo "Usage: $0 <service>"
-    echo "  service: pawn-agent | pawn-diarize | litellm | litellm-docker"
+    echo "  service: pawn-server | pawn-diarize | litellm | litellm-docker"
     exit 1
 }
 
 [[ $# -eq 1 ]] || usage
 SERVICE="$1"
-[[ "$SERVICE" =~ ^(pawn-agent|pawn-diarize|litellm|litellm-docker)$ ]] || { echo "Unknown service: $SERVICE"; usage; }
+[[ "$SERVICE" =~ ^(pawn-server|pawn-diarize|litellm|litellm-docker)$ ]] || { echo "Unknown service: $SERVICE"; usage; }
 
 # ---------------------------------------------------------------------------
 # Substitute placeholders and install

@@ -51,7 +51,7 @@ from __future__ import annotations
 import os
 from typing import Optional
 
-from pydantic import AliasChoices, BaseModel, Field
+from pydantic import AliasChoices, BaseModel, Field, PrivateAttr
 from pydantic_settings import SettingsConfigDict
 
 from pawn_core.config import (  # noqa: F401
@@ -166,6 +166,8 @@ class AgentConfig(PawnConfig):
         populate_by_name=True,
     )
 
+    _model_override: Optional[str] = PrivateAttr(default=None)
+
     agent: AgentSection = Field(default_factory=AgentSection)
     api: ApiSection = Field(default_factory=ApiSection)
     mlflow: MlflowSection = Field(default_factory=MlflowSection)
@@ -254,11 +256,17 @@ class AgentConfig(PawnConfig):
     # Primary PydanticAI provider — resolved from first non-None provider section
     @property
     def pydantic_model(self) -> str:
+        if self._model_override is not None:
+            return self._model_override
         for provider, prefix in _PROVIDER_PREFIXES.items():
             p = getattr(self.agent, provider)
             if p is not None:
                 return f"{prefix}:{p.model}"
         return "openai:gpt-4o"
+
+    @pydantic_model.setter
+    def pydantic_model(self, value: str) -> None:
+        self._model_override = value
 
     @property
     def pydantic_api_key(self) -> Optional[str]:

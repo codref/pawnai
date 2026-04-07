@@ -1,4 +1,4 @@
-"""FastAPI HTTP interface for pawn-agent.
+"""FastAPI HTTP interface for pawn-server.
 
 Exposes the PydanticAI agent over a REST API with an OpenAI-compatible
 ``POST /v1/chat/completions`` endpoint so any OpenAI client can drive
@@ -58,7 +58,7 @@ loaded from the database (stateful) or taken from the request (stateless):
     ``pawn-agent``                           — stateful,  default model
     ``pawn-agent/openai:gpt-4o``             — stateful,  gpt-4o
     ``pawn-agent/stateless``                 — stateless, default model
-    ``pawn-agent/stateless/openai:gpt-4o``   — stateless, gpt-4o
+    ``pawn-agent/stateless/openai:gpt-4o``   — stateless, override = openai:gpt-4o
 
 Stateless mode uses the ``messages`` array from the request as history
 directly, without touching the database.  Useful with clients that manage
@@ -255,7 +255,7 @@ def _require_token(
 
 
 def _clear_agent_cache() -> None:
-    from pawn_agent.core.queue_listener import _agent_cache  # noqa: PLC0415
+    from pawn_server.core.queue_listener import _agent_cache  # noqa: PLC0415
 
     count = len(_agent_cache)
     _agent_cache.clear()
@@ -456,8 +456,8 @@ def _run_turn(agent: Any, prompt: str, history: list, model_settings: dict) -> A
 # ──────────────────────────────────────────────────────────────────────────────
 
 app = FastAPI(
-    title="pawn-agent API",
-    description="HTTP interface for the pawn-agent conversational AI.",
+    title="pawn-server API",
+    description="HTTP interface for the pawn-server conversational AI.",
     version="1.0.0",
 )
 
@@ -483,7 +483,7 @@ async def chat_completions(
     instead of running the agent.  ``stream=true`` is accepted but ignored —
     the response is always a complete JSON object.
     """
-    from pawn_agent.core.queue_listener import _get_or_create_agent  # noqa: PLC0415
+    from pawn_server.core.queue_listener import _get_or_create_agent  # noqa: PLC0415
     from pawn_agent.core.session_store import (  # noqa: PLC0415
         append_turn,
         delete_session as _delete_session,
@@ -610,7 +610,7 @@ async def ingest_knowledge(
         )
 
     if req.siyuan_path:
-        from pawn_agent.utils.siyuan import siyuan_post  # noqa: PLC0415
+        from pawn_core.siyuan import siyuan_post  # noqa: PLC0415
         from pawn_agent.utils.vectorize import vectorize_siyuan_page  # noqa: PLC0415
 
         if not cfg.siyuan_notebook:

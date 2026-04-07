@@ -1,51 +1,54 @@
 """PostgreSQL database layer using SQLAlchemy ORM + pgvector.
 
-This module defines the shared ORM models, engine factory, and session helper
-used across the pawn-diarize package.  All LanceDB operations have been replaced by
-their PostgreSQL + pgvector equivalents here.
+This module defines the pawn-diarize–specific ORM models, engine factory, and
+session helper.  Shared models (TranscriptionSegment, SpeakerName, SessionAnalysis,
+GraphTriple, RagSource, TextChunk) are imported from pawn_core.database.
 
-Tables
-------
+Tables owned here
+-----------------
 embeddings
     Stores per-segment speaker embeddings extracted by pyannote.audio.
     The ``embedding`` column is a pgvector ``vector(512)`` for cosine-similarity
     searches.
 
-speaker_names
-    Maps (audio_file, local_speaker_label) pairs to human-readable names
-    assigned via ``pawn-diarize label``.
+session_state
+    Cross-invocation state for named sessions (processed files, time cursor).
 """
 
 from __future__ import annotations
 
-import os
 import uuid
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from typing import Any, Dict, Generator, List, Optional, Tuple
 
-from sqlalchemy import DateTime, Float, Integer, String, Text, create_engine, text
+from sqlalchemy import DateTime, Float, String, Text, create_engine, text
 from sqlalchemy.dialects.postgresql import JSONB
-from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column
+from sqlalchemy.orm import Mapped, Session, mapped_column
 
 from pgvector.sqlalchemy import Vector
+
+from pawn_core.database import (  # noqa: F401
+    Base,
+    GraphTriple,
+    RagSource,
+    SessionAnalysis,
+    SpeakerName,
+    TEXT_CHUNK_DIM,
+    TextChunk,
+    TranscriptionSegment,
+    _get_session,
+    make_db_session,
+)
 
 
 # Dimension produced by pyannote/embedding model.
 EMBEDDING_DIM = 512
 
-# Dimension for text chunk embeddings (sentence-transformers).
-# Read from env so the value matches whatever was used when running the migration.
-TEXT_CHUNK_DIM: int = int(os.environ.get("PAWN_EMBED_DIM", "1024"))
-
 
 # ──────────────────────────────────────────────────────────────────────────────
-# ORM Models
+# Diarize-specific ORM Models
 # ──────────────────────────────────────────────────────────────────────────────
-
-
-class Base(DeclarativeBase):
-    pass
 
 
 class Embedding(Base):
@@ -77,74 +80,6 @@ class Embedding(Base):
     embedding: Mapped[list] = mapped_column(Vector(EMBEDDING_DIM), nullable=False)
 
 
-class SpeakerName(Base):
-    """Human-readable name assigned to a speaker in a specific audio file.
-
-    Columns
-    -------
-    id:
-        ``"<basename>_<local_label>"`` – unique per (file, speaker) pair.
-    audio_file:
-        Absolute or relative path to the audio file.
-    local_speaker_label:
-        Pyannote speaker label, e.g. ``"SPEAKER_00"``.
-    speaker_name:
-        Human-readable name, e.g. ``"Alice"``.
-    labeled_at:
-        Timestamp when the label was created/updated (UTC).
-    """
-
-    __tablename__ = "speaker_names"
-
-    id: Mapped[str] = mapped_column(String, primary_key=True)
-    audio_file: Mapped[str] = mapped_column(String, nullable=False)
-    local_speaker_label: Mapped[str] = mapped_column(String, nullable=False)
-    speaker_name: Mapped[str] = mapped_column(String, nullable=False)
-    labeled_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
-
-
-class TranscriptionSegment(Base):
-    """One diarized+transcribed segment stored for a session.
-
-    Columns
-    -------
-    id:
-        Deterministic PK: ``"<session_id>_<segment_index>"``.
-    session_id:
-        Human-readable session name or auto-generated UUID.
-    audio_file:
-        Source audio path for this segment.
-    original_speaker_label:
-        Raw pyannote label (``"SPEAKER_00"`` etc.) – never a user-assigned
-        name.  ``NULL`` for standalone ``transcribe`` runs.
-    start_time / end_time:
-        Globally adjusted segment boundaries in seconds.
-    text:
-        Transcribed text.
-    words:
-        JSON array of ``{"word", "start", "end"}`` objects.
-    segment_index:
-        Zero-based position within the session.
-    created_at:
-        UTC timestamp when the row was written.
-    """
-
-    __tablename__ = "transcription_segments"
-
-    id: Mapped[str] = mapped_column(String, primary_key=True)
-    session_id: Mapped[str] = mapped_column(String, nullable=False, index=True)
-    audio_file: Mapped[str] = mapped_column(String, nullable=False)
-    original_speaker_label: Mapped[Optional[str]] = mapped_column(String, nullable=True)
-    start_time: Mapped[float] = mapped_column(Float, nullable=False)
-    end_time: Mapped[float] = mapped_column(Float, nullable=False)
-    text: Mapped[str] = mapped_column(Text, nullable=False)
-    words: Mapped[Optional[Any]] = mapped_column(JSONB, nullable=True)
-    segment_index: Mapped[int] = mapped_column(Integer, nullable=False)
-    created_at: Mapped[Optional[datetime]] = mapped_column(
-        DateTime, nullable=True, default=lambda: datetime.now(timezone.utc)
-    )
-
-
 class SessionState(Base):
     """Persisted cross-invocation state for a named session.
 
@@ -170,171 +105,6 @@ class SessionState(Base):
     speaker_embeddings: Mapped[Optional[Any]] = mapped_column(JSONB, nullable=True)
     time_cursor: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
     updated_at: Mapped[Optional[datetime]] = mapped_column(
-        DateTime, nullable=True, default=lambda: datetime.now(timezone.utc)
-    )
-
-
-class SessionAnalysis(Base):
-    """Persisted analysis result for a transcription session or file.
-
-    Columns
-    -------
-    id:
-        UUID4 primary key generated at insert time.
-    session_id:
-        Matches ``TranscriptionSegment.session_id`` when the analysis was
-        produced from a named session.  ``NULL`` for file-based analyses.
-    source:
-        Human-readable label: ``"session:<id>"`` or the input file path.
-    model:
-        Copilot model used to produce the analysis (e.g. ``"gpt-4o"``).
-    title:
-        Short descriptive title generated by the model (5–10 words).
-    summary:
-        3–5 sentence paragraph summarising the conversation.
-    key_topics:
-        Bullet list of important topics and keywords.
-    speaker_highlights:
-        Per-speaker contribution notes.
-    sentiment:
-        Overall tone of the conversation (free-text prose).
-    sentiment_tags:
-        Up to 3 short sentiment labels for grouping/filtering
-        (e.g. ``["collaborative", "formal"]``).  Stored as a JSONB array
-        with a GIN index to support ``@>`` containment queries.
-    tags:
-        5–10 short topic/entity/tone tags for search and grouping.
-        Stored as a JSONB array with a GIN index.
-    analyzed_at:
-        UTC timestamp of when the analysis was performed.
-    """
-
-    __tablename__ = "session_analysis"
-
-    id: Mapped[str] = mapped_column(String, primary_key=True)
-    session_id: Mapped[Optional[str]] = mapped_column(String, nullable=True, index=True)
-    source: Mapped[str] = mapped_column(String, nullable=False)
-    model: Mapped[str] = mapped_column(String, nullable=False)
-    title: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
-    summary: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
-    key_topics: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
-    speaker_highlights: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
-    sentiment: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
-    sentiment_tags: Mapped[Optional[Any]] = mapped_column(JSONB, nullable=True)
-    tags: Mapped[Optional[Any]] = mapped_column(JSONB, nullable=True)
-    analyzed_at: Mapped[datetime] = mapped_column(
-        DateTime, nullable=False, default=lambda: datetime.now(timezone.utc)
-    )
-
-
-class GraphTriple(Base):
-    """A knowledge-graph triple extracted from a session transcript.
-
-    Columns
-    -------
-    id:
-        UUID4 primary key generated at insert time.
-    session_id:
-        Matches ``TranscriptionSegment.session_id`` the triple was extracted from.
-    subject:
-        The subject entity of the triple.
-    relation:
-        The relation / predicate verb.
-    object:
-        The object entity of the triple.
-    model:
-        Copilot model used to produce the extraction (e.g. ``"gpt-4o"``).
-    extracted_at:
-        UTC timestamp of when the extraction was performed.
-    """
-
-    __tablename__ = "graph_triples"
-
-    id: Mapped[str] = mapped_column(String, primary_key=True)
-    session_id: Mapped[str] = mapped_column(String, nullable=False, index=True)
-    subject: Mapped[str] = mapped_column(Text, nullable=False)
-    relation: Mapped[str] = mapped_column(Text, nullable=False)
-    object: Mapped[str] = mapped_column(Text, nullable=False)
-    model: Mapped[str] = mapped_column(String, nullable=False)
-    extracted_at: Mapped[datetime] = mapped_column(
-        DateTime, nullable=False, default=lambda: datetime.now(timezone.utc)
-    )
-
-
-class RagSource(Base):
-    """A source document registered in the RAG index.
-
-    One row per indexed source — a session transcript, a SiYuan page, or any
-    future source type.  ``text_chunks`` rows reference this table via
-    ``source_id``.  Adding a new source type requires no schema changes.
-
-    Columns
-    -------
-    id:
-        Deterministic primary key: ``"<source_type>:<external_id>"``.
-    source_type:
-        Category label: ``"transcript"``, ``"siyuan"``, or future types.
-    external_id:
-        The natural identifier within the source system — a session_id for
-        transcripts, a SiYuan block ID for notes, etc.
-    display_name:
-        Human-readable label shown in ``rag-stats`` and search results.
-    metadata:
-        Auxiliary data: ``{audio_files, path, notebook, ...}``.
-    created_at:
-        UTC timestamp of the last vectorize run.
-    """
-
-    __tablename__ = "rag_sources"
-
-    id: Mapped[str] = mapped_column(String, primary_key=True)
-    source_type: Mapped[str] = mapped_column(String, nullable=False, index=True)
-    external_id: Mapped[str] = mapped_column(String, nullable=False, index=True)
-    display_name: Mapped[Optional[str]] = mapped_column(String, nullable=True)
-    extra_data: Mapped[Optional[Any]] = mapped_column("metadata", JSONB, nullable=True)
-    created_at: Mapped[Optional[datetime]] = mapped_column(
-        DateTime, nullable=True, default=lambda: datetime.now(timezone.utc)
-    )
-
-
-class TextChunk(Base):
-    """A text chunk with a sentence-transformer embedding for RAG retrieval.
-
-    Each row is one chunk of content from a ``RagSource``.  For transcript
-    sources the speaker/timing fields are populated; for other sources they
-    are left ``NULL``.
-
-    Columns
-    -------
-    id:
-        Deterministic prefix of a SHA-256 hash.
-    source_id:
-        FK to ``rag_sources.id``.
-    speaker_name:
-        Resolved display name of the speaker (transcript chunks only).
-    start_time / end_time:
-        Chunk boundaries in seconds (transcript chunks only).
-    text:
-        The chunk content that was embedded.
-    embedding:
-        Sentence-transformer vector; dimension = ``TEXT_CHUNK_DIM``.
-    metadata:
-        Auxiliary data: ``{segment_ids, audio_file, block_id, ...}``.
-    created_at:
-        UTC timestamp when the chunk was stored.
-    """
-
-    __tablename__ = "text_chunks"
-
-    id: Mapped[str] = mapped_column(String, primary_key=True)
-    source_id: Mapped[str] = mapped_column(String, nullable=False, index=True)
-    speaker_name: Mapped[Optional[str]] = mapped_column(String, nullable=True)
-    start_time: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
-    end_time: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
-    text: Mapped[str] = mapped_column(Text, nullable=False)
-    embedding: Mapped[list] = mapped_column(Vector(TEXT_CHUNK_DIM), nullable=False)
-    extra_data: Mapped[Optional[Any]] = mapped_column("metadata", JSONB, nullable=True)
-    created_at: Mapped[Optional[datetime]] = mapped_column(
         DateTime, nullable=True, default=lambda: datetime.now(timezone.utc)
     )
 
