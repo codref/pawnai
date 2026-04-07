@@ -1,4 +1,4 @@
-"""Queue listener for pawn-agent.
+"""Queue listener for pawn-server.
 
 Consumes messages from a pawn-queue S3-backed topic and dispatches them
 to the PydanticAgent.  Results are persisted in the ``agent_runs`` table
@@ -83,7 +83,7 @@ def _get_or_create_agent(cfg: Any, model_override: Optional[str] = None) -> Any:
     if cache_key not in _agent_cache:
         agent_cfg = cfg
         if model_override:
-            from pawn_agent.cli.commands import _apply_model_override  # noqa: PLC0415
+            from pawn_agent.utils.model_utils import _apply_model_override  # noqa: PLC0415
 
             agent_cfg = deepcopy(cfg)
             _apply_model_override(agent_cfg, model_override)
@@ -287,7 +287,7 @@ async def start_listener(
         builder = builder.concurrency(strategy=concurrency_section["strategy"])
 
     logger.info(
-        "Starting pawn-agent listener | topic=%r consumer=%r endpoint=%s bucket=%s",
+        "Starting pawn-server listener | topic=%r consumer=%r endpoint=%s bucket=%s",
         topic,
         consumer_name,
         endpoint_url,

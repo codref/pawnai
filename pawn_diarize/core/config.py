@@ -20,7 +20,7 @@ from __future__ import annotations
 import os
 from typing import Optional
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 from pydantic_settings import SettingsConfigDict
 
 from pawn_core.config import (  # noqa: F401
@@ -39,6 +39,8 @@ from pawn_core.config import (  # noqa: F401
 class DiarizeQueueConfig(BaseModel):
     """pawn-queue listener configuration for pawn-diarize jobs."""
 
+    model_config = ConfigDict(extra="allow")
+
     bucket_name: str = "pawn-diarize-queue"
 
 
@@ -51,17 +53,11 @@ class DiarizeConfig(PawnConfig):
         env_prefix="PAWN_",
         env_nested_delimiter="__",
         extra="ignore",
-        # diarize_queue YAML key maps to the queue field
         populate_by_name=True,
     )
 
     audio_dir: str = "audio/"
-    queue: Optional[DiarizeQueueConfig] = None
-
-    # pydantic-settings v2 does not support YAML key aliases natively, so we
-    # also accept the legacy key via an alias in model_validator below.
-    def model_post_init(self, __context: object) -> None:  # type: ignore[override]
-        pass  # reserved for future post-init logic
+    diarize_queue: Optional[DiarizeQueueConfig] = None
 
     def get(self, key: str, default: object = None) -> object:
         """Dict-style accessor for backward compat with AppConfig().get(...)."""
@@ -79,7 +75,7 @@ class DiarizeConfig(PawnConfig):
             "audio_dir": lambda: self.audio_dir,
             "s3": lambda: self.s3.model_dump() if self.s3 else None,
             "siyuan": lambda: self.siyuan.model_dump(),
-            "queue": lambda: self.queue.model_dump() if self.queue else None,
+            "queue": lambda: self.diarize_queue.model_dump() if self.diarize_queue else None,
             "rag": lambda: self.rag.model_dump(),
         }
         if key in _flat_map:
@@ -100,7 +96,7 @@ class DiarizeConfig(PawnConfig):
         return self.rag.model_dump()
 
     def get_queue_config(self) -> Optional[dict]:
-        return self.queue.model_dump() if self.queue else None
+        return self.diarize_queue.model_dump() if self.diarize_queue else None
 
 
 # ── Backward-compat public API ────────────────────────────────────────────────

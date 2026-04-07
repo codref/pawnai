@@ -38,7 +38,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
-import requests
+from pawn_core.siyuan import siyuan_post  # noqa: F401
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -210,6 +210,7 @@ class SiyuanClient:
         timeout: int = 30,
     ) -> None:
         self._base = url.rstrip("/")
+        self._token = token
         self._headers = {
             "Content-Type": "application/json",
             "Authorization": f"Token {token}",
@@ -233,20 +234,10 @@ class SiyuanClient:
             SiyuanError: If ``code != 0``.
             requests.RequestException: On network failure.
         """
-        resp = requests.post(
-            f"{self._base}{endpoint}",
-            json=payload,
-            headers=self._headers,
-            timeout=self._timeout,
-        )
-        resp.raise_for_status()
-        body = resp.json()
-        if body.get("code", 0) != 0:
-            raise SiyuanError(
-                f"SiYuan API error [{body.get('code')}]: {body.get('msg')} "
-                f"(endpoint={endpoint})"
-            )
-        return body.get("data")
+        try:
+            return siyuan_post(self._base, self._token, endpoint, payload, timeout=self._timeout)
+        except RuntimeError as exc:
+            raise SiyuanError(str(exc)) from exc
 
     # ── notebooks ─────────────────────────────────────────────────────────────
 

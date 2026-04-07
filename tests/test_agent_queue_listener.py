@@ -1,4 +1,4 @@
-"""Tests for pawn_agent queue listener.
+"""Tests for pawn_server queue listener.
 
 Simulates the end-to-end flow of a message published by pawn-diarize's
 chain_agent feature arriving at pawn-agent's make_message_handler.
@@ -84,14 +84,14 @@ class TestMakeMessageHandlerHappyPath:
             ) as mock_create,
             patch("pawn_agent.utils.db.update_agent_run") as mock_update,
             patch(
-                "pawn_agent.core.queue_listener._get_or_create_agent"
+                "pawn_server.core.queue_listener._get_or_create_agent"
             ) as mock_get_agent,
         ):
             mock_agent = MagicMock()
             mock_agent.run.return_value = "## Analysis\n\nSummary of session."
             mock_get_agent.return_value = mock_agent
 
-            from pawn_agent.core.queue_listener import make_message_handler
+            from pawn_server.core.queue_listener import make_message_handler
 
             handler = make_message_handler(cfg)
             asyncio.run(handler(msg))
@@ -137,14 +137,14 @@ class TestMakeMessageHandlerHappyPath:
             patch("pawn_agent.utils.db.create_agent_run", return_value="run-uuid-2"),
             patch("pawn_agent.utils.db.update_agent_run"),
             patch(
-                "pawn_agent.core.queue_listener._get_or_create_agent"
+                "pawn_server.core.queue_listener._get_or_create_agent"
             ) as mock_get_agent,
         ):
             mock_agent = MagicMock()
             mock_agent.run.return_value = "Result."
             mock_get_agent.return_value = mock_agent
 
-            from pawn_agent.core.queue_listener import make_message_handler
+            from pawn_server.core.queue_listener import make_message_handler
 
             handler = make_message_handler(cfg)
             asyncio.run(handler(msg))
@@ -170,14 +170,14 @@ class TestMakeMessageHandlerHappyPath:
             ) as mock_create,
             patch("pawn_agent.utils.db.update_agent_run"),
             patch(
-                "pawn_agent.core.queue_listener._get_or_create_agent"
+                "pawn_server.core.queue_listener._get_or_create_agent"
             ) as mock_get_agent,
         ):
             mock_agent = MagicMock()
             mock_agent.run.return_value = "Done."
             mock_get_agent.return_value = mock_agent
 
-            from pawn_agent.core.queue_listener import make_message_handler
+            from pawn_server.core.queue_listener import make_message_handler
 
             handler = make_message_handler(cfg)
             asyncio.run(handler(msg))
@@ -200,14 +200,14 @@ class TestMakeMessageHandlerHappyPath:
             patch("pawn_agent.utils.db.create_agent_run", return_value="r"),
             patch("pawn_agent.utils.db.update_agent_run"),
             patch(
-                "pawn_agent.core.queue_listener._get_or_create_agent"
+                "pawn_server.core.queue_listener._get_or_create_agent"
             ) as mock_get_agent,
         ):
             mock_agent = MagicMock()
             mock_agent.run.return_value = "ok"
             mock_get_agent.return_value = mock_agent
 
-            from pawn_agent.core.queue_listener import make_message_handler
+            from pawn_server.core.queue_listener import make_message_handler
 
             handler = make_message_handler(cfg)
             asyncio.run(handler(msg))
@@ -227,7 +227,7 @@ class TestMakeMessageHandlerErrorPaths:
         cfg = _make_cfg()
         msg = _make_msg({"session_id": "abc", "prompt": "Hello"})
 
-        from pawn_agent.core.queue_listener import make_message_handler
+        from pawn_server.core.queue_listener import make_message_handler
 
         handler = make_message_handler(cfg)
         asyncio.run(handler(msg))
@@ -246,7 +246,7 @@ class TestMakeMessageHandlerErrorPaths:
             {"command": "transcribe-diarize", "audio_paths": ["audio.wav"]}
         )
 
-        from pawn_agent.core.queue_listener import make_message_handler
+        from pawn_server.core.queue_listener import make_message_handler
 
         handler = make_message_handler(cfg)
         asyncio.run(handler(msg))
@@ -265,7 +265,7 @@ class TestMakeMessageHandlerErrorPaths:
             ),
             patch("pawn_agent.utils.db.update_agent_run") as mock_update,
         ):
-            from pawn_agent.core.queue_listener import make_message_handler
+            from pawn_server.core.queue_listener import make_message_handler
 
             handler = make_message_handler(cfg)
             asyncio.run(handler(msg))
@@ -287,14 +287,14 @@ class TestMakeMessageHandlerErrorPaths:
             patch("pawn_agent.utils.db.create_agent_run", return_value="run-uuid-5"),
             patch("pawn_agent.utils.db.update_agent_run") as mock_update,
             patch(
-                "pawn_agent.core.queue_listener._get_or_create_agent"
+                "pawn_server.core.queue_listener._get_or_create_agent"
             ) as mock_get_agent,
         ):
             mock_agent = MagicMock()
             mock_agent.run.side_effect = RuntimeError("LLM timeout")
             mock_get_agent.return_value = mock_agent
 
-            from pawn_agent.core.queue_listener import make_message_handler
+            from pawn_server.core.queue_listener import make_message_handler
 
             handler = make_message_handler(cfg)
             asyncio.run(handler(msg))
@@ -321,19 +321,19 @@ class TestDispatch:
 
     def test_dispatch_run_calls_run_prompt(self):
         """dispatch('run') delegates to _run_prompt via executor."""
-        from pawn_agent.core.queue_listener import dispatch
+        from pawn_server.core.queue_listener import dispatch
 
         cfg = _make_cfg()
         params = {"prompt": "Hello", "session_id": None, "model": None}
 
-        with patch("pawn_agent.core.queue_listener._run_prompt") as mock_run:
+        with patch("pawn_server.core.queue_listener._run_prompt") as mock_run:
             asyncio.run(dispatch("run", params, cfg, message_id="m1"))
 
         mock_run.assert_called_once_with(params, cfg, "m1")
 
     def test_dispatch_unsupported_command_raises(self):
         """dispatch raises ValueError for any command other than 'run'."""
-        from pawn_agent.core.queue_listener import dispatch
+        from pawn_server.core.queue_listener import dispatch
 
         cfg = _make_cfg()
 
@@ -350,7 +350,7 @@ class TestRunPrompt:
 
     def test_success_persists_completed_status(self):
         """_run_prompt: pending → running → completed, response stored."""
-        from pawn_agent.core.queue_listener import _run_prompt
+        from pawn_server.core.queue_listener import _run_prompt
 
         cfg = _make_cfg()
         params = {
@@ -365,7 +365,7 @@ class TestRunPrompt:
             ) as mock_create,
             patch("pawn_agent.utils.db.update_agent_run") as mock_update,
             patch(
-                "pawn_agent.core.queue_listener._get_or_create_agent"
+                "pawn_server.core.queue_listener._get_or_create_agent"
             ) as mock_get,
         ):
             mock_agent = MagicMock()
@@ -383,7 +383,7 @@ class TestRunPrompt:
 
     def test_failure_persists_failed_status(self):
         """_run_prompt: re-raises the exception and marks the run failed."""
-        from pawn_agent.core.queue_listener import _run_prompt
+        from pawn_server.core.queue_listener import _run_prompt
 
         cfg = _make_cfg()
         params = {"prompt": "Test", "session_id": None, "model": None}
@@ -392,7 +392,7 @@ class TestRunPrompt:
             patch("pawn_agent.utils.db.create_agent_run", return_value="r2"),
             patch("pawn_agent.utils.db.update_agent_run") as mock_update,
             patch(
-                "pawn_agent.core.queue_listener._get_or_create_agent"
+                "pawn_server.core.queue_listener._get_or_create_agent"
             ) as mock_get,
         ):
             mock_agent = MagicMock()
@@ -407,7 +407,7 @@ class TestRunPrompt:
 
     def test_session_hint_prepended_to_prompt(self):
         """Session ID is prepended to the effective prompt sent to the agent."""
-        from pawn_agent.core.queue_listener import _run_prompt
+        from pawn_server.core.queue_listener import _run_prompt
 
         cfg = _make_cfg()
         params = {
@@ -420,7 +420,7 @@ class TestRunPrompt:
             patch("pawn_agent.utils.db.create_agent_run", return_value="r3"),
             patch("pawn_agent.utils.db.update_agent_run"),
             patch(
-                "pawn_agent.core.queue_listener._get_or_create_agent"
+                "pawn_server.core.queue_listener._get_or_create_agent"
             ) as mock_get,
         ):
             mock_agent = MagicMock()
@@ -442,7 +442,7 @@ class TestRunPrompt:
 class TestMergeParams:
 
     def test_defaults_filled_in(self):
-        from pawn_agent.core.queue_listener import _merge_params
+        from pawn_server.core.queue_listener import _merge_params
 
         result = _merge_params("run", {"prompt": "Hello"})
         assert result["prompt"] == "Hello"
@@ -450,14 +450,14 @@ class TestMergeParams:
         assert result["model"] is None
 
     def test_payload_overrides_defaults(self):
-        from pawn_agent.core.queue_listener import _merge_params
+        from pawn_server.core.queue_listener import _merge_params
 
         result = _merge_params("run", {"prompt": "Hi", "model": "openai:gpt-4o"})
         assert result["model"] == "openai:gpt-4o"
 
     def test_extra_fields_preserved(self):
         """Unknown payload fields pass through (not stripped)."""
-        from pawn_agent.core.queue_listener import _merge_params
+        from pawn_server.core.queue_listener import _merge_params
 
         result = _merge_params("run", {"prompt": "Hi", "custom_field": "value"})
         assert result["custom_field"] == "value"
