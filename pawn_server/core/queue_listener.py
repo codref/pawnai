@@ -135,7 +135,7 @@ def _run_prompt(
         effective_prompt = f"[Session ID: {session_id}]\n{prompt}"
 
     # Load conversation history from the session store
-    history = load_history(session_id or "", cfg.db_dsn)
+    history = load_history(session_id or "", cfg.db_dsn, strip_thinking=cfg.strip_thinking)
 
     try:
         agent = _get_or_create_agent(cfg, model_override)

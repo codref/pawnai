@@ -15,9 +15,12 @@ all entry points that use the same ``session_id``.
 from __future__ import annotations
 
 import json
+import logging
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from typing import Any, Generator, List
+
+logger = logging.getLogger(__name__)
 
 import sqlalchemy as sa
 from sqlalchemy.dialects.postgresql import JSONB, insert as pg_insert
@@ -51,15 +54,40 @@ def _get_session(dsn: str) -> Generator[Session, None, None]:
             raise
 
 
-def load_history(session_id: str, dsn: str) -> list:
+def _strip_thinking(history: list) -> list:
+    """Remove ThinkingPart entries from ModelResponse messages in *history*.
+
+    Thinking parts (chain-of-thought traces) are useful for the model that
+    generated them but add tokens without benefit when replayed as context.
+    """
+    import dataclasses  # noqa: PLC0415
+    from pydantic_ai.messages import ModelResponse, ThinkingPart  # noqa: PLC0415
+
+    result = []
+    for msg in history:
+        if isinstance(msg, ModelResponse):
+            clean = [p for p in msg.parts if not isinstance(p, ThinkingPart)]
+            result.append(dataclasses.replace(msg, parts=clean))
+        else:
+            result.append(msg)
+    return result
+
+
+def load_history(session_id: str, dsn: str, *, strip_thinking: bool = True) -> list:
     """Load and concatenate all turns for *session_id* into a single message list.
 
     Returns an empty list if the session has no turns yet.
     The returned list is suitable for passing directly as ``message_history``
     to ``pydantic_ai.Agent.run()`` or ``run_sync()``.
+
+    Args:
+        strip_thinking: When ``True`` (default), ``ThinkingPart`` entries are
+            removed from replayed ``ModelResponse`` messages.  Thinking traces
+            are not useful as context and inflate the prompt token count.
     """
     from pydantic_ai.messages import ModelMessagesTypeAdapter  # noqa: PLC0415
 
+    logger.info("Loading session history for session_id=%r", session_id)
     engine = sa.create_engine(dsn)
     with Session(engine) as db:
         rows = db.scalars(
@@ -72,6 +100,14 @@ def load_history(session_id: str, dsn: str) -> list:
     for row in rows:
         turn_msgs = ModelMessagesTypeAdapter.validate_python(row.messages)
         history.extend(turn_msgs)
+
+    if strip_thinking:
+        history = _strip_thinking(history)
+
+    logger.info(
+        "Session %r: loaded %d turn(s), %d message(s) total",
+        session_id, len(rows), len(history),
+    )
     return history
 
 

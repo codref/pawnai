@@ -63,6 +63,7 @@ def build(cfg: AgentConfig) -> Tool:
                     embed_model=cfg.embed_model,
                     embed_device=cfg.embed_device,
                     embed_dim=cfg.embed_dim,
+                    embed_local_files_only=cfg.embed_local_files_only,
                 )
                 prefix = "Ran analysis then indexed" if ran_analysis else "Indexed"
                 return f"{prefix} {n} chunks for session '{session_id}'."
@@ -95,6 +96,7 @@ def build(cfg: AgentConfig) -> Tool:
                 embed_model=cfg.embed_model,
                 embed_device=cfg.embed_device,
                 embed_dim=cfg.embed_dim,
+                embed_local_files_only=cfg.embed_local_files_only,
             )
             return f"Indexed {n} chunks for SiYuan page '{siyuan_path}' (id: {page_id})."
         except Exception as exc:

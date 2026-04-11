@@ -48,13 +48,15 @@ Config file schema (all keys optional)::
 
 from __future__ import annotations
 
+import logging
 import os
 from typing import Optional
 
-from pydantic import AliasChoices, BaseModel, Field, PrivateAttr
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field, PrivateAttr
 from pydantic_settings import SettingsConfigDict
 
 from pawn_core.config import (  # noqa: F401
+    LoggingConfig,
     PawnConfig,
     RagConfig,
     S3Config,
@@ -87,6 +89,7 @@ class AgentSection(BaseModel):
 
     name: str = "Bob"
     anima: Optional[str] = None
+    strip_thinking: bool = True
     openai: Optional[AgentProviderConfig] = None
     anthropic: Optional[AgentProviderConfig] = None
     google: Optional[AgentProviderConfig] = None
@@ -105,7 +108,9 @@ class ApiSection(BaseModel):
 
 
 class MlflowSection(BaseModel):
-    """``observability.mlflow:`` section."""
+    """``mlflow:`` section (top-level in pawnai.yaml)."""
+
+    model_config = ConfigDict(populate_by_name=True)
 
     enabled: bool = Field(
         default=False,
@@ -184,6 +189,10 @@ class AgentConfig(PawnConfig):
         return self.agent.anima
 
     @property
+    def strip_thinking(self) -> bool:
+        return self.agent.strip_thinking
+
+    @property
     def api_token(self) -> Optional[str]:
         return self.api.token
 
@@ -210,6 +219,10 @@ class AgentConfig(PawnConfig):
     @property
     def embed_device(self) -> str:
         return self.rag.embed_device
+
+    @property
+    def embed_local_files_only(self) -> bool:
+        return self.rag.embed_local_files_only
 
     @property
     def mlflow_enabled(self) -> bool:
@@ -345,4 +358,9 @@ def load_config(config_path: Optional[str] = None) -> AgentConfig:
     4. Dataclass defaults / environment variables
     """
     yaml_file = config_path or os.environ.get("PAWN_AGENT_CONFIG")
-    return AgentConfig(_yaml_file=yaml_file) if yaml_file else AgentConfig()
+    cfg = AgentConfig(_yaml_file=yaml_file) if yaml_file else AgentConfig()
+    logging.basicConfig(
+        level=cfg.logging.level.upper(),
+        format="%(levelname)s %(name)s: %(message)s",
+    )
+    return cfg

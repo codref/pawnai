@@ -20,11 +20,19 @@ def build(cfg: AgentConfig) -> Tool:
     # Load the embedding model once at session startup, shared across all calls.
     from sentence_transformers import SentenceTransformer
 
-    _model = SentenceTransformer(
-        cfg.embed_model,
-        device=cfg.embed_device,
-        truncate_dim=cfg.embed_dim if cfg.embed_dim else None,
-    )
+    try:
+        _model = SentenceTransformer(
+            cfg.embed_model,
+            device=cfg.embed_device,
+            truncate_dim=cfg.embed_dim if cfg.embed_dim else None,
+            local_files_only=True,
+        )
+    except Exception:
+        _model = SentenceTransformer(
+            cfg.embed_model,
+            device=cfg.embed_device,
+            truncate_dim=cfg.embed_dim if cfg.embed_dim else None,
+        )
 
     def search_knowledge(
         query: str,

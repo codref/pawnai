@@ -25,6 +25,7 @@ The prefix ``PAWN_`` plus double-underscore nesting maps to sections::
 
 from __future__ import annotations
 
+import logging
 import os
 from typing import Literal, Optional
 
@@ -112,6 +113,16 @@ class RagConfig(BaseModel):
     embed_model: str = "Qwen/Qwen3-Embedding-0.6B"
     embed_dim: int = 1024
     embed_device: str = "cpu"
+    embed_local_files_only: bool = True
+
+
+class LoggingConfig(BaseModel):
+    """Console log verbosity settings.
+
+    Set ``level`` to one of: DEBUG, INFO, WARNING, ERROR, CRITICAL.
+    """
+
+    level: str = "WARNING"
 
 
 # ── Shared base ────────────────────────────────────────────────────────────────
@@ -150,6 +161,7 @@ class PawnConfig(BaseSettings):
     s3: Optional[S3Config] = None
     siyuan: SiYuanConfig = Field(default_factory=SiYuanConfig)
     rag: RagConfig = Field(default_factory=RagConfig)
+    logging: LoggingConfig = Field(default_factory=LoggingConfig)
 
     @classmethod
     def settings_customise_sources(

@@ -20,6 +20,8 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import socket
+import urllib.parse
 from pathlib import Path
 from typing import Callable, List, Optional
 
@@ -31,6 +33,20 @@ from pawn_agent.tools import build_tools
 from pawn_agent.utils.config import AgentConfig
 
 logger = logging.getLogger(__name__)
+
+_MLFLOW_CONNECT_TIMEOUT = 2  # seconds
+
+
+def _mlflow_reachable(tracking_uri: str) -> bool:
+    """Return True if a TCP connection to *tracking_uri* succeeds quickly."""
+    try:
+        parsed = urllib.parse.urlparse(tracking_uri)
+        host = parsed.hostname or "localhost"
+        port = parsed.port or (443 if parsed.scheme == "https" else 80)
+        with socket.create_connection((host, port), timeout=_MLFLOW_CONNECT_TIMEOUT):
+            return True
+    except OSError:
+        return False
 
 
 class PydanticAgent:
@@ -64,32 +80,36 @@ class PydanticAgent:
             return
         try:
             import mlflow
-        except ImportError:
+            import mlflow.pydantic_ai  # noqa: F401 — ensures the submodule is loaded
+        except ImportError as exc:
             logger.warning(
-                "MLflow tracing is enabled but mlflow is not installed; continuing without tracing."
+                "MLflow tracing is enabled but a required package is missing (%s); "
+                "install mlflow[genai] to enable tracing.",
+                exc,
             )
             return
 
-        if self.cfg.mlflow_tracking_uri:
-            mlflow.set_tracking_uri(self.cfg.mlflow_tracking_uri)
-        if self.cfg.mlflow_experiment:
-            mlflow.set_experiment(self.cfg.mlflow_experiment)
+        try:
+            if self.cfg.mlflow_tracking_uri:
+                mlflow.set_tracking_uri(self.cfg.mlflow_tracking_uri)
+                if not _mlflow_reachable(self.cfg.mlflow_tracking_uri):
+                    logger.warning(
+                        "MLflow tracking server is not reachable at %r; skipping tracing.",
+                        self.cfg.mlflow_tracking_uri,
+                    )
+                    return
+            if self.cfg.mlflow_experiment:
+                mlflow.set_experiment(self.cfg.mlflow_experiment)
 
-        pydantic_ai_integration = getattr(mlflow, "pydantic_ai", None)
-        if pydantic_ai_integration is None:
-            logger.warning(
-                "MLflow is installed but does not expose pydantic_ai autologging; "
-                "install a newer mlflow[genai] to enable tracing."
+            mlflow.pydantic_ai.autolog()
+            PydanticAgent._mlflow_configured = True
+            logger.info(
+                "Enabled MLflow tracing for PydanticAI (tracking_uri=%r, experiment=%r)",
+                self.cfg.mlflow_tracking_uri,
+                self.cfg.mlflow_experiment,
             )
-            return
-
-        pydantic_ai_integration.autolog()
-        PydanticAgent._mlflow_configured = True
-        logger.info(
-            "Enabled MLflow tracing for PydanticAI (tracking_uri=%r, experiment=%r)",
-            self.cfg.mlflow_tracking_uri,
-            self.cfg.mlflow_experiment,
-        )
+        except Exception as exc:
+            logger.warning("Failed to configure MLflow tracing: %s", exc)
 
     def _build_agent(self) -> Agent:
         model = self._resolve_model()

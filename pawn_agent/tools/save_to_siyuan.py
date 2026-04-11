@@ -31,6 +31,11 @@ def build(cfg: AgentConfig) -> Tool:
         Each call creates a distinct document nested under the session page, so
         multiple focused analyses accumulate rather than overwriting each other.
 
+        IMPORTANT — content encoding: the content string is transmitted as JSON.
+        Avoid raw LaTeX-style backslash sequences such as \\( \\) \\[ \\] \\{
+        as they are invalid JSON escape codes. Use plain Unicode, dollar-sign
+        math notation ($...$), or spell out mathematical expressions in words.
+
         Args:
             session_id: Session identifier; determines the parent page in the tree.
             content: Full Markdown content to store.

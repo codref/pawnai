@@ -86,3 +86,9 @@ model_list:
 litellm_settings:
   # Silently drop OpenAI params unsupported by pawn-agent (presence_penalty, seed, etc.)
   drop_params: true
+  # Ensure the `user` field is forwarded to the backend as-is (pawn-agent uses it as session_id).
+  # Without this, litellm consumes `user` for its own tracking and strips it from the forwarded request.
+  pass_through_all_additional_params: true
+  # pawn-agent returns errors as 200 assistant messages; retrying model-side
+  # failures (e.g. malformed tool-call JSON) only wastes time.
+  num_retries: 0

@@ -490,10 +490,24 @@ async def chat_completions(
         load_history,
     )
 
+    logger.debug("chat/completions raw payload: %s", req.model_dump())
     messages = [m.model_dump() for m in req.messages]
     session_id = _session_id(messages, req.user)
     loop = asyncio.get_running_loop()
     _schedule_idle_reset(loop, cfg.api_model_idle_timeout_minutes * 60)
+
+    stateless_check, _ = _parse_model(req.model)
+    if req.user:
+        logger.info(
+            "chat/completions: session_id=%r model=%r stateless=%s",
+            session_id, req.model, stateless_check,
+        )
+    else:
+        logger.warning(
+            "chat/completions: session_id=%r model=%r stateless=%s "
+            "— 'user' field not set in request payload, session_id derived from message hash",
+            session_id, req.model, stateless_check,
+        )
 
     if _is_reset(messages):
         deleted = _delete_session(session_id, cfg.db_dsn)
@@ -506,25 +520,34 @@ async def chat_completions(
     if not prompt:
         raise HTTPException(status_code=422, detail="No user message found in messages")
 
-    stateless, model_override = _parse_model(req.model)
+    stateless, model_override = stateless_check, _parse_model(req.model)[1]
     model_settings = _build_model_settings(req)
 
     if stateless:
         # Use the client-provided messages as history (all but the last user message)
         history = _openai_messages_to_history(messages[:-1])
     else:
-        history = load_history(session_id, cfg.db_dsn)
+        history = load_history(session_id, cfg.db_dsn, strip_thinking=cfg.strip_thinking)
 
     agent = _get_or_create_agent(cfg, model_override=model_override)
     source_id = str(uuid.uuid4())
 
     try:
-        result = await loop.run_in_executor(
-            None, _run_turn, agent, prompt, history, model_settings
+        result = await agent.run_async(
+            prompt,
+            message_history=history,
+            model_settings=model_settings or None,
         )
     except Exception as exc:
+        # Return all agent errors as a 200 assistant message rather than 500.
+        # A 500 causes LiteLLM (and other proxies) to retry — which never helps
+        # for model-side failures such as malformed tool-call JSON (e.g. invalid
+        # escape sequences like \( \) from LaTeX in generated content).
         logger.error("Agent error for session %r: %s", session_id, exc, exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Agent error: {exc}") from exc
+        reply = f"Agent error: {exc}"
+        if req.stream:
+            return StreamingResponse(_stream_sse(reply, req.model), media_type="text/event-stream")
+        return _build_openai_response(reply, req.model)
 
     if not stateless:
         append_turn(source_id, session_id, list(result.new_messages()), cfg.db_dsn)
@@ -600,6 +623,7 @@ async def ingest_knowledge(
                     embed_model=cfg.embed_model,
                     embed_device=cfg.embed_device,
                     embed_dim=cfg.embed_dim,
+                    embed_local_files_only=cfg.embed_local_files_only,
                 ),
             )
         except ValueError as exc:
@@ -646,6 +670,7 @@ async def ingest_knowledge(
                     embed_model=cfg.embed_model,
                     embed_device=cfg.embed_device,
                     embed_dim=cfg.embed_dim,
+                    embed_local_files_only=cfg.embed_local_files_only,
                 ),
             )
         except ValueError as exc:
@@ -668,6 +693,7 @@ async def ingest_knowledge(
                 embed_model=cfg.embed_model,
                 embed_device=cfg.embed_device,
                 embed_dim=cfg.embed_dim,
+                embed_local_files_only=cfg.embed_local_files_only,
             ),
         )
     except ValueError as exc:

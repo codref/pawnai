@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import re
 from typing import Optional
 
@@ -9,6 +10,8 @@ from sqlalchemy import select
 
 from pawn_agent.utils.config import AgentConfig
 from pawn_agent.utils.db import make_db_session, TranscriptionSegment, SpeakerName
+
+logger = logging.getLogger(__name__)
 
 
 ANALYSIS_PROMPT = """\
@@ -84,6 +87,7 @@ def parse_sections(text_: str) -> dict:
 def fetch_transcript(cfg: AgentConfig, session_id: str) -> str:
     """Fetch and format a transcript from the database."""
     try:
+        logger.info("Retrieving session %r from database", session_id)
         db = make_db_session(cfg.db_dsn)
         segments = db.scalars(
             select(TranscriptionSegment)
@@ -92,7 +96,9 @@ def fetch_transcript(cfg: AgentConfig, session_id: str) -> str:
         ).all()
 
         if not segments:
+            logger.warning("No transcript segments found for session %r", session_id)
             return f"No transcript found for session: {session_id!r}"
+        logger.info("Loaded %d segments for session %r", len(segments), session_id)
 
         audio_files = list({s.audio_file for s in segments if s.audio_file})
         labels = list({s.original_speaker_label for s in segments if s.original_speaker_label})

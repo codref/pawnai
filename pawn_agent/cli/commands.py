@@ -159,7 +159,7 @@ def chat(
             load_history,
         )
 
-        initial_history = load_history(session, cfg.db_dsn)
+        initial_history = load_history(session, cfg.db_dsn, strip_thinking=cfg.strip_thinking)
         kb, tok = context_size(initial_history)
         tok_str = f"{tok // 1000}k" if tok >= 1000 else str(tok)
         if initial_history:

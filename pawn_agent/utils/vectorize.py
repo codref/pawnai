@@ -60,15 +60,23 @@ def load_embedding_model(
     model_name: str,
     device: str = "cpu",
     truncate_dim: Optional[int] = None,
+    local_files_only: bool = True,
 ) -> Any:
     """Load a SentenceTransformer model, caching by ``(model_name, device, truncate_dim)``."""
     from sentence_transformers import SentenceTransformer
 
     key = f"{model_name}:{device}:{truncate_dim}"
     if key not in _MODEL_CACHE:
-        _MODEL_CACHE[key] = SentenceTransformer(
-            model_name, device=device, truncate_dim=truncate_dim
-        )
+        try:
+            _MODEL_CACHE[key] = SentenceTransformer(
+                model_name, device=device, truncate_dim=truncate_dim,
+                local_files_only=local_files_only,
+            )
+        except Exception:
+            # Model not in cache yet — allow network access for the initial download.
+            _MODEL_CACHE[key] = SentenceTransformer(
+                model_name, device=device, truncate_dim=truncate_dim,
+            )
     return _MODEL_CACHE[key]
 
 
@@ -100,6 +108,7 @@ def vectorize_session(
     embed_model: str = "Qwen/Qwen3-Embedding-0.6B",
     embed_device: str = "cpu",
     embed_dim: Optional[int] = None,
+    embed_local_files_only: bool = True,
 ) -> Tuple[int, str]:
     """Embed a session and store as RAG chunks.
 
@@ -122,7 +131,7 @@ def vectorize_session(
 
     src_id = _source_id("transcript", session_id)
     now = datetime.now(timezone.utc)
-    embed_model_obj = load_embedding_model(embed_model, embed_device, truncate_dim=embed_dim)
+    embed_model_obj = load_embedding_model(embed_model, embed_device, truncate_dim=embed_dim, local_files_only=embed_local_files_only)
 
     # ── Analysis path ──────────────────────────────────────────────────────────
     if analysis is not None:
@@ -211,6 +220,7 @@ def vectorize_siyuan_page(
     embed_model: str = "Qwen/Qwen3-Embedding-0.6B",
     embed_device: str = "cpu",
     embed_dim: Optional[int] = None,
+    embed_local_files_only: bool = True,
 ) -> int:
     """Fetch a SiYuan page's content blocks, embed them, and store as RAG chunks.
 
@@ -248,7 +258,7 @@ def vectorize_siyuan_page(
     if not content_blocks:
         raise ValueError(f"No usable content blocks found for SiYuan page '{page_id}'")
 
-    model = load_embedding_model(embed_model, embed_device, truncate_dim=embed_dim)
+    model = load_embedding_model(embed_model, embed_device, truncate_dim=embed_dim, local_files_only=embed_local_files_only)
     texts = [text for _, text in content_blocks]
     embeddings = model.encode(texts, batch_size=32, show_progress_bar=False)
 
@@ -294,6 +304,7 @@ def vectorize_text(
     embed_model: str = "Qwen/Qwen3-Embedding-0.6B",
     embed_device: str = "cpu",
     embed_dim: Optional[int] = None,
+    embed_local_files_only: bool = True,
 ) -> int:
     """Embed inline text and store as RAG chunks.
 
@@ -319,7 +330,7 @@ def vectorize_text(
             raise ValueError("Content is too short to index (minimum 20 characters).")
         chunks = [cleaned]
 
-    model = load_embedding_model(embed_model, embed_device, truncate_dim=embed_dim)
+    model = load_embedding_model(embed_model, embed_device, truncate_dim=embed_dim, local_files_only=embed_local_files_only)
     embeddings = model.encode(chunks, batch_size=32, show_progress_bar=False)
 
     content_hash = hashlib.sha256(content.encode()).hexdigest()[:16]

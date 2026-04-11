@@ -89,13 +89,19 @@ def serve(
         DEFAULT_CONSUMER_NAME,
     )
 
+    cfg = load_config(config)
+
+    # Configure logging from pawnai.yaml before uvicorn starts.
+    # We also pin pawn_* package loggers explicitly so that uvicorn's
+    # dictConfig (which resets the root logger to WARNING) does not silence them.
+    _log_level = getattr(logging, cfg.logging.level.upper(), logging.INFO)
     logging.basicConfig(
-        level=logging.INFO,
+        level=_log_level,
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
         datefmt="%Y-%m-%d %H:%M:%S",
     )
-
-    cfg = load_config(config)
+    for _pkg in ("pawn_agent", "pawn_server", "pawn_core", "pawn_diarize"):
+        logging.getLogger(_pkg).setLevel(_log_level)
     if model:
         _apply_model_override(cfg, model)
 
