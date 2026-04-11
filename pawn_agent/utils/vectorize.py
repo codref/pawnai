@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import hashlib
 import re
+import uuid
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple  # Tuple kept for vectorize_session return
 
@@ -363,3 +364,101 @@ def vectorize_text(
         db.commit()
 
     return len(chunks)
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Agent memory vectorization
+# ──────────────────────────────────────────────────────────────────────────────
+
+
+def vectorize_memory(
+    fact: str,
+    db_dsn: str,
+    embed_model: str = "Qwen/Qwen3-Embedding-0.6B",
+    embed_device: str = "cpu",
+    embed_dim: Optional[int] = None,
+    embed_local_files_only: bool = True,
+    tags: Optional[List[str]] = None,
+    memory_id: Optional[str] = None,
+) -> str:
+    """Embed a free-text fact and store it as a persistent memory entry.
+
+    Unlike :func:`vectorize_text` (which is content-addressed via SHA-256),
+    memory entries are UUID-addressed so the same fact can be updated or
+    deleted by ID.  Each call upserts one ``RagSource`` of
+    ``source_type='memory'`` plus one ``TextChunk``.
+
+    Idempotent when the same *memory_id* is passed — existing chunks are
+    replaced.
+
+    Args:
+        fact: The text to store. Must be at least ``_MIN_CHUNK_CHARS`` chars.
+        db_dsn: SQLAlchemy DSN for the PostgreSQL database.
+        embed_model: SentenceTransformer model name.
+        embed_device: Torch device string (``'cpu'``, ``'cuda'``, etc.).
+        embed_dim: Optional truncation dimension for the embedding vector.
+        embed_local_files_only: If ``True``, disallow network downloads.
+        tags: Optional list of tag strings stored in ``extra_data``.
+        memory_id: UUID string to use as the memory identity.  When ``None``
+            (the default for new entries) a fresh UUID4 is generated.
+
+    Returns:
+        The *memory_id* UUID string for this entry.
+
+    Raises:
+        ValueError: If *fact* is shorter than ``_MIN_CHUNK_CHARS`` characters.
+    """
+    fact = fact.strip()
+    if len(fact) < _MIN_CHUNK_CHARS:
+        raise ValueError(
+            f"Fact is too short to index (minimum {_MIN_CHUNK_CHARS} characters)."
+        )
+
+    memory_id = memory_id or str(uuid.uuid4())
+    src_id = _source_id("memory", memory_id)
+    now = datetime.now(timezone.utc)
+
+    model = load_embedding_model(
+        embed_model,
+        embed_device,
+        truncate_dim=embed_dim,
+        local_files_only=embed_local_files_only,
+    )
+    embedding = model.encode(fact, show_progress_bar=False)
+    engine = create_engine(db_dsn)
+
+    with Session(engine) as db:
+        # Delete existing chunk(s) first — no FK cascade between the tables.
+        for ch in db.scalars(
+            select(TextChunk).where(TextChunk.source_id == src_id)
+        ).all():
+            db.delete(ch)
+
+        db.merge(
+            RagSource(
+                id=src_id,
+                source_type="memory",
+                external_id=memory_id,
+                display_name=fact[:80],
+                extra_data={
+                    "tags": tags or [],
+                    "memory_id": memory_id,
+                    "saved_at": now.isoformat(),
+                },
+                created_at=now,
+            )
+        )
+
+        db.add(
+            TextChunk(
+                id=_chunk_id(f"memory:{memory_id}:0"),
+                source_id=src_id,
+                text=fact,
+                embedding=embedding.tolist(),
+                extra_data={"tags": tags or []},
+                created_at=now,
+            )
+        )
+        db.commit()
+
+    return memory_id
