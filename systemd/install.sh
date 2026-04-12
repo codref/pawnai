@@ -10,7 +10,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
-SYSTEMD_USER_DIR="$HOME/.config/systemd/user"
+SYSTEMD_SYSTEM_DIR="/etc/systemd/system"
 
 # ---------------------------------------------------------------------------
 # Resolve venv binary directory
@@ -25,13 +25,15 @@ fi
 # Argument parsing
 # ---------------------------------------------------------------------------
 usage() {
-    echo "Usage: $0 <service>"
+    echo "Usage: $0 <service> [user]"
     echo "  service: pawn-server | pawn-diarize | litellm | litellm-docker"
+    echo "  user:    run-as user (default: \$SUDO_USER or \$USER)"
     exit 1
 }
 
-[[ $# -eq 1 ]] || usage
+[[ $# -ge 1 ]] || usage
 SERVICE="$1"
+REAL_USER="${2:-${SUDO_USER:-$USER}}"
 [[ "$SERVICE" =~ ^(pawn-server|pawn-diarize|litellm|litellm-docker)$ ]] || { echo "Unknown service: $SERVICE"; usage; }
 
 # ---------------------------------------------------------------------------
@@ -40,12 +42,12 @@ SERVICE="$1"
 TEMPLATE="$SCRIPT_DIR/$SERVICE.service"
 [[ -f "$TEMPLATE" ]] || { echo "Template not found: $TEMPLATE"; exit 1; }
 
-mkdir -p "$SYSTEMD_USER_DIR"
-UNIT_FILE="$SYSTEMD_USER_DIR/$SERVICE.service"
+UNIT_FILE="$SYSTEMD_SYSTEM_DIR/$SERVICE.service"
 
 sed \
     -e "s|{{PROJECT_DIR}}|$PROJECT_DIR|g" \
     -e "s|{{BIN_DIR}}|$BIN_DIR|g" \
+    -e "s|{{USER}}|$REAL_USER|g" \
     "$TEMPLATE" > "$UNIT_FILE"
 
 echo "Installed $UNIT_FILE"
@@ -56,9 +58,9 @@ cat "$UNIT_FILE"
 # Enable and start
 # ---------------------------------------------------------------------------
 echo ""
-systemctl --user daemon-reload
-systemctl --user enable "$SERVICE"
-systemctl --user restart "$SERVICE"
+systemctl daemon-reload
+systemctl enable "$SERVICE"
+systemctl restart "$SERVICE"
 
 echo ""
-systemctl --user status "$SERVICE" --no-pager -l
+systemctl status "$SERVICE" --no-pager -l

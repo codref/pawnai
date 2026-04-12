@@ -4,11 +4,11 @@ After=network.target postgresql.service
 
 [Service]
 Type=simple
-User=%u
+User={{USER}}
 WorkingDirectory={{PROJECT_DIR}}
 ExecStart={{BIN_DIR}}/pawn-diarize listen --config {{PROJECT_DIR}}/pawnai.yaml
 Restart=on-failure
 RestartSec=5
 
 [Install]
-WantedBy=default.target
+WantedBy=multi-user.target

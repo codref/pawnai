@@ -4,7 +4,7 @@ After=network.target pawn-agent.service
 
 [Service]
 Type=simple
-User=%u
+User={{USER}}
 WorkingDirectory={{PROJECT_DIR}}
 Environment=PAWN_AGENT_URL=http://localhost:8000
 ExecStart={{BIN_DIR}}/litellm --config {{PROJECT_DIR}}/litellm_config.yaml --port 4000
@@ -12,4 +12,4 @@ Restart=on-failure
 RestartSec=5
 
 [Install]
-WantedBy=default.target
+WantedBy=multi-user.target
