@@ -237,3 +237,7 @@ pawnai.db*
 .hf
 .hf_cache
 hf_cache
+
+mlflow.db
+
+temp

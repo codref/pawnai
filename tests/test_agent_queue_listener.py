@@ -187,7 +187,11 @@ class TestMakeMessageHandlerHappyPath:
         assert kwargs["model"] == "anthropic:claude-sonnet-4-5"
 
         # Agent built with the override
-        mock_get_agent.assert_called_once_with(cfg, "anthropic:claude-sonnet-4-5")
+        mock_get_agent.assert_called_once_with(
+            cfg,
+            "anthropic:claude-sonnet-4-5",
+            session_id="xyz",
+        )
 
         msg.ack.assert_awaited_once()
 
@@ -429,6 +433,7 @@ class TestRunPrompt:
 
             _run_prompt(params, cfg)
 
+        mock_get.assert_called_once_with(cfg, None, session_id="my-session")
         mock_agent.run.assert_called_once_with(
             "[Session ID: my-session]\nAnalyse conversation."
         )

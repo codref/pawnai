@@ -29,6 +29,17 @@ _DEFAULT_TRANSCRIPTION_BACKEND = "nemo"
 _DEFAULT_WHISPER_MODEL = "large-v3"
 
 
+def _is_oom(exc: Exception) -> bool:
+    """Return True when *exc* is a CUDA out-of-memory error.
+
+    Covers both ``torch.OutOfMemoryError`` (PyTorch >= 2.0) and the older
+    ``RuntimeError: CUDA out of memory`` form.
+    """
+    if type(exc).__name__ == "OutOfMemoryError":
+        return True
+    return isinstance(exc, RuntimeError) and "out of memory" in str(exc).lower()
+
+
 @contextlib.contextmanager  # type: ignore[misc]
 def _quiet_nemo():  # type: ignore[return]
     """Suppress NeMo noise: redirect stdout/stderr to devnull and set loggers to ERROR."""
@@ -99,6 +110,36 @@ class TranscriptionEngine:
                 f"Unknown transcription backend: {backend!r}. Choose 'nemo' or 'whisper'."
             )
 
+    def _cuda_fallback_devices(self) -> List[str]:
+        """Return an ordered list of CUDA devices to try, starting from self.device.
+
+        If self.device is ``"cpu"`` the list contains only ``"cpu"``.  For any
+        CUDA device the list starts with the configured device and continues
+        with every other available GPU in index order so that a single OOM on
+        the primary GPU automatically retries on the next one.
+        """
+        if self.device == "cpu":
+            return ["cpu"]
+
+        try:
+            import torch  # noqa: PLC0415
+            num_gpus = torch.cuda.device_count() if torch.cuda.is_available() else 0
+        except ImportError:
+            return [self.device]
+
+        # Normalise "cuda" → "cuda:0"
+        primary = "cuda:0" if self.device == "cuda" else self.device
+        try:
+            primary_idx = int(primary.split(":")[1])
+        except (IndexError, ValueError):
+            return [self.device]
+
+        devices = [primary]
+        for i in range(num_gpus):
+            if i != primary_idx:
+                devices.append(f"cuda:{i}")
+        return devices
+
     def _initialize_model(self) -> None:
         """Load the NeMo transcription model (lazy loading)."""
         if self.model is not None:
@@ -107,20 +148,35 @@ class TranscriptionEngine:
         with _maybe_quiet(self.verbose):
             import nemo.collections.asr as nemo_asr  # noqa: F401  # lazy import
 
-        print(f"Loading transcription model: {self.model_name}")
-        print(f"Using device: {self.device}")
+        last_error: Optional[Exception] = None
+        for device in self._cuda_fallback_devices():
+            print(f"Loading transcription model: {self.model_name}")
+            print(f"Using device: {device}")
+            try:
+                with _maybe_quiet(self.verbose):
+                    self.model = nemo_asr.models.ASRModel.from_pretrained(
+                        model_name=self.model_name,
+                        map_location=device,
+                    )
 
-        with _maybe_quiet(self.verbose):
-            self.model = nemo_asr.models.ASRModel.from_pretrained(
-                model_name=self.model_name
-            )
+                if device == "cpu":
+                    self.model = self.model.cpu()
+                else:
+                    self.model = self.model.to(device)
 
-        if self.device == "cpu":
-            self.model = self.model.cpu()
-        else:
-            self.model = self.model.cuda()
+                self.device = device
+                print("Transcription model loaded successfully")
+                return
+            except Exception as exc:
+                if not _is_oom(exc):
+                    raise
+                print(f"CUDA OOM on {device}, trying next available GPU…")
+                self.model = None
+                last_error = exc
 
-        print("Transcription model loaded successfully")
+        raise RuntimeError(
+            "All CUDA devices exhausted (OOM on each). Last error: " + str(last_error)
+        ) from last_error
 
     # ── Whisper backend ───────────────────────────────────────────────────────
 
@@ -131,15 +187,32 @@ class TranscriptionEngine:
 
         from faster_whisper import WhisperModel  # noqa: F401  # lazy import
 
-        print(f"Loading Whisper model: {self.whisper_model_name}")
-        print(f"Using device: {self.device}")
-        compute_type = "float16" if self.device != "cpu" else "int8"
-        self.whisper_model = WhisperModel(
-            self.whisper_model_name,
-            device=self.device,
-            compute_type=compute_type,
-        )
-        print("Whisper model loaded successfully")
+        last_error: Optional[Exception] = None
+        for device in self._cuda_fallback_devices():
+            print(f"Loading Whisper model: {self.whisper_model_name}")
+            print(f"Using device: {device}")
+            # faster-whisper accepts "cuda", "cuda:N", or "cpu"
+            fw_device = "cuda" if device == "cuda:0" else device
+            compute_type = "float16" if fw_device != "cpu" else "int8"
+            try:
+                self.whisper_model = WhisperModel(
+                    self.whisper_model_name,
+                    device=fw_device,
+                    compute_type=compute_type,
+                )
+                self.device = device
+                print("Whisper model loaded successfully")
+                return
+            except Exception as exc:
+                if not _is_oom(exc):
+                    raise
+                print(f"CUDA OOM on {device}, trying next available GPU…")
+                self.whisper_model = None
+                last_error = exc
+
+        raise RuntimeError(
+            "All CUDA devices exhausted (OOM on each). Last error: " + str(last_error)
+        ) from last_error
 
     def _transcribe_whisper_single(
         self, audio_path: str, include_timestamps: bool = True

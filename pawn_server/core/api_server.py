@@ -529,7 +529,13 @@ async def chat_completions(
     else:
         history = load_history(session_id, cfg.db_dsn, strip_thinking=cfg.strip_thinking)
 
-    agent = _get_or_create_agent(cfg, model_override=model_override)
+    # Bind agents to session_id in stateful mode so SessionVars can persist.
+    agent_session_id = None if stateless else session_id
+    agent = _get_or_create_agent(
+        cfg,
+        model_override=model_override,
+        session_id=agent_session_id,
+    )
     source_id = str(uuid.uuid4())
 
     try:

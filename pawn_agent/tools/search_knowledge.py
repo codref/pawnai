@@ -18,21 +18,14 @@ DESCRIPTION = (
 
 def build(cfg: AgentConfig) -> Tool:
     # Load the embedding model once at session startup, shared across all calls.
-    from sentence_transformers import SentenceTransformer
+    from pawn_agent.utils.vectorize import load_embedding_model
 
-    try:
-        _model = SentenceTransformer(
-            cfg.embed_model,
-            device=cfg.embed_device,
-            truncate_dim=cfg.embed_dim if cfg.embed_dim else None,
-            local_files_only=True,
-        )
-    except Exception:
-        _model = SentenceTransformer(
-            cfg.embed_model,
-            device=cfg.embed_device,
-            truncate_dim=cfg.embed_dim if cfg.embed_dim else None,
-        )
+    _model = load_embedding_model(
+        cfg.embed_model,
+        cfg.embed_device,
+        truncate_dim=cfg.embed_dim if cfg.embed_dim else None,
+        local_files_only=cfg.embed_local_files_only,
+    )
 
     def search_knowledge(
         query: str,

@@ -12,6 +12,7 @@ Private modules (names starting with ``_``) are ignored.
 from __future__ import annotations
 
 import importlib
+import inspect
 import pkgutil
 from pathlib import Path
 from typing import Any, List, Tuple
@@ -42,6 +43,19 @@ def get_registry() -> List[Tuple[str, str]]:
     ]
 
 
-def build_tools(cfg: AgentConfig) -> List[Tool]:
-    """Return all discovered tools, built for the given config."""
-    return [mod.build(cfg) for mod in _load_tool_modules()]
+def build_tools(cfg: AgentConfig, session_vars=None) -> List[Tool]:
+    """Return all discovered tools, built for the given config.
+
+    When *session_vars* is provided, it is passed as a keyword argument to any
+    tool module whose ``build()`` function declares a ``session_vars`` parameter.
+    Modules without that parameter are called as ``build(cfg)`` unchanged, so
+    all existing tools remain compatible without modification.
+    """
+    tools = []
+    for mod in _load_tool_modules():
+        sig = inspect.signature(mod.build)
+        if session_vars is not None and "session_vars" in sig.parameters:
+            tools.append(mod.build(cfg, session_vars=session_vars))
+        else:
+            tools.append(mod.build(cfg))
+    return tools

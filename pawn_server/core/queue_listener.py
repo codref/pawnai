@@ -70,15 +70,26 @@ async def dispatch(
 # Runners
 # ──────────────────────────────────────────────────────────────────────────────
 
-# Cache agents by model string so we don't rebuild for every message.
-_agent_cache: Dict[str, Any] = {}
+# Cache agents by (model, session_id) so session variables remain isolated.
+_agent_cache: Dict[tuple[str, Optional[str]], Any] = {}
 
 
-def _get_or_create_agent(cfg: Any, model_override: Optional[str] = None) -> Any:
-    """Return a cached PydanticAgent, creating one if needed."""
+def _get_or_create_agent(
+    cfg: Any,
+    model_override: Optional[str] = None,
+    *,
+    session_id: Optional[str] = None,
+) -> Any:
+    """Return a cached PydanticAgent, creating one if needed.
+
+    Session-bound agents are required for session variable persistence
+    (e.g. ``listen_only``) because :class:`SessionVars` persists only when
+    instantiated with a session id.
+    """
     from pawn_agent.core.pydantic_agent import PydanticAgent  # noqa: PLC0415
 
-    cache_key = model_override or cfg.pydantic_model
+    model_key = model_override or cfg.pydantic_model
+    cache_key = (model_key, session_id)
 
     if cache_key not in _agent_cache:
         agent_cfg = cfg
@@ -87,7 +98,7 @@ def _get_or_create_agent(cfg: Any, model_override: Optional[str] = None) -> Any:
 
             agent_cfg = deepcopy(cfg)
             _apply_model_override(agent_cfg, model_override)
-        _agent_cache[cache_key] = PydanticAgent(cfg=agent_cfg)
+        _agent_cache[cache_key] = PydanticAgent(cfg=agent_cfg, session_id=session_id)
 
     return _agent_cache[cache_key]
 
@@ -138,7 +149,7 @@ def _run_prompt(
     history = load_history(session_id or "", cfg.db_dsn, strip_thinking=cfg.strip_thinking)
 
     try:
-        agent = _get_or_create_agent(cfg, model_override)
+        agent = _get_or_create_agent(cfg, model_override, session_id=session_id)
         result = agent.run_sync(effective_prompt, message_history=history)
         response = result.output
 
