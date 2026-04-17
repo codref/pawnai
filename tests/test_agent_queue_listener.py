@@ -26,6 +26,7 @@ The tests cover:
 from __future__ import annotations
 
 import asyncio
+from types import SimpleNamespace
 from typing import Any, Dict
 from unittest.mock import AsyncMock, MagicMock, call, patch
 
@@ -466,3 +467,86 @@ class TestMergeParams:
 
         result = _merge_params("run", {"prompt": "Hi", "custom_field": "value"})
         assert result["custom_field"] == "value"
+
+
+class TestReplayHistorySelection:
+
+    def _make_history_cfg(self, mode: str) -> SimpleNamespace:
+        return SimpleNamespace(
+            db_dsn="postgresql+psycopg://dummy/dummy",
+            pydantic_model="openai:test-model",
+            strip_thinking=True,
+            history_mode=mode,
+            history_recent_turns=4,
+            history_replay_max_tokens=8000,
+            history_max_text_chars=500,
+            history_sanitize_leaked_thoughts=True,
+        )
+
+    def test_run_prompt_uses_compact_replay_history_by_default(self) -> None:
+        from pawn_server.core.queue_listener import _run_prompt
+
+        cfg = self._make_history_cfg("compact")
+        params = {"prompt": "Analyse conversation.", "session_id": "sess-1", "model": None}
+        result = MagicMock()
+        result.output = "ok"
+        result.new_messages.return_value = []
+
+        with (
+            patch("pawn_agent.utils.db.create_agent_run", return_value="run-1"),
+            patch("pawn_agent.utils.db.update_agent_run"),
+            patch("pawn_agent.core.session_store.build_replay_history", return_value=["compact"]) as mock_compact,
+            patch("pawn_agent.core.session_store.load_history", return_value=["raw"]) as mock_raw,
+            patch("pawn_agent.core.session_store.append_turn"),
+            patch("pawn_server.core.queue_listener._get_or_create_agent") as mock_get,
+        ):
+            mock_agent = MagicMock()
+            mock_agent.run_sync.return_value = result
+            mock_get.return_value = mock_agent
+
+            _run_prompt(params, cfg, message_id="msg-1")
+
+        mock_compact.assert_called_once_with(
+            "sess-1",
+            cfg.db_dsn,
+            strip_thinking=True,
+            recent_turns=4,
+            replay_max_tokens=8000,
+            max_text_chars=500,
+            sanitize_leaked_thoughts=True,
+        )
+        mock_raw.assert_not_called()
+        mock_agent.run_sync.assert_called_once_with(
+            "[Session ID: sess-1]\nAnalyse conversation.",
+            message_history=["compact"],
+        )
+
+    def test_run_prompt_can_fall_back_to_raw_history(self) -> None:
+        from pawn_server.core.queue_listener import _run_prompt
+
+        cfg = self._make_history_cfg("raw")
+        params = {"prompt": "Analyse conversation.", "session_id": "sess-1", "model": None}
+        result = MagicMock()
+        result.output = "ok"
+        result.new_messages.return_value = []
+
+        with (
+            patch("pawn_agent.utils.db.create_agent_run", return_value="run-1"),
+            patch("pawn_agent.utils.db.update_agent_run"),
+            patch("pawn_agent.core.session_store.build_replay_history", return_value=["compact"]) as mock_compact,
+            patch("pawn_agent.core.session_store.load_history", return_value=["raw"]) as mock_raw,
+            patch("pawn_agent.core.session_store.append_turn"),
+            patch("pawn_server.core.queue_listener._get_or_create_agent") as mock_get,
+        ):
+            mock_agent = MagicMock()
+            mock_agent.run_sync.return_value = result
+            mock_get.return_value = mock_agent
+
+            _run_prompt(params, cfg, message_id="msg-1")
+
+        mock_raw.assert_called_once_with("sess-1", cfg.db_dsn, strip_thinking=True)
+        mock_compact.assert_not_called()
+        mock_agent.run_sync.assert_called_once_with(
+            "[Session ID: sess-1]\nAnalyse conversation.",
+            message_history=["raw"],
+        )

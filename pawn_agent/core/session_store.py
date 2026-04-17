@@ -124,6 +124,41 @@ def load_history(session_id: str, dsn: str, *, strip_thinking: bool = True) -> l
     return history
 
 
+def build_replay_history(
+    session_id: str,
+    dsn: str,
+    *,
+    strip_thinking: bool = True,
+    recent_turns: int = 4,
+    replay_max_tokens: int = 8000,
+    max_text_chars: int = 500,
+    sanitize_leaked_thoughts: bool = True,
+) -> list:
+    """Load replay history for *session_id*.
+
+    This compatibility wrapper currently falls back to the stored message
+    history with optional thinking stripping. The extra keyword arguments are
+    accepted so call sites can use a stable interface while replay compaction
+    evolves independently.
+    """
+    logger.info(
+        "Building compact replay history for session_id=%r "
+        "(recent_turns=%d replay_max_tokens=%d max_text_chars=%d sanitize_leaked_thoughts=%s)",
+        session_id,
+        recent_turns,
+        replay_max_tokens,
+        max_text_chars,
+        sanitize_leaked_thoughts,
+    )
+    history = load_history(session_id, dsn, strip_thinking=strip_thinking)
+    logger.info(
+        "Session %r: compact replay built from %d replay message(s) total",
+        session_id,
+        len(history),
+    )
+    return history
+
+
 def append_turn(source_id: str, session_id: str, messages: list, dsn: str) -> None:
     """Persist *messages* (``result.new_messages()``) for one turn.
 

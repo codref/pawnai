@@ -451,6 +451,20 @@ def _run_turn(agent: Any, prompt: str, history: list, model_settings: dict) -> A
     )
 
 
+def _history_mode(cfg: Any) -> str:
+    return getattr(cfg, "history_mode", "raw")
+
+
+def _history_kwargs(cfg: Any) -> dict[str, Any]:
+    return {
+        "strip_thinking": getattr(cfg, "strip_thinking", True),
+        "recent_turns": getattr(cfg, "history_recent_turns", 4),
+        "replay_max_tokens": getattr(cfg, "history_replay_max_tokens", 8000),
+        "max_text_chars": getattr(cfg, "history_max_text_chars", 500),
+        "sanitize_leaked_thoughts": getattr(cfg, "history_sanitize_leaked_thoughts", True),
+    }
+
+
 # ──────────────────────────────────────────────────────────────────────────────
 # FastAPI application
 # ──────────────────────────────────────────────────────────────────────────────
@@ -486,6 +500,7 @@ async def chat_completions(
     from pawn_server.core.queue_listener import _get_or_create_agent  # noqa: PLC0415
     from pawn_agent.core.session_store import (  # noqa: PLC0415
         append_turn,
+        build_replay_history,
         delete_session as _delete_session,
         load_history,
     )
@@ -527,7 +542,18 @@ async def chat_completions(
         # Use the client-provided messages as history (all but the last user message)
         history = _openai_messages_to_history(messages[:-1])
     else:
-        history = load_history(session_id, cfg.db_dsn, strip_thinking=cfg.strip_thinking)
+        if _history_mode(cfg) == "raw":
+            history = load_history(
+                session_id,
+                cfg.db_dsn,
+                strip_thinking=getattr(cfg, "strip_thinking", True),
+            )
+        else:
+            history = build_replay_history(
+                session_id,
+                cfg.db_dsn,
+                **_history_kwargs(cfg),
+            )
 
     # Bind agents to session_id in stateful mode so SessionVars can persist.
     agent_session_id = None if stateless else session_id

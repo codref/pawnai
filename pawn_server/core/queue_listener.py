@@ -37,6 +37,20 @@ COMMAND_DEFAULTS: Dict[str, Dict[str, Any]] = {
 }
 
 
+def _history_mode(cfg: Any) -> str:
+    return getattr(cfg, "history_mode", "raw")
+
+
+def _history_kwargs(cfg: Any) -> Dict[str, Any]:
+    return {
+        "strip_thinking": getattr(cfg, "strip_thinking", True),
+        "recent_turns": getattr(cfg, "history_recent_turns", 4),
+        "replay_max_tokens": getattr(cfg, "history_replay_max_tokens", 8000),
+        "max_text_chars": getattr(cfg, "history_max_text_chars", 500),
+        "sanitize_leaked_thoughts": getattr(cfg, "history_sanitize_leaked_thoughts", True),
+    }
+
+
 def _merge_params(command: str, payload: Dict[str, Any]) -> Dict[str, Any]:
     """Merge *payload* over per-command defaults."""
     merged = dict(COMMAND_DEFAULTS[command])
@@ -110,7 +124,7 @@ def _run_prompt(
 ) -> None:
     """Execute a prompt through the PydanticAgent and persist the result."""
     from pawn_agent.utils.db import create_agent_run, update_agent_run  # noqa: PLC0415
-    from pawn_agent.core.session_store import load_history, append_turn  # noqa: PLC0415
+    from pawn_agent.core.session_store import append_turn, build_replay_history, load_history  # noqa: PLC0415
 
     prompt: str = params.get("prompt", "")
     session_id: Optional[str] = params.get("session_id")
@@ -146,7 +160,18 @@ def _run_prompt(
         effective_prompt = f"[Session ID: {session_id}]\n{prompt}"
 
     # Load conversation history from the session store
-    history = load_history(session_id or "", cfg.db_dsn, strip_thinking=cfg.strip_thinking)
+    if _history_mode(cfg) == "raw":
+        history = load_history(
+            session_id or "",
+            cfg.db_dsn,
+            strip_thinking=getattr(cfg, "strip_thinking", True),
+        )
+    else:
+        history = build_replay_history(
+            session_id or "",
+            cfg.db_dsn,
+            **_history_kwargs(cfg),
+        )
 
     try:
         agent = _get_or_create_agent(cfg, model_override, session_id=session_id)

@@ -3,9 +3,17 @@ from __future__ import annotations
 from pawn_agent.core.pydantic_agent import (
     LISTEN_ONLY_BYPASS_MARKER,
     _coerce_tool_call_content,
+    _finalize_run_result,
     _make_listen_only_bypass_result,
 )
-from pydantic_ai.messages import ModelRequest, ModelResponse, TextPart, ToolCallPart, UserPromptPart
+from pydantic_ai.messages import (
+    ModelRequest,
+    ModelResponse,
+    TextPart,
+    ToolCallPart,
+    ToolReturnPart,
+    UserPromptPart,
+)
 
 
 def test_coerce_adds_empty_text_for_tool_call_only_response() -> None:
@@ -71,3 +79,175 @@ def test_listen_only_bypass_result_extends_existing_history() -> None:
     all_messages = result.all_messages()
     assert len(all_messages) == 3
     assert all_messages[0] is prior
+
+
+def test_finalize_run_result_rewrites_raw_save_to_siyuan_command_output() -> None:
+    result = _make_listen_only_bypass_result(
+        text="placeholder",
+        model_name="openai:gpt-oss:20b",
+        message_history=[],
+    )
+    result.output = '/save_to_siyuan(content="# Report", session_id="tom-20260416", title="GitHub Copilot SDK")'
+    result._new_messages = [
+        ModelResponse(
+            parts=[
+                ToolCallPart(
+                    tool_name="save_to_siyuan",
+                    args={"session_id": "tom-20260416", "title": "GitHub Copilot SDK"},
+                )
+            ]
+        ),
+        ModelRequest(parts=[ToolReturnPart(tool_name="save_to_siyuan", content="siyuan://blocks/doc-123")]),
+    ]
+    result._all_messages = list(result._new_messages)
+
+    finalized = _finalize_run_result(result)
+
+    assert finalized.output == (
+        "Saved the content to SiYuan as 'GitHub Copilot SDK' for session 'tom-20260416'. "
+        "URL: siyuan://blocks/doc-123"
+    )
+
+
+def test_finalize_run_result_leaves_normal_text_unchanged() -> None:
+    result = _make_listen_only_bypass_result(
+        text="placeholder",
+        model_name="openai:gpt-oss:20b",
+        message_history=[],
+    )
+    result.output = "Saved to SiYuan."
+
+    finalized = _finalize_run_result(result)
+
+    assert finalized.output == "Saved to SiYuan."
+
+
+def test_finalize_run_result_appends_siyuan_url_to_natural_language_save_reply() -> None:
+    result = _make_listen_only_bypass_result(
+        text="placeholder",
+        model_name="openai:gpt-oss:20b",
+        message_history=[],
+    )
+    result.output = "im done. The analysis is saved to SiYuan."
+    result._new_messages = [
+        ModelResponse(
+            parts=[
+                ToolCallPart(
+                    tool_name="analyze_custom",
+                    args={
+                        "instruction": "Extract action points",
+                        "save": True,
+                        "session_id": "oci-20260416",
+                        "title": "Action Items: oci-20260416",
+                    },
+                )
+            ]
+        ),
+        ModelRequest(
+            parts=[
+                ToolReturnPart(
+                    tool_name="analyze_custom",
+                    content="Saved custom analysis to SiYuan (url: siyuan://blocks/doc-789).\n\n# Report",
+                )
+            ]
+        ),
+    ]
+    result._all_messages = list(result._new_messages)
+
+    finalized = _finalize_run_result(result)
+
+    assert finalized.output == "im done. The analysis is saved to SiYuan.\n\nURL: siyuan://blocks/doc-789"
+
+
+def test_finalize_run_result_rewrites_raw_call_style_analyze_custom_output() -> None:
+    result = _make_listen_only_bypass_result(
+        text="placeholder",
+        model_name="openai:gpt-oss:20b",
+        message_history=[],
+    )
+    result.output = (
+        'call:analyze_custom{instruction:<|"|>Extract all relevant action points<|"|>,'
+        'save:true,session_id:<|"|>oci-20260416<|"|>,title:<|"|>Action Points: oci-20260416<|"|>}'
+    )
+    result._new_messages = [
+        ModelResponse(
+            parts=[
+                ToolCallPart(
+                    tool_name="analyze_custom",
+                    args={
+                        "instruction": "Extract all relevant action points",
+                        "save": True,
+                        "session_id": "oci-20260416",
+                        "title": "Action Points: oci-20260416",
+                    },
+                )
+            ]
+        ),
+        ModelRequest(
+            parts=[
+                ToolReturnPart(
+                    tool_name="analyze_custom",
+                    content="Saved custom analysis to SiYuan (url: siyuan://blocks/doc-456).\n\n# Report",
+                )
+            ]
+        ),
+    ]
+    result._all_messages = list(result._new_messages)
+
+    finalized = _finalize_run_result(result)
+
+    assert finalized.output == (
+        "Created the SiYuan page with the requested analysis "
+        "as 'Action Points: oci-20260416' for session 'oci-20260416'. "
+        "URL: siyuan://blocks/doc-456"
+    )
+
+
+def test_finalize_run_result_prefers_saved_analysis_over_query_conversation_marker() -> None:
+    result = _make_listen_only_bypass_result(
+        text="placeholder",
+        model_name="openai:gpt-oss:20b",
+        message_history=[],
+    )
+    result.output = 'call:query_conversation{session_id:<|"|>oci-20260416<|"|>}'
+    result._new_messages = [
+        ModelResponse(
+            parts=[
+                ToolCallPart(
+                    tool_name="query_conversation",
+                    args={"session_id": "oci-20260416"},
+                )
+            ]
+        ),
+        ModelRequest(parts=[ToolReturnPart(tool_name="query_conversation", content="[00:00] Speaker A: hello")]),
+        ModelResponse(
+            parts=[
+                ToolCallPart(
+                    tool_name="analyze_custom",
+                    args={
+                        "instruction": "Extract action points",
+                        "save": True,
+                        "session_id": "oci-20260416",
+                        "title": "Action Points: oci-20260416",
+                    },
+                )
+            ]
+        ),
+        ModelRequest(
+            parts=[
+                ToolReturnPart(
+                    tool_name="analyze_custom",
+                    content="Saved custom analysis to SiYuan (url: siyuan://blocks/doc-999).",
+                )
+            ]
+        ),
+    ]
+    result._all_messages = list(result._new_messages)
+
+    finalized = _finalize_run_result(result)
+
+    assert finalized.output == (
+        "Created the SiYuan page with the requested analysis "
+        "as 'Action Points: oci-20260416' for session 'oci-20260416'. "
+        "URL: siyuan://blocks/doc-999"
+    )

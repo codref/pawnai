@@ -9,6 +9,11 @@ from pawn_agent.utils.config import AgentConfig
 from pawn_core.siyuan import infer_title, resolve_path, siyuan_post  # noqa: F401
 
 
+def build_siyuan_block_url(block_id: str) -> str:
+    """Return a SiYuan deep link for a document/block id."""
+    return f"siyuan://blocks/{block_id}"
+
+
 def build_siyuan_markdown(sections: dict, session_id: str, transcript: str, model: str) -> str:
     title = sections.get("title") or "Conversation Analysis"
     now_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
@@ -83,4 +88,6 @@ def do_save_to_siyuan(
                          "parentID": daily_doc_id})
     except Exception:
         pass
-    return str(doc_id) if doc_id else "Document created (no ID returned)."
+    if doc_id:
+        return build_siyuan_block_url(str(doc_id))
+    return "Document created (no ID returned)."

@@ -19,6 +19,20 @@ console = Console()
 from pawn_agent.utils.model_utils import _PYDANTIC_PREFIXES, _apply_model_override  # noqa: F401
 
 
+def _history_mode(cfg: object) -> str:
+    return getattr(cfg, "history_mode", "raw")
+
+
+def _history_kwargs(cfg: object) -> dict:
+    return {
+        "strip_thinking": getattr(cfg, "strip_thinking", True),
+        "recent_turns": getattr(cfg, "history_recent_turns", 4),
+        "replay_max_tokens": getattr(cfg, "history_replay_max_tokens", 8000),
+        "max_text_chars": getattr(cfg, "history_max_text_chars", 500),
+        "sanitize_leaked_thoughts": getattr(cfg, "history_sanitize_leaked_thoughts", True),
+    }
+
+
 def _print_session_troubleshooting(report: dict) -> None:
     from rich.table import Table  # noqa: PLC0415
 
@@ -238,12 +252,20 @@ def chat(
         from prompt_toolkit import PromptSession as _PromptSession  # noqa: PLC0415
         from pawn_agent.core.session_store import (  # noqa: PLC0415
             append_turn,
+            build_replay_history,
             context_size,
             delete_session,
             load_history,
         )
 
-        initial_history = load_history(session, cfg.db_dsn, strip_thinking=cfg.strip_thinking)
+        if _history_mode(cfg) == "raw":
+            initial_history = load_history(session, cfg.db_dsn, strip_thinking=cfg.strip_thinking)
+        else:
+            initial_history = build_replay_history(
+                session,
+                cfg.db_dsn,
+                **_history_kwargs(cfg),
+            )
         kb, tok = context_size(initial_history)
         tok_str = f"{tok // 1000}k" if tok >= 1000 else str(tok)
         if initial_history:

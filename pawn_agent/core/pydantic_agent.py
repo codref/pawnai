@@ -20,6 +20,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import re
 import socket
 import urllib.parse
 from datetime import datetime, timezone
@@ -40,6 +41,10 @@ _MLFLOW_CONNECT_TIMEOUT = 2  # seconds
 # Keep this marker plain-text (no angle brackets / markdown-sensitive chars)
 # so UI renderers don't treat it as HTML and strip it.
 LISTEN_ONLY_BYPASS_MARKER = "PAWN_LISTEN_ONLY_BYPASS"
+_RAW_TOOL_COMMAND_RES = (
+    re.compile(r"^\s*/(?P<tool>[a-zA-Z_][a-zA-Z0-9_]*)\s*\("),
+    re.compile(r"^\s*call:(?P<tool>[a-zA-Z_][a-zA-Z0-9_]*)\s*\{"),
+)
 
 
 class _SyntheticRunResult:
@@ -55,6 +60,164 @@ class _SyntheticRunResult:
 
     def all_messages(self) -> list:
         return list(self._all_messages)
+
+
+def _latest_tool_interaction(messages: list) -> tuple[str | None, object, object]:
+    """Return the most recent ``(tool_name, tool_args, tool_return_content)``."""
+    from pydantic_ai.messages import ToolCallPart, ToolReturnPart  # noqa: PLC0415
+
+    latest_call_name: str | None = None
+    latest_call_args: object = None
+    latest_return_name: str | None = None
+    latest_return_content: object = None
+
+    for message in messages:
+        for part in getattr(message, "parts", []):
+            if isinstance(part, ToolCallPart):
+                latest_call_name = part.tool_name
+                latest_call_args = part.args
+            elif isinstance(part, ToolReturnPart):
+                latest_return_name = part.tool_name
+                latest_return_content = part.content
+
+    if latest_return_name is not None:
+        return latest_return_name, latest_call_args, latest_return_content
+    return latest_call_name, latest_call_args, None
+
+
+def _preferred_tool_interaction(messages: list) -> tuple[str | None, object, object]:
+    """Prefer save-related tool interactions when deciding what to show the user."""
+    from pydantic_ai.messages import ToolCallPart, ToolReturnPart  # noqa: PLC0415
+
+    interactions: list[tuple[str, object, object]] = []
+    latest_args_by_name: dict[str, object] = {}
+
+    for message in messages:
+        for part in getattr(message, "parts", []):
+            if isinstance(part, ToolCallPart):
+                latest_args_by_name[part.tool_name] = part.args
+                interactions.append((part.tool_name, part.args, None))
+            elif isinstance(part, ToolReturnPart):
+                interactions.append(
+                    (part.tool_name, latest_args_by_name.get(part.tool_name), part.content)
+                )
+
+    for tool_name, tool_args, tool_return in reversed(interactions):
+        if tool_name == "save_to_siyuan":
+            return tool_name, tool_args, tool_return
+        if (
+            tool_name == "analyze_custom"
+            and isinstance(tool_args, dict)
+            and tool_args.get("save")
+        ):
+            return tool_name, tool_args, tool_return
+
+    for tool_name, tool_args, tool_return in reversed(interactions):
+        if tool_return is not None:
+            return tool_name, tool_args, tool_return
+
+    return _latest_tool_interaction(messages)
+
+
+def _friendly_tool_completion(tool_name: str, tool_args: object, tool_return: object) -> str:
+    """Build a user-facing completion string for a successful tool action."""
+    if isinstance(tool_return, str):
+        stripped = tool_return.strip()
+        if stripped.lower().startswith("error"):
+            return stripped
+    else:
+        stripped = ""
+    siyuan_url_match = re.search(r"siyuan://blocks/[A-Za-z0-9\-]+", stripped)
+    siyuan_url = siyuan_url_match.group(0) if siyuan_url_match else None
+
+    if tool_name == "save_to_siyuan":
+        title = tool_args.get("title") if isinstance(tool_args, dict) else None
+        session_id = tool_args.get("session_id") if isinstance(tool_args, dict) else None
+        parts = ["Saved the content to SiYuan"]
+        if title:
+            parts.append(f"as {title!r}")
+        if session_id:
+            parts.append(f"for session {session_id!r}")
+        message = " ".join(parts) + "."
+        if siyuan_url:
+            message += f" URL: {siyuan_url}"
+        return message
+
+    if tool_name == "analyze_custom":
+        title = tool_args.get("title") if isinstance(tool_args, dict) else None
+        session_id = tool_args.get("session_id") if isinstance(tool_args, dict) else None
+        save_requested = bool(tool_args.get("save")) if isinstance(tool_args, dict) else False
+        if save_requested:
+            parts = ["Created the SiYuan page with the requested analysis"]
+            if title:
+                parts.append(f"as {title!r}")
+            if session_id:
+                parts.append(f"for session {session_id!r}")
+            message = " ".join(parts) + "."
+            if siyuan_url:
+                message += f" URL: {siyuan_url}"
+            return message
+        if stripped and len(stripped) <= 160 and "\n" not in stripped:
+            return stripped
+        return "Completed the requested custom analysis."
+
+    if stripped and len(stripped) <= 160 and "\n" not in stripped:
+        return stripped
+    return f"Completed the requested {tool_name} action."
+
+
+def _extract_siyuan_url(value: object) -> str | None:
+    if not isinstance(value, str):
+        return None
+    match = re.search(r"siyuan://blocks/[A-Za-z0-9\-]+", value)
+    return match.group(0) if match else None
+
+
+def _maybe_append_siyuan_url(output_text: str, tool_name: str | None, tool_args: object, tool_return: object) -> str:
+    """Append a SiYuan deep link when a save actually happened but the model omitted it."""
+    if not output_text or output_text == LISTEN_ONLY_BYPASS_MARKER:
+        return output_text
+
+    siyuan_url = _extract_siyuan_url(output_text) or _extract_siyuan_url(tool_return)
+    if not siyuan_url:
+        return output_text
+
+    if tool_name == "save_to_siyuan":
+        return output_text if _extract_siyuan_url(output_text) else f"{output_text}\n\nURL: {siyuan_url}"
+
+    if tool_name == "analyze_custom" and isinstance(tool_args, dict) and tool_args.get("save"):
+        return output_text if _extract_siyuan_url(output_text) else f"{output_text}\n\nURL: {siyuan_url}"
+
+    return output_text
+
+
+def _finalize_run_result(result):
+    """Hide raw tool-command text and enrich save results with SiYuan URLs."""
+    output = getattr(result, "output", "")
+    output_text = output if isinstance(output, str) else str(output)
+    new_messages = list(result.new_messages())
+    tool_name, tool_args, tool_return = _preferred_tool_interaction(new_messages)
+
+    match = None
+    for pattern in _RAW_TOOL_COMMAND_RES:
+        match = pattern.match(output_text)
+        if match:
+            break
+    replacement = output_text
+    if match and tool_name in {"save_to_siyuan", "analyze_custom"}:
+        replacement = _friendly_tool_completion(tool_name, tool_args, tool_return)
+    elif match and tool_name == match.group("tool") and tool_name != "query_conversation":
+        replacement = _friendly_tool_completion(tool_name, tool_args, tool_return)
+    replacement = _maybe_append_siyuan_url(replacement, tool_name, tool_args, tool_return)
+
+    if replacement == output_text:
+        return result
+
+    return _SyntheticRunResult(
+        output=replacement,
+        new_messages=new_messages,
+        all_messages=list(result.all_messages()),
+    )
 
 
 def _coerce_tool_call_content(messages: list) -> list:
@@ -226,6 +389,7 @@ class PydanticAgent:
             model,
             tools=tools,
             system_prompt=tuple(system_prompts),
+            output_retries=2,
         )
 
     def _build_direction_checker(self) -> Agent:
@@ -359,12 +523,13 @@ class PydanticAgent:
                     self.cfg.pydantic_model,
                     history,
                 )
-        return self._agent.run_sync(
+        result = self._agent.run_sync(
             user_prompt,
             message_history=history,
             model_settings=model_settings,
             instructions=self._vars.build_instructions() or None,
         )
+        return _finalize_run_result(result)
 
     async def run_async(
         self,
@@ -388,12 +553,13 @@ class PydanticAgent:
                     self.cfg.pydantic_model,
                     history,
                 )
-        return await self._agent.run(
+        result = await self._agent.run(
             user_prompt,
             message_history=history,
             model_settings=model_settings,
             instructions=self._vars.build_instructions() or None,
         )
+        return _finalize_run_result(result)
 
     def chat(
         self,
