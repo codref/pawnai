@@ -52,7 +52,7 @@ import logging
 import os
 from typing import Optional
 
-from pydantic import AliasChoices, BaseModel, ConfigDict, Field, PrivateAttr
+from pydantic import BaseModel, Field, PrivateAttr
 from pydantic_settings import SettingsConfigDict
 
 from pawn_core.config import (  # noqa: F401
@@ -107,29 +107,13 @@ class ApiSection(BaseModel):
     model_idle_timeout_minutes: float = 10.0
 
 
-class MlflowSection(BaseModel):
-    """``mlflow:`` section (top-level in pawnai.yaml)."""
+class BurrSection(BaseModel):
+    """``burr:`` section — Burr state-machine tracing and UI."""
 
-    model_config = ConfigDict(populate_by_name=True)
-
-    enabled: bool = Field(
-        default=False,
-        validation_alias=AliasChoices(
-            "PAWN_MLFLOW__ENABLED", "PAWN_AGENT_MLFLOW_ENABLED"
-        ),
-    )
-    tracking_uri: Optional[str] = Field(
-        default=None,
-        validation_alias=AliasChoices(
-            "PAWN_MLFLOW__TRACKING_URI", "MLFLOW_TRACKING_URI"
-        ),
-    )
-    experiment: str = Field(
-        default="pawn-agent",
-        validation_alias=AliasChoices(
-            "PAWN_MLFLOW__EXPERIMENT", "MLFLOW_EXPERIMENT_NAME"
-        ),
-    )
+    enabled: bool = True
+    project: str = "pawn-agent"
+    backend: str = "postgres"  # "postgres" | "local"
+    storage_dir: Optional[str] = None  # only used when backend="local"
 
 
 class AgentQueueConfig(BaseModel):
@@ -175,7 +159,7 @@ class AgentConfig(PawnConfig):
 
     agent: AgentSection = Field(default_factory=AgentSection)
     api: ApiSection = Field(default_factory=ApiSection)
-    mlflow: MlflowSection = Field(default_factory=MlflowSection)
+    burr: BurrSection = Field(default_factory=BurrSection)
     agent_queue: Optional[AgentQueueConfig] = None
 
     # ── Flat property aliases (old flat-field names used throughout pawn_agent) ─
@@ -224,17 +208,27 @@ class AgentConfig(PawnConfig):
     def embed_local_files_only(self) -> bool:
         return self.rag.embed_local_files_only
 
+    # Burr tracing
     @property
-    def mlflow_enabled(self) -> bool:
-        return self.mlflow.enabled
+    def burr_enabled(self) -> bool:
+        return self.burr.enabled
 
     @property
-    def mlflow_tracking_uri(self) -> Optional[str]:
-        return self.mlflow.tracking_uri
+    def burr_project(self) -> str:
+        return self.burr.project
 
     @property
-    def mlflow_experiment(self) -> Optional[str]:
-        return self.mlflow.experiment
+    def burr_backend(self) -> str:
+        return self.burr.backend
+
+    @property
+    def burr_storage_dir(self) -> Optional[str]:
+        return self.burr.storage_dir
+
+    @property
+    def selector_model(self) -> str:
+        """Fast model for context selection sub-calls; defaults to primary model."""
+        return self.pydantic_model
 
     # Transcription (consumed by api_server.py transcription endpoint)
     @property

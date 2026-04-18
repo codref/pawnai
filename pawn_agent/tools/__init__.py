@@ -50,12 +50,38 @@ def build_tools(cfg: AgentConfig, session_vars=None) -> List[Tool]:
     tool module whose ``build()`` function declares a ``session_vars`` parameter.
     Modules without that parameter are called as ``build(cfg)`` unchanged, so
     all existing tools remain compatible without modification.
+
+    Tool modules whose ``build()`` has *required* parameters that cannot be
+    satisfied (e.g. ``session_vars`` when none is provided) are silently
+    skipped so the registry still loads cleanly.
     """
     tools = []
     for mod in _load_tool_modules():
         sig = inspect.signature(mod.build)
-        if session_vars is not None and "session_vars" in sig.parameters:
+        has_sv_param = "session_vars" in sig.parameters
+        sv_required = has_sv_param and (
+            sig.parameters["session_vars"].default is inspect.Parameter.empty
+        )
+        if has_sv_param and session_vars is not None:
             tools.append(mod.build(cfg, session_vars=session_vars))
+        elif sv_required:
+            # Required param we can't supply — skip this tool
+            continue
         else:
             tools.append(mod.build(cfg))
     return tools
+
+
+def build_tools_registry(cfg: AgentConfig) -> dict[str, Any]:
+    """Return ``{tool_name: callable}`` for every discovered tool.
+
+    Extracts the underlying callable from each :class:`pydantic_ai.Tool` so
+    ``tool_executor`` can call it directly with ``**arguments``.
+    """
+    registry: dict[str, Any] = {}
+    for tool in build_tools(cfg):
+        name: str = getattr(tool, "name", "") or getattr(tool, "_name", "")
+        fn: Any = getattr(tool, "function", None) or getattr(tool, "_function", None)
+        if name and fn is not None:
+            registry[name] = fn
+    return registry

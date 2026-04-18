@@ -1,7 +1,7 @@
 """Queue listener for pawn-server.
 
 Consumes messages from a pawn-queue S3-backed topic and dispatches them
-to the PydanticAgent.  Results are persisted in the ``agent_runs`` table
+to the BurrAgent.  Results are persisted in the ``agent_runs`` table
 so they can be inspected later (the listener is headless — no terminal).
 
 Message format::
@@ -94,13 +94,12 @@ def _get_or_create_agent(
     *,
     session_id: Optional[str] = None,
 ) -> Any:
-    """Return a cached PydanticAgent, creating one if needed.
+    """Return a cached BurrAgent, creating one if needed.
 
-    Session-bound agents are required for session variable persistence
-    (e.g. ``listen_only``) because :class:`SessionVars` persists only when
-    instantiated with a session id.
+    Session-bound agents are required so the Burr application is reused
+    across sequential messages within the same session.
     """
-    from pawn_agent.core.pydantic_agent import PydanticAgent  # noqa: PLC0415
+    from pawn_agent.core.burr_agent import BurrAgent  # noqa: PLC0415
 
     model_key = model_override or cfg.pydantic_model
     cache_key = (model_key, session_id)
@@ -112,7 +111,7 @@ def _get_or_create_agent(
 
             agent_cfg = deepcopy(cfg)
             _apply_model_override(agent_cfg, model_override)
-        _agent_cache[cache_key] = PydanticAgent(cfg=agent_cfg, session_id=session_id)
+        _agent_cache[cache_key] = BurrAgent(cfg=agent_cfg, session_id=session_id)
 
     return _agent_cache[cache_key]
 
@@ -122,7 +121,7 @@ def _run_prompt(
     cfg: Any,
     message_id: Optional[str] = None,
 ) -> None:
-    """Execute a prompt through the PydanticAgent and persist the result."""
+    """Execute a prompt through the BurrAgent and persist the result."""
     from pawn_agent.utils.db import create_agent_run, update_agent_run  # noqa: PLC0415
     from pawn_agent.core.session_store import append_turn, build_replay_history, load_history  # noqa: PLC0415
 

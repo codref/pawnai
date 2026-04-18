@@ -148,9 +148,7 @@ def run(
     pawn-agent "Analyse session abc123 and push it to SiYuan" --model claude-sonnet-4
     """
     from pawn_agent.utils.config import load_config  # noqa: PLC0415
-    from pawn_agent.core.pydantic_agent import PydanticAgent  # noqa: PLC0415
-
-    # ── Load and patch config ─────────────────────────────────────────────────
+    from pawn_agent.core.burr_agent import BurrAgent  # noqa: PLC0415────
     cfg = load_config(config)
     if model:
         _apply_model_override(cfg, model)
@@ -163,7 +161,7 @@ def run(
         effective_prompt = f"[Session ID: {session}]\n{prompt}"
 
     # ── Wire agent ────────────────────────────────────────────────────────────
-    agent = PydanticAgent(cfg=cfg)
+    agent = BurrAgent(cfg=cfg)
 
     # ── Run ───────────────────────────────────────────────────────────────────
     console.print(
@@ -205,8 +203,7 @@ def chat(
     The session stays alive across turns so the model retains context.
     Type [bold]/exit[/bold] or [bold]/quit[/bold] to end, or press Ctrl-D / Ctrl-C.
     Type [bold]/reset[/bold] to clear the conversation history and start fresh.
-    Type [bold]/set key=value[/bold] to set a session variable (e.g. listen_only=true).
-    Type [bold]/unset key[/bold] to remove a session variable. [bold]/vars[/bold] lists all.
+    Type [bold]/vars[/bold] to show current plan, facts, and artifact counts.
 
     \b
     Examples
@@ -215,7 +212,7 @@ def chat(
     pawn-agent chat --session my-meeting --model gpt-4o
     """
     from pawn_agent.utils.config import load_config  # noqa: PLC0415
-    from pawn_agent.core.pydantic_agent import PydanticAgent  # noqa: PLC0415
+    from pawn_agent.core.burr_agent import BurrAgent  # noqa: PLC0415
     from rich.markdown import Markdown  # noqa: PLC0415
 
     cfg = load_config(config)
@@ -227,21 +224,18 @@ def chat(
     name = cfg.agent_name
     status = console.status(f"[dim]{name} is thinking…[/dim]")
 
-    def _on_thinking() -> None:
-        status.start()
-
     def _rich_emit(text: str) -> None:
         status.stop()
         console.print(f"\n[bold magenta]{name}[/bold magenta]")
         console.print(Markdown(text))
         console.print()
 
-    agent = PydanticAgent(cfg=cfg, emit=_rich_emit, on_thinking=_on_thinking, session_id=session)
+    agent = BurrAgent(cfg=cfg, emit=_rich_emit, session_id=session)
 
     console.print(
         f"\n[bold cyan]pawn-agent chat[/bold cyan] "
         f"[dim]model={cfg.pydantic_model}  agent={name}[/dim]\n"
-        "[dim]Type /exit or /quit to end. /reset to clear history. Ctrl-D also exits.[/dim]\n"
+        "[dim]Type /exit or /quit to end. /reset to clear history. /vars for state. Ctrl-D also exits.[/dim]\n"
     )
 
     first_message: Optional[str] = None

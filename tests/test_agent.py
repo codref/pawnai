@@ -1,17 +1,14 @@
-"""Tests for pawn_agent."""
+"""Tests for the Burr-based agent: BurrAgent, config, state models, and CLI."""
 
 from __future__ import annotations
 
-import types
 from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# Config
-# ──────────────────────────────────────────────────────────────────────────────
+# ── AgentConfig ────────────────────────────────────────────────────────────────
 
 
 class TestAgentConfig:
@@ -19,323 +16,330 @@ class TestAgentConfig:
         from pawn_agent.utils.config import AgentConfig
 
         cfg = AgentConfig()
-        assert cfg.backend == "copilot"
-        assert cfg.model == "gpt-4o"
-        assert "postgres" in cfg.db_dsn
+        assert cfg.agent_name == "Bob"
+        assert cfg.burr_enabled is True
+        assert cfg.burr_project == "pawn-agent"
+        assert cfg.burr_backend == "postgres"
+        assert cfg.burr_storage_dir is None
+        # MLflow properties must no longer exist
+        assert not hasattr(cfg, "mlflow_enabled")
+        assert not hasattr(cfg, "mlflow_tracking_uri")
+        assert not hasattr(cfg, "mlflow_experiment")
 
-    def test_load_config_missing_file(self):
-        from pawn_agent.utils.config import load_config
+    def test_selector_model_defaults_to_pydantic_model(self):
+        from pawn_agent.utils.config import AgentConfig
 
-        cfg = load_config("/nonexistent/path.yml")
-        assert cfg.backend == "copilot"  # falls back to default
+        cfg = AgentConfig()
+        assert cfg.selector_model == cfg.pydantic_model
 
-    def test_load_config_from_yaml(self, tmp_path):
-        from pawn_agent.utils.config import load_config
+    def test_burr_section_from_dict(self):
+        from pawn_agent.utils.config import AgentConfig
 
-        cfg_file = tmp_path / "test.yml"
-        cfg_file.write_text(
-            "db_dsn: postgresql+psycopg://user:pw@host/db\n"
-            "agent:\n"
-            "  backend: openai\n"
-            "  model: llama3\n"
-            "  openai_base_url: http://localhost:11434/v1\n"
-            "siyuan:\n"
-            "  token: mytoken\n"
-            "  notebook: nb123\n"
+        cfg = AgentConfig.model_validate(
+            {
+                "burr": {
+                    "enabled": False,
+                    "project": "test-project",
+                    "backend": "local",
+                    "storage_dir": "/tmp/burr",
+                }
+            }
         )
-        cfg = load_config(str(cfg_file))
-        assert cfg.db_dsn == "postgresql+psycopg://user:pw@host/db"
-        assert cfg.backend == "openai"
-        assert cfg.model == "llama3"
-        assert cfg.openai_base_url == "http://localhost:11434/v1"
-        assert cfg.siyuan_token == "mytoken"
-        assert cfg.siyuan_notebook == "nb123"
+        assert cfg.burr_enabled is False
+        assert cfg.burr_project == "test-project"
+        assert cfg.burr_backend == "local"
+        assert cfg.burr_storage_dir == "/tmp/burr"
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# LM backends
-# ──────────────────────────────────────────────────────────────────────────────
+# ── State models ───────────────────────────────────────────────────────────────
 
 
-class TestBuildLm:
-    def test_returns_copilot_lm(self):
-        from pawn_agent.utils.config import AgentConfig
-        from pawn_agent.core.lm import build_lm, CopilotLM
+class TestBurrState:
+    def test_default_state(self):
+        from pawn_agent.core.burr_state import DynamicContextState
 
-        cfg = AgentConfig(backend="copilot", model="gpt-4o")
-        lm = build_lm(cfg)
-        assert isinstance(lm, CopilotLM)
+        s = DynamicContextState()
+        assert s.user_goal == ""
+        assert s.facts == []
+        assert s.next_action == "respond"
+        assert s.pending_tool_call is None
+        assert s.raw_tool_result is None
 
-    def test_returns_dspy_lm_for_openai(self):
-        import dspy
-        from pawn_agent.utils.config import AgentConfig
-        from pawn_agent.core.lm import build_lm, CopilotLM
-
-        cfg = AgentConfig(backend="openai", model="llama3",
-                          openai_base_url="http://localhost:11434/v1",
-                          openai_api_key="ollama")
-        lm = build_lm(cfg)
-        assert not isinstance(lm, CopilotLM)
-        assert isinstance(lm, dspy.LM)
-
-
-class TestCopilotLm:
-    def _make_copilot_response(self, content: str):
-        """Build a minimal mock matching CopilotClient.send_and_wait return value."""
-        data = MagicMock()
-        data.content = content
-        response = MagicMock()
-        response.data = data
-        return response
-
-    def test_call_with_messages(self):
-        """CopilotLM.__call__ should invoke the async path and return a list."""
-        from pawn_agent.core.lm import CopilotLM
-
-        lm = CopilotLM(model="gpt-4o")
-        expected = "Hello, world!"
-
-        with patch.object(lm, "_async_call", return_value=expected) as mock_ac:
-            # patch asyncio.run to call the coroutine synchronously
-            with patch("pawn_agent.core.lm.asyncio.run", side_effect=lambda c: expected):
-                result = lm(messages=[{"role": "user", "content": "hi"}])
-
-        assert isinstance(result, list)
-        assert result[0] == expected
-
-    def test_history_appended(self):
-        """Each call should append an entry to lm.history."""
-        from pawn_agent.core.lm import CopilotLM
-
-        lm = CopilotLM()
-        with patch("pawn_agent.core.lm.asyncio.run", return_value="ok"):
-            lm(prompt="test")
-        assert len(lm.history) == 1
-        assert lm.history[0]["prompt"] == "test"
-
-
-# ──────────────────────────────────────────────────────────────────────────────
-# Tools
-# ──────────────────────────────────────────────────────────────────────────────
-
-
-@pytest.fixture()
-def agent_cfg(tmp_path):
-    from pawn_agent.utils.config import AgentConfig
-
-    return AgentConfig(
-        db_dsn="postgresql+psycopg://dummy/dummy",
-        siyuan_url="http://localhost:6806",
-        siyuan_token="tok",
-        siyuan_notebook="nb1",
-        siyuan_path_template="/Conversations/{date}/{session_id}",
-        siyuan_daily_template="/daily note/{year}/{month}/{date}",
-    )
-
-
-class TestQueryConversation:
-    def test_returns_formatted_transcript(self, agent_cfg):
-        from pawn_agent.core.tools import build_tools, _TranscriptionSegment, _SpeakerName
-
-        tools = build_tools(agent_cfg)
-        query_fn = tools[0]  # query_conversation
-
-        # Mock DB session
-        seg = MagicMock(spec=_TranscriptionSegment)
-        seg.session_id = "s1"
-        seg.audio_file = "audio.wav"
-        seg.original_speaker_label = "SPEAKER_00"
-        seg.start_time = 0.0
-        seg.text = "Hello there"
-        seg.segment_index = 0
-
-        speaker = MagicMock(spec=_SpeakerName)
-        speaker.audio_file = "audio.wav"
-        speaker.local_speaker_label = "SPEAKER_00"
-        speaker.speaker_name = "Alice"
-
-        mock_db = MagicMock()
-        mock_db.scalars.return_value.all.side_effect = [[seg], [speaker]]
-
-        with patch("pawn_agent.core.tools._make_db_session", return_value=mock_db):
-            result = query_fn("s1")
-
-        assert "Alice" in result
-        assert "Hello there" in result
-
-    def test_returns_error_when_no_segments(self, agent_cfg):
-        from pawn_agent.core.tools import build_tools
-
-        tools = build_tools(agent_cfg)
-        query_fn = tools[0]
-
-        mock_db = MagicMock()
-        mock_db.scalars.return_value.all.return_value = []
-
-        with patch("pawn_agent.core.tools._make_db_session", return_value=mock_db):
-            result = query_fn("missing-session")
-
-        assert "No transcript" in result
-
-
-class TestAnalyzeConversation:
-    def test_persists_to_db_and_returns_text(self, agent_cfg):
-        import dspy
-        from pawn_agent.core.tools import build_tools
-
-        tools = build_tools(agent_cfg)
-        analyze_fn = tools[1]  # analyze_conversation
-
-        # Pre-canned analysis text with all required sections
-        analysis_text = (
-            "## Title\nTest Meeting\n"
-            "## Summary\nA test summary.\n"
-            "## Key Topics / Keywords\n- topic1\n"
-            "## Speaker Highlights\nAlice talked.\n"
-            "## Sentiment\nNeutral.\n"
-            "## Sentiment Tags\nneutral\n"
-            "## Tags\ntest, meeting\n"
+    def test_round_trip(self):
+        from pawn_agent.core.burr_state import (
+            DynamicContextState,
+            Fact,
+            burr_dict_to_state,
+            state_to_burr_dict,
         )
 
-        mock_lm = MagicMock()
-        mock_lm.return_value = [analysis_text]
-        mock_lm._copilot_model = "gpt-4o"
-        mock_lm.model = "gpt-4o"
+        original = DynamicContextState(
+            user_goal="List sessions",
+            facts=[Fact(text="Session X exists", source="tool", confidence=0.9)],
+            next_action="search_knowledge",
+        )
+        d = state_to_burr_dict(original)
+        restored = burr_dict_to_state(d)
 
-        mock_db = MagicMock()
-        mock_db.scalars.return_value.all.return_value = []
+        assert restored.user_goal == original.user_goal
+        assert len(restored.facts) == 1
+        assert restored.facts[0].text == "Session X exists"
+        assert restored.next_action == "search_knowledge"
 
-        # Configure DSPy with mock LM, then restore
-        original_lm = getattr(dspy.settings, "lm", None)
-        try:
-            dspy.configure(lm=mock_lm)
-            with patch("pawn_agent.core.tools._make_db_session", return_value=mock_db):
-                result = analyze_fn("s1")
-        finally:
-            if original_lm is not None:
-                dspy.configure(lm=original_lm)
+    def test_tool_call_model(self):
+        from pawn_agent.core.burr_state import ToolCall
 
-        # Should return either the analysis or the "no transcript" message
-        assert isinstance(result, str)
-        assert len(result) > 0
+        tc = ToolCall(tool_name="search_knowledge", arguments={"query": "hello", "top_k": 3})
+        assert tc.tool_name == "search_knowledge"
+        assert tc.arguments["top_k"] == 3
+
+    def test_context_selection_default(self):
+        from pawn_agent.core.burr_state import ContextSelection
+
+        cs = ContextSelection()
+        assert cs.need_additional_retrieval is False
+        assert cs.selected_ids == []
 
 
-class TestSaveToSiyuan:
-    def test_calls_siyuan_api(self, agent_cfg):
-        from pawn_agent.core.tools import build_tools
+# ── build_tools_registry ───────────────────────────────────────────────────────
 
-        tools = build_tools(agent_cfg)
-        save_fn = tools[2]  # save_to_siyuan
 
-        # Responses for: getIDsByHPath (no existing), createDocWithMd, setBlockAttrs,
-        # daily getIDsByHPath, daily createDocWithMd, appendBlock
-        responses = [
-            [],          # no existing doc to remove
-            "blockid1",  # createDocWithMd → new doc id
-            {},          # setBlockAttrs
-            [],          # daily note getIDsByHPath
-            "dailyid1",  # daily createDocWithMd
-            {"doOperations": [{"id": "blk2"}]},  # appendBlock
+class TestBuildToolsRegistry:
+    def test_returns_dict_of_callables(self):
+        from pawn_agent.tools import build_tools_registry
+        from pawn_agent.utils.config import AgentConfig
+
+        cfg = AgentConfig()
+
+        fake_tool = MagicMock()
+        fake_tool.name = "fake_tool"
+        fake_tool.function = lambda query: "result"
+
+        with patch("pawn_agent.tools.build_tools", return_value=[fake_tool]):
+            registry = build_tools_registry(cfg)
+
+        assert "fake_tool" in registry
+        assert callable(registry["fake_tool"])
+
+
+# ── BurrAgent unit ─────────────────────────────────────────────────────────────
+
+
+class TestBurrAgent:
+    def _make_cfg(self) -> Any:
+        from pawn_agent.utils.config import AgentConfig
+
+        cfg = AgentConfig.model_validate(
+            {"db_dsn": "", "burr": {"enabled": False}}
+        )
+        return cfg
+
+    def test_init_without_db(self):
+        from pawn_agent.core.burr_agent import BurrAgent
+
+        cfg = self._make_cfg()
+
+        with patch("pawn_agent.core.burr_agent.build_tools_registry", return_value={}):
+            agent = BurrAgent(cfg=cfg)
+
+        assert agent._session_id is not None
+        assert agent._tools_registry == {}
+
+    def test_run_returns_string(self):
+        from pawn_agent.core.burr_agent import BurrAgent
+
+        cfg = self._make_cfg()
+
+        with patch("pawn_agent.core.burr_agent.build_tools_registry", return_value={}):
+            agent = BurrAgent(cfg=cfg)
+
+        expected_response = "Here are the sessions."
+
+        with patch.object(agent, "_run_turn", return_value=expected_response) as mock_run:
+            result = agent.run("List sessions")
+
+        mock_run.assert_called_once_with("List sessions")
+        assert result.output == expected_response
+
+    def test_session_id_preserved(self):
+        from pawn_agent.core.burr_agent import BurrAgent
+
+        cfg = self._make_cfg()
+
+        with patch("pawn_agent.core.burr_agent.build_tools_registry", return_value={}):
+            agent = BurrAgent(cfg=cfg, session_id="my-session-123")
+
+        assert agent._session_id == "my-session-123"
+
+
+# ── Context subgraph unit ──────────────────────────────────────────────────────
+
+
+class TestDeriveRetrievalQuery:
+    def test_builds_query_from_goal(self):
+        from burr.core import State
+
+        from pawn_agent.core.burr_context import derive_retrieval_query
+
+        state = State(
+            {
+                "user_goal": "Find sessions about pricing",
+                "open_questions": [{"question": "Which sessions?", "priority": 1}],
+                "constraints": ["today only"],
+            }
+        )
+        result, new_state = derive_retrieval_query(state)
+        query = result["retrieval_query"]
+        assert "Find sessions about pricing" in query
+        assert "Which sessions?" in query
+        assert "today only" in query
+
+    def test_empty_state(self):
+        from burr.core import State
+
+        from pawn_agent.core.burr_context import derive_retrieval_query
+
+        state = State({"user_goal": "", "open_questions": [], "constraints": []})
+        result, _ = derive_retrieval_query(state)
+        assert isinstance(result["retrieval_query"], str)
+
+
+class TestRankContextCandidates:
+    def test_sorts_by_score_descending(self):
+        from burr.core import State
+
+        from pawn_agent.core.burr_context import rank_context_candidates
+
+        candidates = [
+            {"id": "a", "text": "low", "score": 0.3, "entities": [], "token_estimate": 10, "freshness_score": 0},
+            {"id": "b", "text": "high", "score": 0.9, "entities": [], "token_estimate": 10, "freshness_score": 0},
+            {"id": "c", "text": "mid", "score": 0.6, "entities": [], "token_estimate": 10, "freshness_score": 0},
         ]
-        call_count = 0
-
-        def fake_post(base_url, token, endpoint, payload):
-            nonlocal call_count
-            r = responses[call_count] if call_count < len(responses) else {}
-            call_count += 1
-            return r
-
-        with patch("pawn_agent.core.tools._siyuan_post", side_effect=fake_post):
-            result = save_fn("s1", "Test Meeting", "# Test\n\nContent")
-
-        assert result == "blockid1"
-
-    def test_missing_notebook_returns_error(self, agent_cfg):
-        from pawn_agent.core.tools import build_tools
-        from pawn_agent.utils.config import AgentConfig
-
-        cfg = AgentConfig(siyuan_notebook="")  # no notebook
-        tools = build_tools(cfg)
-        save_fn = tools[2]
-
-        result = save_fn("s1", "Title", "Content")
-        assert "not configured" in result.lower()
+        state = State({"context_candidates": candidates, "retrieval_query": "test", "facts": []})
+        result, _ = rank_context_candidates(state)
+        ids = [c["id"] for c in result["context_candidates"]]
+        assert ids[0] == "b"
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# Agent
-# ──────────────────────────────────────────────────────────────────────────────
+class TestAssemblePromptContext:
+    def test_includes_goal_and_facts(self):
+        from burr.core import State
+
+        from pawn_agent.core.burr_context import assemble_prompt_context
+
+        state = State(
+            {
+                "user_goal": "Summarise the meeting",
+                "constraints": [],
+                "open_questions": [],
+                "facts": [{"text": "Alice spoke first", "entity_ids": []}],
+                "artifacts": [],
+                "selected_context_ids": [],
+                "context_candidates": [],
+                "token_budget_for_context": 4096,
+            }
+        )
+        result, _ = assemble_prompt_context(state)
+        ctx = result["assembled_context"]
+        assert "Summarise the meeting" in ctx
+        assert "Alice spoke first" in ctx
+
+    def test_enforces_token_budget(self):
+        from burr.core import State
+
+        from pawn_agent.core.burr_context import assemble_prompt_context
+
+        long_fact = "x" * 8000
+        state = State(
+            {
+                "user_goal": "goal",
+                "constraints": [],
+                "open_questions": [],
+                "facts": [{"text": long_fact, "entity_ids": []}] * 5,
+                "artifacts": [],
+                "selected_context_ids": [],
+                "context_candidates": [],
+                "token_budget_for_context": 100,
+            }
+        )
+        result, _ = assemble_prompt_context(state)
+        ctx = result["assembled_context"]
+        assert len(ctx) < len(long_fact) * 5
 
 
-class TestConversationAgent:
-    def test_forward_returns_string(self):
-        import dspy
-        from pawn_agent.core.agent import ConversationAgent
-
-        mock_tool = MagicMock(return_value="tool result")
-        mock_tool.__name__ = "mock_tool"
-        mock_tool.__doc__ = "A mock tool."
-        mock_tool.__annotations__ = {"query": str, "return": str}
-
-        mock_react_result = MagicMock()
-        mock_react_result.response = "Final answer"
-
-        with patch("dspy.ReAct") as MockReAct:
-            MockReAct.return_value = MagicMock(return_value=mock_react_result)
-            agent = ConversationAgent(tools=[mock_tool], max_iters=3)
-            result = agent(user_prompt="What was discussed in session abc?")
-
-        assert result == "Final answer"
-
-    def test_run_is_alias_for_forward(self):
-        import dspy
-        from pawn_agent.core.agent import ConversationAgent
-
-        mock_react_result = MagicMock()
-        mock_react_result.response = "response text"
-
-        with patch("dspy.ReAct") as MockReAct:
-            MockReAct.return_value = MagicMock(return_value=mock_react_result)
-            agent = ConversationAgent(tools=[], max_iters=1)
-            # agent(...) is the DSPy-canonical call path
-            assert agent(user_prompt="hi") == "response text"
+# ── Main action graph unit ─────────────────────────────────────────────────────
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# CLI
-# ──────────────────────────────────────────────────────────────────────────────
+class TestToolExecutor:
+    def test_calls_registered_tool(self):
+        from burr.core import State
+
+        from pawn_agent.core.burr_actions import tool_executor
+
+        results = []
+
+        def my_tool(query: str) -> str:
+            results.append(query)
+            return f"result for {query}"
+
+        registry = {"my_tool": my_tool}
+        state = State({"pending_tool_call": {"tool_name": "my_tool", "arguments": {"query": "hello"}}})
+
+        result, _ = tool_executor(state, tools_registry=registry)
+        assert results == ["hello"]
+        assert "result for hello" in result["raw_tool_result"]
+
+    def test_unknown_tool_returns_error_string(self):
+        from burr.core import State
+
+        from pawn_agent.core.burr_actions import tool_executor
+
+        state = State({"pending_tool_call": {"tool_name": "nonexistent", "arguments": {}}})
+        result, _ = tool_executor(state, tools_registry={})
+        assert "Unknown tool" in result["raw_tool_result"]
+
+    def test_missing_tool_call(self):
+        from burr.core import State
+
+        from pawn_agent.core.burr_actions import tool_executor
+
+        state = State({"pending_tool_call": None})
+        result, _ = tool_executor(state, tools_registry={})
+        assert "No tool selected" in result["raw_tool_result"]
+
+
+# ── CLI smoke test ─────────────────────────────────────────────────────────────
 
 
 class TestCli:
-    def test_help(self):
+    def test_run_command_invokes_agent(self):
         from typer.testing import CliRunner
+
         from pawn_agent.cli.commands import app
 
         runner = CliRunner()
-        result = runner.invoke(app, ["--help"])
+
+        with (
+            patch("pawn_agent.core.burr_agent.build_tools_registry", return_value={}),
+            patch("pawn_agent.core.burr_agent.BurrAgent") as MockAgent,
+        ):
+            instance = MockAgent.return_value
+            instance.run.return_value = "Hello from agent"
+
+            result = runner.invoke(app, ["run", "Test prompt"])
+
+        assert result.exit_code == 0, result.output
+        instance.run.assert_called_once()
+
+    def test_tools_command(self):
+        from typer.testing import CliRunner
+
+        from pawn_agent.cli.commands import app
+
+        runner = CliRunner()
+
+        with patch("pawn_agent.tools.get_registry", return_value=[("fake_tool", "Does stuff")]):
+            result = runner.invoke(app, ["tools"])
+
         assert result.exit_code == 0
-        assert "pawn-agent" in result.output.lower() or "prompt" in result.output.lower()
-
-    def test_run_missing_prompt(self):
-        from typer.testing import CliRunner
-        from pawn_agent.cli.commands import app
-
-        runner = CliRunner()
-        result = runner.invoke(app, [])
-        # Missing required argument → non-zero or usage message
-        assert result.exit_code != 0 or "prompt" in result.output.lower()
-
-    def test_run_with_mock_agent(self):
-        from typer.testing import CliRunner
-        from pawn_agent.cli.commands import app
-
-        runner = CliRunner()
-        # Patch at module origin since commands.py uses local imports
-        with patch("pawn_agent.core.lm.build_lm"):
-            with patch("pawn_agent.core.tools.build_tools", return_value=[]):
-                with patch("pawn_agent.core.agent.ConversationAgent.forward",
-                           return_value="## Result\n\nDone."):
-                    with patch("dspy.configure"):
-                        result = runner.invoke(app, ["Hello from test", "--session", "s1"])
-        # Should complete without crashing
-        assert result.exit_code in (0, 1)  # 1 is acceptable if LM setup fails in test env
+        assert "fake_tool" in result.output

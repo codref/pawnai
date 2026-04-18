@@ -110,9 +110,21 @@ def load_history(session_id: str, dsn: str, *, strip_thinking: bool = True) -> l
         ).all()
 
     history: list = []
+    skipped = 0
     for row in rows:
-        turn_msgs = ModelMessagesTypeAdapter.validate_python(row.messages)
+        try:
+            turn_msgs = ModelMessagesTypeAdapter.validate_python(row.messages)
+        except Exception:
+            # Row written by BurrAgent or other non-PydanticAI writer; skip gracefully.
+            skipped += 1
+            continue
         history.extend(turn_msgs)
+
+    if skipped:
+        logger.debug(
+            "Session %r: skipped %d turn(s) with non-PydanticAI message format",
+            session_id, skipped,
+        )
 
     if strip_thinking:
         history = _strip_thinking(history)
