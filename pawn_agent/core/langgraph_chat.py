@@ -7,13 +7,10 @@ from typing import Any, Callable, TypedDict
 from prompt_toolkit import PromptSession
 
 from pawn_agent.core.burr_chat import (
+    PlainPydanticChatAgent,
     _normalize_output,
     apply_assistant_message,
     apply_user_message,
-)
-from pawn_agent.core.langgraph_runtime import (
-    PlainSmolagentsChatAgent,
-    build_phoenix_tracer,
 )
 from pawn_agent.utils.config import AgentConfig
 
@@ -49,7 +46,48 @@ def _import_langgraph_core():
     return StateGraph, START, END
 
 
-async def build_langgraph_chat_graph(chat_agent: PlainSmolagentsChatAgent, tracer=None):
+def _import_phoenix_register():
+    try:
+        from phoenix.otel import register
+    except ImportError as exc:  # pragma: no cover - exercised via CLI/runtime integration
+        raise RuntimeError(
+            "LangGraph chat Phoenix tracing requires the optional 'arize-phoenix-otel' dependency."
+        ) from exc
+    return register
+
+
+def _import_trace_api():
+    try:
+        from opentelemetry import trace
+    except ImportError as exc:  # pragma: no cover - exercised via CLI/runtime integration
+        raise RuntimeError(
+            "LangGraph chat Phoenix tracing requires OpenTelemetry support to be installed."
+        ) from exc
+    return trace
+
+
+def build_phoenix_tracer(cfg: AgentConfig):
+    """Build a Phoenix-backed tracer when tracing is enabled."""
+    if not cfg.phoenix_enabled:
+        return None
+
+    register = _import_phoenix_register()
+    trace = _import_trace_api()
+    kwargs: dict[str, object] = {}
+    if cfg.phoenix_api_key:
+        kwargs["headers"] = {"authorization": f"Bearer {cfg.phoenix_api_key}"}
+    register(
+        project_name=cfg.phoenix_project_name,
+        endpoint=cfg.phoenix_endpoint,
+        protocol=cfg.phoenix_protocol,
+        auto_instrument=False,
+        batch=True,
+        **kwargs,
+    )
+    return trace.get_tracer(__name__)
+
+
+async def build_langgraph_chat_graph(chat_agent: PlainPydanticChatAgent, tracer=None):
     """Build the minimal LangGraph chatbot graph."""
     StateGraph, START, END = _import_langgraph_core()
 
@@ -79,7 +117,7 @@ async def build_langgraph_chat_graph(chat_agent: PlainSmolagentsChatAgent, trace
             return updated
         with tracer.start_as_current_span("langgraph-ai-response") as span:
             latest_user_message = _normalize_output(state.get("latest_user_message", ""))
-            span.set_attribute("llm.model_name", chat_agent.model_name)
+            span.set_attribute("llm.model_name", chat_agent.cfg.pydantic_model)
             span.set_attribute("input.value", latest_user_message)
             reply = await chat_agent.reply(
                 latest_user_message,
@@ -110,9 +148,9 @@ class LangGraphChatSession:
     ) -> None:
         self.cfg = cfg
         self._emit = emit
-        self._chat_agent = PlainSmolagentsChatAgent(cfg=cfg, on_thinking=on_thinking)
+        self._chat_agent = PlainPydanticChatAgent(cfg=cfg, on_thinking=on_thinking)
         self._tracer = build_phoenix_tracer(cfg)
-        self._graph: Any | None = None
+        self._graph = None
         self._state: LangGraphChatState = new_langgraph_chat_state()
 
     @classmethod
@@ -129,33 +167,29 @@ class LangGraphChatSession:
     async def reset(self) -> None:
         self._state = new_langgraph_chat_state()
 
-    def _build_turn_payload(self, text: str) -> LangGraphChatState:
-        payload = dict(self._state)
-        payload["incoming_prompt"] = text
-        return payload
-
-    def _apply_graph_result(self, result: object) -> str:
-        state: LangGraphChatState = dict(result or ())
-        state["incoming_prompt"] = ""
-        self._state = state
-        return _normalize_output(self._state["latest_assistant_message"])
-
-    async def _run_turn(self, text: str) -> str:
-        assert self._graph is not None
-        result = await self._graph.ainvoke(self._build_turn_payload(text))
-        return self._apply_graph_result(result)
-
     async def handle_user_input(self, text: str) -> str:
         if self._graph is None:
             raise RuntimeError("LangGraph chat application is not initialized.")
         if self._tracer is None:
-            return await self._run_turn(text)
+            payload = dict(self._state)
+            payload["incoming_prompt"] = text
+            result = await self._graph.ainvoke(payload)
+            state = dict(result)
+            state["incoming_prompt"] = ""
+            self._state = state
+            return _normalize_output(self._state["latest_assistant_message"])
         with self._tracer.start_as_current_span("langgraph-chat-turn") as span:
+            payload = dict(self._state)
+            payload["incoming_prompt"] = text
             span.set_attribute("framework", "langgraph")
             span.set_attribute("agent.name", self.cfg.agent_name)
             span.set_attribute("input.value", text)
             span.set_attribute("input.turn_count", int(self._state.get("turn_count", 0)))
-            output = await self._run_turn(text)
+            result = await self._graph.ainvoke(payload)
+            state = dict(result)
+            state["incoming_prompt"] = ""
+            self._state = state
+            output = _normalize_output(self._state["latest_assistant_message"])
             span.set_attribute("output.value", output)
             return output
 

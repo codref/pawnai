@@ -8,12 +8,8 @@ from unittest.mock import patch
 from pawn_agent.core.langgraph_chat import (
     LangGraphChatSession,
     build_langgraph_chat_graph,
-    new_langgraph_chat_state,
-)
-from pawn_agent.core.langgraph_runtime import (
-    PlainSmolagentsChatAgent,
     build_phoenix_tracer,
-    resolve_smolagents_model_config,
+    new_langgraph_chat_state,
 )
 from pawn_agent.utils.config import load_config
 
@@ -26,43 +22,6 @@ def test_new_langgraph_chat_state_resets_history() -> None:
         "latest_assistant_message": "",
         "turn_count": 0,
     }
-
-
-def test_resolve_smolagents_model_config_supports_openai_compatible_base_url() -> None:
-    model_name, kwargs = resolve_smolagents_model_config("openai:gpt-4o", None, None)
-    assert model_name == "openai/gpt-4o"
-    assert kwargs == {}
-
-    local_name, local_kwargs = resolve_smolagents_model_config(
-        "openai:gemma4:26b",
-        "http://localhost:11434/v1/",
-        "ollama",
-    )
-    assert local_name == "openai/gemma4:26b"
-    assert local_kwargs == {
-        "api_base": "http://localhost:11434/v1",
-        "api_key": "ollama",
-    }
-
-    proxy_name, proxy_kwargs = resolve_smolagents_model_config(
-        "openai:gpt-4o",
-        "https://proxy.example/v1/",
-        "secret",
-    )
-    assert proxy_name == "openai/gpt-4o"
-    assert proxy_kwargs == {
-        "api_base": "https://proxy.example/v1",
-        "api_key": "secret",
-    }
-
-
-def test_resolve_smolagents_model_config_rejects_non_openai_prefix() -> None:
-    try:
-        resolve_smolagents_model_config("anthropic:claude-sonnet-4-5", None, None)
-    except RuntimeError as exc:
-        assert "supports only openai:<model>" in str(exc)
-    else:  # pragma: no cover - defensive assertion
-        raise AssertionError("Expected RuntimeError for unsupported provider prefix.")
 
 
 def test_build_langgraph_chat_graph_registers_nodes_and_edges() -> None:
@@ -88,12 +47,11 @@ def test_build_langgraph_chat_graph_registers_nodes_and_edges() -> None:
             calls["compiled"] = True
             return FakeCompiledGraph()
 
-    fake_agent = SimpleNamespace(model_name="openai/gpt-4o")
     with patch(
         "pawn_agent.core.langgraph_chat._import_langgraph_core",
         return_value=(FakeStateGraph, "__start__", "__end__"),
     ):
-        compiled = asyncio.run(build_langgraph_chat_graph(chat_agent=fake_agent))
+        compiled = asyncio.run(build_langgraph_chat_graph(chat_agent=object()))
 
     assert isinstance(compiled, FakeCompiledGraph)
     assert set(calls["nodes"]) == {"human_input", "ai_response"}
@@ -158,8 +116,8 @@ def test_build_phoenix_tracer_passes_configuration() -> None:
         register_calls.update(kwargs)
 
     with (
-        patch("pawn_agent.core.langgraph_runtime._import_phoenix_register", return_value=fake_register),
-        patch("pawn_agent.core.langgraph_runtime._import_trace_api", return_value=FakeTraceApi),
+        patch("pawn_agent.core.langgraph_chat._import_phoenix_register", return_value=fake_register),
+        patch("pawn_agent.core.langgraph_chat._import_trace_api", return_value=FakeTraceApi),
     ):
         built = build_phoenix_tracer(cfg)
 
@@ -172,127 +130,7 @@ def test_build_phoenix_tracer_passes_configuration() -> None:
         "batch": True,
         "headers": {"authorization": "Bearer secret-token"},
     }
-    assert trace_calls == ["pawn_agent.core.langgraph_runtime"]
-
-
-def test_plain_smolagents_chat_agent_uses_anima_and_openai_model(tmp_path: Path) -> None:
-    anima = tmp_path / "anima.md"
-    anima.write_text("You are calm and concise.", encoding="utf-8")
-
-    cfg_file = tmp_path / "pawnai.yaml"
-    cfg_file.write_text(
-        "agent:\n"
-        f"  anima: {anima}\n"
-        "  openai:\n"
-        "    model: gpt-4o\n"
-        "    base_url: null\n",
-        encoding="utf-8",
-    )
-    cfg = load_config(str(cfg_file))
-
-    captured: dict[str, object] = {}
-
-    class FakeLiteLLMModel:
-        def __init__(self, model_id, **kwargs) -> None:
-            captured["model_id"] = model_id
-            captured["kwargs"] = kwargs
-
-        def __call__(self, messages):
-            captured["messages"] = messages
-            return SimpleNamespace(content="ok")
-
-    with patch(
-        "pawn_agent.core.langgraph_runtime._import_smolagents_litellm_model",
-        return_value=FakeLiteLLMModel,
-    ):
-        agent = PlainSmolagentsChatAgent(cfg)
-
-    assert agent.model_name == "openai/gpt-4o"
-    assert captured["model_id"] == "openai/gpt-4o"
-    assert captured["kwargs"] == {}
-    assert agent._system_prompt == "You are calm and concise."
-
-
-def test_plain_smolagents_chat_agent_reuses_prior_history_on_next_turn(tmp_path: Path) -> None:
-    cfg_file = tmp_path / "pawnai.yaml"
-    cfg_file.write_text(
-        "agent:\n"
-        "  openai:\n"
-        "    model: gpt-4o\n"
-        "    base_url: null\n",
-        encoding="utf-8",
-    )
-    cfg = load_config(str(cfg_file))
-
-    captured: dict[str, object] = {}
-
-    class FakeLiteLLMModel:
-        def __init__(self, model_id, **kwargs) -> None:
-            captured["model_id"] = model_id
-            captured["kwargs"] = kwargs
-
-        def __call__(self, messages):
-            captured["messages"] = messages
-            return SimpleNamespace(content=[{"type": "text", "text": "All good."}])
-
-    with patch(
-        "pawn_agent.core.langgraph_runtime._import_smolagents_litellm_model",
-        return_value=FakeLiteLLMModel,
-    ):
-        agent = PlainSmolagentsChatAgent(cfg)
-        reply = asyncio.run(
-            agent.reply(
-                "how are you?",
-                [
-                    {"role": "user", "content": "hello"},
-                    {"role": "assistant", "content": "hi there"},
-                    {"role": "user", "content": "how are you?"},
-                ],
-            )
-        )
-
-    assert reply == "All good."
-    assert captured["messages"] == [
-        {"role": "user", "content": [{"type": "text", "text": "hello"}]},
-        {"role": "assistant", "content": [{"type": "text", "text": "hi there"}]},
-        {"role": "user", "content": [{"type": "text", "text": "how are you?"}]},
-    ]
-
-
-def test_plain_smolagents_chat_agent_passes_openai_compatible_base_url(tmp_path: Path) -> None:
-    cfg_file = tmp_path / "pawnai.yaml"
-    cfg_file.write_text(
-        "agent:\n"
-        "  openai:\n"
-        "    model: gemma4:26b\n"
-        "    base_url: http://localhost:11434/v1\n"
-        "    api_key: ollama\n",
-        encoding="utf-8",
-    )
-    cfg = load_config(str(cfg_file))
-
-    captured: dict[str, object] = {}
-
-    class FakeLiteLLMModel:
-        def __init__(self, model_id, **kwargs) -> None:
-            captured["model_id"] = model_id
-            captured["kwargs"] = kwargs
-
-        def __call__(self, messages):
-            return "ok"
-
-    with patch(
-        "pawn_agent.core.langgraph_runtime._import_smolagents_litellm_model",
-        return_value=FakeLiteLLMModel,
-    ):
-        agent = PlainSmolagentsChatAgent(cfg)
-
-    assert agent.model_name == "openai/gemma4:26b"
-    assert captured["model_id"] == "openai/gemma4:26b"
-    assert captured["kwargs"] == {
-        "api_base": "http://localhost:11434/v1",
-        "api_key": "ollama",
-    }
+    assert trace_calls == ["pawn_agent.core.langgraph_chat"]
 
 
 def test_langgraph_chat_session_handles_turns_and_reset(tmp_path: Path) -> None:
@@ -323,7 +161,7 @@ def test_langgraph_chat_session_handles_turns_and_reset(tmp_path: Path) -> None:
             }
 
     with (
-        patch("pawn_agent.core.langgraph_chat.PlainSmolagentsChatAgent", return_value=object()),
+        patch("pawn_agent.core.langgraph_chat.PlainPydanticChatAgent", return_value=object()),
         patch("pawn_agent.core.langgraph_chat.build_langgraph_chat_graph", return_value=FakeGraph()),
     ):
         session = asyncio.run(LangGraphChatSession.create(cfg=cfg, emit=lambda _text: None))
@@ -394,7 +232,7 @@ def test_langgraph_chat_session_emits_phoenix_spans(tmp_path: Path) -> None:
             return FakeCompiledGraph(self._nodes)
 
     class FakeChatAgent:
-        model_name = "openai/gpt-4o"
+        cfg = SimpleNamespace(pydantic_model="openai:gpt-4o")
 
         async def reply(self, user_prompt: str, chat_history: list[dict[str, str]]) -> str:
             assert user_prompt == "hello"
@@ -406,7 +244,7 @@ def test_langgraph_chat_session_emits_phoenix_spans(tmp_path: Path) -> None:
             "pawn_agent.core.langgraph_chat._import_langgraph_core",
             return_value=(FakeStateGraph, "__start__", "__end__"),
         ),
-        patch("pawn_agent.core.langgraph_chat.PlainSmolagentsChatAgent", return_value=FakeChatAgent()),
+        patch("pawn_agent.core.langgraph_chat.PlainPydanticChatAgent", return_value=FakeChatAgent()),
         patch("pawn_agent.core.langgraph_chat.build_phoenix_tracer", return_value=FakeTracer()),
     ):
         session = asyncio.run(LangGraphChatSession.create(cfg=cfg, emit=lambda _text: None))
@@ -419,9 +257,3 @@ def test_langgraph_chat_session_emits_phoenix_spans(tmp_path: Path) -> None:
         "langgraph-human-input",
         "langgraph-ai-response",
     ]
-    assert (
-        "attr",
-        "langgraph-ai-response",
-        "llm.model_name",
-        "openai/gpt-4o",
-    ) in span_events
