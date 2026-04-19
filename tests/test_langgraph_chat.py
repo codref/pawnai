@@ -15,13 +15,17 @@ from pawn_agent.core.langgraph_chat import (
     new_langgraph_chat_state,
 )
 from pawn_agent.core.langgraph_tools import (
+    build_tool_analyze_summary_node,
     build_tool_query_conversation_node,
     resolve_session_id_for_tool,
     resolve_session_id_from_list_output,
+    run_analyze_summary_tool,
     run_list_sessions_tool,
     run_query_conversation_tool,
     run_save_to_siyuan_tool,
 )
+from pawn_agent.tools.analyze_summary import analyze_summary_impl
+from pawn_agent.tools.analyze_summary import build as build_analyze_summary_tool
 from pawn_agent.tools.list_sessions import build as build_list_sessions_tool
 from pawn_agent.tools.list_sessions import list_sessions_impl
 from pawn_agent.tools.query_conversation import build as build_query_conversation_tool
@@ -124,6 +128,7 @@ def test_build_langgraph_chat_graph_registers_nodes_and_edges() -> None:
         "route",
         "extract_session_id",
         "tool_list_sessions",
+        "tool_analyze_summary",
         "tool_query_conversation",
         "tool_save_to_siyuan",
         "respond_fast",
@@ -132,27 +137,32 @@ def test_build_langgraph_chat_graph_registers_nodes_and_edges() -> None:
     assert calls["edges"] == [
         ("__start__", "human_input"),
         ("human_input", "route"),
-        ("extract_session_id", "tool_query_conversation"),
         ("tool_list_sessions", "respond_fast"),
+        ("tool_analyze_summary", "respond_fast"),
         ("tool_save_to_siyuan", "respond_fast"),
     ]
-    assert calls["conditionals"][0][0] == "tool_query_conversation"
+    assert calls["conditionals"][0][0] == "extract_session_id"
     assert calls["conditionals"][0][2] == {
+        "tool_analyze_summary": "tool_analyze_summary",
+        "tool_query_conversation": "tool_query_conversation",
+    }
+    assert calls["conditionals"][1][0] == "tool_query_conversation"
+    assert calls["conditionals"][1][2] == {
         "respond_fast": "respond_fast",
         "respond_deep": "respond_deep",
     }
-    assert calls["conditionals"][1][0] == "respond_fast"
-    assert calls["conditionals"][1][2] == {
-        "tool_save_to_siyuan": "tool_save_to_siyuan",
-        "__end__": "__end__",
-    }
-    assert calls["conditionals"][2][0] == "respond_deep"
+    assert calls["conditionals"][2][0] == "respond_fast"
     assert calls["conditionals"][2][2] == {
         "tool_save_to_siyuan": "tool_save_to_siyuan",
         "__end__": "__end__",
     }
-    assert calls["conditionals"][3][0] == "route"
+    assert calls["conditionals"][3][0] == "respond_deep"
     assert calls["conditionals"][3][2] == {
+        "tool_save_to_siyuan": "tool_save_to_siyuan",
+        "__end__": "__end__",
+    }
+    assert calls["conditionals"][4][0] == "route"
+    assert calls["conditionals"][4][2] == {
         "tool_list_sessions": "tool_list_sessions",
         "extract_session_id": "extract_session_id",
         "tool_save_to_siyuan": "tool_save_to_siyuan",
@@ -400,6 +410,62 @@ def test_query_conversation_build_delegates_to_shared_helper() -> None:
     mock_impl.assert_called_once_with(cfg, "sess-123")
 
 
+def test_analyze_summary_impl_delegates_to_shared_helper() -> None:
+    cfg = SimpleNamespace(db_dsn="postgresql://dummy")
+
+    with (
+        patch(
+            "pawn_agent.tools.analyze_summary.run_analysis",
+            return_value="## Title\nDemo",
+        ) as mock_run,
+        patch(
+            "pawn_agent.tools.analyze_summary.get_session_analysis",
+            return_value=SimpleNamespace(
+                title="Demo",
+                tags=["demo"],
+                sentiment_tags=["collaborative"],
+            ),
+        ),
+        patch(
+            "pawn_agent.tools.analyze_summary.do_save_to_siyuan",
+            return_value="siyuan://blocks/doc-123",
+        ) as mock_save,
+    ):
+        reply = asyncio.run(
+            analyze_summary_impl(cfg, "sess-123", save=True, title=None)
+        )
+
+    assert reply.startswith("Analysis saved to database and SiYuan")
+    mock_run.assert_called_once_with(cfg, "sess-123")
+    mock_save.assert_called_once()
+
+
+def test_analyze_summary_build_delegates_to_shared_helper() -> None:
+    cfg = SimpleNamespace()
+    captured: dict[str, object] = {}
+
+    class FakeTool:
+        def __init__(self, fn) -> None:
+            captured["fn"] = fn
+
+    fake_pydantic_ai = ModuleType("pydantic_ai")
+    fake_pydantic_ai.Tool = FakeTool
+
+    with (
+        patch.dict(sys.modules, {"pydantic_ai": fake_pydantic_ai}),
+        patch(
+            "pawn_agent.tools.analyze_summary.analyze_summary_impl",
+            return_value="## Title\nDemo",
+        ) as mock_impl,
+    ):
+        tool_obj = build_analyze_summary_tool(cfg)
+        reply = asyncio.run(captured["fn"]("sess-123", save=False, title=None))
+
+    assert isinstance(tool_obj, FakeTool)
+    assert reply == "## Title\nDemo"
+    mock_impl.assert_called_once_with(cfg, "sess-123", save=False, title=None)
+
+
 def test_save_to_siyuan_impl_delegates_to_shared_helper() -> None:
     cfg = SimpleNamespace()
 
@@ -642,6 +708,54 @@ def test_langgraph_router_agent_routes_to_query_conversation_tool(tmp_path: Path
     assert "Tool result:\nSpeaker A: hi\nSpeaker B: hello" in calls[1][1]
 
 
+def test_langgraph_router_agent_routes_to_analyze_summary_tool(tmp_path: Path) -> None:
+    cfg_file = tmp_path / "pawnai.yaml"
+    cfg_file.write_text(
+        "agent:\n"
+        "  openai:\n"
+        "    fast_model: gemma4:e4b\n"
+        "    model: gemma4:26b\n"
+        "    base_url: http://localhost:11434/v1\n"
+        "    api_key: ollama\n",
+        encoding="utf-8",
+    )
+    cfg = load_config(str(cfg_file))
+    calls: list[tuple[str, str]] = []
+
+    class FakeAgent:
+        def __init__(self, cfg, on_thinking=None) -> None:
+            self.cfg = cfg
+
+        async def reply(self, user_prompt: str, chat_history: list[dict[str, str]]) -> str:
+            calls.append((self.cfg.pydantic_model, user_prompt))
+            if user_prompt.startswith("You are a routing model"):
+                return "tool_analyze_summary"
+            return "## Title\nStandard Analysis"
+
+    with (
+        patch("pawn_agent.core.langgraph_chat.PlainPydanticChatAgent", FakeAgent),
+        patch(
+            "pawn_agent.core.langgraph_tools.analyze_summary_impl",
+            return_value="## Title\nStandard Analysis",
+        ) as mock_tool,
+    ):
+        agent = LangGraphRouterChatAgent(cfg)
+        route = asyncio.run(agent.route("run the standard analysis for session sess-123", []))
+        tool_output = asyncio.run(run_analyze_summary_tool(cfg, "sess-123"))
+        reply = asyncio.run(
+            agent.respond_fast(
+                "run the standard analysis for session sess-123",
+                [],
+                tool_output=tool_output,
+            )
+        )
+
+    assert route == "tool_analyze_summary"
+    assert reply == "## Title\nStandard Analysis"
+    mock_tool.assert_called_once_with(cfg, "sess-123", save=False, title=None)
+    assert "tool_analyze_summary" in calls[0][1]
+
+
 def test_langgraph_router_agent_routes_to_save_to_siyuan_tool(tmp_path: Path) -> None:
     cfg_file = tmp_path / "pawnai.yaml"
     cfg_file.write_text(
@@ -797,6 +911,48 @@ def test_tool_query_conversation_bootstraps_session_catalog_for_first_turn_looku
     assert updated["session_state"]["pending_save_to_siyuan"] is True
     mock_list.assert_called_once_with(cfg)
     mock_query.assert_called_once_with(cfg, "tom-20260416")
+
+
+def test_tool_analyze_summary_bootstraps_session_catalog_for_first_turn_lookup() -> None:
+    cfg = SimpleNamespace()
+    node = build_tool_analyze_summary_node(cfg=cfg)
+    state = {
+        "session_state": {
+            "latest_user_message": "run the standard analysis for the latest tom session",
+            "requested_session_id": "",
+        },
+        "durable_facts": {"latest_session_id": ""},
+        "artifacts": {
+            "session_catalog_output": "",
+            "tool_output": "",
+        },
+        "recent_messages": [],
+    }
+    catalog_output = (
+        "Found 3 session(s):\n"
+        "  oci-20260416  |  segments: 138  |  duration: 19m 53s  |  updated: 2026-04-16 15:57\n"
+        "  tom-20260416  |  segments: 564  |  duration: 1h 03m 38s  |  updated: 2026-04-16 15:41\n"
+        "  tom-20260415  |  segments: 706  |  duration: 1h 10m 05s  |  updated: 2026-04-15 16:32"
+    )
+
+    with (
+        patch(
+            "pawn_agent.core.langgraph_tools.run_list_sessions_tool",
+            return_value=catalog_output,
+        ) as mock_list,
+        patch(
+            "pawn_agent.core.langgraph_tools.run_analyze_summary_tool",
+            return_value="## Title\nStandard Analysis",
+        ) as mock_analyze,
+    ):
+        updated = asyncio.run(node(state))
+
+    assert updated["durable_facts"]["latest_session_id"] == "tom-20260416"
+    assert updated["artifacts"]["session_catalog_output"] == catalog_output
+    assert updated["artifacts"]["tool_output"] == "## Title\nStandard Analysis"
+    assert updated["session_state"]["tool_name"] == "analyze_summary"
+    mock_list.assert_called_once_with(cfg)
+    mock_analyze.assert_called_once_with(cfg, "tom-20260416")
 
 
 def test_langgraph_list_sessions_helper_prefers_matching_session() -> None:

@@ -25,6 +25,7 @@ from pawn_agent.core.langgraph_state import (
     set_state_fields,
 )
 from pawn_agent.core.langgraph_tools import (
+    build_tool_analyze_summary_node,
     build_tool_list_sessions_node,
     build_tool_query_conversation_node,
     build_tool_save_to_siyuan_node,
@@ -103,6 +104,7 @@ class LangGraphRouterChatAgent:
         "reply_fast",
         "reply_deep",
         "tool_list_sessions",
+        "tool_analyze_summary",
         "tool_query_conversation",
         "tool_save_to_siyuan",
     }
@@ -182,6 +184,7 @@ class LangGraphRouterChatAgent:
             "- reply_fast: simple conversational reply, lightweight reasoning, or normal follow-up\n"
             "- reply_deep: analysis, synthesis, complex reasoning, or anything needing deeper thought\n"
             "- tool_list_sessions: the user asks for recent/latest/available sessions, or needs session discovery before analysis\n"
+            "- tool_analyze_summary: the user asks for the standard structured session analysis, canonical summary, or default analysis format. Use this for the fixed Title / Summary / Key Topics / Speaker Highlights / Sentiment / Tags analysis. This tool already loads the transcript itself.\n"
             "- tool_query_conversation: the user asks to inspect, quote, review, retrieve, summarize, analyze, extract action points, or write a report about a conversation session. If a latest session is already in focus and the user asks for a report, summary, executive report, analysis, decisions, action items, or similar follow-up about that session, choose tool_query_conversation so the transcript is loaded before answering. If the user asks for a new session-derived summary, report, analysis, or executive summary and also asks to save it to SiYuan in the same request, still choose tool_query_conversation first so the transcript is refreshed before the new result is saved.\n\n"
             "- tool_save_to_siyuan: the user asks to save, export, or store the latest generated report, summary, analysis, or other already-written assistant content into SiYuan. Choose this only when the user is asking to save existing generated content, not when they are asking for a new analysis or report to be created and saved in the same request.\n\n"
             "Latest session in focus:\n"
@@ -370,6 +373,8 @@ def _next_node_from_route(state: LangGraphChatState) -> str:
     route_kind = _normalize_output(get_state_field(state, "route_kind")).strip()
     if route_kind == "tool_list_sessions":
         return "tool_list_sessions"
+    if route_kind == "tool_analyze_summary":
+        return "extract_session_id"
     if route_kind == "tool_query_conversation":
         return "extract_session_id"
     if route_kind == "tool_save_to_siyuan":
@@ -385,6 +390,13 @@ def _next_node_after_query_tool(state: LangGraphChatState) -> str:
         if _normalize_output(get_state_field(state, "post_tool_reply_model")).strip() == "deep"
         else "respond_fast"
     )
+
+
+def _next_node_after_extract_session_id(state: LangGraphChatState) -> str:
+    route_kind = _normalize_output(get_state_field(state, "route_kind")).strip()
+    if route_kind == "tool_analyze_summary":
+        return "tool_analyze_summary"
+    return "tool_query_conversation"
 
 
 def _next_node_after_response(state: LangGraphChatState) -> str:
@@ -691,6 +703,14 @@ async def build_langgraph_chat_graph(
         ),
     )
     builder.add_node(
+        "tool_analyze_summary",
+        build_tool_analyze_summary_node(
+            cfg=chat_agent.cfg,
+            tracer=tracer,
+            trace_full_state=trace_full_state,
+        ),
+    )
+    builder.add_node(
         "tool_query_conversation",
         build_tool_query_conversation_node(
             cfg=chat_agent.cfg,
@@ -710,9 +730,17 @@ async def build_langgraph_chat_graph(
     builder.add_node("respond_deep", respond_deep_node)
     builder.add_edge(START, "human_input")
     builder.add_edge("human_input", "route")
-    builder.add_edge("extract_session_id", "tool_query_conversation")
     builder.add_edge("tool_list_sessions", "respond_fast")
+    builder.add_edge("tool_analyze_summary", "respond_fast")
     builder.add_edge("tool_save_to_siyuan", "respond_fast")
+    builder.add_conditional_edges(
+        "extract_session_id",
+        _next_node_after_extract_session_id,
+        {
+            "tool_analyze_summary": "tool_analyze_summary",
+            "tool_query_conversation": "tool_query_conversation",
+        },
+    )
     builder.add_conditional_edges(
         "tool_query_conversation",
         _next_node_after_query_tool,
