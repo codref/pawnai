@@ -43,6 +43,7 @@ def test_new_langgraph_chat_state_resets_history() -> None:
             "reply_model": "",
             "tool_name": "",
             "requested_session_id": "",
+            "post_tool_reply_model": "",
             "pending_save_to_siyuan": False,
         },
         "durable_facts": {
@@ -133,21 +134,25 @@ def test_build_langgraph_chat_graph_registers_nodes_and_edges() -> None:
         ("human_input", "route"),
         ("extract_session_id", "tool_query_conversation"),
         ("tool_list_sessions", "respond_fast"),
-        ("tool_query_conversation", "respond_fast"),
         ("tool_save_to_siyuan", "respond_fast"),
     ]
-    assert calls["conditionals"][0][0] == "respond_fast"
+    assert calls["conditionals"][0][0] == "tool_query_conversation"
     assert calls["conditionals"][0][2] == {
-        "tool_save_to_siyuan": "tool_save_to_siyuan",
-        "__end__": "__end__",
+        "respond_fast": "respond_fast",
+        "respond_deep": "respond_deep",
     }
-    assert calls["conditionals"][1][0] == "respond_deep"
+    assert calls["conditionals"][1][0] == "respond_fast"
     assert calls["conditionals"][1][2] == {
         "tool_save_to_siyuan": "tool_save_to_siyuan",
         "__end__": "__end__",
     }
-    assert calls["conditionals"][2][0] == "route"
+    assert calls["conditionals"][2][0] == "respond_deep"
     assert calls["conditionals"][2][2] == {
+        "tool_save_to_siyuan": "tool_save_to_siyuan",
+        "__end__": "__end__",
+    }
+    assert calls["conditionals"][3][0] == "route"
+    assert calls["conditionals"][3][2] == {
         "tool_list_sessions": "tool_list_sessions",
         "extract_session_id": "extract_session_id",
         "tool_save_to_siyuan": "tool_save_to_siyuan",
@@ -850,6 +855,164 @@ def test_langgraph_router_agent_session_id_extractor_returns_none_when_absent(tm
     assert session_id == ""
 
 
+def test_langgraph_chat_session_uses_deep_responder_after_query_for_executive_report(
+    tmp_path: Path,
+) -> None:
+    cfg_file = tmp_path / "pawnai.yaml"
+    cfg_file.write_text(
+        "agent:\n"
+        "  openai:\n"
+        "    fast_model: gemma4:e4b\n"
+        "    model: gemma4:26b\n"
+        "    base_url: http://localhost:11434/v1\n"
+        "    api_key: ollama\n",
+        encoding="utf-8",
+    )
+    cfg = load_config(str(cfg_file))
+
+    class FakeCompiledGraph:
+        def __init__(self, nodes) -> None:
+            self._nodes = nodes
+            self._route_fn = None
+            self._query_next_fn = None
+            self._after_response_fn = None
+
+        def set_route_fn(self, route_fn) -> None:
+            self._route_fn = route_fn
+
+        def set_query_next_fn(self, query_next_fn) -> None:
+            self._query_next_fn = query_next_fn
+
+        def set_after_response_fn(self, after_response_fn) -> None:
+            self._after_response_fn = after_response_fn
+
+        async def ainvoke(self, payload):
+            state = dict(payload)
+            state = self._nodes["human_input"](state)
+            state = await self._nodes["route"](state)
+            next_node = self._route_fn(state)
+            if next_node == "extract_session_id":
+                state = await self._nodes["extract_session_id"](state)
+                state = self._nodes["tool_query_conversation"](state)
+                next_node = self._query_next_fn(state)
+            elif next_node in {"tool_list_sessions", "tool_save_to_siyuan"}:
+                state = self._nodes[next_node](state)
+                next_node = "respond_fast"
+            state = await self._nodes[next_node](state)
+            follow_up = self._after_response_fn(state)
+            if follow_up == "tool_save_to_siyuan":
+                state = self._nodes["tool_save_to_siyuan"](state)
+                state = await self._nodes["respond_fast"](state)
+            return state
+
+    class FakeStateGraph:
+        def __init__(self, _state_schema) -> None:
+            self._nodes: dict[str, object] = {}
+            self._route_fn = None
+            self._query_next_fn = None
+            self._after_response_fn = None
+
+        def add_node(self, name, fn) -> None:
+            self._nodes[name] = fn
+
+        def add_edge(self, _start, _end) -> None:
+            return None
+
+        def add_conditional_edges(self, start, fn, _path_map) -> None:
+            if start == "route":
+                self._route_fn = fn
+            elif start == "tool_query_conversation":
+                self._query_next_fn = fn
+            elif start in {"respond_fast", "respond_deep"}:
+                self._after_response_fn = fn
+
+        def compile(self):
+            graph = FakeCompiledGraph(self._nodes)
+            graph.set_route_fn(self._route_fn)
+            graph.set_query_next_fn(self._query_next_fn)
+            graph.set_after_response_fn(self._after_response_fn)
+            return graph
+
+    class FakeChatAgent:
+        last_route_kind = ""
+        last_route_model = "openai:gemma4:e4b"
+        last_reply_model = ""
+        last_tool_name = ""
+
+        async def route(
+            self,
+            user_prompt: str,
+            chat_history: list[dict[str, str]],
+            *,
+            latest_session_id: str = "",
+            latest_generated_content: str = "",
+        ) -> str:
+            assert "deep report ready for executive presentation" in user_prompt
+            self.last_route_kind = "tool_query_conversation"
+            return "tool_query_conversation"
+
+        async def extract_requested_session_id(
+            self,
+            user_prompt: str,
+            chat_history: list[dict[str, str]],
+            *,
+            latest_session_id: str = "",
+        ) -> str:
+            return "tom-20260416"
+
+        async def respond_fast(
+            self,
+            user_prompt: str,
+            chat_history: list[dict[str, str]],
+            *,
+            tool_output: str = "",
+        ) -> str:
+            raise AssertionError("Fast responder should not run for this deep report flow.")
+
+        async def respond_deep(
+            self,
+            user_prompt: str,
+            chat_history: list[dict[str, str]],
+            *,
+            tool_output: str = "",
+        ) -> str:
+            self.last_reply_model = "openai:gemma4:26b"
+            assert user_prompt == (
+                "retrieve latest tom conversation available and give me a deep report "
+                "ready for executive presentation"
+            )
+            assert tool_output == "Transcript for tom-20260416"
+            return "# Executive Report\n\nDeep analysis from transcript."
+
+    with (
+        patch(
+            "pawn_agent.core.langgraph_chat._import_langgraph_core",
+            return_value=(FakeStateGraph, "__start__", "__end__"),
+        ),
+        patch(
+            "pawn_agent.core.langgraph_chat.LangGraphRouterChatAgent",
+            return_value=FakeChatAgent(),
+        ),
+        patch("pawn_agent.core.langgraph_chat.build_phoenix_tracer", return_value=None),
+        patch(
+            "pawn_agent.core.langgraph_tools.run_query_conversation_tool",
+            return_value="Transcript for tom-20260416",
+        ),
+    ):
+        session = asyncio.run(LangGraphChatSession.create(cfg=cfg, emit=lambda _text: None))
+        reply = asyncio.run(
+            session.handle_user_input(
+                "retrieve latest tom conversation available and give me a deep report "
+                "ready for executive presentation"
+            )
+        )
+
+    assert reply == "# Executive Report\n\nDeep analysis from transcript."
+    assert session._state["session_state"]["reply_model"] == "openai:gemma4:26b"
+    assert session._state["session_state"]["post_tool_reply_model"] == ""
+    assert session._state["durable_facts"]["latest_session_id"] == "tom-20260416"
+
+
 def test_langgraph_router_agent_session_id_extractor_returns_model_value(tmp_path: Path) -> None:
     cfg_file = tmp_path / "pawnai.yaml"
     cfg_file.write_text(
@@ -1061,7 +1224,13 @@ def test_langgraph_chat_session_reuses_and_overrides_latest_session_id(tmp_path:
             self.last_reply_model = "openai:gemma4:e4b"
             return f"answer:{tool_output}"
 
-        async def respond_deep(self, user_prompt: str, chat_history: list[dict[str, str]]) -> str:
+        async def respond_deep(
+            self,
+            user_prompt: str,
+            chat_history: list[dict[str, str]],
+            *,
+            tool_output: str = "",
+        ) -> str:
             raise AssertionError("Deep responder should not run in this test.")
 
     fake_chat_agent = FakeChatAgent()
@@ -1201,7 +1370,13 @@ def test_langgraph_chat_session_promotes_latest_session_id_from_list_results(tmp
                 return "# Executive Summary\n\nFresh summary."
             raise AssertionError(f"Unexpected prompt: {user_prompt}")
 
-        async def respond_deep(self, user_prompt: str, chat_history: list[dict[str, str]]) -> str:
+        async def respond_deep(
+            self,
+            user_prompt: str,
+            chat_history: list[dict[str, str]],
+            *,
+            tool_output: str = "",
+        ) -> str:
             raise AssertionError("Deep responder should not run in this test.")
 
     with (
@@ -1344,7 +1519,13 @@ def test_langgraph_chat_session_resolves_named_session_and_confirmation_from_cat
                 return "Loaded tom-20260416 again."
             raise AssertionError(f"Unexpected prompt: {user_prompt}")
 
-        async def respond_deep(self, user_prompt: str, chat_history: list[dict[str, str]]) -> str:
+        async def respond_deep(
+            self,
+            user_prompt: str,
+            chat_history: list[dict[str, str]],
+            *,
+            tool_output: str = "",
+        ) -> str:
             raise AssertionError("Deep responder should not run in this test.")
 
     queried_ids: list[str] = []
@@ -1489,7 +1670,13 @@ def test_langgraph_chat_session_preserves_session_focus_after_transcript_summary
                 return f"Saved to SiYuan: {tool_output}"
             raise AssertionError(f"Unexpected prompt: {user_prompt}")
 
-        async def respond_deep(self, user_prompt: str, chat_history: list[dict[str, str]]) -> str:
+        async def respond_deep(
+            self,
+            user_prompt: str,
+            chat_history: list[dict[str, str]],
+            *,
+            tool_output: str = "",
+        ) -> str:
             raise AssertionError("Deep responder should not run in this test.")
 
     with (
@@ -1629,7 +1816,13 @@ def test_langgraph_chat_session_saves_latest_generated_content_to_siyuan(tmp_pat
                 return f"Saved to SiYuan: {tool_output}"
             raise AssertionError(f"Unexpected prompt: {user_prompt}")
 
-        async def respond_deep(self, user_prompt: str, chat_history: list[dict[str, str]]) -> str:
+        async def respond_deep(
+            self,
+            user_prompt: str,
+            chat_history: list[dict[str, str]],
+            *,
+            tool_output: str = "",
+        ) -> str:
             raise AssertionError("Deep responder should not run in this test.")
 
     fake_chat_agent = FakeChatAgent()
@@ -1774,7 +1967,13 @@ def test_langgraph_chat_session_refreshes_session_analysis_before_saving(tmp_pat
                 return f"Saved to SiYuan: {tool_output}"
             raise AssertionError(f"Unexpected tool output: {tool_output}")
 
-        async def respond_deep(self, user_prompt: str, chat_history: list[dict[str, str]]) -> str:
+        async def respond_deep(
+            self,
+            user_prompt: str,
+            chat_history: list[dict[str, str]],
+            *,
+            tool_output: str = "",
+        ) -> str:
             raise AssertionError("Deep responder should not run in this test.")
 
     fake_chat_agent = FakeChatAgent()
@@ -1891,7 +2090,13 @@ def test_langgraph_chat_session_save_to_siyuan_requires_session_id(tmp_path: Pat
             self.last_reply_model = "openai:gemma4:e4b"
             return tool_output
 
-        async def respond_deep(self, user_prompt: str, chat_history: list[dict[str, str]]) -> str:
+        async def respond_deep(
+            self,
+            user_prompt: str,
+            chat_history: list[dict[str, str]],
+            *,
+            tool_output: str = "",
+        ) -> str:
             raise AssertionError("Deep responder should not run in this test.")
 
     with (
@@ -1993,7 +2198,13 @@ def test_langgraph_chat_session_save_to_siyuan_requires_generated_content(tmp_pa
             self.last_reply_model = "openai:gemma4:e4b"
             return tool_output
 
-        async def respond_deep(self, user_prompt: str, chat_history: list[dict[str, str]]) -> str:
+        async def respond_deep(
+            self,
+            user_prompt: str,
+            chat_history: list[dict[str, str]],
+            *,
+            tool_output: str = "",
+        ) -> str:
             raise AssertionError("Deep responder should not run in this test.")
 
     with (
@@ -2108,7 +2319,13 @@ def test_langgraph_chat_session_reports_missing_session_id_for_session_tool(tmp_
             self.last_reply_model = "openai:gemma4:e4b"
             return tool_output
 
-        async def respond_deep(self, user_prompt: str, chat_history: list[dict[str, str]]) -> str:
+        async def respond_deep(
+            self,
+            user_prompt: str,
+            chat_history: list[dict[str, str]],
+            *,
+            tool_output: str = "",
+        ) -> str:
             raise AssertionError("Deep responder should not run in this test.")
 
     with (
@@ -2241,7 +2458,13 @@ def test_langgraph_chat_session_emits_phoenix_spans(tmp_path: Path) -> None:
             self.last_reply_model = "openai:gemma4:e4b"
             return "Here are the latest sessions."
 
-        async def respond_deep(self, user_prompt: str, chat_history: list[dict[str, str]]) -> str:
+        async def respond_deep(
+            self,
+            user_prompt: str,
+            chat_history: list[dict[str, str]],
+            *,
+            tool_output: str = "",
+        ) -> str:
             raise AssertionError("Deep responder should not run in tool path test.")
 
     with (
@@ -2373,7 +2596,13 @@ def test_langgraph_chat_session_emits_save_to_siyuan_spans(tmp_path: Path) -> No
             self.last_reply_model = "openai:gemma4:e4b"
             return f"Saved to SiYuan: {tool_output}"
 
-        async def respond_deep(self, user_prompt: str, chat_history: list[dict[str, str]]) -> str:
+        async def respond_deep(
+            self,
+            user_prompt: str,
+            chat_history: list[dict[str, str]],
+            *,
+            tool_output: str = "",
+        ) -> str:
             raise AssertionError("Deep responder should not run in save path test.")
 
     with (
@@ -2503,7 +2732,13 @@ def test_langgraph_chat_session_traces_full_state_when_enabled(tmp_path: Path) -
             self.last_reply_model = "openai:gemma4:e4b"
             return "ok"
 
-        async def respond_deep(self, user_prompt: str, chat_history: list[dict[str, str]]) -> str:
+        async def respond_deep(
+            self,
+            user_prompt: str,
+            chat_history: list[dict[str, str]],
+            *,
+            tool_output: str = "",
+        ) -> str:
             raise AssertionError("Deep responder should not run in this test.")
 
     with (

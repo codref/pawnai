@@ -300,9 +300,26 @@ class LangGraphRouterChatAgent:
             return await self._fast_agent.reply(prompt, chat_history)
         return await self._fast_agent.reply(user_prompt, chat_history)
 
-    async def respond_deep(self, user_prompt: str, chat_history: list[dict[str, str]]) -> str:
+    async def respond_deep(
+        self,
+        user_prompt: str,
+        chat_history: list[dict[str, str]],
+        *,
+        tool_output: str = "",
+    ) -> str:
         self.last_reply_model = self.cfg.langgraph_deep_model
         self.model_name = self.last_reply_model
+        if tool_output:
+            prompt = (
+                "Answer the user's request using the tool result below.\n"
+                "Provide a thorough, well-structured response grounded in the tool result.\n"
+                "Do not invent facts beyond what the tool result supports.\n\n"
+                "Tool result:\n"
+                f"{tool_output}\n\n"
+                "Current user message:\n"
+                f"{user_prompt}"
+            )
+            return await self._deep_agent.reply(prompt, chat_history)
         return await self._deep_agent.reply(user_prompt, chat_history)
 
 
@@ -325,6 +342,24 @@ def _requests_save_to_siyuan(user_prompt: str) -> bool:
     return any(keyword in normalized for keyword in ("save", "store", "export"))
 
 
+def _select_post_tool_reply_model(user_prompt: str, route_kind: str) -> str:
+    if route_kind != "tool_query_conversation":
+        return ""
+    normalized = _normalize_output(user_prompt).strip().lower()
+    deep_cues = (
+        "deep report",
+        "deep analysis",
+        "detailed analysis",
+        "in-depth",
+        "thorough",
+        "comprehensive",
+        "executive presentation",
+        "board-ready",
+        "board ready",
+    )
+    return "deep" if any(cue in normalized for cue in deep_cues) else "fast"
+
+
 def _should_queue_save_after_response(user_prompt: str, route_kind: str) -> bool:
     if route_kind == "tool_save_to_siyuan":
         return False
@@ -342,6 +377,14 @@ def _next_node_from_route(state: LangGraphChatState) -> str:
     if route_kind == "reply_fast":
         return "respond_fast"
     return "respond_deep"
+
+
+def _next_node_after_query_tool(state: LangGraphChatState) -> str:
+    return (
+        "respond_deep"
+        if _normalize_output(get_state_field(state, "post_tool_reply_model")).strip() == "deep"
+        else "respond_fast"
+    )
 
 
 def _next_node_after_response(state: LangGraphChatState) -> str:
@@ -416,6 +459,10 @@ async def build_langgraph_chat_graph(
                 tool_name="",
                 tool_output="",
                 requested_session_id="",
+                post_tool_reply_model=_select_post_tool_reply_model(
+                    latest_user_message,
+                    route_kind,
+                ),
                 pending_save_to_siyuan=_should_queue_save_after_response(
                     latest_user_message,
                     route_kind,
@@ -437,6 +484,10 @@ async def build_langgraph_chat_graph(
                 tool_name="",
                 tool_output="",
                 requested_session_id="",
+                post_tool_reply_model=_select_post_tool_reply_model(
+                    latest_user_message,
+                    route_kind,
+                ),
                 pending_save_to_siyuan=_should_queue_save_after_response(
                     latest_user_message,
                     route_kind,
@@ -445,6 +496,10 @@ async def build_langgraph_chat_graph(
             span.set_attribute("llm.model_name", chat_agent.last_route_model)
             span.set_attribute("input.value", latest_user_message)
             span.set_attribute("output.route_kind", route_kind)
+            span.set_attribute(
+                "output.post_tool_reply_model",
+                _normalize_output(get_state_field(updated, "post_tool_reply_model")) or "NONE",
+            )
             span.set_attribute(
                 "output.pending_save_to_siyuan",
                 bool(get_state_field(updated, "pending_save_to_siyuan")),
@@ -505,6 +560,7 @@ async def build_langgraph_chat_graph(
                 reply_model=chat_agent.last_reply_model,
                 tool_output="",
                 requested_session_id="",
+                post_tool_reply_model="",
                 latest_assistant_message=reply,
             )
             if _should_capture_generated_content(state):
@@ -530,6 +586,7 @@ async def build_langgraph_chat_graph(
                 reply_model=chat_agent.last_reply_model,
                 tool_output="",
                 requested_session_id="",
+                post_tool_reply_model="",
                 latest_assistant_message=reply,
             )
             if _should_capture_generated_content(state):
@@ -556,11 +613,16 @@ async def build_langgraph_chat_graph(
         current = ensure_langgraph_state(state)
         latest_user_message = _normalize_output(get_state_field(current, "latest_user_message"))
         chat_history = get_recent_messages(current)
+        tool_output = _normalize_output(get_state_field(current, "tool_output"))
         message_state = {
             "chat_history": chat_history,
         }
         if tracer is None:
-            reply = await chat_agent.respond_deep(latest_user_message, chat_history)
+            reply = await chat_agent.respond_deep(
+                latest_user_message,
+                chat_history,
+                tool_output=tool_output,
+            )
             message_update = apply_assistant_message(message_state, reply)
             updated = set_recent_messages(dict(current), message_update.get("chat_history", []))
             updated = set_state_fields(
@@ -569,6 +631,7 @@ async def build_langgraph_chat_graph(
                 reply_model=chat_agent.last_reply_model,
                 tool_output="",
                 requested_session_id="",
+                post_tool_reply_model="",
                 latest_assistant_message=reply,
             )
             if _should_capture_generated_content(state):
@@ -581,7 +644,11 @@ async def build_langgraph_chat_graph(
         with tracer.start_as_current_span("langgraph-respond-deep") as span:
             if trace_full_state:
                 _trace_full_state_snapshot(span, current, label="before")
-            reply = await chat_agent.respond_deep(latest_user_message, chat_history)
+            reply = await chat_agent.respond_deep(
+                latest_user_message,
+                chat_history,
+                tool_output=tool_output,
+            )
             message_update = apply_assistant_message(message_state, reply)
             updated = set_recent_messages(dict(current), message_update.get("chat_history", []))
             updated = set_state_fields(
@@ -590,6 +657,7 @@ async def build_langgraph_chat_graph(
                 reply_model=chat_agent.last_reply_model,
                 tool_output="",
                 requested_session_id="",
+                post_tool_reply_model="",
                 latest_assistant_message=reply,
             )
             if _should_capture_generated_content(state):
@@ -644,8 +712,15 @@ async def build_langgraph_chat_graph(
     builder.add_edge("human_input", "route")
     builder.add_edge("extract_session_id", "tool_query_conversation")
     builder.add_edge("tool_list_sessions", "respond_fast")
-    builder.add_edge("tool_query_conversation", "respond_fast")
     builder.add_edge("tool_save_to_siyuan", "respond_fast")
+    builder.add_conditional_edges(
+        "tool_query_conversation",
+        _next_node_after_query_tool,
+        {
+            "respond_fast": "respond_fast",
+            "respond_deep": "respond_deep",
+        },
+    )
     builder.add_conditional_edges(
         "respond_fast",
         _next_node_after_response,
