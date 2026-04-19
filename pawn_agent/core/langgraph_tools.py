@@ -20,8 +20,8 @@ from pawn_agent.tools.save_to_siyuan import save_to_siyuan_impl
 from pawn_agent.utils.config import AgentConfig
 
 
-def resolve_session_id_for_tool(state: Mapping[str, object]) -> str:
-    """Resolve the session id for a session-scoped LangGraph tool call."""
+def _resolve_session_id_from_state(state: Mapping[str, object]) -> str:
+    """Resolve the session id from existing LangGraph state only."""
     latest_user_message = _normalize_output(get_state_field(state, "latest_user_message")).strip()
     requested_session_id = _normalize_output(get_state_field(state, "requested_session_id")).strip()
     latest_session_id = _normalize_output(get_state_field(state, "latest_session_id")).strip()
@@ -78,7 +78,7 @@ def _session_ids_from_list_output(tool_output: str) -> list[str]:
     return session_ids
 
 
-def resolve_session_id_from_list_output(user_prompt: str, tool_output: str) -> str:
+def _resolve_session_id_from_catalog_output(user_prompt: str, tool_output: str) -> str:
     """Resolve a likely target session id from list-sessions output."""
     session_ids = _session_ids_from_list_output(tool_output)
     if not session_ids:
@@ -119,6 +119,11 @@ def resolve_session_id_from_list_output(user_prompt: str, tool_output: str) -> s
     return session_ids[0]
 
 
+def resolve_session_id_from_list_output(user_prompt: str, tool_output: str) -> str:
+    """Public compatibility wrapper for resolving a session id from catalog output."""
+    return _resolve_session_id_from_catalog_output(user_prompt, tool_output)
+
+
 def run_list_sessions_tool(cfg: AgentConfig) -> str:
     """Execute the list-sessions tool for LangGraph mode."""
     return list_sessions_impl(cfg)
@@ -150,17 +155,12 @@ def run_save_to_siyuan_tool(
     return save_to_siyuan_impl(cfg, session_id=session_id, content=content, title=title, path=None)
 
 
-def resolve_session_id_with_catalog(
+def _bootstrap_session_catalog_if_needed(
     state: Mapping[str, object],
     cfg: AgentConfig,
-) -> tuple[dict[str, Any], str]:
-    """Resolve a session id, bootstrapping the session catalog if needed."""
+) -> dict[str, Any]:
+    """Populate session catalog output when it is missing."""
     current = ensure_langgraph_state(state)
-    latest_user_message = _normalize_output(get_state_field(current, "latest_user_message"))
-    session_id = resolve_session_id_for_tool(current)
-    if session_id:
-        return current, session_id
-
     session_catalog_output = _normalize_output(get_state_field(current, "session_catalog_output"))
     if not session_catalog_output.strip():
         session_catalog_output = run_list_sessions_tool(cfg)
@@ -168,10 +168,31 @@ def resolve_session_id_with_catalog(
             dict(current),
             session_catalog_output=session_catalog_output,
         )
-        session_id = resolve_session_id_from_list_output(
-            latest_user_message,
-            session_catalog_output,
-        )
+    return current
+
+
+def resolve_session_id(
+    state: Mapping[str, object],
+    cfg: AgentConfig,
+    *,
+    bootstrap_catalog: bool = True,
+) -> tuple[dict[str, Any], str]:
+    """Resolve a session id for a LangGraph tool call.
+
+    Returns the normalized state and the resolved session id. When requested,
+    the resolver can bootstrap the session catalog during the same turn.
+    """
+    current = ensure_langgraph_state(state)
+    session_id = _resolve_session_id_from_state(current)
+    if session_id or not bootstrap_catalog:
+        return current, session_id
+
+    current = _bootstrap_session_catalog_if_needed(current, cfg)
+    latest_user_message = _normalize_output(get_state_field(current, "latest_user_message"))
+    session_id = _resolve_session_id_from_catalog_output(
+        latest_user_message,
+        _normalize_output(get_state_field(current, "session_catalog_output")),
+    )
     return current, session_id
 
 
@@ -194,7 +215,7 @@ def build_tool_list_sessions_node(
                 tool_output=tool_output,
                 session_catalog_output=tool_output,
             )
-            resolved_session_id = resolve_session_id_from_list_output(
+            resolved_session_id = _resolve_session_id_from_catalog_output(
                 latest_user_message,
                 tool_output,
             )
@@ -211,7 +232,7 @@ def build_tool_list_sessions_node(
                 tool_output=tool_output,
                 session_catalog_output=tool_output,
             )
-            resolved_session_id = resolve_session_id_from_list_output(
+            resolved_session_id = _resolve_session_id_from_catalog_output(
                 latest_user_message,
                 tool_output,
             )
@@ -238,7 +259,7 @@ def build_tool_query_conversation_node(
 
     def tool_query_conversation_node(state: dict[str, Any]) -> dict[str, Any]:
         current = ensure_langgraph_state(state)
-        current, session_id = resolve_session_id_with_catalog(current, cfg)
+        current, session_id = resolve_session_id(current, cfg)
         if tracer is None:
             if not session_id:
                 return set_state_fields(
@@ -259,7 +280,7 @@ def build_tool_query_conversation_node(
         with tracer.start_as_current_span("langgraph-tool-query-conversation") as span:
             if trace_full_state:
                 span.set_attribute("state.before.json", serialize_langgraph_state(current))
-            current, session_id = resolve_session_id_with_catalog(current, cfg)
+            current, session_id = resolve_session_id(current, cfg)
             if not session_id:
                 updated = set_state_fields(
                     dict(current),
@@ -301,7 +322,7 @@ def build_tool_analyze_summary_node(
 
     async def tool_analyze_summary_node(state: dict[str, Any]) -> dict[str, Any]:
         current = ensure_langgraph_state(state)
-        current, session_id = resolve_session_id_with_catalog(current, cfg)
+        current, session_id = resolve_session_id(current, cfg)
         if tracer is None:
             if not session_id:
                 return set_state_fields(

@@ -17,7 +17,7 @@ from pawn_agent.core.langgraph_chat import (
 from pawn_agent.core.langgraph_tools import (
     build_tool_analyze_summary_node,
     build_tool_query_conversation_node,
-    resolve_session_id_for_tool,
+    resolve_session_id,
     resolve_session_id_from_list_output,
     run_analyze_summary_tool,
     run_list_sessions_tool,
@@ -824,6 +824,7 @@ def test_langgraph_router_agent_routes_to_save_to_siyuan_tool(tmp_path: Path) ->
 
 
 def test_langgraph_session_tool_helper_prefers_current_turn_id() -> None:
+    cfg = SimpleNamespace()
     state = {
         "session_state": {"requested_session_id": "sess-456"},
         "durable_facts": {"latest_session_id": "sess-123"},
@@ -831,10 +832,12 @@ def test_langgraph_session_tool_helper_prefers_current_turn_id() -> None:
         "recent_messages": [],
     }
 
-    assert resolve_session_id_for_tool(state) == "sess-456"
+    _, session_id = resolve_session_id(state, cfg, bootstrap_catalog=False)
+    assert session_id == "sess-456"
 
 
 def test_langgraph_session_tool_helper_falls_back_to_latest_session_id() -> None:
+    cfg = SimpleNamespace()
     state = {
         "session_state": {"requested_session_id": "", "latest_user_message": "yes"},
         "durable_facts": {"latest_session_id": "sess-123"},
@@ -842,10 +845,12 @@ def test_langgraph_session_tool_helper_falls_back_to_latest_session_id() -> None
         "recent_messages": [],
     }
 
-    assert resolve_session_id_for_tool(state) == "sess-123"
+    _, session_id = resolve_session_id(state, cfg, bootstrap_catalog=False)
+    assert session_id == "sess-123"
 
 
 def test_langgraph_session_tool_helper_resolves_named_session_from_catalog() -> None:
+    cfg = SimpleNamespace()
     state = {
         "session_state": {
             "requested_session_id": "tom",
@@ -863,7 +868,8 @@ def test_langgraph_session_tool_helper_resolves_named_session_from_catalog() -> 
         "recent_messages": [],
     }
 
-    assert resolve_session_id_for_tool(state) == "tom-20260416"
+    _, session_id = resolve_session_id(state, cfg, bootstrap_catalog=False)
+    assert session_id == "tom-20260416"
 
 
 def test_tool_query_conversation_bootstraps_session_catalog_for_first_turn_lookup() -> None:
