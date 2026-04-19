@@ -6,6 +6,12 @@ from collections.abc import Mapping
 from typing import Any, Callable
 
 from pawn_agent.core.burr_chat import _normalize_output
+from pawn_agent.core.langgraph_state import (
+    ensure_langgraph_state,
+    get_state_field,
+    serialize_langgraph_state,
+    set_state_fields,
+)
 from pawn_agent.tools.list_sessions import list_sessions_impl
 from pawn_agent.tools.query_conversation import query_conversation_impl
 from pawn_agent.tools.save_to_siyuan import save_to_siyuan_impl
@@ -14,10 +20,48 @@ from pawn_agent.utils.config import AgentConfig
 
 def resolve_session_id_for_tool(state: Mapping[str, object]) -> str:
     """Resolve the session id for a session-scoped LangGraph tool call."""
-    requested_session_id = _normalize_output(state.get("requested_session_id", "")).strip()
-    if requested_session_id:
+    latest_user_message = _normalize_output(get_state_field(state, "latest_user_message")).strip()
+    requested_session_id = _normalize_output(get_state_field(state, "requested_session_id")).strip()
+    latest_session_id = _normalize_output(get_state_field(state, "latest_session_id")).strip()
+    session_catalog_output = _normalize_output(get_state_field(state, "session_catalog_output"))
+
+    if _looks_like_explicit_session_id(requested_session_id):
         return requested_session_id
-    return _normalize_output(state.get("latest_session_id", "")).strip()
+    if _is_confirmation_prompt(latest_user_message) and latest_session_id:
+        return latest_session_id
+    if session_catalog_output:
+        resolved_session_id = resolve_session_id_from_list_output(
+            latest_user_message or requested_session_id,
+            session_catalog_output,
+        )
+        if resolved_session_id:
+            return resolved_session_id
+    if latest_session_id:
+        return latest_session_id
+    return ""
+
+
+def _looks_like_explicit_session_id(value: str) -> bool:
+    candidate = _normalize_output(value).strip()
+    if not candidate:
+        return False
+    return any(ch.isdigit() for ch in candidate) and any(sep in candidate for sep in "-_:")
+
+
+def _is_confirmation_prompt(user_prompt: str) -> bool:
+    normalized = _normalize_output(user_prompt).strip().lower()
+    return normalized in {
+        "yes",
+        "y",
+        "yeah",
+        "yep",
+        "sure",
+        "ok",
+        "okay",
+        "please do",
+        "do it",
+        "go ahead",
+    }
 
 
 def _session_ids_from_list_output(tool_output: str) -> list[str]:
@@ -97,38 +141,50 @@ def build_tool_list_sessions_node(
     *,
     cfg: AgentConfig,
     tracer=None,
+    trace_full_state: bool = False,
 ) -> Callable[[dict[str, Any]], dict[str, Any]]:
     """Build the LangGraph node for listing sessions."""
 
     def tool_list_sessions_node(state: dict[str, Any]) -> dict[str, Any]:
-        latest_user_message = _normalize_output(state.get("latest_user_message", ""))
+        current = ensure_langgraph_state(state)
+        latest_user_message = _normalize_output(get_state_field(current, "latest_user_message"))
         if tracer is None:
             tool_output = run_list_sessions_tool(cfg)
-            updated = dict(state)
-            updated["tool_name"] = "list_sessions"
-            updated["tool_output"] = tool_output
+            updated = set_state_fields(
+                dict(current),
+                tool_name="list_sessions",
+                tool_output=tool_output,
+                session_catalog_output=tool_output,
+            )
             resolved_session_id = resolve_session_id_from_list_output(
                 latest_user_message,
                 tool_output,
             )
             if resolved_session_id:
-                updated["latest_session_id"] = resolved_session_id
+                updated = set_state_fields(updated, latest_session_id=resolved_session_id)
             return updated
         with tracer.start_as_current_span("langgraph-tool-list-sessions") as span:
+            if trace_full_state:
+                span.set_attribute("state.before.json", serialize_langgraph_state(current))
             tool_output = run_list_sessions_tool(cfg)
-            updated = dict(state)
-            updated["tool_name"] = "list_sessions"
-            updated["tool_output"] = tool_output
+            updated = set_state_fields(
+                dict(current),
+                tool_name="list_sessions",
+                tool_output=tool_output,
+                session_catalog_output=tool_output,
+            )
             resolved_session_id = resolve_session_id_from_list_output(
                 latest_user_message,
                 tool_output,
             )
             if resolved_session_id:
-                updated["latest_session_id"] = resolved_session_id
+                updated = set_state_fields(updated, latest_session_id=resolved_session_id)
             span.set_attribute("tool.name", "list_sessions")
             if resolved_session_id:
                 span.set_attribute("session.id", resolved_session_id)
             span.set_attribute("output.value", tool_output)
+            if trace_full_state:
+                span.set_attribute("state.after.json", serialize_langgraph_state(updated))
             return updated
 
     return tool_list_sessions_node
@@ -138,43 +194,88 @@ def build_tool_query_conversation_node(
     *,
     cfg: AgentConfig,
     tracer=None,
+    trace_full_state: bool = False,
 ) -> Callable[[dict[str, Any]], dict[str, Any]]:
     """Build the LangGraph node for loading a conversation transcript."""
 
     def tool_query_conversation_node(state: dict[str, Any]) -> dict[str, Any]:
+        current = ensure_langgraph_state(state)
+        latest_user_message = _normalize_output(get_state_field(current, "latest_user_message"))
         session_id = resolve_session_id_for_tool(state)
         if tracer is None:
-            updated = dict(state)
             if not session_id:
-                updated["tool_name"] = "query_conversation"
-                updated["tool_output"] = (
-                    "I need a session id to retrieve a conversation. "
-                    "Ask for available sessions first or specify the session id."
+                session_catalog_output = _normalize_output(
+                    get_state_field(current, "session_catalog_output")
                 )
-                return updated
-            tool_output = run_query_conversation_tool(cfg, session_id)
-            updated["tool_name"] = "query_conversation"
-            updated["tool_output"] = tool_output
-            updated["latest_session_id"] = session_id
-            return updated
-        with tracer.start_as_current_span("langgraph-tool-query-conversation") as span:
-            updated = dict(state)
+                if not session_catalog_output.strip():
+                    session_catalog_output = run_list_sessions_tool(cfg)
+                    current = set_state_fields(
+                        dict(current),
+                        session_catalog_output=session_catalog_output,
+                    )
+                    session_id = resolve_session_id_from_list_output(
+                        latest_user_message,
+                        session_catalog_output,
+                    )
             if not session_id:
-                updated["tool_name"] = "query_conversation"
-                updated["tool_output"] = (
+                return set_state_fields(
+                    dict(current),
+                    tool_name="query_conversation",
+                    tool_output=(
                     "I need a session id to retrieve a conversation. "
                     "Ask for available sessions first or specify the session id."
+                    ),
+                )
+            tool_output = run_query_conversation_tool(cfg, session_id)
+            return set_state_fields(
+                dict(current),
+                tool_name="query_conversation",
+                tool_output=tool_output,
+                latest_session_id=session_id,
+            )
+        with tracer.start_as_current_span("langgraph-tool-query-conversation") as span:
+            if trace_full_state:
+                span.set_attribute("state.before.json", serialize_langgraph_state(current))
+            if not session_id:
+                session_catalog_output = _normalize_output(
+                    get_state_field(current, "session_catalog_output")
+                )
+                if not session_catalog_output.strip():
+                    session_catalog_output = run_list_sessions_tool(cfg)
+                    current = set_state_fields(
+                        dict(current),
+                        session_catalog_output=session_catalog_output,
+                    )
+                    session_id = resolve_session_id_from_list_output(
+                        latest_user_message,
+                        session_catalog_output,
+                    )
+            if not session_id:
+                updated = set_state_fields(
+                    dict(current),
+                    tool_name="query_conversation",
+                    tool_output=(
+                    "I need a session id to retrieve a conversation. "
+                    "Ask for available sessions first or specify the session id."
+                    ),
                 )
                 span.set_attribute("tool.name", "query_conversation")
-                span.set_attribute("output.value", updated["tool_output"])
+                span.set_attribute("output.value", _normalize_output(get_state_field(updated, "tool_output")))
+                if trace_full_state:
+                    span.set_attribute("state.after.json", serialize_langgraph_state(updated))
                 return updated
             tool_output = run_query_conversation_tool(cfg, session_id)
-            updated["tool_name"] = "query_conversation"
-            updated["tool_output"] = tool_output
-            updated["latest_session_id"] = session_id
+            updated = set_state_fields(
+                dict(current),
+                tool_name="query_conversation",
+                tool_output=tool_output,
+                latest_session_id=session_id,
+            )
             span.set_attribute("tool.name", "query_conversation")
             span.set_attribute("session.id", session_id)
             span.set_attribute("output.value", tool_output)
+            if trace_full_state:
+                span.set_attribute("state.after.json", serialize_langgraph_state(updated))
             return updated
 
     return tool_query_conversation_node
@@ -184,66 +285,89 @@ def build_tool_save_to_siyuan_node(
     *,
     cfg: AgentConfig,
     tracer=None,
+    trace_full_state: bool = False,
 ) -> Callable[[dict[str, Any]], dict[str, Any]]:
     """Build the LangGraph node for saving generated content to SiYuan."""
 
     def tool_save_to_siyuan_node(state: dict[str, Any]) -> dict[str, Any]:
-        session_id = _normalize_output(state.get("latest_session_id", "")).strip()
-        content = _normalize_output(state.get("latest_generated_content", ""))
-        title = _normalize_output(state.get("latest_generated_title", "")).strip() or None
+        current = ensure_langgraph_state(state)
+        session_id = _normalize_output(get_state_field(current, "latest_session_id")).strip()
+        content = _normalize_output(get_state_field(current, "latest_generated_content"))
+        title = _normalize_output(get_state_field(current, "latest_generated_title")).strip() or None
         if tracer is None:
-            updated = dict(state)
             if not session_id:
-                updated["tool_name"] = "save_to_siyuan"
-                updated["pending_save_to_siyuan"] = False
-                updated["tool_output"] = (
+                return set_state_fields(
+                    dict(current),
+                    tool_name="save_to_siyuan",
+                    pending_save_to_siyuan=False,
+                    tool_output=(
                     "I need a session in focus before I can save to SiYuan. "
                     "Retrieve or analyze a session first."
+                    ),
                 )
-                return updated
             if not content.strip():
-                updated["tool_name"] = "save_to_siyuan"
-                updated["pending_save_to_siyuan"] = False
-                updated["tool_output"] = (
+                return set_state_fields(
+                    dict(current),
+                    tool_name="save_to_siyuan",
+                    pending_save_to_siyuan=False,
+                    tool_output=(
                     "I need generated content to save to SiYuan. "
                     "Ask me to produce the report or analysis first."
+                    ),
                 )
-                return updated
             tool_output = run_save_to_siyuan_tool(cfg, session_id, content, title=title)
-            updated["tool_name"] = "save_to_siyuan"
-            updated["pending_save_to_siyuan"] = False
-            updated["tool_output"] = tool_output
-            return updated
+            return set_state_fields(
+                dict(current),
+                tool_name="save_to_siyuan",
+                pending_save_to_siyuan=False,
+                tool_output=tool_output,
+            )
         with tracer.start_as_current_span("langgraph-tool-save-to-siyuan") as span:
-            updated = dict(state)
+            if trace_full_state:
+                span.set_attribute("state.before.json", serialize_langgraph_state(current))
             if not session_id:
-                updated["tool_name"] = "save_to_siyuan"
-                updated["pending_save_to_siyuan"] = False
-                updated["tool_output"] = (
+                updated = set_state_fields(
+                    dict(current),
+                    tool_name="save_to_siyuan",
+                    pending_save_to_siyuan=False,
+                    tool_output=(
                     "I need a session in focus before I can save to SiYuan. "
                     "Retrieve or analyze a session first."
+                    ),
                 )
                 span.set_attribute("tool.name", "save_to_siyuan")
-                span.set_attribute("output.value", updated["tool_output"])
+                span.set_attribute("output.value", _normalize_output(get_state_field(updated, "tool_output")))
+                if trace_full_state:
+                    span.set_attribute("state.after.json", serialize_langgraph_state(updated))
                 return updated
             if not content.strip():
-                updated["tool_name"] = "save_to_siyuan"
-                updated["pending_save_to_siyuan"] = False
-                updated["tool_output"] = (
+                updated = set_state_fields(
+                    dict(current),
+                    tool_name="save_to_siyuan",
+                    pending_save_to_siyuan=False,
+                    tool_output=(
                     "I need generated content to save to SiYuan. "
                     "Ask me to produce the report or analysis first."
+                    ),
                 )
                 span.set_attribute("tool.name", "save_to_siyuan")
                 span.set_attribute("session.id", session_id)
-                span.set_attribute("output.value", updated["tool_output"])
+                span.set_attribute("output.value", _normalize_output(get_state_field(updated, "tool_output")))
+                if trace_full_state:
+                    span.set_attribute("state.after.json", serialize_langgraph_state(updated))
                 return updated
             tool_output = run_save_to_siyuan_tool(cfg, session_id, content, title=title)
-            updated["tool_name"] = "save_to_siyuan"
-            updated["pending_save_to_siyuan"] = False
-            updated["tool_output"] = tool_output
+            updated = set_state_fields(
+                dict(current),
+                tool_name="save_to_siyuan",
+                pending_save_to_siyuan=False,
+                tool_output=tool_output,
+            )
             span.set_attribute("tool.name", "save_to_siyuan")
             span.set_attribute("session.id", session_id)
             span.set_attribute("output.value", tool_output)
+            if trace_full_state:
+                span.set_attribute("state.after.json", serialize_langgraph_state(updated))
             return updated
 
     return tool_save_to_siyuan_node

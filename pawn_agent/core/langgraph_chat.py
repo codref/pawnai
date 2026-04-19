@@ -14,6 +14,16 @@ from pawn_agent.core.burr_chat import (
     apply_assistant_message,
     apply_user_message,
 )
+from pawn_agent.core.langgraph_state import (
+    StructuredLangGraphState,
+    ensure_langgraph_state,
+    get_recent_messages,
+    get_state_field,
+    new_structured_langgraph_state,
+    serialize_langgraph_state,
+    set_recent_messages,
+    set_state_fields,
+)
 from pawn_agent.core.langgraph_tools import (
     build_tool_list_sessions_node,
     build_tool_query_conversation_node,
@@ -22,45 +32,13 @@ from pawn_agent.core.langgraph_tools import (
 from pawn_agent.utils.config import AgentConfig
 
 
-class LangGraphChatState(TypedDict, total=False):
+class LangGraphChatState(StructuredLangGraphState, total=False):
     """State carried through the minimal LangGraph chatbot."""
-
-    incoming_prompt: str
-    chat_history: list[dict[str, str]]
-    latest_user_message: str
-    latest_assistant_message: str
-    turn_count: int
-    route_kind: str
-    route_model: str
-    reply_model: str
-    tool_name: str
-    tool_output: str
-    latest_session_id: str
-    requested_session_id: str
-    pending_save_to_siyuan: bool
-    latest_generated_content: str
-    latest_generated_title: str
 
 
 def new_langgraph_chat_state() -> LangGraphChatState:
     """Return the default LangGraph chat state."""
-    return {
-        "incoming_prompt": "",
-        "chat_history": [],
-        "latest_user_message": "",
-        "latest_assistant_message": "",
-        "turn_count": 0,
-        "route_kind": "",
-        "route_model": "",
-        "reply_model": "",
-        "tool_name": "",
-        "tool_output": "",
-        "latest_session_id": "",
-        "requested_session_id": "",
-        "pending_save_to_siyuan": False,
-        "latest_generated_content": "",
-        "latest_generated_title": "",
-    }
+    return ensure_langgraph_state(new_structured_langgraph_state())
 
 
 def _import_langgraph_core():
@@ -112,6 +90,10 @@ def build_phoenix_tracer(cfg: AgentConfig):
         **kwargs,
     )
     return trace.get_tracer(__name__)
+
+
+def _trace_full_state_snapshot(span, state: LangGraphChatState, *, label: str) -> None:
+    span.set_attribute(f"state.{label}.json", serialize_langgraph_state(state))
 
 
 class LangGraphRouterChatAgent:
@@ -333,7 +315,7 @@ def _infer_generated_title(content: str) -> str:
 
 
 def _should_capture_generated_content(state: LangGraphChatState) -> bool:
-    return _normalize_output(state.get("tool_name", "")).strip() != "save_to_siyuan"
+    return _normalize_output(get_state_field(state, "tool_name")).strip() != "save_to_siyuan"
 
 
 def _requests_save_to_siyuan(user_prompt: str) -> bool:
@@ -350,7 +332,7 @@ def _should_queue_save_after_response(user_prompt: str, route_kind: str) -> bool
 
 
 def _next_node_from_route(state: LangGraphChatState) -> str:
-    route_kind = _normalize_output(state.get("route_kind", "")).strip()
+    route_kind = _normalize_output(get_state_field(state, "route_kind")).strip()
     if route_kind == "tool_list_sessions":
         return "tool_list_sessions"
     if route_kind == "tool_query_conversation":
@@ -363,34 +345,63 @@ def _next_node_from_route(state: LangGraphChatState) -> str:
 
 
 def _next_node_after_response(state: LangGraphChatState) -> str:
-    if bool(state.get("pending_save_to_siyuan", False)):
+    if bool(get_state_field(state, "pending_save_to_siyuan")):
         return "tool_save_to_siyuan"
     return "__end__"
 
 
-async def build_langgraph_chat_graph(chat_agent: LangGraphRouterChatAgent, tracer=None):
+async def build_langgraph_chat_graph(
+    chat_agent: LangGraphRouterChatAgent,
+    tracer=None,
+    *,
+    trace_full_state: bool = False,
+):
     """Build the minimal LangGraph chatbot graph."""
     StateGraph, START, END = _import_langgraph_core()
 
     def human_input_node(state: LangGraphChatState) -> LangGraphChatState:
+        current = ensure_langgraph_state(state)
+        message_state = {
+            "chat_history": get_recent_messages(current),
+            "turn_count": int(get_state_field(current, "turn_count")),
+        }
         if tracer is None:
-            prompt = _normalize_output(state.get("incoming_prompt", ""))
-            updated = apply_user_message(dict(state), prompt)
-            updated["incoming_prompt"] = prompt
+            prompt = _normalize_output(get_state_field(current, "incoming_prompt"))
+            message_update = apply_user_message(message_state, prompt)
+            updated = set_recent_messages(dict(current), message_update.get("chat_history", []))
+            updated = set_state_fields(
+                updated,
+                incoming_prompt=prompt,
+                latest_user_message=message_update.get("latest_user_message", ""),
+                turn_count=int(message_update.get("turn_count", 0)),
+            )
             return updated
         with tracer.start_as_current_span("langgraph-human-input") as span:
-            prompt = _normalize_output(state.get("incoming_prompt", ""))
+            if trace_full_state:
+                _trace_full_state_snapshot(span, current, label="before")
+            prompt = _normalize_output(get_state_field(current, "incoming_prompt"))
             span.set_attribute("input.value", prompt)
-            updated = apply_user_message(dict(state), prompt)
-            updated["incoming_prompt"] = prompt
-            span.set_attribute("output.turn_count", updated["turn_count"])
+            message_update = apply_user_message(message_state, prompt)
+            updated = set_recent_messages(dict(current), message_update.get("chat_history", []))
+            updated = set_state_fields(
+                updated,
+                incoming_prompt=prompt,
+                latest_user_message=message_update.get("latest_user_message", ""),
+                turn_count=int(message_update.get("turn_count", 0)),
+            )
+            span.set_attribute("output.turn_count", int(get_state_field(updated, "turn_count")))
+            if trace_full_state:
+                _trace_full_state_snapshot(span, updated, label="after")
             return updated
 
     async def route_node(state: LangGraphChatState) -> LangGraphChatState:
-        latest_user_message = _normalize_output(state.get("latest_user_message", ""))
-        chat_history = list(state.get("chat_history", []))
-        latest_session_id = _normalize_output(state.get("latest_session_id", "")).strip()
-        latest_generated_content = _normalize_output(state.get("latest_generated_content", ""))
+        current = ensure_langgraph_state(state)
+        latest_user_message = _normalize_output(get_state_field(current, "latest_user_message"))
+        chat_history = get_recent_messages(current)
+        latest_session_id = _normalize_output(get_state_field(current, "latest_session_id")).strip()
+        latest_generated_content = _normalize_output(
+            get_state_field(current, "latest_generated_content")
+        )
         if tracer is None:
             route_kind = await chat_agent.route(
                 latest_user_message,
@@ -398,148 +409,205 @@ async def build_langgraph_chat_graph(chat_agent: LangGraphRouterChatAgent, trace
                 latest_session_id=latest_session_id,
                 latest_generated_content=latest_generated_content,
             )
-            updated = dict(state)
-            updated["route_kind"] = route_kind
-            updated["route_model"] = chat_agent.last_route_model
-            updated["tool_name"] = ""
-            updated["tool_output"] = ""
-            updated["requested_session_id"] = ""
-            updated["pending_save_to_siyuan"] = _should_queue_save_after_response(
-                latest_user_message,
-                route_kind,
+            return set_state_fields(
+                dict(current),
+                route_kind=route_kind,
+                route_model=chat_agent.last_route_model,
+                tool_name="",
+                tool_output="",
+                requested_session_id="",
+                pending_save_to_siyuan=_should_queue_save_after_response(
+                    latest_user_message,
+                    route_kind,
+                ),
             )
-            return updated
         with tracer.start_as_current_span("langgraph-route") as span:
+            if trace_full_state:
+                _trace_full_state_snapshot(span, current, label="before")
             route_kind = await chat_agent.route(
                 latest_user_message,
                 chat_history,
                 latest_session_id=latest_session_id,
                 latest_generated_content=latest_generated_content,
             )
-            updated = dict(state)
-            updated["route_kind"] = route_kind
-            updated["route_model"] = chat_agent.last_route_model
-            updated["tool_name"] = ""
-            updated["tool_output"] = ""
-            updated["requested_session_id"] = ""
-            updated["pending_save_to_siyuan"] = _should_queue_save_after_response(
-                latest_user_message,
-                route_kind,
+            updated = set_state_fields(
+                dict(current),
+                route_kind=route_kind,
+                route_model=chat_agent.last_route_model,
+                tool_name="",
+                tool_output="",
+                requested_session_id="",
+                pending_save_to_siyuan=_should_queue_save_after_response(
+                    latest_user_message,
+                    route_kind,
+                ),
             )
             span.set_attribute("llm.model_name", chat_agent.last_route_model)
             span.set_attribute("input.value", latest_user_message)
             span.set_attribute("output.route_kind", route_kind)
             span.set_attribute(
                 "output.pending_save_to_siyuan",
-                bool(updated["pending_save_to_siyuan"]),
+                bool(get_state_field(updated, "pending_save_to_siyuan")),
             )
+            if trace_full_state:
+                _trace_full_state_snapshot(span, updated, label="after")
             return updated
 
     async def extract_session_id_node(state: LangGraphChatState) -> LangGraphChatState:
-        latest_user_message = _normalize_output(state.get("latest_user_message", ""))
-        chat_history = list(state.get("chat_history", []))
-        latest_session_id = _normalize_output(state.get("latest_session_id", "")).strip()
+        current = ensure_langgraph_state(state)
+        latest_user_message = _normalize_output(get_state_field(current, "latest_user_message"))
+        chat_history = get_recent_messages(current)
+        latest_session_id = _normalize_output(get_state_field(current, "latest_session_id")).strip()
         if tracer is None:
             requested_session_id = await chat_agent.extract_requested_session_id(
                 latest_user_message,
                 chat_history,
                 latest_session_id=latest_session_id,
             )
-            updated = dict(state)
-            updated["requested_session_id"] = requested_session_id
-            return updated
+            return set_state_fields(dict(current), requested_session_id=requested_session_id)
         with tracer.start_as_current_span("langgraph-extract-session-id") as span:
+            if trace_full_state:
+                _trace_full_state_snapshot(span, current, label="before")
             requested_session_id = await chat_agent.extract_requested_session_id(
                 latest_user_message,
                 chat_history,
                 latest_session_id=latest_session_id,
             )
-            updated = dict(state)
-            updated["requested_session_id"] = requested_session_id
+            updated = set_state_fields(dict(current), requested_session_id=requested_session_id)
             span.set_attribute("llm.model_name", chat_agent.last_route_model)
             span.set_attribute("input.value", latest_user_message)
             if latest_session_id:
                 span.set_attribute("session.id", latest_session_id)
             span.set_attribute("output.requested_session_id", requested_session_id or "NONE")
+            if trace_full_state:
+                _trace_full_state_snapshot(span, updated, label="after")
             return updated
 
     async def respond_fast_node(state: LangGraphChatState) -> LangGraphChatState:
-        latest_user_message = _normalize_output(state.get("latest_user_message", ""))
-        chat_history = list(state.get("chat_history", []))
-        tool_output = _normalize_output(state.get("tool_output", ""))
+        current = ensure_langgraph_state(state)
+        latest_user_message = _normalize_output(get_state_field(current, "latest_user_message"))
+        chat_history = get_recent_messages(current)
+        tool_output = _normalize_output(get_state_field(current, "tool_output"))
+        message_state = {
+            "chat_history": chat_history,
+        }
         if tracer is None:
             reply = await chat_agent.respond_fast(
                 latest_user_message,
                 chat_history,
                 tool_output=tool_output,
             )
-            updated = apply_assistant_message(dict(state), reply)
-            updated["incoming_prompt"] = ""
-            updated["reply_model"] = chat_agent.last_reply_model
-            updated["tool_output"] = ""
-            updated["requested_session_id"] = ""
+            message_update = apply_assistant_message(message_state, reply)
+            updated = set_recent_messages(dict(current), message_update.get("chat_history", []))
+            updated = set_state_fields(
+                updated,
+                incoming_prompt="",
+                reply_model=chat_agent.last_reply_model,
+                tool_output="",
+                requested_session_id="",
+                latest_assistant_message=reply,
+            )
             if _should_capture_generated_content(state):
-                updated["latest_generated_content"] = reply
-                updated["latest_generated_title"] = _infer_generated_title(reply)
+                updated = set_state_fields(
+                    updated,
+                    latest_generated_content=reply,
+                    latest_generated_title=_infer_generated_title(reply),
+                )
             return updated
         with tracer.start_as_current_span("langgraph-respond-fast") as span:
+            if trace_full_state:
+                _trace_full_state_snapshot(span, current, label="before")
             reply = await chat_agent.respond_fast(
                 latest_user_message,
                 chat_history,
                 tool_output=tool_output,
             )
-            updated = apply_assistant_message(dict(state), reply)
-            updated["incoming_prompt"] = ""
-            updated["reply_model"] = chat_agent.last_reply_model
-            updated["tool_output"] = ""
-            updated["requested_session_id"] = ""
+            message_update = apply_assistant_message(message_state, reply)
+            updated = set_recent_messages(dict(current), message_update.get("chat_history", []))
+            updated = set_state_fields(
+                updated,
+                incoming_prompt="",
+                reply_model=chat_agent.last_reply_model,
+                tool_output="",
+                requested_session_id="",
+                latest_assistant_message=reply,
+            )
             if _should_capture_generated_content(state):
-                updated["latest_generated_content"] = reply
-                updated["latest_generated_title"] = _infer_generated_title(reply)
+                updated = set_state_fields(
+                    updated,
+                    latest_generated_content=reply,
+                    latest_generated_title=_infer_generated_title(reply),
+                )
             span.set_attribute("llm.model_name", chat_agent.last_reply_model)
             span.set_attribute("input.value", latest_user_message)
-            if _normalize_output(state.get("tool_name", "")):
-                span.set_attribute("tool.name", _normalize_output(state.get("tool_name", "")))
-            if _normalize_output(state.get("latest_session_id", "")):
+            if _normalize_output(get_state_field(current, "tool_name")):
+                span.set_attribute("tool.name", _normalize_output(get_state_field(current, "tool_name")))
+            if _normalize_output(get_state_field(current, "latest_session_id")):
                 span.set_attribute(
                     "session.id",
-                    _normalize_output(state.get("latest_session_id", "")),
+                    _normalize_output(get_state_field(current, "latest_session_id")),
                 )
             span.set_attribute("output.value", reply)
+            if trace_full_state:
+                _trace_full_state_snapshot(span, updated, label="after")
             return updated
 
     async def respond_deep_node(state: LangGraphChatState) -> LangGraphChatState:
-        latest_user_message = _normalize_output(state.get("latest_user_message", ""))
-        chat_history = list(state.get("chat_history", []))
+        current = ensure_langgraph_state(state)
+        latest_user_message = _normalize_output(get_state_field(current, "latest_user_message"))
+        chat_history = get_recent_messages(current)
+        message_state = {
+            "chat_history": chat_history,
+        }
         if tracer is None:
             reply = await chat_agent.respond_deep(latest_user_message, chat_history)
-            updated = apply_assistant_message(dict(state), reply)
-            updated["incoming_prompt"] = ""
-            updated["reply_model"] = chat_agent.last_reply_model
-            updated["tool_output"] = ""
-            updated["requested_session_id"] = ""
+            message_update = apply_assistant_message(message_state, reply)
+            updated = set_recent_messages(dict(current), message_update.get("chat_history", []))
+            updated = set_state_fields(
+                updated,
+                incoming_prompt="",
+                reply_model=chat_agent.last_reply_model,
+                tool_output="",
+                requested_session_id="",
+                latest_assistant_message=reply,
+            )
             if _should_capture_generated_content(state):
-                updated["latest_generated_content"] = reply
-                updated["latest_generated_title"] = _infer_generated_title(reply)
+                updated = set_state_fields(
+                    updated,
+                    latest_generated_content=reply,
+                    latest_generated_title=_infer_generated_title(reply),
+                )
             return updated
         with tracer.start_as_current_span("langgraph-respond-deep") as span:
+            if trace_full_state:
+                _trace_full_state_snapshot(span, current, label="before")
             reply = await chat_agent.respond_deep(latest_user_message, chat_history)
-            updated = apply_assistant_message(dict(state), reply)
-            updated["incoming_prompt"] = ""
-            updated["reply_model"] = chat_agent.last_reply_model
-            updated["tool_output"] = ""
-            updated["requested_session_id"] = ""
+            message_update = apply_assistant_message(message_state, reply)
+            updated = set_recent_messages(dict(current), message_update.get("chat_history", []))
+            updated = set_state_fields(
+                updated,
+                incoming_prompt="",
+                reply_model=chat_agent.last_reply_model,
+                tool_output="",
+                requested_session_id="",
+                latest_assistant_message=reply,
+            )
             if _should_capture_generated_content(state):
-                updated["latest_generated_content"] = reply
-                updated["latest_generated_title"] = _infer_generated_title(reply)
+                updated = set_state_fields(
+                    updated,
+                    latest_generated_content=reply,
+                    latest_generated_title=_infer_generated_title(reply),
+                )
             span.set_attribute("llm.model_name", chat_agent.last_reply_model)
             span.set_attribute("input.value", latest_user_message)
-            if _normalize_output(state.get("latest_session_id", "")):
+            if _normalize_output(get_state_field(current, "latest_session_id")):
                 span.set_attribute(
                     "session.id",
-                    _normalize_output(state.get("latest_session_id", "")),
+                    _normalize_output(get_state_field(current, "latest_session_id")),
                 )
             span.set_attribute("output.value", reply)
+            if trace_full_state:
+                _trace_full_state_snapshot(span, updated, label="after")
             return updated
 
     builder = StateGraph(LangGraphChatState)
@@ -548,15 +616,27 @@ async def build_langgraph_chat_graph(chat_agent: LangGraphRouterChatAgent, trace
     builder.add_node("extract_session_id", extract_session_id_node)
     builder.add_node(
         "tool_list_sessions",
-        build_tool_list_sessions_node(cfg=chat_agent.cfg, tracer=tracer),
+        build_tool_list_sessions_node(
+            cfg=chat_agent.cfg,
+            tracer=tracer,
+            trace_full_state=trace_full_state,
+        ),
     )
     builder.add_node(
         "tool_query_conversation",
-        build_tool_query_conversation_node(cfg=chat_agent.cfg, tracer=tracer),
+        build_tool_query_conversation_node(
+            cfg=chat_agent.cfg,
+            tracer=tracer,
+            trace_full_state=trace_full_state,
+        ),
     )
     builder.add_node(
         "tool_save_to_siyuan",
-        build_tool_save_to_siyuan_node(cfg=chat_agent.cfg, tracer=tracer),
+        build_tool_save_to_siyuan_node(
+            cfg=chat_agent.cfg,
+            tracer=tracer,
+            trace_full_state=trace_full_state,
+        ),
     )
     builder.add_node("respond_fast", respond_fast_node)
     builder.add_node("respond_deep", respond_deep_node)
@@ -604,9 +684,11 @@ class LangGraphChatSession:
         cfg: AgentConfig,
         emit: Callable[[str], None],
         on_thinking: Callable[[], None] | None = None,
+        trace_full_state: bool = False,
     ) -> None:
         self.cfg = cfg
         self._emit = emit
+        self._trace_full_state = trace_full_state
         self._chat_agent = LangGraphRouterChatAgent(cfg=cfg, on_thinking=on_thinking)
         self._tracer = build_phoenix_tracer(cfg)
         self._graph = None
@@ -618,9 +700,19 @@ class LangGraphChatSession:
         cfg: AgentConfig,
         emit: Callable[[str], None],
         on_thinking: Callable[[], None] | None = None,
+        trace_full_state: bool = False,
     ) -> "LangGraphChatSession":
-        session = cls(cfg=cfg, emit=emit, on_thinking=on_thinking)
-        session._graph = await build_langgraph_chat_graph(session._chat_agent, session._tracer)
+        session = cls(
+            cfg=cfg,
+            emit=emit,
+            on_thinking=on_thinking,
+            trace_full_state=trace_full_state,
+        )
+        session._graph = await build_langgraph_chat_graph(
+            session._chat_agent,
+            session._tracer,
+            trace_full_state=trace_full_state,
+        )
         return session
 
     async def reset(self) -> None:
@@ -630,36 +722,36 @@ class LangGraphChatSession:
         if self._graph is None:
             raise RuntimeError("LangGraph chat application is not initialized.")
         if self._tracer is None:
-            payload = dict(self._state)
-            payload["incoming_prompt"] = text
+            payload = set_state_fields(dict(self._state), incoming_prompt=text)
             result = await self._graph.ainvoke(payload)
-            state = dict(result)
-            state["incoming_prompt"] = ""
+            state = set_state_fields(ensure_langgraph_state(result), incoming_prompt="")
             self._state = state
-            return _normalize_output(self._state["latest_assistant_message"])
+            return _normalize_output(get_state_field(self._state, "latest_assistant_message"))
         with self._tracer.start_as_current_span("langgraph-chat-turn") as span:
-            payload = dict(self._state)
-            payload["incoming_prompt"] = text
+            if self._trace_full_state:
+                _trace_full_state_snapshot(span, self._state, label="before")
+            payload = set_state_fields(dict(self._state), incoming_prompt=text)
             span.set_attribute("framework", "langgraph")
             span.set_attribute("agent.name", self.cfg.agent_name)
             span.set_attribute("input.value", text)
-            span.set_attribute("input.turn_count", int(self._state.get("turn_count", 0)))
+            span.set_attribute("input.turn_count", int(get_state_field(self._state, "turn_count")))
             result = await self._graph.ainvoke(payload)
-            state = dict(result)
-            state["incoming_prompt"] = ""
+            state = set_state_fields(ensure_langgraph_state(result), incoming_prompt="")
             self._state = state
-            output = _normalize_output(self._state["latest_assistant_message"])
-            span.set_attribute("route.kind", _normalize_output(self._state.get("route_kind", "")))
-            span.set_attribute("route.model", _normalize_output(self._state.get("route_model", "")))
-            span.set_attribute("llm.model_name", _normalize_output(self._state.get("reply_model", "")))
-            if _normalize_output(self._state.get("tool_name", "")):
-                span.set_attribute("tool.name", _normalize_output(self._state.get("tool_name", "")))
-            if _normalize_output(self._state.get("latest_session_id", "")):
+            output = _normalize_output(get_state_field(self._state, "latest_assistant_message"))
+            span.set_attribute("route.kind", _normalize_output(get_state_field(self._state, "route_kind")))
+            span.set_attribute("route.model", _normalize_output(get_state_field(self._state, "route_model")))
+            span.set_attribute("llm.model_name", _normalize_output(get_state_field(self._state, "reply_model")))
+            if _normalize_output(get_state_field(self._state, "tool_name")):
+                span.set_attribute("tool.name", _normalize_output(get_state_field(self._state, "tool_name")))
+            if _normalize_output(get_state_field(self._state, "latest_session_id")):
                 span.set_attribute(
                     "session.id",
-                    _normalize_output(self._state.get("latest_session_id", "")),
+                    _normalize_output(get_state_field(self._state, "latest_session_id")),
                 )
             span.set_attribute("output.value", output)
+            if self._trace_full_state:
+                _trace_full_state_snapshot(span, self._state, label="after")
             return output
 
 
@@ -667,9 +759,15 @@ async def run_langgraph_chat(
     cfg: AgentConfig,
     emit: Callable[[str], None] = print,
     on_thinking: Callable[[], None] | None = None,
+    trace_full_state: bool = False,
 ) -> None:
     """Run the minimal LangGraph-backed chat REPL."""
-    session = await LangGraphChatSession.create(cfg=cfg, emit=emit, on_thinking=on_thinking)
+    session = await LangGraphChatSession.create(
+        cfg=cfg,
+        emit=emit,
+        on_thinking=on_thinking,
+        trace_full_state=trace_full_state,
+    )
     prompt_session = PromptSession()
     while True:
         try:

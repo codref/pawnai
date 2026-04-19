@@ -207,6 +207,10 @@ def chat(
         False, "--langgraph",
         help="Run the minimal LangGraph-managed chat evaluation path (basic conversation only)."
     ),
+    langgraph_trace_state: bool = typer.Option(
+        False, "--langgraph-trace-state",
+        help="When using --langgraph, attach the full LangGraph state as JSON to Phoenix spans for debugging.",
+    ),
     burr_graph: Optional[str] = typer.Option(
         None, "--burr-graph",
         help="When using --burr, save the Burr state-machine graph to this file (for example graph.png)."
@@ -251,6 +255,9 @@ def chat(
 
     if burr and langgraph:
         console.print("[red]Choose only one orchestration mode: --burr or --langgraph.[/red]")
+        raise typer.Exit(1)
+    if langgraph_trace_state and not langgraph:
+        console.print("[red]--langgraph-trace-state requires --langgraph.[/red]")
         raise typer.Exit(1)
 
     if burr:
@@ -311,6 +318,7 @@ def chat(
                     cfg=cfg,
                     emit=_rich_emit,
                     on_thinking=_on_thinking,
+                    trace_full_state=langgraph_trace_state,
                 )
             )
         except Exception as exc:

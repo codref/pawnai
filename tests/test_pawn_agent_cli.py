@@ -160,6 +160,29 @@ def test_chat_langgraph_mode_routes_to_langgraph_runner() -> None:
     assert captured["cfg"] is cfg
     assert callable(captured["emit"])
     assert callable(captured["on_thinking"])
+    assert captured["trace_full_state"] is False
+
+
+def test_chat_langgraph_mode_passes_trace_state_flag() -> None:
+    captured: dict[str, object] = {}
+
+    async def fake_run_langgraph_chat(**kwargs) -> None:
+        captured.update(kwargs)
+
+    cfg = SimpleNamespace(
+        db_dsn="postgresql://dummy",
+        agent_name="Bob",
+        pydantic_model="openai:gpt-4o",
+    )
+
+    with (
+        patch("pawn_agent.utils.config.load_config", return_value=cfg),
+        patch("pawn_agent.core.langgraph_chat.run_langgraph_chat", side_effect=fake_run_langgraph_chat),
+    ):
+        result = runner.invoke(app, ["chat", "--langgraph", "--langgraph-trace-state"])
+
+    assert result.exit_code == 0
+    assert captured["trace_full_state"] is True
 
 
 def test_chat_langgraph_mode_rejects_session_flag() -> None:
@@ -174,6 +197,20 @@ def test_chat_langgraph_mode_rejects_session_flag() -> None:
 
     assert result.exit_code == 1
     assert "LangGraph mode does not support --session yet" in result.stdout
+
+
+def test_chat_langgraph_trace_state_requires_langgraph_flag() -> None:
+    cfg = SimpleNamespace(
+        db_dsn="postgresql://dummy",
+        agent_name="Bob",
+        pydantic_model="openai:gpt-4o",
+    )
+
+    with patch("pawn_agent.utils.config.load_config", return_value=cfg):
+        result = runner.invoke(app, ["chat", "--langgraph-trace-state"])
+
+    assert result.exit_code == 1
+    assert "--langgraph-trace-state requires --langgraph" in result.stdout
 
 
 def test_chat_rejects_multiple_orchestrators() -> None:

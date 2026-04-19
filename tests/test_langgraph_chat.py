@@ -15,6 +15,7 @@ from pawn_agent.core.langgraph_chat import (
     new_langgraph_chat_state,
 )
 from pawn_agent.core.langgraph_tools import (
+    build_tool_query_conversation_node,
     resolve_session_id_for_tool,
     resolve_session_id_from_list_output,
     run_list_sessions_tool,
@@ -32,21 +33,28 @@ from pawn_agent.utils.config import load_config
 
 def test_new_langgraph_chat_state_resets_history() -> None:
     assert new_langgraph_chat_state() == {
-        "incoming_prompt": "",
-        "chat_history": [],
-        "latest_user_message": "",
-        "latest_assistant_message": "",
-        "turn_count": 0,
-        "route_kind": "",
-        "route_model": "",
-        "reply_model": "",
-        "tool_name": "",
-        "tool_output": "",
-        "latest_session_id": "",
-        "requested_session_id": "",
-        "pending_save_to_siyuan": False,
-        "latest_generated_content": "",
-        "latest_generated_title": "",
+        "session_state": {
+            "incoming_prompt": "",
+            "latest_user_message": "",
+            "latest_assistant_message": "",
+            "turn_count": 0,
+            "route_kind": "",
+            "route_model": "",
+            "reply_model": "",
+            "tool_name": "",
+            "requested_session_id": "",
+            "pending_save_to_siyuan": False,
+        },
+        "durable_facts": {
+            "latest_session_id": "",
+        },
+        "artifacts": {
+            "tool_output": "",
+            "latest_generated_content": "",
+            "latest_generated_title": "",
+            "session_catalog_output": "",
+        },
+        "recent_messages": [],
     }
 
 
@@ -217,6 +225,17 @@ def test_build_phoenix_tracer_passes_configuration() -> None:
         "headers": {"authorization": "Bearer secret-token"},
     }
     assert trace_calls == ["pawn_agent.core.langgraph_chat"]
+
+
+def test_serialize_langgraph_state_returns_json_snapshot() -> None:
+    from pawn_agent.core.langgraph_state import serialize_langgraph_state
+
+    state_json = serialize_langgraph_state(new_langgraph_chat_state())
+
+    assert '"session_state"' in state_json
+    assert '"durable_facts"' in state_json
+    assert '"artifacts"' in state_json
+    assert '"recent_messages"' in state_json
 
 
 def test_list_sessions_impl_formats_rows() -> None:
@@ -687,8 +706,10 @@ def test_langgraph_router_agent_routes_to_save_to_siyuan_tool(tmp_path: Path) ->
 
 def test_langgraph_session_tool_helper_prefers_current_turn_id() -> None:
     state = {
-        "requested_session_id": "sess-456",
-        "latest_session_id": "sess-123",
+        "session_state": {"requested_session_id": "sess-456"},
+        "durable_facts": {"latest_session_id": "sess-123"},
+        "artifacts": {},
+        "recent_messages": [],
     }
 
     assert resolve_session_id_for_tool(state) == "sess-456"
@@ -696,11 +717,81 @@ def test_langgraph_session_tool_helper_prefers_current_turn_id() -> None:
 
 def test_langgraph_session_tool_helper_falls_back_to_latest_session_id() -> None:
     state = {
-        "requested_session_id": "",
-        "latest_session_id": "sess-123",
+        "session_state": {"requested_session_id": "", "latest_user_message": "yes"},
+        "durable_facts": {"latest_session_id": "sess-123"},
+        "artifacts": {},
+        "recent_messages": [],
     }
 
     assert resolve_session_id_for_tool(state) == "sess-123"
+
+
+def test_langgraph_session_tool_helper_resolves_named_session_from_catalog() -> None:
+    state = {
+        "session_state": {
+            "requested_session_id": "tom",
+            "latest_user_message": "retrieve latest tom session",
+        },
+        "durable_facts": {"latest_session_id": ""},
+        "artifacts": {
+            "session_catalog_output": (
+                "Found 3 session(s):\n"
+                "  oci-20260416  |  segments: 1  |  duration: 1m 00s  |  updated: 2026-04-16 15:57\n"
+                "  tom-20260416  |  segments: 2  |  duration: 2m 00s  |  updated: 2026-04-16 15:41\n"
+                "  tom-20260415  |  segments: 3  |  duration: 3m 00s  |  updated: 2026-04-15 16:32"
+            )
+        },
+        "recent_messages": [],
+    }
+
+    assert resolve_session_id_for_tool(state) == "tom-20260416"
+
+
+def test_tool_query_conversation_bootstraps_session_catalog_for_first_turn_lookup() -> None:
+    cfg = SimpleNamespace()
+    node = build_tool_query_conversation_node(cfg=cfg)
+    state = {
+        "session_state": {
+            "latest_user_message": (
+                "retrieve latest tom conversation available and save to siyuan "
+                "a deep report ready for executive presentation"
+            ),
+            "requested_session_id": "",
+            "pending_save_to_siyuan": True,
+        },
+        "durable_facts": {"latest_session_id": ""},
+        "artifacts": {
+            "session_catalog_output": "",
+            "tool_output": "",
+        },
+        "recent_messages": [],
+    }
+    catalog_output = (
+        "Found 3 session(s):\n"
+        "  oci-20260416  |  segments: 138  |  duration: 19m 53s  |  updated: 2026-04-16 15:57\n"
+        "  tom-20260416  |  segments: 564  |  duration: 1h 03m 38s  |  updated: 2026-04-16 15:41\n"
+        "  tom-20260415  |  segments: 706  |  duration: 1h 10m 05s  |  updated: 2026-04-15 16:32"
+    )
+
+    with (
+        patch(
+            "pawn_agent.core.langgraph_tools.run_list_sessions_tool",
+            return_value=catalog_output,
+        ) as mock_list,
+        patch(
+            "pawn_agent.core.langgraph_tools.run_query_conversation_tool",
+            return_value="Speaker A: hi\nSpeaker B: hello",
+        ) as mock_query,
+    ):
+        updated = node(state)
+
+    assert updated["durable_facts"]["latest_session_id"] == "tom-20260416"
+    assert updated["artifacts"]["session_catalog_output"] == catalog_output
+    assert updated["artifacts"]["tool_output"] == "Speaker A: hi\nSpeaker B: hello"
+    assert updated["session_state"]["tool_name"] == "query_conversation"
+    assert updated["session_state"]["pending_save_to_siyuan"] is True
+    mock_list.assert_called_once_with(cfg)
+    mock_query.assert_called_once_with(cfg, "tom-20260416")
 
 
 def test_langgraph_list_sessions_helper_prefers_matching_session() -> None:
@@ -839,15 +930,20 @@ def test_langgraph_chat_session_handles_turns_and_reset(tmp_path: Path) -> None:
     class FakeGraph:
         async def ainvoke(self, payload):
             payloads.append(dict(payload))
-            history = list(payload.get("chat_history", []))
-            history.append({"role": "user", "content": payload["incoming_prompt"]})
-            history.append({"role": "assistant", "content": f"echo:{payload['incoming_prompt']}"})
+            history = list(payload.get("recent_messages", []))
+            incoming_prompt = payload["session_state"]["incoming_prompt"]
+            history.append({"role": "user", "content": incoming_prompt})
+            history.append({"role": "assistant", "content": f"echo:{incoming_prompt}"})
             return {
-                "incoming_prompt": "",
-                "chat_history": history,
-                "latest_user_message": payload["incoming_prompt"],
-                "latest_assistant_message": f"echo:{payload['incoming_prompt']}",
-                "turn_count": int(payload.get("turn_count", 0)) + 1,
+                "session_state": {
+                    "incoming_prompt": "",
+                    "latest_user_message": incoming_prompt,
+                    "latest_assistant_message": f"echo:{incoming_prompt}",
+                    "turn_count": int(payload["session_state"].get("turn_count", 0)) + 1,
+                },
+                "recent_messages": history,
+                "durable_facts": {},
+                "artifacts": {},
             }
 
     with (
@@ -861,8 +957,8 @@ def test_langgraph_chat_session_handles_turns_and_reset(tmp_path: Path) -> None:
 
     assert first == "echo:hello"
     assert second == "echo:again"
-    assert payloads[0]["chat_history"] == []
-    assert payloads[1]["chat_history"] == [
+    assert payloads[0]["recent_messages"] == []
+    assert payloads[1]["recent_messages"] == [
         {"role": "user", "content": "hello"},
         {"role": "assistant", "content": "echo:hello"},
     ]
@@ -998,9 +1094,9 @@ def test_langgraph_chat_session_reuses_and_overrides_latest_session_id(tmp_path:
         "oci-20260416",
         "oci-20260417",
     ]
-    assert session._state["latest_session_id"] == "oci-20260417"
-    assert session._state["requested_session_id"] == ""
-    assert session._state["tool_output"] == ""
+    assert session._state["durable_facts"]["latest_session_id"] == "oci-20260417"
+    assert session._state["session_state"]["requested_session_id"] == ""
+    assert session._state["artifacts"]["tool_output"] == ""
 
 
 def test_langgraph_chat_session_promotes_latest_session_id_from_list_results(tmp_path: Path) -> None:
@@ -1137,7 +1233,291 @@ def test_langgraph_chat_session_promotes_latest_session_id_from_list_results(tmp
 
     assert first == "The most recent session was oci-20260416."
     assert second == "# Executive Summary\n\nFresh summary."
-    assert session._state["latest_session_id"] == "oci-20260416"
+    assert session._state["durable_facts"]["latest_session_id"] == "oci-20260416"
+
+
+def test_langgraph_chat_session_resolves_named_session_and_confirmation_from_catalog(
+    tmp_path: Path,
+) -> None:
+    cfg_file = tmp_path / "pawnai.yaml"
+    cfg_file.write_text(
+        "agent:\n"
+        "  openai:\n"
+        "    fast_model: gemma4:e4b\n"
+        "    model: gemma4:26b\n"
+        "    base_url: http://localhost:11434/v1\n"
+        "    api_key: ollama\n",
+        encoding="utf-8",
+    )
+    cfg = load_config(str(cfg_file))
+
+    class FakeCompiledGraph:
+        def __init__(self, nodes) -> None:
+            self._nodes = nodes
+            self._route_fn = None
+
+        def set_route_fn(self, route_fn) -> None:
+            self._route_fn = route_fn
+
+        async def ainvoke(self, payload):
+            state = dict(payload)
+            state = self._nodes["human_input"](state)
+            state = await self._nodes["route"](state)
+            next_node = self._route_fn(state)
+            if next_node == "extract_session_id":
+                state = await self._nodes[next_node](state)
+                next_node = "tool_query_conversation"
+            if next_node in {"tool_list_sessions", "tool_query_conversation"}:
+                state = self._nodes[next_node](state)
+                next_node = "respond_fast"
+            return await self._nodes[next_node](state)
+
+    class FakeStateGraph:
+        def __init__(self, _state_schema) -> None:
+            self._nodes: dict[str, object] = {}
+            self._route_fn = None
+
+        def add_node(self, name, fn) -> None:
+            self._nodes[name] = fn
+
+        def add_edge(self, _start, _end) -> None:
+            return None
+
+        def add_conditional_edges(self, start, fn, _path_map) -> None:
+            if start == "route":
+                self._route_fn = fn
+
+        def compile(self):
+            graph = FakeCompiledGraph(self._nodes)
+            graph.set_route_fn(self._route_fn)
+            return graph
+
+    class FakeChatAgent:
+        last_route_kind = ""
+        last_route_model = "openai:gemma4:e4b"
+        last_reply_model = ""
+        last_tool_name = ""
+
+        async def route(
+            self,
+            user_prompt: str,
+            chat_history: list[dict[str, str]],
+            *,
+            latest_session_id: str = "",
+            latest_generated_content: str = "",
+        ) -> str:
+            if user_prompt == "list latest sessions":
+                return "tool_list_sessions"
+            if user_prompt in {"retrieve latest tom session", "yes"}:
+                return "tool_query_conversation"
+            raise AssertionError(f"Unexpected prompt: {user_prompt}")
+
+        async def extract_requested_session_id(
+            self,
+            user_prompt: str,
+            chat_history: list[dict[str, str]],
+            *,
+            latest_session_id: str = "",
+        ) -> str:
+            if user_prompt == "retrieve latest tom session":
+                return "tom"
+            if user_prompt == "yes":
+                assert latest_session_id == "tom-20260416"
+                return ""
+            raise AssertionError(f"Unexpected prompt: {user_prompt}")
+
+        async def respond_fast(
+            self,
+            user_prompt: str,
+            chat_history: list[dict[str, str]],
+            *,
+            tool_output: str = "",
+        ) -> str:
+            self.last_reply_model = "openai:gemma4:e4b"
+            if user_prompt == "list latest sessions":
+                return "Here are the latest sessions."
+            if user_prompt == "retrieve latest tom session":
+                assert tool_output == "Transcript for tom-20260416"
+                return "Loaded tom-20260416."
+            if user_prompt == "yes":
+                assert tool_output == "Transcript for tom-20260416"
+                return "Loaded tom-20260416 again."
+            raise AssertionError(f"Unexpected prompt: {user_prompt}")
+
+        async def respond_deep(self, user_prompt: str, chat_history: list[dict[str, str]]) -> str:
+            raise AssertionError("Deep responder should not run in this test.")
+
+    queried_ids: list[str] = []
+
+    with (
+        patch(
+            "pawn_agent.core.langgraph_chat._import_langgraph_core",
+            return_value=(FakeStateGraph, "__start__", "__end__"),
+        ),
+        patch(
+            "pawn_agent.core.langgraph_chat.LangGraphRouterChatAgent",
+            return_value=FakeChatAgent(),
+        ),
+        patch("pawn_agent.core.langgraph_chat.build_phoenix_tracer", return_value=None),
+        patch(
+            "pawn_agent.core.langgraph_tools.run_list_sessions_tool",
+            return_value=(
+                "Found 3 session(s):\n"
+                "  oci-20260416  |  segments: 1  |  duration: 1m 00s  |  updated: 2026-04-16 15:57\n"
+                "  tom-20260416  |  segments: 2  |  duration: 2m 00s  |  updated: 2026-04-16 15:41\n"
+                "  tom-20260415  |  segments: 3  |  duration: 3m 00s  |  updated: 2026-04-15 16:32"
+            ),
+        ),
+        patch(
+            "pawn_agent.core.langgraph_tools.run_query_conversation_tool",
+            side_effect=lambda cfg, session_id: queried_ids.append(session_id)
+            or f"Transcript for {session_id}",
+        ),
+    ):
+        session = asyncio.run(LangGraphChatSession.create(cfg=cfg, emit=lambda _text: None))
+        first = asyncio.run(session.handle_user_input("list latest sessions"))
+        second = asyncio.run(session.handle_user_input("retrieve latest tom session"))
+        third = asyncio.run(session.handle_user_input("yes"))
+
+    assert first == "Here are the latest sessions."
+    assert second == "Loaded tom-20260416."
+    assert third == "Loaded tom-20260416 again."
+    assert queried_ids == ["tom-20260416", "tom-20260416"]
+    assert session._state["durable_facts"]["latest_session_id"] == "tom-20260416"
+
+
+def test_langgraph_chat_session_preserves_session_focus_after_transcript_summary(
+    tmp_path: Path,
+) -> None:
+    cfg_file = tmp_path / "pawnai.yaml"
+    cfg_file.write_text(
+        "agent:\n"
+        "  openai:\n"
+        "    fast_model: gemma4:e4b\n"
+        "    model: gemma4:26b\n"
+        "    base_url: http://localhost:11434/v1\n"
+        "    api_key: ollama\n",
+        encoding="utf-8",
+    )
+    cfg = load_config(str(cfg_file))
+
+    class FakeCompiledGraph:
+        def __init__(self, nodes) -> None:
+            self._nodes = nodes
+            self._route_fn = None
+
+        def set_route_fn(self, route_fn) -> None:
+            self._route_fn = route_fn
+
+        async def ainvoke(self, payload):
+            state = dict(payload)
+            state = self._nodes["human_input"](state)
+            state = await self._nodes["route"](state)
+            next_node = self._route_fn(state)
+            if next_node == "extract_session_id":
+                state = await self._nodes[next_node](state)
+                next_node = "tool_query_conversation"
+            if next_node in {"tool_list_sessions", "tool_query_conversation", "tool_save_to_siyuan"}:
+                state = self._nodes[next_node](state)
+                next_node = "respond_fast"
+            state = await self._nodes[next_node](state)
+            return state
+
+    class FakeStateGraph:
+        def __init__(self, _state_schema) -> None:
+            self._nodes: dict[str, object] = {}
+            self._route_fn = None
+
+        def add_node(self, name, fn) -> None:
+            self._nodes[name] = fn
+
+        def add_edge(self, _start, _end) -> None:
+            return None
+
+        def add_conditional_edges(self, start, fn, _path_map) -> None:
+            if start == "route":
+                self._route_fn = fn
+
+        def compile(self):
+            graph = FakeCompiledGraph(self._nodes)
+            graph.set_route_fn(self._route_fn)
+            return graph
+
+    class FakeChatAgent:
+        last_route_kind = ""
+        last_route_model = "openai:gemma4:e4b"
+        last_reply_model = ""
+        last_tool_name = ""
+
+        async def route(
+            self,
+            user_prompt: str,
+            chat_history: list[dict[str, str]],
+            *,
+            latest_session_id: str = "",
+            latest_generated_content: str = "",
+        ) -> str:
+            if user_prompt == "retrieve latest tom session":
+                return "tool_query_conversation"
+            if user_prompt == "save a deep analysis of the conversation in siyuan":
+                assert latest_session_id == "tom-20260416"
+                assert latest_generated_content == "Summary of tom-20260416."
+                return "tool_save_to_siyuan"
+            raise AssertionError(f"Unexpected prompt: {user_prompt}")
+
+        async def extract_requested_session_id(
+            self,
+            user_prompt: str,
+            chat_history: list[dict[str, str]],
+            *,
+            latest_session_id: str = "",
+        ) -> str:
+            return "tom-20260416"
+
+        async def respond_fast(
+            self,
+            user_prompt: str,
+            chat_history: list[dict[str, str]],
+            *,
+            tool_output: str = "",
+        ) -> str:
+            self.last_reply_model = "openai:gemma4:e4b"
+            if user_prompt == "retrieve latest tom session":
+                assert tool_output == "Transcript for tom-20260416"
+                return "Summary of tom-20260416."
+            if user_prompt == "save a deep analysis of the conversation in siyuan":
+                return f"Saved to SiYuan: {tool_output}"
+            raise AssertionError(f"Unexpected prompt: {user_prompt}")
+
+        async def respond_deep(self, user_prompt: str, chat_history: list[dict[str, str]]) -> str:
+            raise AssertionError("Deep responder should not run in this test.")
+
+    with (
+        patch(
+            "pawn_agent.core.langgraph_chat._import_langgraph_core",
+            return_value=(FakeStateGraph, "__start__", "__end__"),
+        ),
+        patch(
+            "pawn_agent.core.langgraph_chat.LangGraphRouterChatAgent",
+            return_value=FakeChatAgent(),
+        ),
+        patch("pawn_agent.core.langgraph_chat.build_phoenix_tracer", return_value=None),
+        patch(
+            "pawn_agent.core.langgraph_tools.run_query_conversation_tool",
+            return_value="Transcript for tom-20260416",
+        ),
+        patch(
+            "pawn_agent.core.langgraph_tools.run_save_to_siyuan_tool",
+            return_value="siyuan://blocks/doc-123",
+        ),
+    ):
+        session = asyncio.run(LangGraphChatSession.create(cfg=cfg, emit=lambda _text: None))
+        first = asyncio.run(session.handle_user_input("retrieve latest tom session"))
+        second = asyncio.run(session.handle_user_input("save a deep analysis of the conversation in siyuan"))
+
+    assert first == "Summary of tom-20260416."
+    assert second == "Saved to SiYuan: siyuan://blocks/doc-123"
+    assert session._state["durable_facts"]["latest_session_id"] == "tom-20260416"
 
 
 def test_langgraph_chat_session_saves_latest_generated_content_to_siyuan(tmp_path: Path) -> None:
@@ -1283,9 +1663,9 @@ def test_langgraph_chat_session_saves_latest_generated_content_to_siyuan(tmp_pat
         "# Executive Report\n\nThis is the report.",
         title="Executive Report",
     )
-    assert session._state["latest_generated_content"] == "# Executive Report\n\nThis is the report."
-    assert session._state["latest_generated_title"] == "Executive Report"
-    assert session._state["latest_session_id"] == "oci-20260416"
+    assert session._state["artifacts"]["latest_generated_content"] == "# Executive Report\n\nThis is the report."
+    assert session._state["artifacts"]["latest_generated_title"] == "Executive Report"
+    assert session._state["durable_facts"]["latest_session_id"] == "oci-20260416"
 
 
 def test_langgraph_chat_session_refreshes_session_analysis_before_saving(tmp_path: Path) -> None:
@@ -1416,9 +1796,9 @@ def test_langgraph_chat_session_refreshes_session_analysis_before_saving(tmp_pat
         ) as mock_save,
     ):
         session = asyncio.run(LangGraphChatSession.create(cfg=cfg, emit=lambda _text: None))
-        session._state["latest_session_id"] = "oci-20260416"
-        session._state["latest_generated_content"] = "# Old Summary\n\nStale"
-        session._state["latest_generated_title"] = "Old Summary"
+        session._state["durable_facts"]["latest_session_id"] = "oci-20260416"
+        session._state["artifacts"]["latest_generated_content"] = "# Old Summary\n\nStale"
+        session._state["artifacts"]["latest_generated_title"] = "Old Summary"
         reply = asyncio.run(
             session.handle_user_input("extract an executive summary and save it to siyuan")
         )
@@ -1430,9 +1810,9 @@ def test_langgraph_chat_session_refreshes_session_analysis_before_saving(tmp_pat
         "# Executive Summary\n\nFresh summary from transcript.",
         title="Executive Summary",
     )
-    assert session._state["latest_generated_content"] == "# Executive Summary\n\nFresh summary from transcript."
-    assert session._state["latest_generated_title"] == "Executive Summary"
-    assert session._state["pending_save_to_siyuan"] is False
+    assert session._state["artifacts"]["latest_generated_content"] == "# Executive Summary\n\nFresh summary from transcript."
+    assert session._state["artifacts"]["latest_generated_title"] == "Executive Summary"
+    assert session._state["session_state"]["pending_save_to_siyuan"] is False
 
 
 def test_langgraph_chat_session_save_to_siyuan_requires_session_id(tmp_path: Path) -> None:
@@ -1527,7 +1907,7 @@ def test_langgraph_chat_session_save_to_siyuan_requires_session_id(tmp_path: Pat
         ),
     ):
         session = asyncio.run(LangGraphChatSession.create(cfg=cfg, emit=lambda _text: None))
-        session._state["latest_generated_content"] = "# Executive Report\n\nHello"
+        session._state["artifacts"]["latest_generated_content"] = "# Executive Report\n\nHello"
         reply = asyncio.run(session.handle_user_input("save the analysis into siyuan"))
 
     assert reply == (
@@ -1629,7 +2009,7 @@ def test_langgraph_chat_session_save_to_siyuan_requires_generated_content(tmp_pa
         ),
     ):
         session = asyncio.run(LangGraphChatSession.create(cfg=cfg, emit=lambda _text: None))
-        session._state["latest_session_id"] = "oci-20260416"
+        session._state["durable_facts"]["latest_session_id"] = "oci-20260416"
         reply = asyncio.run(session.handle_user_input("save the analysis into siyuan"))
 
     assert reply == (
@@ -1750,8 +2130,8 @@ def test_langgraph_chat_session_reports_missing_session_id_for_session_tool(tmp_
         "I need a session id to retrieve a conversation. "
         "Ask for available sessions first or specify the session id."
     )
-    assert session._state["latest_session_id"] == ""
-    assert session._state["requested_session_id"] == ""
+    assert session._state["durable_facts"]["latest_session_id"] == ""
+    assert session._state["session_state"]["requested_session_id"] == ""
 
 
 def test_langgraph_chat_session_emits_phoenix_spans(tmp_path: Path) -> None:
@@ -2009,9 +2389,9 @@ def test_langgraph_chat_session_emits_save_to_siyuan_spans(tmp_path: Path) -> No
         ),
     ):
         session = asyncio.run(LangGraphChatSession.create(cfg=cfg, emit=lambda _text: None))
-        session._state["latest_session_id"] = "oci-20260416"
-        session._state["latest_generated_content"] = "# Executive Report\n\nHello"
-        session._state["latest_generated_title"] = "Executive Report"
+        session._state["durable_facts"]["latest_session_id"] = "oci-20260416"
+        session._state["artifacts"]["latest_generated_content"] = "# Executive Report\n\nHello"
+        session._state["artifacts"]["latest_generated_title"] = "Executive Report"
         reply = asyncio.run(session.handle_user_input("save the analysis into siyuan"))
 
     assert reply == "Saved to SiYuan: siyuan://blocks/doc-123"
@@ -2026,3 +2406,126 @@ def test_langgraph_chat_session_emits_save_to_siyuan_spans(tmp_path: Path) -> No
     assert ("attr", "langgraph-tool-save-to-siyuan", "tool.name", "save_to_siyuan") in span_events
     assert ("attr", "langgraph-tool-save-to-siyuan", "session.id", "oci-20260416") in span_events
     assert ("attr", "langgraph-chat-turn", "tool.name", "save_to_siyuan") in span_events
+
+
+def test_langgraph_chat_session_traces_full_state_when_enabled(tmp_path: Path) -> None:
+    cfg_file = tmp_path / "pawnai.yaml"
+    cfg_file.write_text(
+        "agent:\n"
+        "  name: Bob\n"
+        "  openai:\n"
+        "    fast_model: gemma4:e4b\n"
+        "    model: gemma4:26b\n"
+        "    base_url: http://localhost:11434/v1\n"
+        "    api_key: ollama\n",
+        encoding="utf-8",
+    )
+    cfg = load_config(str(cfg_file))
+    span_events: list[tuple[str, str, object | None, object | None]] = []
+
+    class FakeSpan:
+        def __init__(self, name: str) -> None:
+            self._name = name
+
+        def __enter__(self):
+            span_events.append(("enter", self._name, None, None))
+            return self
+
+        def __exit__(self, exc_type, exc, tb) -> None:
+            span_events.append(("exit", self._name, None, None))
+
+        def set_attribute(self, key: str, value: object) -> None:
+            span_events.append(("attr", self._name, key, value))
+
+    class FakeTracer:
+        def start_as_current_span(self, name: str):
+            return FakeSpan(name)
+
+    class FakeCompiledGraph:
+        def __init__(self, nodes) -> None:
+            self._nodes = nodes
+            self._route_fn = None
+
+        def set_route_fn(self, route_fn) -> None:
+            self._route_fn = route_fn
+
+        async def ainvoke(self, payload):
+            state = dict(payload)
+            state = self._nodes["human_input"](state)
+            state = await self._nodes["route"](state)
+            next_node = self._route_fn(state)
+            return await self._nodes[next_node](state)
+
+    class FakeStateGraph:
+        def __init__(self, _state_schema) -> None:
+            self._nodes: dict[str, object] = {}
+            self._route_fn = None
+
+        def add_node(self, name, fn) -> None:
+            self._nodes[name] = fn
+
+        def add_edge(self, _start, _end) -> None:
+            return None
+
+        def add_conditional_edges(self, start, fn, _path_map) -> None:
+            if start == "route":
+                self._route_fn = fn
+
+        def compile(self):
+            graph = FakeCompiledGraph(self._nodes)
+            graph.set_route_fn(self._route_fn)
+            return graph
+
+    class FakeChatAgent:
+        last_route_kind = ""
+        last_route_model = "openai:gemma4:e4b"
+        last_reply_model = ""
+        last_tool_name = ""
+
+        async def route(
+            self,
+            user_prompt: str,
+            chat_history: list[dict[str, str]],
+            *,
+            latest_session_id: str = "",
+            latest_generated_content: str = "",
+        ) -> str:
+            self.last_route_kind = "reply_fast"
+            return "reply_fast"
+
+        async def respond_fast(
+            self,
+            user_prompt: str,
+            chat_history: list[dict[str, str]],
+            *,
+            tool_output: str = "",
+        ) -> str:
+            self.last_reply_model = "openai:gemma4:e4b"
+            return "ok"
+
+        async def respond_deep(self, user_prompt: str, chat_history: list[dict[str, str]]) -> str:
+            raise AssertionError("Deep responder should not run in this test.")
+
+    with (
+        patch(
+            "pawn_agent.core.langgraph_chat._import_langgraph_core",
+            return_value=(FakeStateGraph, "__start__", "__end__"),
+        ),
+        patch("pawn_agent.core.langgraph_chat.LangGraphRouterChatAgent", return_value=FakeChatAgent()),
+        patch("pawn_agent.core.langgraph_chat.build_phoenix_tracer", return_value=FakeTracer()),
+    ):
+        session = asyncio.run(
+            LangGraphChatSession.create(
+                cfg=cfg,
+                emit=lambda _text: None,
+                trace_full_state=True,
+            )
+        )
+        reply = asyncio.run(session.handle_user_input("hello"))
+
+    assert reply == "ok"
+    full_state_attrs = [
+        event for event in span_events if event[0] == "attr" and str(event[2]).startswith("state.")
+    ]
+    assert full_state_attrs
+    assert any('"session_state"' in str(event[3]) for event in full_state_attrs)
