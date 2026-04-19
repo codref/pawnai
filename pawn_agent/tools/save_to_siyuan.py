@@ -4,8 +4,6 @@ from __future__ import annotations
 
 from typing import Optional
 
-from pydantic_ai import Tool
-
 from pawn_agent.utils.config import AgentConfig
 from pawn_agent.utils.siyuan import do_save_to_siyuan
 
@@ -14,7 +12,23 @@ NAME = "save_to_siyuan"
 DESCRIPTION = "Save already-generated Markdown content to SiYuan Notes as a new document."
 
 
-def build(cfg: AgentConfig) -> Tool:
+def save_to_siyuan_impl(
+    cfg: AgentConfig,
+    session_id: str,
+    content: str,
+    title: Optional[str] = None,
+    path: Optional[str] = None,
+) -> str:
+    """Save already-generated content to SiYuan using the shared helper path."""
+    try:
+        return do_save_to_siyuan(cfg, session_id, title, content, path)
+    except Exception as exc:
+        return f"Error saving to SiYuan: {exc}"
+
+
+def build(cfg: AgentConfig):
+    from pydantic_ai import Tool
+
     def save_to_siyuan(
         session_id: str,
         content: str,
@@ -44,9 +58,12 @@ def build(cfg: AgentConfig) -> Tool:
             path: Optional explicit SiYuan path override. Bypasses the template
                 entirely — use sparingly.
         """
-        try:
-            return do_save_to_siyuan(cfg, session_id, title, content, path)
-        except Exception as exc:
-            return f"Error saving to SiYuan: {exc}"
+        return save_to_siyuan_impl(
+            cfg,
+            session_id=session_id,
+            content=content,
+            title=title,
+            path=path,
+        )
 
     return Tool(save_to_siyuan)

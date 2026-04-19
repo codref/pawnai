@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from pydantic_ai import Tool
-
 from pawn_agent.utils.config import AgentConfig
 from pawn_agent.utils.transcript import fetch_transcript
 
@@ -17,7 +15,14 @@ DESCRIPTION = (
 )
 
 
-def build(cfg: AgentConfig) -> Tool:
+def query_conversation_impl(cfg: AgentConfig, session_id: str) -> str:
+    """Retrieve and return the full transcript for a session from the database."""
+    return fetch_transcript(cfg, session_id)
+
+
+def build(cfg: AgentConfig):
+    from pydantic_ai import Tool
+
     def query_conversation(session_id: str) -> str:
         """Retrieve and return the full transcript for a session from the database.
 
@@ -29,6 +34,6 @@ def build(cfg: AgentConfig) -> Tool:
         Args:
             session_id: Unique session identifier stored in the database.
         """
-        return fetch_transcript(cfg, session_id)
+        return query_conversation_impl(cfg, session_id)
 
     return Tool(query_conversation)
