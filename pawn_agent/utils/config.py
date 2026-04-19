@@ -73,6 +73,7 @@ class AgentProviderConfig(BaseModel):
     """LLM provider settings (one per provider key under ``agent:``)."""
 
     model: str = "gpt-4o"
+    fast_model: Optional[str] = None
     api_key: Optional[str] = None
     base_url: Optional[str] = None
 
@@ -340,6 +341,26 @@ class AgentConfig(PawnConfig):
             if p is not None:
                 return p.base_url
         return None
+
+    @property
+    def langgraph_fast_model(self) -> str:
+        for provider, prefix in _PROVIDER_PREFIXES.items():
+            p = getattr(self.agent, provider)
+            if p is not None and p.fast_model:
+                return f"{prefix}:{p.fast_model}"
+        return self.pydantic_model
+
+    @property
+    def langgraph_deep_model(self) -> str:
+        return self.pydantic_model
+
+    @property
+    def langgraph_api_key(self) -> Optional[str]:
+        return self.pydantic_api_key
+
+    @property
+    def langgraph_base_url(self) -> Optional[str]:
+        return self.pydantic_base_url
 
     # Copilot sub-agent flat attrs
     @property
