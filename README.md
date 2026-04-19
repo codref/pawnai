@@ -401,7 +401,7 @@ Tools are **auto-discovered** from `pawn_agent/tools/` — any module that expor
 
 #### `chat`
 
-Start an interactive multi-turn conversation session with persistent history.
+Start an interactive multi-turn conversation session.
 
 ```bash
 pawn-agent chat [OPTIONS]
@@ -411,6 +411,7 @@ Options:
   --model TEXT     Override the configured LLM model (e.g. openai:gpt-4o)
   --session TEXT   Session ID to load and continue a stored conversation
   --db-dsn TEXT    PostgreSQL DSN override
+  --burr           Run the minimal Burr-managed evaluation chat path
 ```
 
 **Terminal features:**
@@ -434,6 +435,12 @@ Options:
   `Ctrl-D` and `Ctrl-C` also exit cleanly.
 
 **Session persistence**: when `--session` is given, every turn is appended to `agent_session_turns` in PostgreSQL. Resuming the same session replays the full stored history so the model retains context across invocations. `/reset` deletes all stored turns so the next message starts fresh.
+
+**Burr evaluation mode**: `pawn-agent chat --burr` runs a separate, tool-less chat loop backed by Apache Burr plus PydanticAI. It supports basic multi-turn conversation with `/reset`, `/exit`, and `/quit`, but it does not support `--session`, DB-backed chat history, or the richer slash commands from the default chat path.
+
+```bash
+pawn-agent chat --burr
+```
 
 #### `run`
 

@@ -50,10 +50,12 @@ from __future__ import annotations
 
 import logging
 import os
-from typing import Optional
+from pathlib import Path
+from typing import Literal, Optional
 
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field, PrivateAttr
 from pydantic_settings import SettingsConfigDict
+import yaml
 
 from pawn_core.config import (  # noqa: F401
     LoggingConfig,
@@ -140,6 +142,26 @@ class AgentQueueConfig(BaseModel):
     bucket_name: str = "my-bucket"
 
 
+class BurrSection(BaseModel):
+    """``burr:`` section — Burr chat evaluation settings."""
+
+    enabled: bool = False
+    project: str = "pawn-agent"
+    backend: Literal["local", "postgres"] = "local"
+    storage_dir: Optional[str] = None
+    table_name: str = "burr_state"
+
+
+class PhoenixSection(BaseModel):
+    """``phoenix:`` section — optional Phoenix observability settings."""
+
+    enabled: bool = False
+    endpoint: str = "http://localhost:6006/v1/traces"
+    project_name: str = "parakeet-langgraph"
+    protocol: Literal["grpc", "http/protobuf"] = "http/protobuf"
+    api_key: Optional[str] = None
+
+
 # ── AgentConfig ───────────────────────────────────────────────────────────────
 
 _PROVIDER_PREFIXES = {
@@ -176,6 +198,8 @@ class AgentConfig(PawnConfig):
     agent: AgentSection = Field(default_factory=AgentSection)
     api: ApiSection = Field(default_factory=ApiSection)
     mlflow: MlflowSection = Field(default_factory=MlflowSection)
+    burr: BurrSection = Field(default_factory=BurrSection)
+    phoenix: PhoenixSection = Field(default_factory=PhoenixSection)
     agent_queue: Optional[AgentQueueConfig] = None
 
     # ── Flat property aliases (old flat-field names used throughout pawn_agent) ─
@@ -235,6 +259,26 @@ class AgentConfig(PawnConfig):
     @property
     def mlflow_experiment(self) -> Optional[str]:
         return self.mlflow.experiment
+
+    @property
+    def phoenix_enabled(self) -> bool:
+        return self.phoenix.enabled
+
+    @property
+    def phoenix_endpoint(self) -> str:
+        return self.phoenix.endpoint
+
+    @property
+    def phoenix_project_name(self) -> str:
+        return self.phoenix.project_name
+
+    @property
+    def phoenix_protocol(self) -> str:
+        return self.phoenix.protocol
+
+    @property
+    def phoenix_api_key(self) -> Optional[str]:
+        return self.phoenix.api_key
 
     # Transcription (consumed by api_server.py transcription endpoint)
     @property
@@ -358,7 +402,12 @@ def load_config(config_path: Optional[str] = None) -> AgentConfig:
     4. Dataclass defaults / environment variables
     """
     yaml_file = config_path or os.environ.get("PAWN_AGENT_CONFIG")
-    cfg = AgentConfig(_yaml_file=yaml_file) if yaml_file else AgentConfig()
+    cfg: AgentConfig
+    if yaml_file and Path(yaml_file).exists():
+        raw = yaml.safe_load(Path(yaml_file).read_text(encoding="utf-8")) or {}
+        cfg = AgentConfig(**raw)
+    else:
+        cfg = AgentConfig()
     logging.basicConfig(
         level=cfg.logging.level.upper(),
         format="%(levelname)s %(name)s: %(message)s",

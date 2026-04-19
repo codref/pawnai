@@ -199,6 +199,18 @@ def chat(
         None, "--db-dsn",
         help="PostgreSQL DSN. Overrides DATABASE_URL env var and config."
     ),
+    burr: bool = typer.Option(
+        False, "--burr",
+        help="Run the minimal Burr-managed chat evaluation path (basic conversation only)."
+    ),
+    langgraph: bool = typer.Option(
+        False, "--langgraph",
+        help="Run the minimal LangGraph-managed chat evaluation path (basic conversation only)."
+    ),
+    burr_graph: Optional[str] = typer.Option(
+        None, "--burr-graph",
+        help="When using --burr, save the Burr state-machine graph to this file (for example graph.png)."
+    ),
 ) -> None:
     """Start an interactive multi-turn [bold]CHAT[/bold] session.
 
@@ -214,8 +226,9 @@ def chat(
     pawn-agent chat
     pawn-agent chat --session my-meeting --model gpt-4o
     """
+    import asyncio  # noqa: PLC0415
+
     from pawn_agent.utils.config import load_config  # noqa: PLC0415
-    from pawn_agent.core.pydantic_agent import PydanticAgent  # noqa: PLC0415
     from rich.markdown import Markdown  # noqa: PLC0415
 
     cfg = load_config(config)
@@ -235,6 +248,84 @@ def chat(
         console.print(f"\n[bold magenta]{name}[/bold magenta]")
         console.print(Markdown(text))
         console.print()
+
+    if burr and langgraph:
+        console.print("[red]Choose only one orchestration mode: --burr or --langgraph.[/red]")
+        raise typer.Exit(1)
+
+    if burr:
+        if session:
+            console.print(
+                "[red]Burr mode does not support --session yet.[/red] "
+                "Use plain `pawn-agent chat` for DB-backed session history."
+            )
+            raise typer.Exit(1)
+
+        from pawn_agent.core.burr_chat import run_burr_chat  # noqa: PLC0415
+
+        console.print(
+            f"\n[bold cyan]pawn-agent chat[/bold cyan] "
+            f"[dim]model={cfg.pydantic_model}  agent={name}  mode=burr[/dim]\n"
+            "[dim]Burr evaluation mode: basic conversation only. "
+            "Type /exit or /quit to end. /reset starts a fresh Burr app.[/dim]\n"
+        )
+        try:
+            asyncio.run(
+                run_burr_chat(
+                    cfg=cfg,
+                    emit=_rich_emit,
+                    on_thinking=_on_thinking,
+                    graph_output_path=burr_graph,
+                )
+            )
+        except Exception as exc:
+            status.stop()
+            console.print(f"[red]Agent error:[/red] {exc}")
+            raise typer.Exit(1)
+
+        console.print("\n[dim]Session ended.[/dim]")
+        return
+
+    if langgraph:
+        if session:
+            console.print(
+                "[red]LangGraph mode does not support --session yet.[/red] "
+                "Use plain `pawn-agent chat` for DB-backed session history."
+            )
+            raise typer.Exit(1)
+        if burr_graph:
+            console.print("[red]--burr-graph requires --burr.[/red]")
+            raise typer.Exit(1)
+
+        from pawn_agent.core.langgraph_chat import run_langgraph_chat  # noqa: PLC0415
+
+        console.print(
+            f"\n[bold cyan]pawn-agent chat[/bold cyan] "
+            f"[dim]model={cfg.pydantic_model}  agent={name}  mode=langgraph[/dim]\n"
+            "[dim]LangGraph evaluation mode: basic conversation only. "
+            "Type /exit or /quit to end. /reset starts a fresh LangGraph state.[/dim]\n"
+        )
+        try:
+            asyncio.run(
+                run_langgraph_chat(
+                    cfg=cfg,
+                    emit=_rich_emit,
+                    on_thinking=_on_thinking,
+                )
+            )
+        except Exception as exc:
+            status.stop()
+            console.print(f"[red]Agent error:[/red] {exc}")
+            raise typer.Exit(1)
+
+        console.print("\n[dim]Session ended.[/dim]")
+        return
+
+    if burr_graph:
+        console.print("[red]--burr-graph requires --burr.[/red]")
+        raise typer.Exit(1)
+
+    from pawn_agent.core.pydantic_agent import PydanticAgent  # noqa: PLC0415
 
     agent = PydanticAgent(cfg=cfg, emit=_rich_emit, on_thinking=_on_thinking, session_id=session)
 
