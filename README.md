@@ -411,7 +411,9 @@ Options:
   --model TEXT     Override the configured LLM model (e.g. openai:gpt-4o)
   --session TEXT   Session ID to load and continue a stored conversation
   --db-dsn TEXT    PostgreSQL DSN override
-  --burr           Run the minimal Burr-managed evaluation chat path
+  --langgraph      Run the LangGraph evaluation chat path
+  --langgraph-trace-state
+                   Attach the full LangGraph state as JSON to Phoenix spans
 ```
 
 **Terminal features:**
@@ -436,10 +438,10 @@ Options:
 
 **Session persistence**: when `--session` is given, every turn is appended to `agent_session_turns` in PostgreSQL. Resuming the same session replays the full stored history so the model retains context across invocations. `/reset` deletes all stored turns so the next message starts fresh.
 
-**Burr evaluation mode**: `pawn-agent chat --burr` runs a separate, tool-less chat loop backed by Apache Burr plus PydanticAI. It supports basic multi-turn conversation with `/reset`, `/exit`, and `/quit`, but it does not support `--session`, DB-backed chat history, or the richer slash commands from the default chat path.
+**LangGraph evaluation mode**: `pawn-agent chat --langgraph` runs the explicit orchestration path used to evaluate routed multi-step chat behavior. It still has a minimal REPL surface, but internally it uses structured state, fast/deep response routing, session-aware tool nodes, artifact carry-forward for later save steps, and optional Phoenix tracing via `--langgraph-trace-state`. It does not yet support `--session`, DB-backed chat history, or the richer slash commands from the default chat path.
 
 ```bash
-pawn-agent chat --burr
+pawn-agent chat --langgraph
 ```
 
 #### `run`

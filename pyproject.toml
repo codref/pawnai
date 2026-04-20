@@ -50,7 +50,6 @@ dependencies = [
     "uvicorn[standard]>=0.29.0",
     "mlflow[genai]>=3.0.0",
     "pydantic-settings[yaml]>=2.3.0",
-    "burr[start,asyncpg]>=0.40.0",
     "langgraph>=0.2.0",
     "arize-phoenix-otel>=0.9.0",
     "litellm>=1.40.0",

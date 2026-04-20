@@ -143,16 +143,6 @@ class AgentQueueConfig(BaseModel):
     bucket_name: str = "my-bucket"
 
 
-class BurrSection(BaseModel):
-    """``burr:`` section — Burr chat evaluation settings."""
-
-    enabled: bool = False
-    project: str = "pawn-agent"
-    backend: Literal["local", "postgres"] = "local"
-    storage_dir: Optional[str] = None
-    table_name: str = "burr_state"
-
-
 class PhoenixSection(BaseModel):
     """``phoenix:`` section — optional Phoenix observability settings."""
 
@@ -199,7 +189,6 @@ class AgentConfig(PawnConfig):
     agent: AgentSection = Field(default_factory=AgentSection)
     api: ApiSection = Field(default_factory=ApiSection)
     mlflow: MlflowSection = Field(default_factory=MlflowSection)
-    burr: BurrSection = Field(default_factory=BurrSection)
     phoenix: PhoenixSection = Field(default_factory=PhoenixSection)
     agent_queue: Optional[AgentQueueConfig] = None
 

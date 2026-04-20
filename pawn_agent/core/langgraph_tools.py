@@ -6,7 +6,7 @@ from collections.abc import Mapping
 from typing import Awaitable
 from typing import Any, Callable
 
-from pawn_agent.core.burr_chat import _normalize_output
+from pawn_agent.core.chat_primitives import normalize_output
 from pawn_agent.core.langgraph_state import (
     ensure_langgraph_state,
     get_state_field,
@@ -22,10 +22,10 @@ from pawn_agent.utils.config import AgentConfig
 
 def _resolve_session_id_from_state(state: Mapping[str, object]) -> str:
     """Resolve the session id from existing LangGraph state only."""
-    latest_user_message = _normalize_output(get_state_field(state, "latest_user_message")).strip()
-    requested_session_id = _normalize_output(get_state_field(state, "requested_session_id")).strip()
-    latest_session_id = _normalize_output(get_state_field(state, "latest_session_id")).strip()
-    session_catalog_output = _normalize_output(get_state_field(state, "session_catalog_output"))
+    latest_user_message = normalize_output(get_state_field(state, "latest_user_message")).strip()
+    requested_session_id = normalize_output(get_state_field(state, "requested_session_id")).strip()
+    latest_session_id = normalize_output(get_state_field(state, "latest_session_id")).strip()
+    session_catalog_output = normalize_output(get_state_field(state, "session_catalog_output"))
 
     if _looks_like_explicit_session_id(requested_session_id):
         return requested_session_id
@@ -44,14 +44,14 @@ def _resolve_session_id_from_state(state: Mapping[str, object]) -> str:
 
 
 def _looks_like_explicit_session_id(value: str) -> bool:
-    candidate = _normalize_output(value).strip()
+    candidate = normalize_output(value).strip()
     if not candidate:
         return False
     return any(ch.isdigit() for ch in candidate) and any(sep in candidate for sep in "-_:")
 
 
 def _is_confirmation_prompt(user_prompt: str) -> bool:
-    normalized = _normalize_output(user_prompt).strip().lower()
+    normalized = normalize_output(user_prompt).strip().lower()
     return normalized in {
         "yes",
         "y",
@@ -68,7 +68,7 @@ def _is_confirmation_prompt(user_prompt: str) -> bool:
 
 def _session_ids_from_list_output(tool_output: str) -> list[str]:
     session_ids: list[str] = []
-    for raw_line in _normalize_output(tool_output).splitlines():
+    for raw_line in normalize_output(tool_output).splitlines():
         line = raw_line.strip()
         if not line or line.lower().startswith("found "):
             continue
@@ -87,7 +87,7 @@ def _resolve_session_id_from_catalog_output(user_prompt: str, tool_output: str) 
         token
         for token in "".join(
             ch.lower() if ch.isalnum() or ch in {"-", "_", ":"} else " "
-            for ch in _normalize_output(user_prompt)
+            for ch in normalize_output(user_prompt)
         ).split()
         if len(token) >= 3
         and token
@@ -161,7 +161,7 @@ def _bootstrap_session_catalog_if_needed(
 ) -> dict[str, Any]:
     """Populate session catalog output when it is missing."""
     current = ensure_langgraph_state(state)
-    session_catalog_output = _normalize_output(get_state_field(current, "session_catalog_output"))
+    session_catalog_output = normalize_output(get_state_field(current, "session_catalog_output"))
     if not session_catalog_output.strip():
         session_catalog_output = run_list_sessions_tool(cfg)
         current = set_state_fields(
@@ -188,10 +188,10 @@ def resolve_session_id(
         return current, session_id
 
     current = _bootstrap_session_catalog_if_needed(current, cfg)
-    latest_user_message = _normalize_output(get_state_field(current, "latest_user_message"))
+    latest_user_message = normalize_output(get_state_field(current, "latest_user_message"))
     session_id = _resolve_session_id_from_catalog_output(
         latest_user_message,
-        _normalize_output(get_state_field(current, "session_catalog_output")),
+        normalize_output(get_state_field(current, "session_catalog_output")),
     )
     return current, session_id
 
@@ -206,7 +206,7 @@ def build_tool_list_sessions_node(
 
     def tool_list_sessions_node(state: dict[str, Any]) -> dict[str, Any]:
         current = ensure_langgraph_state(state)
-        latest_user_message = _normalize_output(get_state_field(current, "latest_user_message"))
+        latest_user_message = normalize_output(get_state_field(current, "latest_user_message"))
         if tracer is None:
             tool_output = run_list_sessions_tool(cfg)
             updated = set_state_fields(
@@ -291,7 +291,7 @@ def build_tool_query_conversation_node(
                     ),
                 )
                 span.set_attribute("tool.name", "query_conversation")
-                span.set_attribute("output.value", _normalize_output(get_state_field(updated, "tool_output")))
+                span.set_attribute("output.value", normalize_output(get_state_field(updated, "tool_output")))
                 if trace_full_state:
                     span.set_attribute("state.after.json", serialize_langgraph_state(updated))
                 return updated
@@ -355,7 +355,7 @@ def build_tool_analyze_summary_node(
                 span.set_attribute("tool.name", "analyze_summary")
                 span.set_attribute(
                     "output.value",
-                    _normalize_output(get_state_field(updated, "tool_output")),
+                    normalize_output(get_state_field(updated, "tool_output")),
                 )
                 if trace_full_state:
                     span.set_attribute("state.after.json", serialize_langgraph_state(updated))
@@ -387,9 +387,9 @@ def build_tool_save_to_siyuan_node(
 
     def tool_save_to_siyuan_node(state: dict[str, Any]) -> dict[str, Any]:
         current = ensure_langgraph_state(state)
-        session_id = _normalize_output(get_state_field(current, "latest_session_id")).strip()
-        content = _normalize_output(get_state_field(current, "latest_generated_content"))
-        title = _normalize_output(get_state_field(current, "latest_generated_title")).strip() or None
+        session_id = normalize_output(get_state_field(current, "latest_session_id")).strip()
+        content = normalize_output(get_state_field(current, "latest_generated_content"))
+        title = normalize_output(get_state_field(current, "latest_generated_title")).strip() or None
         if tracer is None:
             if not session_id:
                 return set_state_fields(
@@ -432,7 +432,7 @@ def build_tool_save_to_siyuan_node(
                     ),
                 )
                 span.set_attribute("tool.name", "save_to_siyuan")
-                span.set_attribute("output.value", _normalize_output(get_state_field(updated, "tool_output")))
+                span.set_attribute("output.value", normalize_output(get_state_field(updated, "tool_output")))
                 if trace_full_state:
                     span.set_attribute("state.after.json", serialize_langgraph_state(updated))
                 return updated
@@ -448,7 +448,7 @@ def build_tool_save_to_siyuan_node(
                 )
                 span.set_attribute("tool.name", "save_to_siyuan")
                 span.set_attribute("session.id", session_id)
-                span.set_attribute("output.value", _normalize_output(get_state_field(updated, "tool_output")))
+                span.set_attribute("output.value", normalize_output(get_state_field(updated, "tool_output")))
                 if trace_full_state:
                     span.set_attribute("state.after.json", serialize_langgraph_state(updated))
                 return updated

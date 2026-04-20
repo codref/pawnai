@@ -6,7 +6,7 @@ from collections.abc import Mapping, Sequence
 import json
 from typing import Any, TypedDict
 
-from pawn_agent.core.burr_chat import _normalize_output
+from pawn_agent.core.chat_primitives import normalize_output
 
 
 RECENT_MESSAGE_LIMIT = 12
@@ -114,8 +114,8 @@ def _copy_mapping(value: Any) -> dict[str, Any]:
 def _trim_recent_messages(messages: Sequence[Mapping[str, object]]) -> list[dict[str, str]]:
     trimmed: list[dict[str, str]] = []
     for item in list(messages)[-RECENT_MESSAGE_LIMIT:]:
-        role = _normalize_output(item.get("role", "")).strip()
-        content = _normalize_output(item.get("content", ""))
+        role = normalize_output(item.get("role", "")).strip()
+        content = normalize_output(item.get("content", ""))
         if not role:
             continue
         trimmed.append({"role": role, "content": content})

@@ -83,60 +83,6 @@ def test_inspect_session_command_can_dump_llm_context() -> None:
     mock_inspect.assert_called_once_with("sess-123", "postgresql://dummy", tail=12)
 
 
-def test_chat_burr_mode_routes_to_burr_runner() -> None:
-    captured: dict[str, object] = {}
-
-    async def fake_run_burr_chat(**kwargs) -> None:
-        captured.update(kwargs)
-
-    cfg = SimpleNamespace(
-        db_dsn="postgresql://dummy",
-        agent_name="Bob",
-        pydantic_model="openai:gpt-4o",
-    )
-
-    with (
-        patch("pawn_agent.utils.config.load_config", return_value=cfg),
-        patch("pawn_agent.core.burr_chat.run_burr_chat", side_effect=fake_run_burr_chat),
-    ):
-        result = runner.invoke(app, ["chat", "--burr", "--burr-graph", "graph.png"])
-
-    assert result.exit_code == 0
-    assert "mode=burr" in result.stdout
-    assert captured["cfg"] is cfg
-    assert callable(captured["emit"])
-    assert callable(captured["on_thinking"])
-    assert captured["graph_output_path"] == "graph.png"
-
-
-def test_chat_burr_mode_rejects_session_flag() -> None:
-    cfg = SimpleNamespace(
-        db_dsn="postgresql://dummy",
-        agent_name="Bob",
-        pydantic_model="openai:gpt-4o",
-    )
-
-    with patch("pawn_agent.utils.config.load_config", return_value=cfg):
-        result = runner.invoke(app, ["chat", "--burr", "--session", "abc"])
-
-    assert result.exit_code == 1
-    assert "does not support --session yet" in result.stdout
-
-
-def test_chat_burr_graph_requires_burr_flag() -> None:
-    cfg = SimpleNamespace(
-        db_dsn="postgresql://dummy",
-        agent_name="Bob",
-        pydantic_model="openai:gpt-4o",
-    )
-
-    with patch("pawn_agent.utils.config.load_config", return_value=cfg):
-        result = runner.invoke(app, ["chat", "--burr-graph", "graph.png"])
-
-    assert result.exit_code == 1
-    assert "--burr-graph requires --burr" in result.stdout
-
-
 def test_chat_langgraph_mode_routes_to_langgraph_runner() -> None:
     captured: dict[str, object] = {}
 
@@ -212,16 +158,3 @@ def test_chat_langgraph_trace_state_requires_langgraph_flag() -> None:
     assert result.exit_code == 1
     assert "--langgraph-trace-state requires --langgraph" in result.stdout
 
-
-def test_chat_rejects_multiple_orchestrators() -> None:
-    cfg = SimpleNamespace(
-        db_dsn="postgresql://dummy",
-        agent_name="Bob",
-        pydantic_model="openai:gpt-4o",
-    )
-
-    with patch("pawn_agent.utils.config.load_config", return_value=cfg):
-        result = runner.invoke(app, ["chat", "--burr", "--langgraph"])
-
-    assert result.exit_code == 1
-    assert "Choose only one orchestration mode" in result.stdout

@@ -8,11 +8,11 @@ from typing import Callable, TypedDict
 
 from prompt_toolkit import PromptSession
 
-from pawn_agent.core.burr_chat import (
+from pawn_agent.core.chat_primitives import (
     PlainPydanticChatAgent,
-    _normalize_output,
     apply_assistant_message,
     apply_user_message,
+    normalize_output,
 )
 from pawn_agent.core.langgraph_state import (
     StructuredLangGraphState,
@@ -159,8 +159,8 @@ class LangGraphRouterChatAgent:
             return "(no prior conversation)"
         lines: list[str] = []
         for item in prior_history:
-            role = _normalize_output(item.get("role", "")).strip().lower()
-            content = _normalize_output(item.get("content", "")).strip()
+            role = normalize_output(item.get("role", "")).strip().lower()
+            content = normalize_output(item.get("content", "")).strip()
             if not content:
                 continue
             speaker = "User" if role == "user" else "Assistant"
@@ -176,7 +176,7 @@ class LangGraphRouterChatAgent:
         latest_generated_content: str = "",
     ) -> str:
         session_focus = latest_session_id or "(none)"
-        has_generated_content = "yes" if _normalize_output(latest_generated_content).strip() else "no"
+        has_generated_content = "yes" if normalize_output(latest_generated_content).strip() else "no"
         return (
             "You are a routing model for a forward-only LangGraph chat system.\n"
             "Choose exactly one label and return only that label.\n"
@@ -221,7 +221,7 @@ class LangGraphRouterChatAgent:
 
     def _normalize_route(self, route_reply: str) -> str:
         route = (
-            _normalize_output(route_reply).strip().lower().splitlines()[0].strip()
+            normalize_output(route_reply).strip().lower().splitlines()[0].strip()
             if route_reply
             else ""
         )
@@ -233,7 +233,7 @@ class LangGraphRouterChatAgent:
         return "reply_deep"
 
     def _normalize_requested_session_id(self, reply: str) -> str:
-        value = _normalize_output(reply).strip().splitlines()[0].strip() if reply else ""
+        value = normalize_output(reply).strip().splitlines()[0].strip() if reply else ""
         if not value or value.upper() == "NONE":
             return ""
         return value
@@ -330,16 +330,16 @@ _HEADING_RE = re.compile(r"^\s*#\s+(.+?)\s*$", re.MULTILINE)
 
 
 def _infer_generated_title(content: str) -> str:
-    match = _HEADING_RE.search(_normalize_output(content))
+    match = _HEADING_RE.search(normalize_output(content))
     return match.group(1).strip() if match else ""
 
 
 def _should_capture_generated_content(state: LangGraphChatState) -> bool:
-    return _normalize_output(get_state_field(state, "tool_name")).strip() != "save_to_siyuan"
+    return normalize_output(get_state_field(state, "tool_name")).strip() != "save_to_siyuan"
 
 
 def _requests_save_to_siyuan(user_prompt: str) -> bool:
-    normalized = _normalize_output(user_prompt).strip().lower()
+    normalized = normalize_output(user_prompt).strip().lower()
     if "siyuan" not in normalized:
         return False
     return any(keyword in normalized for keyword in ("save", "store", "export"))
@@ -348,7 +348,7 @@ def _requests_save_to_siyuan(user_prompt: str) -> bool:
 def _select_post_tool_reply_model(user_prompt: str, route_kind: str) -> str:
     if route_kind != "tool_query_conversation":
         return ""
-    normalized = _normalize_output(user_prompt).strip().lower()
+    normalized = normalize_output(user_prompt).strip().lower()
     deep_cues = (
         "deep report",
         "deep analysis",
@@ -370,7 +370,7 @@ def _should_queue_save_after_response(user_prompt: str, route_kind: str) -> bool
 
 
 def _next_node_from_route(state: LangGraphChatState) -> str:
-    route_kind = _normalize_output(get_state_field(state, "route_kind")).strip()
+    route_kind = normalize_output(get_state_field(state, "route_kind")).strip()
     if route_kind == "tool_list_sessions":
         return "tool_list_sessions"
     if route_kind == "tool_analyze_summary":
@@ -387,13 +387,13 @@ def _next_node_from_route(state: LangGraphChatState) -> str:
 def _next_node_after_query_tool(state: LangGraphChatState) -> str:
     return (
         "respond_deep"
-        if _normalize_output(get_state_field(state, "post_tool_reply_model")).strip() == "deep"
+        if normalize_output(get_state_field(state, "post_tool_reply_model")).strip() == "deep"
         else "respond_fast"
     )
 
 
 def _next_node_after_extract_session_id(state: LangGraphChatState) -> str:
-    route_kind = _normalize_output(get_state_field(state, "route_kind")).strip()
+    route_kind = normalize_output(get_state_field(state, "route_kind")).strip()
     if route_kind == "tool_analyze_summary":
         return "tool_analyze_summary"
     return "tool_query_conversation"
@@ -421,7 +421,7 @@ async def build_langgraph_chat_graph(
             "turn_count": int(get_state_field(current, "turn_count")),
         }
         if tracer is None:
-            prompt = _normalize_output(get_state_field(current, "incoming_prompt"))
+            prompt = normalize_output(get_state_field(current, "incoming_prompt"))
             message_update = apply_user_message(message_state, prompt)
             updated = set_recent_messages(dict(current), message_update.get("chat_history", []))
             updated = set_state_fields(
@@ -434,7 +434,7 @@ async def build_langgraph_chat_graph(
         with tracer.start_as_current_span("langgraph-human-input") as span:
             if trace_full_state:
                 _trace_full_state_snapshot(span, current, label="before")
-            prompt = _normalize_output(get_state_field(current, "incoming_prompt"))
+            prompt = normalize_output(get_state_field(current, "incoming_prompt"))
             span.set_attribute("input.value", prompt)
             message_update = apply_user_message(message_state, prompt)
             updated = set_recent_messages(dict(current), message_update.get("chat_history", []))
@@ -451,10 +451,10 @@ async def build_langgraph_chat_graph(
 
     async def route_node(state: LangGraphChatState) -> LangGraphChatState:
         current = ensure_langgraph_state(state)
-        latest_user_message = _normalize_output(get_state_field(current, "latest_user_message"))
+        latest_user_message = normalize_output(get_state_field(current, "latest_user_message"))
         chat_history = get_recent_messages(current)
-        latest_session_id = _normalize_output(get_state_field(current, "latest_session_id")).strip()
-        latest_generated_content = _normalize_output(
+        latest_session_id = normalize_output(get_state_field(current, "latest_session_id")).strip()
+        latest_generated_content = normalize_output(
             get_state_field(current, "latest_generated_content")
         )
         if tracer is None:
@@ -510,7 +510,7 @@ async def build_langgraph_chat_graph(
             span.set_attribute("output.route_kind", route_kind)
             span.set_attribute(
                 "output.post_tool_reply_model",
-                _normalize_output(get_state_field(updated, "post_tool_reply_model")) or "NONE",
+                normalize_output(get_state_field(updated, "post_tool_reply_model")) or "NONE",
             )
             span.set_attribute(
                 "output.pending_save_to_siyuan",
@@ -522,9 +522,9 @@ async def build_langgraph_chat_graph(
 
     async def extract_session_id_node(state: LangGraphChatState) -> LangGraphChatState:
         current = ensure_langgraph_state(state)
-        latest_user_message = _normalize_output(get_state_field(current, "latest_user_message"))
+        latest_user_message = normalize_output(get_state_field(current, "latest_user_message"))
         chat_history = get_recent_messages(current)
-        latest_session_id = _normalize_output(get_state_field(current, "latest_session_id")).strip()
+        latest_session_id = normalize_output(get_state_field(current, "latest_session_id")).strip()
         if tracer is None:
             requested_session_id = await chat_agent.extract_requested_session_id(
                 latest_user_message,
@@ -552,9 +552,9 @@ async def build_langgraph_chat_graph(
 
     async def respond_fast_node(state: LangGraphChatState) -> LangGraphChatState:
         current = ensure_langgraph_state(state)
-        latest_user_message = _normalize_output(get_state_field(current, "latest_user_message"))
+        latest_user_message = normalize_output(get_state_field(current, "latest_user_message"))
         chat_history = get_recent_messages(current)
-        tool_output = _normalize_output(get_state_field(current, "tool_output"))
+        tool_output = normalize_output(get_state_field(current, "tool_output"))
         message_state = {
             "chat_history": chat_history,
         }
@@ -609,12 +609,12 @@ async def build_langgraph_chat_graph(
                 )
             span.set_attribute("llm.model_name", chat_agent.last_reply_model)
             span.set_attribute("input.value", latest_user_message)
-            if _normalize_output(get_state_field(current, "tool_name")):
-                span.set_attribute("tool.name", _normalize_output(get_state_field(current, "tool_name")))
-            if _normalize_output(get_state_field(current, "latest_session_id")):
+            if normalize_output(get_state_field(current, "tool_name")):
+                span.set_attribute("tool.name", normalize_output(get_state_field(current, "tool_name")))
+            if normalize_output(get_state_field(current, "latest_session_id")):
                 span.set_attribute(
                     "session.id",
-                    _normalize_output(get_state_field(current, "latest_session_id")),
+                    normalize_output(get_state_field(current, "latest_session_id")),
                 )
             span.set_attribute("output.value", reply)
             if trace_full_state:
@@ -623,9 +623,9 @@ async def build_langgraph_chat_graph(
 
     async def respond_deep_node(state: LangGraphChatState) -> LangGraphChatState:
         current = ensure_langgraph_state(state)
-        latest_user_message = _normalize_output(get_state_field(current, "latest_user_message"))
+        latest_user_message = normalize_output(get_state_field(current, "latest_user_message"))
         chat_history = get_recent_messages(current)
-        tool_output = _normalize_output(get_state_field(current, "tool_output"))
+        tool_output = normalize_output(get_state_field(current, "tool_output"))
         message_state = {
             "chat_history": chat_history,
         }
@@ -680,10 +680,10 @@ async def build_langgraph_chat_graph(
                 )
             span.set_attribute("llm.model_name", chat_agent.last_reply_model)
             span.set_attribute("input.value", latest_user_message)
-            if _normalize_output(get_state_field(current, "latest_session_id")):
+            if normalize_output(get_state_field(current, "latest_session_id")):
                 span.set_attribute(
                     "session.id",
-                    _normalize_output(get_state_field(current, "latest_session_id")),
+                    normalize_output(get_state_field(current, "latest_session_id")),
                 )
             span.set_attribute("output.value", reply)
             if trace_full_state:
@@ -829,7 +829,7 @@ class LangGraphChatSession:
             result = await self._graph.ainvoke(payload)
             state = set_state_fields(ensure_langgraph_state(result), incoming_prompt="")
             self._state = state
-            return _normalize_output(get_state_field(self._state, "latest_assistant_message"))
+            return normalize_output(get_state_field(self._state, "latest_assistant_message"))
         with self._tracer.start_as_current_span("langgraph-chat-turn") as span:
             if self._trace_full_state:
                 _trace_full_state_snapshot(span, self._state, label="before")
@@ -841,16 +841,16 @@ class LangGraphChatSession:
             result = await self._graph.ainvoke(payload)
             state = set_state_fields(ensure_langgraph_state(result), incoming_prompt="")
             self._state = state
-            output = _normalize_output(get_state_field(self._state, "latest_assistant_message"))
-            span.set_attribute("route.kind", _normalize_output(get_state_field(self._state, "route_kind")))
-            span.set_attribute("route.model", _normalize_output(get_state_field(self._state, "route_model")))
-            span.set_attribute("llm.model_name", _normalize_output(get_state_field(self._state, "reply_model")))
-            if _normalize_output(get_state_field(self._state, "tool_name")):
-                span.set_attribute("tool.name", _normalize_output(get_state_field(self._state, "tool_name")))
-            if _normalize_output(get_state_field(self._state, "latest_session_id")):
+            output = normalize_output(get_state_field(self._state, "latest_assistant_message"))
+            span.set_attribute("route.kind", normalize_output(get_state_field(self._state, "route_kind")))
+            span.set_attribute("route.model", normalize_output(get_state_field(self._state, "route_model")))
+            span.set_attribute("llm.model_name", normalize_output(get_state_field(self._state, "reply_model")))
+            if normalize_output(get_state_field(self._state, "tool_name")):
+                span.set_attribute("tool.name", normalize_output(get_state_field(self._state, "tool_name")))
+            if normalize_output(get_state_field(self._state, "latest_session_id")):
                 span.set_attribute(
                     "session.id",
-                    _normalize_output(get_state_field(self._state, "latest_session_id")),
+                    normalize_output(get_state_field(self._state, "latest_session_id")),
                 )
             span.set_attribute("output.value", output)
             if self._trace_full_state:
