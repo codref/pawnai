@@ -12,11 +12,8 @@ from sqlalchemy.orm import Mapped, Session, mapped_column
 from pawn_core.database import (  # noqa: F401
     Base as _Base,
     GraphTriple,
-    RagSource,
     SessionAnalysis,
     SpeakerName,
-    TEXT_CHUNK_DIM,
-    TextChunk,
     TranscriptionSegment,
     _get_session,
     make_db_session,

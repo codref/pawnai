@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import uuid
+from datetime import datetime, timezone
 from typing import List, Optional
 
 from pydantic_ai import Tool
@@ -17,17 +19,7 @@ DESCRIPTION = (
 
 
 def build(cfg: AgentConfig) -> Tool:
-    # Load the embedding model once at session startup, shared across all calls.
-    from pawn_agent.utils.vectorize import load_embedding_model
-
-    load_embedding_model(
-        cfg.embed_model,
-        cfg.embed_device,
-        truncate_dim=cfg.embed_dim if cfg.embed_dim else None,
-        local_files_only=cfg.embed_local_files_only,
-    )
-
-    def memorize(
+    async def memorize(
         fact: str,
         tags: Optional[List[str]] = None,
     ) -> str:
@@ -49,26 +41,26 @@ def build(cfg: AgentConfig) -> Tool:
             tags: Optional list of short label strings for categorisation
                 (e.g. ["preference", "ui"]).
         """
-        from pawn_agent.utils.vectorize import vectorize_memory
+        from pawn_agent.core.store import NS_MEMORIES, get_store  # noqa: PLC0415
 
+        key = uuid.uuid4().hex
         try:
-            memory_id = vectorize_memory(
-                fact=fact,
-                db_dsn=cfg.db_dsn,
-                embed_model=cfg.embed_model,
-                embed_device=cfg.embed_device,
-                embed_dim=cfg.embed_dim if cfg.embed_dim else None,
-                embed_local_files_only=cfg.embed_local_files_only,
-                tags=tags,
+            store = await get_store(cfg)
+            await store.aput(
+                NS_MEMORIES,
+                key,
+                {
+                    "text": fact,
+                    "tags": tags or [],
+                    "saved_at": datetime.now(timezone.utc).isoformat(),
+                },
             )
         except Exception as exc:
             return f"Error saving memory: {exc}"
 
-        from datetime import datetime, timezone
-
         date_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
         tag_str = f" [tags: {', '.join(tags)}]" if tags else ""
         preview = fact[:80] + ("..." if len(fact) > 80 else "")
-        return f"Memorized on {date_str} (id: {memory_id}){tag_str}: {preview}"
+        return f"Memorized on {date_str} (id: {key}){tag_str}: {preview}"
 
     return Tool(memorize)

@@ -15,27 +15,17 @@ session_analysis
     Structured analysis results (title, summary, topics, sentiment, tags).
 graph_triples
     Knowledge-graph triples extracted from session transcripts.
-rag_sources
-    Source documents registered in the RAG index.
-text_chunks
-    Text chunks with sentence-transformer embeddings for RAG retrieval.
 """
 
 from __future__ import annotations
 
-import os
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from typing import Any, Generator, Optional
 
-from pgvector.sqlalchemy import Vector
 from sqlalchemy import DateTime, Float, Integer, String, Text, create_engine
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sessionmaker
-
-# Dimension for text chunk embeddings (sentence-transformers).
-# Read from env so the value matches whatever was used when running the migration.
-TEXT_CHUNK_DIM: int = int(os.environ.get("PAWN_EMBED_DIM", "1024"))
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -116,39 +106,6 @@ class GraphTriple(Base):
     object: Mapped[str] = mapped_column(Text, nullable=False)
     model: Mapped[str] = mapped_column(String, nullable=False)
     extracted_at: Mapped[Optional[datetime]] = mapped_column(
-        DateTime, nullable=True, default=lambda: datetime.now(timezone.utc)
-    )
-
-
-class RagSource(Base):
-    """A source document registered in the RAG index."""
-
-    __tablename__ = "rag_sources"
-
-    id: Mapped[str] = mapped_column(String, primary_key=True)
-    source_type: Mapped[str] = mapped_column(String, nullable=False, index=True)
-    external_id: Mapped[str] = mapped_column(String, nullable=False, index=True)
-    display_name: Mapped[Optional[str]] = mapped_column(String, nullable=True)
-    extra_data: Mapped[Optional[Any]] = mapped_column("metadata", JSONB, nullable=True)
-    created_at: Mapped[Optional[datetime]] = mapped_column(
-        DateTime, nullable=True, default=lambda: datetime.now(timezone.utc)
-    )
-
-
-class TextChunk(Base):
-    """A text chunk with a sentence-transformer embedding for RAG retrieval."""
-
-    __tablename__ = "text_chunks"
-
-    id: Mapped[str] = mapped_column(String, primary_key=True)
-    source_id: Mapped[str] = mapped_column(String, nullable=False, index=True)
-    speaker_name: Mapped[Optional[str]] = mapped_column(String, nullable=True)
-    start_time: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
-    end_time: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
-    text: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
-    embedding: Mapped[list] = mapped_column(Vector(TEXT_CHUNK_DIM), nullable=False)
-    extra_data: Mapped[Optional[Any]] = mapped_column("metadata", JSONB, nullable=True)
-    created_at: Mapped[Optional[datetime]] = mapped_column(
         DateTime, nullable=True, default=lambda: datetime.now(timezone.utc)
     )
 

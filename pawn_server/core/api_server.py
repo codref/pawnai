@@ -147,21 +147,8 @@ class ChatCompletionResponse(BaseModel):
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Pydantic schemas — RAG ingestion
+# Pydantic schemas — transcription & TTS
 # ──────────────────────────────────────────────────────────────────────────────
-
-
-class KnowledgeIngestRequest(BaseModel):
-    model_config = ConfigDict(extra="ignore")
-
-    text: Optional[str] = None          # inline plain text
-    session_id: Optional[str] = None    # index an existing session transcript
-    siyuan_path: Optional[str] = None   # index a SiYuan page by path
-
-
-class KnowledgeIngestResponse(BaseModel):
-    chunks: int
-    message: str
 
 
 class TranscriptionResponse(BaseModel):
@@ -461,130 +448,6 @@ async def delete_session(
     if deleted == 0:
         raise HTTPException(status_code=404, detail=f"Session {session_id!r} not found")
     return Response(status_code=204)
-
-
-@app.post(
-    "/knowledge",
-    response_model=KnowledgeIngestResponse,
-    status_code=201,
-    dependencies=[Depends(_require_token)],
-)
-async def ingest_knowledge(
-    req: KnowledgeIngestRequest,
-    cfg: Any = Depends(_get_cfg),
-) -> KnowledgeIngestResponse:
-    """Index content into the RAG vector store.
-
-    Provide exactly one source field:
-
-    - **text** — embed inline plain text directly.
-    - **session_id** — index an existing session's analysis.  The session must
-      have a stored analysis; run ``analyze_summary`` via the agent first if
-      needed.
-    - **siyuan_path** — index a SiYuan page by its human-readable path
-      (e.g. ``/Notes/MyPage``).
-    """
-    sources = [x for x in (req.text, req.session_id, req.siyuan_path) if x]
-    if len(sources) != 1:
-        raise HTTPException(
-            status_code=422,
-            detail="Provide exactly one of: text, session_id, siyuan_path",
-        )
-
-    loop = asyncio.get_running_loop()
-
-    if req.session_id:
-        from pawn_agent.utils.vectorize import vectorize_session  # noqa: PLC0415
-
-        session_id = req.session_id
-        try:
-            n, _ = await loop.run_in_executor(
-                None,
-                lambda: vectorize_session(
-                    session_id=session_id,
-                    db_dsn=cfg.db_dsn,
-                    embed_model=cfg.embed_model,
-                    embed_device=cfg.embed_device,
-                    embed_dim=cfg.embed_dim,
-                    embed_local_files_only=cfg.embed_local_files_only,
-                ),
-            )
-        except ValueError as exc:
-            raise HTTPException(status_code=422, detail=str(exc)) from exc
-        return KnowledgeIngestResponse(
-            chunks=n,
-            message=f"Indexed {n} chunks for session '{session_id}'.",
-        )
-
-    if req.siyuan_path:
-        from pawn_core.siyuan import siyuan_post  # noqa: PLC0415
-        from pawn_agent.utils.vectorize import vectorize_siyuan_page  # noqa: PLC0415
-
-        if not cfg.siyuan_notebook:
-            raise HTTPException(status_code=400, detail="siyuan.notebook is not configured")
-
-        siyuan_path = req.siyuan_path
-        try:
-            ids = siyuan_post(
-                cfg.siyuan_url,
-                cfg.siyuan_token,
-                "/api/filetree/getIDsByHPath",
-                {"path": siyuan_path, "notebook": cfg.siyuan_notebook},
-            )
-        except Exception as exc:
-            raise HTTPException(
-                status_code=502, detail=f"SiYuan error: {exc}"
-            ) from exc
-
-        if not isinstance(ids, list) or not ids:
-            raise HTTPException(
-                status_code=404, detail=f"No SiYuan page found at '{siyuan_path}'"
-            )
-
-        page_id = ids[0]
-        try:
-            n = await loop.run_in_executor(
-                None,
-                lambda: vectorize_siyuan_page(
-                    page_id=page_id,
-                    siyuan_url=cfg.siyuan_url,
-                    siyuan_token=cfg.siyuan_token,
-                    db_dsn=cfg.db_dsn,
-                    embed_model=cfg.embed_model,
-                    embed_device=cfg.embed_device,
-                    embed_dim=cfg.embed_dim,
-                    embed_local_files_only=cfg.embed_local_files_only,
-                ),
-            )
-        except ValueError as exc:
-            raise HTTPException(status_code=422, detail=str(exc)) from exc
-        return KnowledgeIngestResponse(
-            chunks=n,
-            message=f"Indexed {n} chunks for SiYuan page '{siyuan_path}'.",
-        )
-
-    # text branch
-    from pawn_agent.utils.vectorize import vectorize_text  # noqa: PLC0415
-
-    text_content = req.text
-    try:
-        n = await loop.run_in_executor(
-            None,
-            lambda: vectorize_text(
-                content=text_content,
-                db_dsn=cfg.db_dsn,
-                embed_model=cfg.embed_model,
-                embed_device=cfg.embed_device,
-                embed_dim=cfg.embed_dim,
-                embed_local_files_only=cfg.embed_local_files_only,
-            ),
-        )
-    except ValueError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
-    return KnowledgeIngestResponse(
-        chunks=n,
-        message=f"Indexed {n} chunk{'s' if n != 1 else ''} from inline text.",
-    )
 
 
 @app.post(

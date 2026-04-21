@@ -28,8 +28,12 @@ from pawn_agent.core.langgraph_state import (
 from pawn_agent.core.langgraph_tools import (
     build_tool_analyze_summary_node,
     build_tool_list_sessions_node,
+    build_tool_memorize_node,
     build_tool_query_conversation_node,
+    build_tool_recall_memory_node,
     build_tool_save_to_siyuan_node,
+    build_tool_search_knowledge_node,
+    build_tool_vectorize_node,
 )
 from pawn_agent.utils.config import AgentConfig
 
@@ -108,6 +112,10 @@ class LangGraphRouterChatAgent:
         "tool_analyze_summary",
         "tool_query_conversation",
         "tool_save_to_siyuan",
+        "tool_memorize",
+        "tool_recall_memory",
+        "tool_search_knowledge",
+        "tool_vectorize",
     }
 
     def __init__(
@@ -177,10 +185,18 @@ class LangGraphRouterChatAgent:
         latest_session_id: str = "",
         latest_generated_content: str = "",
         latest_session_transcript: str = "",
+        recent_memories: list[str] | None = None,
     ) -> str:
         session_focus = latest_session_id or "(none)"
         has_generated_content = "yes" if normalize_output(latest_generated_content).strip() else "no"
         has_session_transcript = "yes" if normalize_output(latest_session_transcript).strip() else "no"
+        memories_section = ""
+        if recent_memories:
+            memory_lines = "\n".join(f"- {m}" for m in recent_memories)
+            memories_section = (
+                "\nRelevant memories from previous sessions:\n"
+                f"{memory_lines}\n"
+            )
         return (
             "You are a planning model for a LangGraph chat system.\n"
             "Decompose the user's request into an ordered list of actions and return it as a JSON array of strings.\n"
@@ -191,7 +207,11 @@ class LangGraphRouterChatAgent:
             "- tool_list_sessions: discover available sessions when none is in focus\n"
             "- tool_analyze_summary: produce the fixed structured analysis (Title / Summary / Key Topics / Speaker Highlights / Sentiment / Tags). This tool loads the transcript itself.\n"
             "- tool_query_conversation: load a conversation transcript. Include this before reply_fast/reply_deep when the user asks for a report or summary about a session AND the session transcript is not already cached.\n"
-            "- tool_save_to_siyuan: Use ONLY when the user explicitly asks to save or export something to SiYuan.\n\n"
+            "- tool_save_to_siyuan: Use ONLY when the user explicitly asks to save or export something to SiYuan.\n"
+            "- tool_memorize: Use when the user explicitly asks to remember, save, or memorize a fact or preference.\n"
+            "- tool_recall_memory: Search persistent memory for facts the user previously asked to remember.\n"
+            "- tool_search_knowledge: Semantic search over indexed session chunks and SiYuan notes.\n"
+            "- tool_vectorize: Index a session or SiYuan page into the knowledge store for future search.\n\n"
             "Rules:\n"
             "- Every plan must end with reply_fast or reply_deep.\n"
             "- Use reply_deep when the user asks for analysis, executive reports, comprehensive summaries, or complex reasoning.\n"
@@ -212,13 +232,18 @@ class LangGraphRouterChatAgent:
             "  User asks to write a draft or recap → [\"reply_deep\"]\n"
             "  User asks to retrieve, write a report and save it to SiYuan → [\"tool_query_conversation\", \"reply_deep\", \"tool_save_to_siyuan\", \"reply_fast\"]\n"
             "  User asks to save the latest generated content → [\"tool_save_to_siyuan\", \"reply_fast\"]\n"
-            "  User asks to save a specific earlier analysis or piece of content → [\"reply_deep\", \"tool_save_to_siyuan\", \"reply_fast\"]\n\n"
+            "  User asks to save a specific earlier analysis or piece of content → [\"reply_deep\", \"tool_save_to_siyuan\", \"reply_fast\"]\n"
+            "  User says 'remember that...' → [\"tool_memorize\", \"reply_fast\"]\n"
+            "  User asks about a fact they may have mentioned before → [\"tool_recall_memory\", \"reply_fast\"]\n"
+            "  User asks to search across sessions → [\"tool_search_knowledge\", \"reply_deep\"]\n"
+            "  User asks to index a session for search → [\"tool_vectorize\", \"reply_fast\"]\n\n"
             "Latest session in focus:\n"
             f"{session_focus}\n\n"
             "Session transcript cached:\n"
             f"{has_session_transcript}\n\n"
             "Latest generated content available (for context only — do NOT auto-save):\n"
-            f"{has_generated_content}\n\n"
+            f"{has_generated_content}\n"
+            f"{memories_section}\n"
             "Conversation so far:\n"
             f"{self._history_transcript(chat_history, user_prompt)}\n\n"
             "Current user message:\n"
@@ -301,6 +326,7 @@ class LangGraphRouterChatAgent:
         latest_session_id: str = "",
         latest_generated_content: str = "",
         latest_session_transcript: str = "",
+        state: dict | None = None,
     ) -> list[str]:
         if self._on_thinking is not None:
             self._on_thinking()
@@ -316,6 +342,7 @@ class LangGraphRouterChatAgent:
                 latest_session_id=latest_session_id,
                 latest_generated_content=latest_generated_content,
                 latest_session_transcript=latest_session_transcript,
+                recent_memories=get_state_field(state, "recent_memories") if state else [],
             ),
             [],
         )
@@ -396,6 +423,14 @@ def _next_node_from_dispatch(state: LangGraphChatState) -> str:
         return "tool_list_sessions"
     if route_kind == "tool_save_to_siyuan":
         return "tool_save_to_siyuan"
+    if route_kind == "tool_memorize":
+        return "tool_memorize"
+    if route_kind == "tool_recall_memory":
+        return "tool_recall_memory"
+    if route_kind == "tool_search_knowledge":
+        return "tool_search_knowledge"
+    if route_kind == "tool_vectorize":
+        return "tool_vectorize"
     if route_kind == "reply_fast":
         return "respond_fast"
     return "respond_deep"
@@ -409,6 +444,29 @@ async def build_langgraph_chat_graph(
 ):
     """Build the minimal LangGraph chatbot graph."""
     StateGraph, START, END = _import_langgraph_core()
+
+    async def recall_memories_node(state: LangGraphChatState) -> LangGraphChatState:
+        """Silently fetch relevant memories before planning."""
+        from pawn_agent.core.store import NS_MEMORIES, get_store  # noqa: PLC0415
+
+        _MEMORY_SCORE_THRESHOLD = 0.5
+        current = ensure_langgraph_state(state)
+        user_msg = normalize_output(get_state_field(current, "latest_user_message")).strip()
+        if not user_msg:
+            return current
+        try:
+            store = await get_store(chat_agent.cfg)
+            results = await store.asearch(NS_MEMORIES, query=user_msg, limit=5)
+            memories = [
+                (item.value or {}).get("text", "").strip()
+                for item in results
+                if (item.score or 0.0) >= _MEMORY_SCORE_THRESHOLD
+                and (item.value or {}).get("text", "").strip()
+            ]
+        except Exception:
+            memories = []
+        return set_state_fields(dict(current), recent_memories=memories)
+
 
     def human_input_node(state: LangGraphChatState) -> LangGraphChatState:
         current = ensure_langgraph_state(state)
@@ -463,6 +521,7 @@ async def build_langgraph_chat_graph(
                 latest_session_id=latest_session_id,
                 latest_generated_content=latest_generated_content,
                 latest_session_transcript=latest_session_transcript,
+                state=current,
             )
             return set_state_fields(
                 dict(current),
@@ -482,6 +541,7 @@ async def build_langgraph_chat_graph(
                 latest_session_id=latest_session_id,
                 latest_generated_content=latest_generated_content,
                 latest_session_transcript=latest_session_transcript,
+                state=current,
             )
             updated = set_state_fields(
                 dict(current),
@@ -698,6 +758,7 @@ async def build_langgraph_chat_graph(
 
     builder = StateGraph(LangGraphChatState)
     builder.add_node("human_input", human_input_node)
+    builder.add_node("recall_memories", recall_memories_node)
     builder.add_node("plan", plan_node)
     builder.add_node("dispatch", dispatch_node)
     builder.add_node("extract_session_id", extract_session_id_node)
@@ -733,15 +794,52 @@ async def build_langgraph_chat_graph(
             trace_full_state=trace_full_state,
         ),
     )
+    builder.add_node(
+        "tool_memorize",
+        build_tool_memorize_node(
+            cfg=chat_agent.cfg,
+            tracer=tracer,
+            trace_full_state=trace_full_state,
+        ),
+    )
+    builder.add_node(
+        "tool_recall_memory",
+        build_tool_recall_memory_node(
+            cfg=chat_agent.cfg,
+            tracer=tracer,
+            trace_full_state=trace_full_state,
+        ),
+    )
+    builder.add_node(
+        "tool_search_knowledge",
+        build_tool_search_knowledge_node(
+            cfg=chat_agent.cfg,
+            tracer=tracer,
+            trace_full_state=trace_full_state,
+        ),
+    )
+    builder.add_node(
+        "tool_vectorize",
+        build_tool_vectorize_node(
+            cfg=chat_agent.cfg,
+            tracer=tracer,
+            trace_full_state=trace_full_state,
+        ),
+    )
     builder.add_node("respond_fast", respond_fast_node)
     builder.add_node("respond_deep", respond_deep_node)
     builder.add_edge(START, "human_input")
-    builder.add_edge("human_input", "plan")
+    builder.add_edge("human_input", "recall_memories")
+    builder.add_edge("recall_memories", "plan")
     builder.add_edge("plan", "dispatch")
     builder.add_edge("tool_list_sessions", "dispatch")
     builder.add_edge("tool_analyze_summary", "dispatch")
     builder.add_edge("tool_query_conversation", "dispatch")
     builder.add_edge("tool_save_to_siyuan", "dispatch")
+    builder.add_edge("tool_memorize", "dispatch")
+    builder.add_edge("tool_recall_memory", "dispatch")
+    builder.add_edge("tool_search_knowledge", "dispatch")
+    builder.add_edge("tool_vectorize", "dispatch")
     builder.add_edge("respond_fast", "dispatch")
     builder.add_edge("respond_deep", "dispatch")
     builder.add_conditional_edges(
@@ -759,6 +857,10 @@ async def build_langgraph_chat_graph(
             "tool_list_sessions": "tool_list_sessions",
             "extract_session_id": "extract_session_id",
             "tool_save_to_siyuan": "tool_save_to_siyuan",
+            "tool_memorize": "tool_memorize",
+            "tool_recall_memory": "tool_recall_memory",
+            "tool_search_knowledge": "tool_search_knowledge",
+            "tool_vectorize": "tool_vectorize",
             "respond_fast": "respond_fast",
             "respond_deep": "respond_deep",
             "__end__": END,

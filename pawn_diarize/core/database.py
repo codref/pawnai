@@ -2,7 +2,7 @@
 
 This module defines the pawn-diarize–specific ORM models, engine factory, and
 session helper.  Shared models (TranscriptionSegment, SpeakerName, SessionAnalysis,
-GraphTriple, RagSource, TextChunk) are imported from pawn_core.database.
+GraphTriple) are imported from pawn_core.database.
 
 Tables owned here
 -----------------
@@ -31,11 +31,8 @@ from pgvector.sqlalchemy import Vector
 from pawn_core.database import (  # noqa: F401
     Base,
     GraphTriple,
-    RagSource,
     SessionAnalysis,
     SpeakerName,
-    TEXT_CHUNK_DIM,
-    TextChunk,
     TranscriptionSegment,
     _get_session,
     make_db_session,

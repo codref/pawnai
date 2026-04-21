@@ -1,7 +1,8 @@
-"""Tool: search_knowledge — semantic vector search over the RAG index."""
+"""Tool: search_knowledge — semantic vector search over sessions and SiYuan notes."""
 
 from __future__ import annotations
 
+import asyncio
 from typing import Optional
 
 from pydantic_ai import Tool
@@ -16,122 +17,108 @@ DESCRIPTION = (
 )
 
 
+async def search_knowledge_impl(
+    cfg: AgentConfig,
+    query: str,
+    source_type: Optional[str] = None,
+    session_id: Optional[str] = None,
+    top_k: int = 5,
+) -> str:
+    """Search the knowledge store and return formatted results."""
+    from pawn_agent.core.store import NS_SESSIONS, NS_SIYUAN, get_store  # noqa: PLC0415
+
+    top_k = max(1, min(20, top_k))
+    store = await get_store(cfg)
+
+    # Determine which namespaces to search.
+    search_sessions = source_type in (None, "transcript", "session")
+    search_siyuan = source_type in (None, "siyuan")
+
+    tasks = []
+    labels = []
+    if search_sessions:
+        tasks.append(store.asearch(NS_SESSIONS, query=query, limit=top_k))
+        labels.append("session")
+    if search_siyuan:
+        tasks.append(store.asearch(NS_SIYUAN, query=query, limit=top_k))
+        labels.append("siyuan")
+
+    if not tasks:
+        return "No relevant chunks found in the knowledge store."
+
+    result_groups = await asyncio.gather(*tasks)
+
+    # Merge and sort by score descending; higher score = more similar.
+    merged: list[tuple[float, str, object]] = []
+    for label, results in zip(labels, result_groups):
+        for item in results:
+            score = item.score if item.score is not None else 0.0
+            merged.append((score, label, item))
+    merged.sort(key=lambda x: x[0], reverse=True)
+    merged = merged[:top_k]
+
+    if not merged:
+        return "No relevant chunks found in the knowledge store."
+
+    # Filter by session_id if requested.
+    if session_id:
+        merged = [
+            (s, lbl, item)
+            for s, lbl, item in merged
+            if (item.value or {}).get("session_id") == session_id
+            or str(item.key).startswith(session_id)
+        ]
+        if not merged:
+            return f"No relevant chunks found for session '{session_id}'."
+
+    parts: list[str] = []
+    for i, (score, label, item) in enumerate(merged, 1):
+        value = item.value or {}
+        text = value.get("text", "").strip()
+        speaker = value.get("speaker_name") or value.get("speaker", "")
+
+        if label == "session":
+            sid = value.get("session_id", item.key)
+            source_label = f"Session: {sid}"
+            title = value.get("title", "")
+            if title and title != sid:
+                source_label += f" ({title})"
+        else:
+            page_title = value.get("page_title") or value.get("display_name", item.key)
+            source_label = f"SiYuan: {page_title}"
+
+        speaker_part = f"Speaker: {speaker}  " if speaker else ""
+        header = (
+            f"[{i}] {source_label}  {speaker_part}(similarity: {score:.3f})"
+        )
+        parts.append(f"{header}\n{text}")
+
+    return "\n\n---\n\n".join(parts)
+
+
 def build(cfg: AgentConfig) -> Tool:
-    # Load the embedding model once at session startup, shared across all calls.
-    from pawn_agent.utils.vectorize import load_embedding_model
-
-    _model = load_embedding_model(
-        cfg.embed_model,
-        cfg.embed_device,
-        truncate_dim=cfg.embed_dim if cfg.embed_dim else None,
-        local_files_only=cfg.embed_local_files_only,
-    )
-
-    def search_knowledge(
+    async def search_knowledge(
         query: str,
         source_type: Optional[str] = None,
         session_id: Optional[str] = None,
         top_k: int = 5,
     ) -> str:
-        """Perform a semantic similarity search over the RAG index of stored
+        """Perform a semantic similarity search over the knowledge store of stored
         transcript chunks and SiYuan note blocks. Use this when the user
         asks a question about past conversations or notes that may span
         multiple sessions, or when you need context beyond a single transcript.
-        Returns the most relevant text chunks with source, speaker, timestamps,
-        and similarity scores.
+        Returns the most relevant text chunks with source, speaker, and
+        similarity scores.
 
         Args:
-            query: Natural language search query. The query is embedded and matched
-                semantically against all indexed transcript chunks and SiYuan page blocks.
-            source_type: Filter by source type: 'transcript' for conversation chunks,
+            query: Natural language search query.
+            source_type: Filter by source type: 'transcript' for session chunks,
                 'siyuan' for note page chunks, or omit to search both.
-            session_id: Restrict the search to a specific session (transcript chunks only).
+            session_id: Restrict the search to a specific session.
                 Omit to search across all sessions.
             top_k: Number of top results to return (1-20).
         """
-        from sqlalchemy import text as sa_text
-
-        from pawn_agent.utils.db import make_db_session
-
-        top_k = max(1, min(20, top_k))
-
-        query_vec = _model.encode(query, show_progress_bar=False).tolist()
-        query_vec_str = "[" + ",".join(str(v) for v in query_vec) + "]"
-
-        where_parts: list[str] = []
-        bind: dict = {"query_vec": query_vec_str, "top_k": top_k}
-
-        if source_type:
-            where_parts.append("rs.source_type = :source_type")
-            bind["source_type"] = source_type
-
-        if session_id:
-            where_parts.append("rs.external_id = :session_id")
-            bind["session_id"] = session_id
-
-        where_sql = ("WHERE " + " AND ".join(where_parts)) if where_parts else ""
-
-        sql = sa_text(
-            f"""
-            SELECT
-                tc.id,
-                rs.source_type,
-                rs.external_id,
-                rs.display_name,
-                tc.speaker_name,
-                tc.start_time,
-                tc.end_time,
-                tc.text,
-                tc.metadata,
-                tc.embedding <=> CAST(:query_vec AS vector) AS distance
-            FROM text_chunks tc
-            JOIN rag_sources rs ON rs.id = tc.source_id
-            {where_sql}
-            ORDER BY distance ASC
-            LIMIT :top_k
-            """
-        )
-
-        db = make_db_session(cfg.db_dsn)
-        try:
-            rows = db.execute(sql, bind).fetchall()
-        finally:
-            db.close()
-
-        if not rows:
-            return "No relevant chunks found in the RAG index."
-
-        parts: list[str] = []
-        for i, row in enumerate(rows, 1):
-            if row.source_type == "transcript":
-                source_label = f"Session: {row.external_id}"
-                if row.display_name and row.display_name != row.external_id:
-                    source_label += f" ({row.display_name})"
-            else:
-                source_label = f"SiYuan: {row.display_name or row.external_id}"
-
-            similarity = 1.0 - float(row.distance)
-            chunk_meta = row.metadata or {}
-            is_summary = chunk_meta.get("chunk_type") == "session_summary"
-
-            if is_summary:
-                tags = chunk_meta.get("tags") or []
-                tag_str = f"  [tags: {', '.join(tags)}]" if tags else ""
-                header = (
-                    f"[{i}] Session Overview — {source_label}{tag_str}  "
-                    f"(similarity: {similarity:.3f})"
-                )
-            else:
-                speaker_part = f"Speaker: {row.speaker_name}  " if row.speaker_name else ""
-                time_part = ""
-                if row.start_time is not None and row.end_time is not None:
-                    s_m, s_s = divmod(row.start_time, 60)
-                    e_m, e_s = divmod(row.end_time, 60)
-                    time_part = f"[{int(s_m):02d}:{s_s:05.2f} → {int(e_m):02d}:{e_s:05.2f}]  "
-                header = f"[{i}] {source_label}  {speaker_part}{time_part}(similarity: {similarity:.3f})"
-
-            parts.append(f"{header}\n{(row.text or '').strip()}")
-
-        return "\n\n---\n\n".join(parts)
+        return await search_knowledge_impl(cfg, query, source_type, session_id, top_k)
 
     return Tool(search_knowledge)
+

@@ -48,6 +48,7 @@ def test_new_langgraph_chat_state_resets_history() -> None:
             "tool_name": "",
             "requested_session_id": "",
             "action_plan": [],
+            "recent_memories": [],
         },
         "durable_facts": {
             "latest_session_id": "",
@@ -127,6 +128,7 @@ def test_build_langgraph_chat_graph_registers_nodes_and_edges() -> None:
     assert isinstance(compiled, FakeCompiledGraph)
     assert set(calls["nodes"]) == {
         "human_input",
+        "recall_memories",
         "plan",
         "dispatch",
         "extract_session_id",
@@ -134,17 +136,26 @@ def test_build_langgraph_chat_graph_registers_nodes_and_edges() -> None:
         "tool_analyze_summary",
         "tool_query_conversation",
         "tool_save_to_siyuan",
+        "tool_memorize",
+        "tool_recall_memory",
+        "tool_search_knowledge",
+        "tool_vectorize",
         "respond_fast",
         "respond_deep",
     }
     assert calls["edges"] == [
         ("__start__", "human_input"),
-        ("human_input", "plan"),
+        ("human_input", "recall_memories"),
+        ("recall_memories", "plan"),
         ("plan", "dispatch"),
         ("tool_list_sessions", "dispatch"),
         ("tool_analyze_summary", "dispatch"),
         ("tool_query_conversation", "dispatch"),
         ("tool_save_to_siyuan", "dispatch"),
+        ("tool_memorize", "dispatch"),
+        ("tool_recall_memory", "dispatch"),
+        ("tool_search_knowledge", "dispatch"),
+        ("tool_vectorize", "dispatch"),
         ("respond_fast", "dispatch"),
         ("respond_deep", "dispatch"),
     ]
@@ -158,6 +169,10 @@ def test_build_langgraph_chat_graph_registers_nodes_and_edges() -> None:
         "tool_list_sessions": "tool_list_sessions",
         "extract_session_id": "extract_session_id",
         "tool_save_to_siyuan": "tool_save_to_siyuan",
+        "tool_memorize": "tool_memorize",
+        "tool_recall_memory": "tool_recall_memory",
+        "tool_search_knowledge": "tool_search_knowledge",
+        "tool_vectorize": "tool_vectorize",
         "respond_fast": "respond_fast",
         "respond_deep": "respond_deep",
         "__end__": "__end__",
@@ -1091,6 +1106,7 @@ def test_langgraph_chat_session_uses_deep_responder_after_query_for_executive_re
             latest_session_id: str = "",
             latest_generated_content: str = "",
             latest_session_transcript: str = "",
+            state: dict | None = None,
         ) -> list[str]:
             assert "deep report ready for executive presentation" in user_prompt
             self.last_route_kind = "tool_query_conversation"
@@ -1348,6 +1364,7 @@ def test_langgraph_chat_session_reuses_and_overrides_latest_session_id(tmp_path:
             latest_session_id: str = "",
             latest_generated_content: str = "",
             latest_session_transcript: str = "",
+            state: dict | None = None,
         ) -> list[str]:
             if user_prompt == "extract action points":
                 assert latest_session_id == "oci-20260416"
@@ -1497,6 +1514,7 @@ def test_langgraph_chat_session_promotes_latest_session_id_from_list_results(tmp
             latest_session_id: str = "",
             latest_generated_content: str = "",
             latest_session_transcript: str = "",
+            state: dict | None = None,
         ) -> list[str]:
             if user_prompt == "retrieve last oci session":
                 assert latest_session_id == ""
@@ -1651,6 +1669,7 @@ def test_langgraph_chat_session_resolves_named_session_and_confirmation_from_cat
             latest_session_id: str = "",
             latest_generated_content: str = "",
             latest_session_transcript: str = "",
+            state: dict | None = None,
         ) -> list[str]:
             if user_prompt == "list latest sessions":
                 return ["tool_list_sessions", "reply_fast"]
@@ -1816,6 +1835,7 @@ def test_langgraph_chat_session_preserves_session_focus_after_transcript_summary
             latest_session_id: str = "",
             latest_generated_content: str = "",
             latest_session_transcript: str = "",
+            state: dict | None = None,
         ) -> list[str]:
             if user_prompt == "retrieve latest tom session":
                 return ["tool_query_conversation", "reply_fast"]
@@ -1961,6 +1981,7 @@ def test_langgraph_chat_session_saves_latest_generated_content_to_siyuan(tmp_pat
             latest_session_id: str = "",
             latest_generated_content: str = "",
             latest_session_transcript: str = "",
+            state: dict | None = None,
         ) -> list[str]:
             if user_prompt == "show session oci-20260416":
                 return ["tool_query_conversation", "reply_fast"]
@@ -2122,6 +2143,7 @@ def test_langgraph_chat_session_refreshes_session_analysis_before_saving(tmp_pat
             latest_session_id: str = "",
             latest_generated_content: str = "",
             latest_session_transcript: str = "",
+            state: dict | None = None,
         ) -> list[str]:
             assert user_prompt == "extract an executive summary and save it to siyuan"
             assert latest_session_id == "oci-20260416"
@@ -2275,6 +2297,7 @@ def test_langgraph_chat_session_save_to_siyuan_requires_session_id(tmp_path: Pat
             latest_session_id: str = "",
             latest_generated_content: str = "",
             latest_session_transcript: str = "",
+            state: dict | None = None,
         ) -> list[str]:
             return ["tool_save_to_siyuan", "reply_fast"]
 
@@ -2388,6 +2411,7 @@ def test_langgraph_chat_session_save_to_siyuan_requires_generated_content(tmp_pa
             latest_session_id: str = "",
             latest_generated_content: str = "",
             latest_session_transcript: str = "",
+            state: dict | None = None,
         ) -> list[str]:
             assert latest_session_id == "oci-20260416"
             return ["tool_save_to_siyuan", "reply_fast"]
@@ -2508,6 +2532,7 @@ def test_langgraph_chat_session_reports_missing_session_id_for_session_tool(tmp_
             latest_session_id: str = "",
             latest_generated_content: str = "",
             latest_session_transcript: str = "",
+            state: dict | None = None,
         ) -> list[str]:
             assert latest_session_id == ""
             self.last_route_kind = "tool_query_conversation"
@@ -2663,6 +2688,7 @@ def test_langgraph_chat_session_emits_phoenix_spans(tmp_path: Path) -> None:
             latest_session_id: str = "",
             latest_generated_content: str = "",
             latest_session_transcript: str = "",
+            state: dict | None = None,
         ) -> list[str]:
             assert user_prompt == "show latest sessions"
             assert chat_history == [{"role": "user", "content": "show latest sessions"}]
@@ -2821,6 +2847,7 @@ def test_langgraph_chat_session_emits_save_to_siyuan_spans(tmp_path: Path) -> No
             latest_session_id: str = "",
             latest_generated_content: str = "",
             latest_session_transcript: str = "",
+            state: dict | None = None,
         ) -> list[str]:
             assert latest_session_id == "oci-20260416"
             assert latest_generated_content.startswith("# Executive Report")
@@ -2971,6 +2998,7 @@ def test_langgraph_chat_session_traces_full_state_when_enabled(tmp_path: Path) -
             latest_session_id: str = "",
             latest_generated_content: str = "",
             latest_session_transcript: str = "",
+            state: dict | None = None,
         ) -> list[str]:
             self.last_route_kind = "reply_fast"
             return ["reply_fast"]

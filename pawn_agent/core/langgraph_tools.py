@@ -17,6 +17,8 @@ from pawn_agent.tools.analyze_summary import analyze_summary_impl
 from pawn_agent.tools.list_sessions import list_sessions_impl
 from pawn_agent.tools.query_conversation import query_conversation_impl
 from pawn_agent.tools.save_to_siyuan import save_to_siyuan_impl
+from pawn_agent.tools.search_knowledge import search_knowledge_impl
+from pawn_agent.tools.vectorize import vectorize_impl
 from pawn_agent.utils.config import AgentConfig
 
 
@@ -507,3 +509,129 @@ def build_tool_save_to_siyuan_node(
             return updated
 
     return tool_save_to_siyuan_node
+
+
+def build_tool_memorize_node(
+    *,
+    cfg: AgentConfig,
+    tracer=None,
+    trace_full_state: bool = False,
+) -> Callable[[dict[str, Any]], Awaitable[dict[str, Any]]]:
+    """Build the LangGraph node for saving a fact to persistent memory."""
+
+    async def tool_memorize_node(state: dict[str, Any]) -> dict[str, Any]:
+        from pawn_agent.tools.memorize import build as _build_memorize  # noqa: PLC0415
+
+        current = ensure_langgraph_state(state)
+        latest_user_message = normalize_output(get_state_field(current, "latest_user_message"))
+
+        # Extract fact from tool_output field (set by prior nodes) or user message.
+        fact = normalize_output(get_state_field(current, "tool_output")).strip() or latest_user_message
+
+        # Build the tool and call it directly.
+        tool = _build_memorize(cfg)
+        try:
+            tool_output = await tool.function(fact)  # type: ignore[attr-defined]
+        except Exception as exc:
+            tool_output = f"Error memorizing: {exc}"
+
+        return set_state_fields(
+            dict(current),
+            tool_name="memorize",
+            tool_output=tool_output,
+        )
+
+    return tool_memorize_node
+
+
+def build_tool_recall_memory_node(
+    *,
+    cfg: AgentConfig,
+    tracer=None,
+    trace_full_state: bool = False,
+) -> Callable[[dict[str, Any]], Awaitable[dict[str, Any]]]:
+    """Build the LangGraph node for recalling facts from persistent memory."""
+
+    async def tool_recall_memory_node(state: dict[str, Any]) -> dict[str, Any]:
+        from pawn_agent.tools.recall_memory import build as _build_recall  # noqa: PLC0415
+
+        current = ensure_langgraph_state(state)
+        query = normalize_output(get_state_field(current, "latest_user_message")).strip()
+
+        tool = _build_recall(cfg)
+        try:
+            tool_output = await tool.function(query)  # type: ignore[attr-defined]
+        except Exception as exc:
+            tool_output = f"Error recalling memories: {exc}"
+
+        return set_state_fields(
+            dict(current),
+            tool_name="recall_memory",
+            tool_output=tool_output,
+        )
+
+    return tool_recall_memory_node
+
+
+def build_tool_search_knowledge_node(
+    *,
+    cfg: AgentConfig,
+    tracer=None,
+    trace_full_state: bool = False,
+) -> Callable[[dict[str, Any]], Awaitable[dict[str, Any]]]:
+    """Build the LangGraph node for semantic search over the knowledge store."""
+
+    async def tool_search_knowledge_node(state: dict[str, Any]) -> dict[str, Any]:
+        current = ensure_langgraph_state(state)
+        query = normalize_output(get_state_field(current, "latest_user_message")).strip()
+        session_id = normalize_output(get_state_field(current, "latest_session_id")).strip() or None
+
+        try:
+            tool_output = await search_knowledge_impl(cfg, query, session_id=session_id)
+        except Exception as exc:
+            tool_output = f"Error searching knowledge: {exc}"
+
+        return set_state_fields(
+            dict(current),
+            tool_name="search_knowledge",
+            tool_output=tool_output,
+        )
+
+    return tool_search_knowledge_node
+
+
+def build_tool_vectorize_node(
+    *,
+    cfg: AgentConfig,
+    tracer=None,
+    trace_full_state: bool = False,
+) -> Callable[[dict[str, Any]], Awaitable[dict[str, Any]]]:
+    """Build the LangGraph node for indexing a session or SiYuan page."""
+
+    async def tool_vectorize_node(state: dict[str, Any]) -> dict[str, Any]:
+        current = ensure_langgraph_state(state)
+        session_id = normalize_output(get_state_field(current, "latest_session_id")).strip() or None
+
+        if not session_id:
+            return set_state_fields(
+                dict(current),
+                tool_name="vectorize",
+                tool_output=(
+                    "I need a session in focus before I can index it. "
+                    "Retrieve or analyze a session first."
+                ),
+            )
+
+        try:
+            tool_output = await vectorize_impl(cfg, session_id=session_id)
+        except Exception as exc:
+            tool_output = f"Error vectorizing session: {exc}"
+
+        return set_state_fields(
+            dict(current),
+            tool_name="vectorize",
+            tool_output=tool_output,
+        )
+
+    return tool_vectorize_node
+

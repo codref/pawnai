@@ -18,11 +18,11 @@ from sqlalchemy import engine_from_config, pool
 
 from alembic import context
 
-# ── Load pawn_diarize ORM metadata ────────────────────────────────────────────────────
+# ── Load pawn ORM metadata ────────────────────────────────────────────────────────
 # Import Base (and all models, so they register with metadata) before Alembic
 # inspects target_metadata.
-from pawn_diarize.core.database import Base  # noqa: F401 – registers all ORM models
-from pawn_diarize.core.config import AppConfig
+from pawn_core.database import Base  # noqa: F401 – registers all ORM models
+from pawn_core.config import PawnConfig as _CoreConfig
 
 target_metadata = Base.metadata
 
@@ -36,7 +36,7 @@ if config.config_file_name is not None:
 # ── DSN resolution ────────────────────────────────────────────────────────────
 # AppConfig reads .pawn-diarize.yml (paths.db_dsn) and falls back to DATABASE_URL
 # then to the hard-coded default — so a single source of truth for all tooling.
-_dsn: str = AppConfig().get("db_dsn")
+_dsn: str = _CoreConfig().db_dsn
 config.set_main_option("sqlalchemy.url", _dsn)
 
 

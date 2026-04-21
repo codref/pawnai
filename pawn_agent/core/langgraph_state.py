@@ -23,6 +23,7 @@ class LangGraphSessionState(TypedDict, total=False):
     tool_name: str
     requested_session_id: str
     action_plan: list[str]
+    recent_memories: list[str]
 
 
 class LangGraphDurableFacts(TypedDict, total=False):
@@ -55,6 +56,7 @@ SESSION_STATE_DEFAULTS: LangGraphSessionState = {
     "tool_name": "",
     "requested_session_id": "",
     "action_plan": [],
+    "recent_memories": [],
 }
 
 DURABLE_FACT_DEFAULTS: LangGraphDurableFacts = {
@@ -80,6 +82,7 @@ FIELD_BUCKETS = {
     "tool_name": "session_state",
     "requested_session_id": "session_state",
     "action_plan": "session_state",
+    "recent_memories": "session_state",
     "latest_session_id": "durable_facts",
     "tool_output": "artifacts",
     "latest_generated_content": "artifacts",

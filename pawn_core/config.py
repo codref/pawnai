@@ -153,8 +153,8 @@ class PawnConfig(BaseSettings):
     )
 
     db_dsn: str = Field(
-        default="postgresql+psycopg://postgres:postgres@localhost:5432/pawnai",
-        validation_alias=AliasChoices("PAWN_DB_DSN", "DATABASE_URL"),
+        default="postgresql+psycopg://postgres:postgres@localhost:5433/pawnai",
+        validation_alias=AliasChoices("PAWN_DB_DSN", "DATABASE_URL", "db_dsn"),
     )
     models: ModelsConfig = Field(default_factory=ModelsConfig)
     device: DeviceConfig = Field(default_factory=DeviceConfig)
