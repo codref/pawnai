@@ -50,19 +50,10 @@ All endpoints except ``/health`` require ``Authorization: Bearer <token>``.
 If ``api.token`` is not set in ``pawnai.yaml`` the server starts in open
 mode with a warning — useful for local development.
 
-Model selection / session mode
-------------------------------
-The ``model`` field controls both the backend model and whether history is
-loaded from the database (stateful) or taken from the request (stateless):
-
-    ``pawn-agent``                           — stateful,  default model
-    ``pawn-agent/openai:gpt-4o``             — stateful,  gpt-4o
-    ``pawn-agent/stateless``                 — stateless, default model
-    ``pawn-agent/stateless/openai:gpt-4o``   — stateless, override = openai:gpt-4o
-
-Stateless mode uses the ``messages`` array from the request as history
-directly, without touching the database.  Useful with clients that manage
-conversation history themselves (e.g. Open WebUI, Continue).
+Model selection
+---------------
+The server always routes through the LangGraph agent.  The ``model`` field
+is accepted for OpenAI client compatibility but its value is ignored.
 
 Session management
 ------------------
@@ -85,7 +76,7 @@ import threading
 import time
 import uuid
 from pathlib import Path
-from typing import Any, AsyncIterator, Dict, List, Optional, Union
+from typing import Any, AsyncIterator, List, Optional, Union
 
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Response, UploadFile
 from fastapi.responses import PlainTextResponse, StreamingResponse
@@ -105,6 +96,10 @@ _transcription_lock = threading.Lock()
 _tts_engine: Optional[Any] = None  # pawn_core.TTSEngine, lazy-loaded
 _tts_lock = threading.Lock()
 _tts_idle_handle: Optional[asyncio.TimerHandle] = None
+
+# LangGraph session registry — lazily populated, survives across requests.
+from pawn_agent.core.langgraph_registry import LangGraphSessionRegistry  # noqa: E402
+_langgraph_registry = LangGraphSessionRegistry()
 
 _security = HTTPBearer(auto_error=False)
 
@@ -128,13 +123,6 @@ class ChatCompletionRequest(BaseModel):
     messages: List[ChatCompletionMessage]
     user: Optional[str] = None
     stream: Optional[bool] = False
-    # pydantic_ai ModelSettings passthrough
-    temperature: Optional[float] = None
-    max_tokens: Optional[int] = None
-    top_p: Optional[float] = None
-    stop: Optional[List[str]] = None  # maps to stop_sequences
-    frequency_penalty: Optional[float] = None
-    logit_bias: Optional[Dict[str, int]] = None
 
 
 class ChatCompletionChoice(BaseModel):
@@ -255,12 +243,8 @@ def _require_token(
 
 
 def _clear_agent_cache() -> None:
-    from pawn_server.core.queue_listener import _agent_cache  # noqa: PLC0415
-
-    count = len(_agent_cache)
-    _agent_cache.clear()
-    if count:
-        logger.info("Model idle timeout reached — cleared %d cached agent(s)", count)
+    _langgraph_registry.evict_all()
+    logger.info("Model idle timeout reached — LangGraph sessions evicted")
 
 
 def _schedule_idle_reset(loop: asyncio.AbstractEventLoop, timeout_seconds: float) -> None:
@@ -317,62 +301,6 @@ def _session_id(messages: List[dict], user: Optional[str]) -> str:
         return str(uuid.UUID(hashlib.md5(first.encode()).hexdigest()))
     return str(uuid.uuid4())
 
-
-def _parse_model(model_str: str) -> tuple:
-    """Parse the model string into (stateless, model_override).
-
-    Supported forms:
-        pawn-agent                      → stateful,  no override
-        pawn-agent/openai:gpt-4o        → stateful,  override = openai:gpt-4o
-        pawn-agent/stateless            → stateless, no override
-        pawn-agent/stateless/openai:gpt-4o → stateless, override = openai:gpt-4o
-    """
-    # strip the leading component (pawn-agent / pawn_agent / default / …)
-    first_slash = model_str.find("/")
-    remainder = model_str[first_slash + 1:] if first_slash != -1 else ""
-
-    if remainder.startswith("stateless"):
-        after = remainder[len("stateless"):]
-        override_str = after.lstrip("/") or None
-        return True, override_str or None
-    else:
-        override_str = remainder or None
-        return False, override_str or None
-
-
-def _openai_messages_to_history(messages: List[dict]) -> list:
-    """Convert an OpenAI messages array to pydantic_ai ModelMessage history.
-
-    Skips system messages (handled by the agent's own system prompt).
-    """
-    from pydantic_ai.messages import ModelRequest, ModelResponse, TextPart, UserPromptPart  # noqa: PLC0415
-
-    history = []
-    for msg in messages:
-        role = msg.get("role")
-        content = msg.get("content") or ""
-        if role == "user":
-            history.append(ModelRequest(parts=[UserPromptPart(content=content)]))
-        elif role == "assistant":
-            history.append(ModelResponse(parts=[TextPart(content=content)]))
-    return history
-
-
-def _build_model_settings(req: ChatCompletionRequest) -> dict:
-    s: dict = {}
-    if req.temperature is not None:
-        s["temperature"] = req.temperature
-    if req.max_tokens is not None:
-        s["max_tokens"] = req.max_tokens
-    if req.top_p is not None:
-        s["top_p"] = req.top_p
-    if req.stop:
-        s["stop_sequences"] = req.stop
-    if req.frequency_penalty is not None:
-        s["frequency_penalty"] = req.frequency_penalty
-    if req.logit_bias is not None:
-        s["logit_bias"] = req.logit_bias
-    return s
 
 
 def _build_openai_response(reply: str, model: str) -> ChatCompletionResponse:
@@ -437,33 +365,6 @@ async def _stream_sse(reply: str, model: str) -> AsyncIterator[str]:
     yield "data: [DONE]\n\n"
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# Thread-executor helper
-# ──────────────────────────────────────────────────────────────────────────────
-
-
-def _run_turn(agent: Any, prompt: str, history: list, model_settings: dict) -> Any:
-    """Synchronous wrapper — runs in a thread executor from the async endpoint."""
-    return agent.run_sync(
-        prompt,
-        message_history=history,
-        model_settings=model_settings or None,
-    )
-
-
-def _history_mode(cfg: Any) -> str:
-    return getattr(cfg, "history_mode", "raw")
-
-
-def _history_kwargs(cfg: Any) -> dict[str, Any]:
-    return {
-        "strip_thinking": getattr(cfg, "strip_thinking", True),
-        "recent_turns": getattr(cfg, "history_recent_turns", 4),
-        "replay_max_tokens": getattr(cfg, "history_replay_max_tokens", 8000),
-        "max_text_chars": getattr(cfg, "history_max_text_chars", 500),
-        "sanitize_leaked_thoughts": getattr(cfg, "history_sanitize_leaked_thoughts", True),
-    }
-
 
 # ──────────────────────────────────────────────────────────────────────────────
 # FastAPI application
@@ -493,17 +394,12 @@ async def chat_completions(
 ) -> Union[ChatCompletionResponse, StreamingResponse]:
     """OpenAI-compatible chat completions endpoint.
 
-    Send ``/reset`` as the last user message to clear the session history
-    instead of running the agent.  ``stream=true`` is accepted but ignored —
-    the response is always a complete JSON object.
+    All requests are handled by the LangGraph agent.  The ``model`` field is
+    accepted for OpenAI client compatibility but ignored.
+
+    Send ``/reset`` as the last user message to clear the session history.
     """
-    from pawn_server.core.queue_listener import _get_or_create_agent  # noqa: PLC0415
-    from pawn_agent.core.session_store import (  # noqa: PLC0415
-        append_turn,
-        build_replay_history,
-        delete_session as _delete_session,
-        load_history,
-    )
+    from pawn_agent.core.session_store import delete_session as _delete_session  # noqa: PLC0415
 
     logger.debug("chat/completions raw payload: %s", req.model_dump())
     messages = [m.model_dump() for m in req.messages]
@@ -511,21 +407,18 @@ async def chat_completions(
     loop = asyncio.get_running_loop()
     _schedule_idle_reset(loop, cfg.api_model_idle_timeout_minutes * 60)
 
-    stateless_check, _ = _parse_model(req.model)
     if req.user:
-        logger.info(
-            "chat/completions: session_id=%r model=%r stateless=%s",
-            session_id, req.model, stateless_check,
-        )
+        logger.info("chat/completions: session_id=%r model=%r", session_id, req.model)
     else:
         logger.warning(
-            "chat/completions: session_id=%r model=%r stateless=%s "
+            "chat/completions: session_id=%r model=%r "
             "— 'user' field not set in request payload, session_id derived from message hash",
-            session_id, req.model, stateless_check,
+            session_id, req.model,
         )
 
     if _is_reset(messages):
         deleted = _delete_session(session_id, cfg.db_dsn)
+        await _langgraph_registry.reset(session_id, cfg.db_dsn)
         reply = f"Session reset. ({deleted} turn{'s' if deleted != 1 else ''} deleted)"
         if req.stream:
             return StreamingResponse(_stream_sse(reply, req.model), media_type="text/event-stream")
@@ -535,58 +428,15 @@ async def chat_completions(
     if not prompt:
         raise HTTPException(status_code=422, detail="No user message found in messages")
 
-    stateless, model_override = stateless_check, _parse_model(req.model)[1]
-    model_settings = _build_model_settings(req)
-
-    if stateless:
-        # Use the client-provided messages as history (all but the last user message)
-        history = _openai_messages_to_history(messages[:-1])
-    else:
-        if _history_mode(cfg) == "raw":
-            history = load_history(
-                session_id,
-                cfg.db_dsn,
-                strip_thinking=getattr(cfg, "strip_thinking", True),
-            )
-        else:
-            history = build_replay_history(
-                session_id,
-                cfg.db_dsn,
-                **_history_kwargs(cfg),
-            )
-
-    # Bind agents to session_id in stateful mode so SessionVars can persist.
-    agent_session_id = None if stateless else session_id
-    agent = _get_or_create_agent(
-        cfg,
-        model_override=model_override,
-        session_id=agent_session_id,
-    )
-    source_id = str(uuid.uuid4())
-
     try:
-        result = await agent.run_async(
-            prompt,
-            message_history=history,
-            model_settings=model_settings or None,
-        )
+        reply = await _langgraph_registry.handle_turn(session_id, prompt, cfg, cfg.db_dsn)
     except Exception as exc:
-        # Return all agent errors as a 200 assistant message rather than 500.
-        # A 500 causes LiteLLM (and other proxies) to retry — which never helps
-        # for model-side failures such as malformed tool-call JSON (e.g. invalid
-        # escape sequences like \( \) from LaTeX in generated content).
-        logger.error("Agent error for session %r: %s", session_id, exc, exc_info=True)
+        logger.error("LangGraph agent error for session %r: %s", session_id, exc, exc_info=True)
         reply = f"Agent error: {exc}"
-        if req.stream:
-            return StreamingResponse(_stream_sse(reply, req.model), media_type="text/event-stream")
-        return _build_openai_response(reply, req.model)
-
-    if not stateless:
-        append_turn(source_id, session_id, list(result.new_messages()), cfg.db_dsn)
 
     if req.stream:
-        return StreamingResponse(_stream_sse(result.output, req.model), media_type="text/event-stream")
-    return _build_openai_response(result.output, req.model)
+        return StreamingResponse(_stream_sse(reply, req.model), media_type="text/event-stream")
+    return _build_openai_response(reply, req.model)
 
 
 @app.delete(
@@ -607,6 +457,7 @@ async def delete_session(
     from pawn_agent.core.session_store import delete_session as _delete  # noqa: PLC0415
 
     deleted = _delete(session_id, cfg.db_dsn)
+    await _langgraph_registry.reset(session_id, cfg.db_dsn)
     if deleted == 0:
         raise HTTPException(status_code=404, detail=f"Session {session_id!r} not found")
     return Response(status_code=204)
