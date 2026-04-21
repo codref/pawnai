@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
+import json
 import re
 from typing import Callable, TypedDict
 
@@ -100,7 +101,7 @@ def _trace_full_state_snapshot(span, state: LangGraphChatState, *, label: str) -
 class LangGraphRouterChatAgent:
     """Forward-only fast/deep router used by the LangGraph evaluation path."""
 
-    VALID_ROUTES = {
+    VALID_ACTIONS = {
         "reply_fast",
         "reply_deep",
         "tool_list_sessions",
@@ -125,6 +126,7 @@ class LangGraphRouterChatAgent:
         self.last_route_model = self.cfg.langgraph_fast_model
         self.last_reply_model = ""
         self.last_tool_name = ""
+        self.last_action_plan: list[str] = []
 
     def _clone_cfg_with_model(self, model_name: str) -> AgentConfig:
         cloned = (
@@ -167,29 +169,55 @@ class LangGraphRouterChatAgent:
             lines.append(f"{speaker}: {content}")
         return "\n".join(lines) if lines else "(no prior conversation)"
 
-    def _router_prompt(
+    def _planner_prompt(
         self,
         user_prompt: str,
         chat_history: list[dict[str, str]],
         *,
         latest_session_id: str = "",
         latest_generated_content: str = "",
+        latest_session_transcript: str = "",
     ) -> str:
         session_focus = latest_session_id or "(none)"
         has_generated_content = "yes" if normalize_output(latest_generated_content).strip() else "no"
+        has_session_transcript = "yes" if normalize_output(latest_session_transcript).strip() else "no"
         return (
-            "You are a routing model for a forward-only LangGraph chat system.\n"
-            "Choose exactly one label and return only that label.\n"
-            "Labels:\n"
+            "You are a planning model for a LangGraph chat system.\n"
+            "Decompose the user's request into an ordered list of actions and return it as a JSON array of strings.\n"
+            "Return ONLY the JSON array — no explanation, no markdown, no other text.\n\n"
+            "Available actions:\n"
             "- reply_fast: simple conversational reply, lightweight reasoning, or normal follow-up\n"
-            "- reply_deep: analysis, synthesis, complex reasoning, or anything needing deeper thought\n"
-            "- tool_list_sessions: the user asks for recent/latest/available sessions, or needs session discovery before analysis\n"
-            "- tool_analyze_summary: the user asks for the standard structured session analysis, canonical summary, or default analysis format. Use this for the fixed Title / Summary / Key Topics / Speaker Highlights / Sentiment / Tags analysis. This tool already loads the transcript itself.\n"
-            "- tool_query_conversation: the user asks to inspect, quote, review, retrieve, summarize, analyze, extract action points, or write a report about a conversation session. If a latest session is already in focus and the user asks for a report, summary, executive report, analysis, decisions, action items, or similar follow-up about that session, choose tool_query_conversation so the transcript is loaded before answering. If the user asks for a new session-derived summary, report, analysis, or executive summary and also asks to save it to SiYuan in the same request, still choose tool_query_conversation first so the transcript is refreshed before the new result is saved.\n\n"
-            "- tool_save_to_siyuan: the user asks to save, export, or store the latest generated report, summary, analysis, or other already-written assistant content into SiYuan. Choose this only when the user is asking to save existing generated content, not when they are asking for a new analysis or report to be created and saved in the same request.\n\n"
+            "- reply_deep: thorough analysis, synthesis, executive reports, comprehensive summaries, or complex reasoning\n"
+            "- tool_list_sessions: discover available sessions when none is in focus\n"
+            "- tool_analyze_summary: produce the fixed structured analysis (Title / Summary / Key Topics / Speaker Highlights / Sentiment / Tags). This tool loads the transcript itself.\n"
+            "- tool_query_conversation: load a conversation transcript. Include this before reply_fast/reply_deep when the user asks for a report or summary about a session AND the session transcript is not already cached.\n"
+            "- tool_save_to_siyuan: Use ONLY when the user explicitly asks to save or export something to SiYuan.\n\n"
+            "Rules:\n"
+            "- Every plan must end with reply_fast or reply_deep.\n"
+            "- Use reply_deep when the user asks for analysis, executive reports, comprehensive summaries, or complex reasoning.\n"
+            "- Use reply_fast for conversational replies, simple follow-ups, or when just reporting a tool result.\n"
+            "- If session_transcript_cached is 'yes', skip tool_query_conversation — the transcript is already available for the current session.\n"
+            "- Include tool_save_to_siyuan ONLY when the user explicitly asks to save or export to SiYuan. Never include it speculatively after generating content.\n"
+            "- Include tool_save_to_siyuan AFTER the reply step that produces the content, and BEFORE END.\n"
+            "- If the user asks to save a specific earlier piece of content (not the latest), use reply_deep first to extract and reproduce it from the conversation history, then tool_save_to_siyuan.\n"
+            "- Do NOT include extract_session_id — it is handled automatically.\n"
+            "- Include each action at most once (exception: you may include reply_fast after tool_save_to_siyuan to confirm the save).\n"
+            "- Maximum 8 actions.\n\n"
+            "Examples:\n"
+            "  User asks a simple question → [\"reply_fast\"]\n"
+            "  User asks for an analysis → [\"reply_deep\"]\n"
+            "  User asks to list sessions → [\"tool_list_sessions\", \"reply_fast\"]\n"
+            "  User asks to retrieve and summarize a session (transcript not cached) → [\"tool_query_conversation\", \"reply_deep\"]\n"
+            "  User asks a follow-up about an already-loaded session (transcript cached) → [\"reply_deep\"]\n"
+            "  User asks to write a draft or recap → [\"reply_deep\"]\n"
+            "  User asks to retrieve, write a report and save it to SiYuan → [\"tool_query_conversation\", \"reply_deep\", \"tool_save_to_siyuan\", \"reply_fast\"]\n"
+            "  User asks to save the latest generated content → [\"tool_save_to_siyuan\", \"reply_fast\"]\n"
+            "  User asks to save a specific earlier analysis or piece of content → [\"reply_deep\", \"tool_save_to_siyuan\", \"reply_fast\"]\n\n"
             "Latest session in focus:\n"
             f"{session_focus}\n\n"
-            "Latest generated content available:\n"
+            "Session transcript cached:\n"
+            f"{has_session_transcript}\n\n"
+            "Latest generated content available (for context only — do NOT auto-save):\n"
             f"{has_generated_content}\n\n"
             "Conversation so far:\n"
             f"{self._history_transcript(chat_history, user_prompt)}\n\n"
@@ -219,18 +247,28 @@ class LangGraphRouterChatAgent:
             f"{user_prompt}\n"
         )
 
-    def _normalize_route(self, route_reply: str) -> str:
-        route = (
-            normalize_output(route_reply).strip().lower().splitlines()[0].strip()
-            if route_reply
-            else ""
-        )
-        if route in self.VALID_ROUTES:
-            return route
-        for candidate in self.VALID_ROUTES:
-            if candidate in route:
-                return candidate
-        return "reply_deep"
+    def _normalize_plan(self, plan_reply: str) -> list[str]:
+        MAX_PLAN_LENGTH = 8
+        raw = normalize_output(plan_reply).strip() if plan_reply else ""
+        # Try direct JSON parse first
+        parsed: list[str] = []
+        try:
+            parsed = json.loads(raw)
+        except (json.JSONDecodeError, ValueError):
+            # Fallback: extract first JSON array from the reply
+            match = re.search(r"\[.*?\]", raw, re.DOTALL)
+            if match:
+                try:
+                    parsed = json.loads(match.group(0))
+                except (json.JSONDecodeError, ValueError):
+                    parsed = []
+        if not isinstance(parsed, list):
+            return ["reply_deep"]
+        validated = [
+            item for item in parsed
+            if isinstance(item, str) and item in self.VALID_ACTIONS
+        ][:MAX_PLAN_LENGTH]
+        return validated if validated else ["reply_deep"]
 
     def _normalize_requested_session_id(self, reply: str) -> str:
         value = normalize_output(reply).strip().splitlines()[0].strip() if reply else ""
@@ -255,14 +293,15 @@ class LangGraphRouterChatAgent:
         )
         return self._normalize_requested_session_id(extraction_reply)
 
-    async def route(
+    async def plan(
         self,
         user_prompt: str,
         chat_history: list[dict[str, str]],
         *,
         latest_session_id: str = "",
         latest_generated_content: str = "",
-    ) -> str:
+        latest_session_transcript: str = "",
+    ) -> list[str]:
         if self._on_thinking is not None:
             self._on_thinking()
 
@@ -270,17 +309,19 @@ class LangGraphRouterChatAgent:
         self.last_reply_model = ""
         self.last_tool_name = ""
         self.model_name = self.cfg.langgraph_fast_model
-        route_reply = await self._fast_agent.reply(
-            self._router_prompt(
+        plan_reply = await self._fast_agent.reply(
+            self._planner_prompt(
                 user_prompt,
                 chat_history,
                 latest_session_id=latest_session_id,
                 latest_generated_content=latest_generated_content,
+                latest_session_transcript=latest_session_transcript,
             ),
             [],
         )
-        self.last_route_kind = self._normalize_route(route_reply)
-        return self.last_route_kind
+        self.last_action_plan = self._normalize_plan(plan_reply)
+        self.last_route_kind = self.last_action_plan[0] if self.last_action_plan else ""
+        return self.last_action_plan
 
     async def respond_fast(
         self,
@@ -338,60 +379,6 @@ def _should_capture_generated_content(state: LangGraphChatState) -> bool:
     return normalize_output(get_state_field(state, "tool_name")).strip() != "save_to_siyuan"
 
 
-def _requests_save_to_siyuan(user_prompt: str) -> bool:
-    normalized = normalize_output(user_prompt).strip().lower()
-    if "siyuan" not in normalized:
-        return False
-    return any(keyword in normalized for keyword in ("save", "store", "export"))
-
-
-def _select_post_tool_reply_model(user_prompt: str, route_kind: str) -> str:
-    if route_kind != "tool_query_conversation":
-        return ""
-    normalized = normalize_output(user_prompt).strip().lower()
-    deep_cues = (
-        "deep report",
-        "deep analysis",
-        "detailed analysis",
-        "in-depth",
-        "thorough",
-        "comprehensive",
-        "executive presentation",
-        "board-ready",
-        "board ready",
-    )
-    return "deep" if any(cue in normalized for cue in deep_cues) else "fast"
-
-
-def _should_queue_save_after_response(user_prompt: str, route_kind: str) -> bool:
-    if route_kind == "tool_save_to_siyuan":
-        return False
-    return _requests_save_to_siyuan(user_prompt)
-
-
-def _next_node_from_route(state: LangGraphChatState) -> str:
-    route_kind = normalize_output(get_state_field(state, "route_kind")).strip()
-    if route_kind == "tool_list_sessions":
-        return "tool_list_sessions"
-    if route_kind == "tool_analyze_summary":
-        return "extract_session_id"
-    if route_kind == "tool_query_conversation":
-        return "extract_session_id"
-    if route_kind == "tool_save_to_siyuan":
-        return "tool_save_to_siyuan"
-    if route_kind == "reply_fast":
-        return "respond_fast"
-    return "respond_deep"
-
-
-def _next_node_after_query_tool(state: LangGraphChatState) -> str:
-    return (
-        "respond_deep"
-        if normalize_output(get_state_field(state, "post_tool_reply_model")).strip() == "deep"
-        else "respond_fast"
-    )
-
-
 def _next_node_after_extract_session_id(state: LangGraphChatState) -> str:
     route_kind = normalize_output(get_state_field(state, "route_kind")).strip()
     if route_kind == "tool_analyze_summary":
@@ -399,10 +386,19 @@ def _next_node_after_extract_session_id(state: LangGraphChatState) -> str:
     return "tool_query_conversation"
 
 
-def _next_node_after_response(state: LangGraphChatState) -> str:
-    if bool(get_state_field(state, "pending_save_to_siyuan")):
+def _next_node_from_dispatch(state: LangGraphChatState) -> str:
+    route_kind = normalize_output(get_state_field(state, "route_kind")).strip()
+    if not route_kind:
+        return "__end__"
+    if route_kind in {"tool_analyze_summary", "tool_query_conversation"}:
+        return "extract_session_id"
+    if route_kind == "tool_list_sessions":
+        return "tool_list_sessions"
+    if route_kind == "tool_save_to_siyuan":
         return "tool_save_to_siyuan"
-    return "__end__"
+    if route_kind == "reply_fast":
+        return "respond_fast"
+    return "respond_deep"
 
 
 async def build_langgraph_chat_graph(
@@ -449,7 +445,7 @@ async def build_langgraph_chat_graph(
                 _trace_full_state_snapshot(span, updated, label="after")
             return updated
 
-    async def route_node(state: LangGraphChatState) -> LangGraphChatState:
+    async def plan_node(state: LangGraphChatState) -> LangGraphChatState:
         current = ensure_langgraph_state(state)
         latest_user_message = normalize_output(get_state_field(current, "latest_user_message"))
         chat_history = get_recent_messages(current)
@@ -457,65 +453,48 @@ async def build_langgraph_chat_graph(
         latest_generated_content = normalize_output(
             get_state_field(current, "latest_generated_content")
         )
+        latest_session_transcript = normalize_output(
+            get_state_field(current, "latest_session_transcript")
+        )
         if tracer is None:
-            route_kind = await chat_agent.route(
+            action_plan = await chat_agent.plan(
                 latest_user_message,
                 chat_history,
                 latest_session_id=latest_session_id,
                 latest_generated_content=latest_generated_content,
+                latest_session_transcript=latest_session_transcript,
             )
             return set_state_fields(
                 dict(current),
-                route_kind=route_kind,
+                route_kind="",
                 route_model=chat_agent.last_route_model,
+                action_plan=action_plan,
                 tool_name="",
                 tool_output="",
                 requested_session_id="",
-                post_tool_reply_model=_select_post_tool_reply_model(
-                    latest_user_message,
-                    route_kind,
-                ),
-                pending_save_to_siyuan=_should_queue_save_after_response(
-                    latest_user_message,
-                    route_kind,
-                ),
             )
-        with tracer.start_as_current_span("langgraph-route") as span:
+        with tracer.start_as_current_span("langgraph-plan") as span:
             if trace_full_state:
                 _trace_full_state_snapshot(span, current, label="before")
-            route_kind = await chat_agent.route(
+            action_plan = await chat_agent.plan(
                 latest_user_message,
                 chat_history,
                 latest_session_id=latest_session_id,
                 latest_generated_content=latest_generated_content,
+                latest_session_transcript=latest_session_transcript,
             )
             updated = set_state_fields(
                 dict(current),
-                route_kind=route_kind,
+                route_kind="",
                 route_model=chat_agent.last_route_model,
+                action_plan=action_plan,
                 tool_name="",
                 tool_output="",
                 requested_session_id="",
-                post_tool_reply_model=_select_post_tool_reply_model(
-                    latest_user_message,
-                    route_kind,
-                ),
-                pending_save_to_siyuan=_should_queue_save_after_response(
-                    latest_user_message,
-                    route_kind,
-                ),
             )
             span.set_attribute("llm.model_name", chat_agent.last_route_model)
             span.set_attribute("input.value", latest_user_message)
-            span.set_attribute("output.route_kind", route_kind)
-            span.set_attribute(
-                "output.post_tool_reply_model",
-                normalize_output(get_state_field(updated, "post_tool_reply_model")) or "NONE",
-            )
-            span.set_attribute(
-                "output.pending_save_to_siyuan",
-                bool(get_state_field(updated, "pending_save_to_siyuan")),
-            )
+            span.set_attribute("output.action_plan", json.dumps(action_plan))
             if trace_full_state:
                 _trace_full_state_snapshot(span, updated, label="after")
             return updated
@@ -550,11 +529,40 @@ async def build_langgraph_chat_graph(
                 _trace_full_state_snapshot(span, updated, label="after")
             return updated
 
+    def dispatch_node(state: LangGraphChatState) -> LangGraphChatState:
+        current = ensure_langgraph_state(state)
+        action_plan = list(get_state_field(current, "action_plan") or [])
+        if tracer is None:
+            if action_plan:
+                route_kind = action_plan[0]
+                remaining = action_plan[1:]
+            else:
+                route_kind = ""
+                remaining = []
+            return set_state_fields(dict(current), route_kind=route_kind, action_plan=remaining)
+        with tracer.start_as_current_span("langgraph-dispatch") as span:
+            if trace_full_state:
+                _trace_full_state_snapshot(span, current, label="before")
+            span.set_attribute("input.action_plan", json.dumps(action_plan))
+            if action_plan:
+                route_kind = action_plan[0]
+                remaining = action_plan[1:]
+            else:
+                route_kind = ""
+                remaining = []
+            updated = set_state_fields(dict(current), route_kind=route_kind, action_plan=remaining)
+            span.set_attribute("output.route_kind", route_kind or "__end__")
+            if trace_full_state:
+                _trace_full_state_snapshot(span, updated, label="after")
+            return updated
+
     async def respond_fast_node(state: LangGraphChatState) -> LangGraphChatState:
         current = ensure_langgraph_state(state)
         latest_user_message = normalize_output(get_state_field(current, "latest_user_message"))
         chat_history = get_recent_messages(current)
         tool_output = normalize_output(get_state_field(current, "tool_output"))
+        if not tool_output.strip():
+            tool_output = normalize_output(get_state_field(current, "latest_session_transcript"))
         message_state = {
             "chat_history": chat_history,
         }
@@ -572,7 +580,6 @@ async def build_langgraph_chat_graph(
                 reply_model=chat_agent.last_reply_model,
                 tool_output="",
                 requested_session_id="",
-                post_tool_reply_model="",
                 latest_assistant_message=reply,
             )
             if _should_capture_generated_content(state):
@@ -598,7 +605,6 @@ async def build_langgraph_chat_graph(
                 reply_model=chat_agent.last_reply_model,
                 tool_output="",
                 requested_session_id="",
-                post_tool_reply_model="",
                 latest_assistant_message=reply,
             )
             if _should_capture_generated_content(state):
@@ -626,6 +632,8 @@ async def build_langgraph_chat_graph(
         latest_user_message = normalize_output(get_state_field(current, "latest_user_message"))
         chat_history = get_recent_messages(current)
         tool_output = normalize_output(get_state_field(current, "tool_output"))
+        if not tool_output.strip():
+            tool_output = normalize_output(get_state_field(current, "latest_session_transcript"))
         message_state = {
             "chat_history": chat_history,
         }
@@ -643,7 +651,6 @@ async def build_langgraph_chat_graph(
                 reply_model=chat_agent.last_reply_model,
                 tool_output="",
                 requested_session_id="",
-                post_tool_reply_model="",
                 latest_assistant_message=reply,
             )
             if _should_capture_generated_content(state):
@@ -669,7 +676,6 @@ async def build_langgraph_chat_graph(
                 reply_model=chat_agent.last_reply_model,
                 tool_output="",
                 requested_session_id="",
-                post_tool_reply_model="",
                 latest_assistant_message=reply,
             )
             if _should_capture_generated_content(state):
@@ -692,7 +698,8 @@ async def build_langgraph_chat_graph(
 
     builder = StateGraph(LangGraphChatState)
     builder.add_node("human_input", human_input_node)
-    builder.add_node("route", route_node)
+    builder.add_node("plan", plan_node)
+    builder.add_node("dispatch", dispatch_node)
     builder.add_node("extract_session_id", extract_session_id_node)
     builder.add_node(
         "tool_list_sessions",
@@ -729,10 +736,14 @@ async def build_langgraph_chat_graph(
     builder.add_node("respond_fast", respond_fast_node)
     builder.add_node("respond_deep", respond_deep_node)
     builder.add_edge(START, "human_input")
-    builder.add_edge("human_input", "route")
-    builder.add_edge("tool_list_sessions", "respond_fast")
-    builder.add_edge("tool_analyze_summary", "respond_fast")
-    builder.add_edge("tool_save_to_siyuan", "respond_fast")
+    builder.add_edge("human_input", "plan")
+    builder.add_edge("plan", "dispatch")
+    builder.add_edge("tool_list_sessions", "dispatch")
+    builder.add_edge("tool_analyze_summary", "dispatch")
+    builder.add_edge("tool_query_conversation", "dispatch")
+    builder.add_edge("tool_save_to_siyuan", "dispatch")
+    builder.add_edge("respond_fast", "dispatch")
+    builder.add_edge("respond_deep", "dispatch")
     builder.add_conditional_edges(
         "extract_session_id",
         _next_node_after_extract_session_id,
@@ -742,38 +753,15 @@ async def build_langgraph_chat_graph(
         },
     )
     builder.add_conditional_edges(
-        "tool_query_conversation",
-        _next_node_after_query_tool,
-        {
-            "respond_fast": "respond_fast",
-            "respond_deep": "respond_deep",
-        },
-    )
-    builder.add_conditional_edges(
-        "respond_fast",
-        _next_node_after_response,
-        {
-            "tool_save_to_siyuan": "tool_save_to_siyuan",
-            "__end__": END,
-        },
-    )
-    builder.add_conditional_edges(
-        "respond_deep",
-        _next_node_after_response,
-        {
-            "tool_save_to_siyuan": "tool_save_to_siyuan",
-            "__end__": END,
-        },
-    )
-    builder.add_conditional_edges(
-        "route",
-        _next_node_from_route,
+        "dispatch",
+        _next_node_from_dispatch,
         {
             "tool_list_sessions": "tool_list_sessions",
             "extract_session_id": "extract_session_id",
             "tool_save_to_siyuan": "tool_save_to_siyuan",
             "respond_fast": "respond_fast",
             "respond_deep": "respond_deep",
+            "__end__": END,
         },
     )
     return builder.compile()

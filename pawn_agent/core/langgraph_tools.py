@@ -32,14 +32,47 @@ def _resolve_session_id_from_state(state: Mapping[str, object]) -> str:
     if _is_confirmation_prompt(latest_user_message) and latest_session_id:
         return latest_session_id
     if session_catalog_output:
-        resolved_session_id = resolve_session_id_from_list_output(
-            latest_user_message or requested_session_id,
-            session_catalog_output,
-        )
-        if resolved_session_id:
-            return resolved_session_id
+        # Use token-match only (not the session_ids[0] fallback) so that a known
+        # latest_session_id is not overridden by an unrelated catalog entry.
+        session_ids_list = _session_ids_from_list_output(session_catalog_output)
+        prompt_tokens = [
+            token
+            for token in "".join(
+                ch.lower() if ch.isalnum() or ch in {"-", "_", ":"} else " "
+                for ch in normalize_output(latest_user_message or requested_session_id)
+            ).split()
+            if len(token) >= 3
+            and token
+            not in {
+                "the",
+                "and",
+                "with",
+                "from",
+                "into",
+                "this",
+                "that",
+                "show",
+                "latest",
+                "last",
+                "most",
+                "recent",
+                "session",
+                "sessions",
+                "retrieve",
+                "get",
+                "give",
+                "conversation",
+            }
+        ]
+        for sid in session_ids_list:
+            if any(token in sid.lower() for token in prompt_tokens):
+                return sid
     if latest_session_id:
         return latest_session_id
+    if session_catalog_output:
+        # Final fallback: no token match and no latest_session_id — use first session.
+        session_ids_list = _session_ids_from_list_output(session_catalog_output)
+        return session_ids_list[0] if session_ids_list else ""
     return ""
 
 
@@ -207,6 +240,7 @@ def build_tool_list_sessions_node(
     def tool_list_sessions_node(state: dict[str, Any]) -> dict[str, Any]:
         current = ensure_langgraph_state(state)
         latest_user_message = normalize_output(get_state_field(current, "latest_user_message"))
+        existing_session_id = normalize_output(get_state_field(current, "latest_session_id")).strip()
         if tracer is None:
             tool_output = run_list_sessions_tool(cfg)
             updated = set_state_fields(
@@ -221,6 +255,8 @@ def build_tool_list_sessions_node(
             )
             if resolved_session_id:
                 updated = set_state_fields(updated, latest_session_id=resolved_session_id)
+                if resolved_session_id != existing_session_id:
+                    updated = set_state_fields(updated, latest_session_transcript="")
             return updated
         with tracer.start_as_current_span("langgraph-tool-list-sessions") as span:
             if trace_full_state:
@@ -238,6 +274,8 @@ def build_tool_list_sessions_node(
             )
             if resolved_session_id:
                 updated = set_state_fields(updated, latest_session_id=resolved_session_id)
+                if resolved_session_id != existing_session_id:
+                    updated = set_state_fields(updated, latest_session_transcript="")
             span.set_attribute("tool.name", "list_sessions")
             if resolved_session_id:
                 span.set_attribute("session.id", resolved_session_id)
@@ -276,6 +314,7 @@ def build_tool_query_conversation_node(
                 tool_name="query_conversation",
                 tool_output=tool_output,
                 latest_session_id=session_id,
+                latest_session_transcript=tool_output,
             )
         with tracer.start_as_current_span("langgraph-tool-query-conversation") as span:
             if trace_full_state:
@@ -301,6 +340,7 @@ def build_tool_query_conversation_node(
                 tool_name="query_conversation",
                 tool_output=tool_output,
                 latest_session_id=session_id,
+                latest_session_transcript=tool_output,
             )
             span.set_attribute("tool.name", "query_conversation")
             span.set_attribute("session.id", session_id)

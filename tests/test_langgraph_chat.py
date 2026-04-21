@@ -47,8 +47,7 @@ def test_new_langgraph_chat_state_resets_history() -> None:
             "reply_model": "",
             "tool_name": "",
             "requested_session_id": "",
-            "post_tool_reply_model": "",
-            "pending_save_to_siyuan": False,
+            "action_plan": [],
         },
         "durable_facts": {
             "latest_session_id": "",
@@ -58,6 +57,7 @@ def test_new_langgraph_chat_state_resets_history() -> None:
             "latest_generated_content": "",
             "latest_generated_title": "",
             "session_catalog_output": "",
+            "latest_session_transcript": "",
         },
         "recent_messages": [],
     }
@@ -111,10 +111,12 @@ def test_build_langgraph_chat_graph_registers_nodes_and_edges() -> None:
             return FakeCompiledGraph()
 
     fake_agent = SimpleNamespace(
+        cfg=SimpleNamespace(),
         last_route_kind="reply_fast",
         last_route_model="openai:gemma4:e4b",
         last_reply_model="openai:gemma4:e4b",
         last_tool_name="",
+        last_action_plan=["reply_fast"],
     )
     with patch(
         "pawn_agent.core.langgraph_chat._import_langgraph_core",
@@ -125,7 +127,8 @@ def test_build_langgraph_chat_graph_registers_nodes_and_edges() -> None:
     assert isinstance(compiled, FakeCompiledGraph)
     assert set(calls["nodes"]) == {
         "human_input",
-        "route",
+        "plan",
+        "dispatch",
         "extract_session_id",
         "tool_list_sessions",
         "tool_analyze_summary",
@@ -136,38 +139,28 @@ def test_build_langgraph_chat_graph_registers_nodes_and_edges() -> None:
     }
     assert calls["edges"] == [
         ("__start__", "human_input"),
-        ("human_input", "route"),
-        ("tool_list_sessions", "respond_fast"),
-        ("tool_analyze_summary", "respond_fast"),
-        ("tool_save_to_siyuan", "respond_fast"),
+        ("human_input", "plan"),
+        ("plan", "dispatch"),
+        ("tool_list_sessions", "dispatch"),
+        ("tool_analyze_summary", "dispatch"),
+        ("tool_query_conversation", "dispatch"),
+        ("tool_save_to_siyuan", "dispatch"),
+        ("respond_fast", "dispatch"),
+        ("respond_deep", "dispatch"),
     ]
     assert calls["conditionals"][0][0] == "extract_session_id"
     assert calls["conditionals"][0][2] == {
         "tool_analyze_summary": "tool_analyze_summary",
         "tool_query_conversation": "tool_query_conversation",
     }
-    assert calls["conditionals"][1][0] == "tool_query_conversation"
+    assert calls["conditionals"][1][0] == "dispatch"
     assert calls["conditionals"][1][2] == {
-        "respond_fast": "respond_fast",
-        "respond_deep": "respond_deep",
-    }
-    assert calls["conditionals"][2][0] == "respond_fast"
-    assert calls["conditionals"][2][2] == {
-        "tool_save_to_siyuan": "tool_save_to_siyuan",
-        "__end__": "__end__",
-    }
-    assert calls["conditionals"][3][0] == "respond_deep"
-    assert calls["conditionals"][3][2] == {
-        "tool_save_to_siyuan": "tool_save_to_siyuan",
-        "__end__": "__end__",
-    }
-    assert calls["conditionals"][4][0] == "route"
-    assert calls["conditionals"][4][2] == {
         "tool_list_sessions": "tool_list_sessions",
         "extract_session_id": "extract_session_id",
         "tool_save_to_siyuan": "tool_save_to_siyuan",
         "respond_fast": "respond_fast",
         "respond_deep": "respond_deep",
+        "__end__": "__end__",
     }
     assert calls["compiled"] is True
 
@@ -537,22 +530,23 @@ def test_langgraph_router_agent_routes_fast_reply(tmp_path: Path) -> None:
 
         async def reply(self, user_prompt: str, chat_history: list[dict[str, str]]) -> str:
             calls.append((self.cfg.pydantic_model, user_prompt, list(chat_history)))
-            if user_prompt.startswith("You are a routing model"):
-                return "reply_fast"
+            if user_prompt.startswith("You are a planning model"):
+                return '["reply_fast"]'
             return "fast:hello"
 
     with patch("pawn_agent.core.langgraph_chat.PlainPydanticChatAgent", FakeAgent):
         agent = LangGraphRouterChatAgent(cfg)
-        route = asyncio.run(agent.route("hello", [{"role": "user", "content": "hello"}]))
+        route = asyncio.run(agent.plan("hello", [{"role": "user", "content": "hello"}]))
         reply = asyncio.run(
             agent.respond_fast("hello", [{"role": "user", "content": "hello"}])
         )
 
-    assert route == "reply_fast"
+    assert route == ["reply_fast"]
     assert reply == "fast:hello"
     assert calls[0][0] == "openai:gemma4:e4b"
     assert calls[1][0] == "openai:gemma4:e4b"
     assert calls[1][1] == "hello"
+    assert agent.last_action_plan == ["reply_fast"]
     assert agent.last_route_kind == "reply_fast"
     assert agent.last_route_model == "openai:gemma4:e4b"
     assert agent.last_reply_model == "openai:gemma4:e4b"
@@ -579,19 +573,20 @@ def test_langgraph_router_agent_routes_deep_reply(tmp_path: Path) -> None:
 
         async def reply(self, user_prompt: str, chat_history: list[dict[str, str]]) -> str:
             calls.append((self.cfg.pydantic_model, user_prompt))
-            if user_prompt.startswith("You are a routing model"):
-                return "reply_deep"
+            if user_prompt.startswith("You are a planning model"):
+                return '["reply_deep"]'
             return "deep:analysis"
 
     with patch("pawn_agent.core.langgraph_chat.PlainPydanticChatAgent", FakeAgent):
         agent = LangGraphRouterChatAgent(cfg)
-        route = asyncio.run(agent.route("analyze this deeply", []))
+        route = asyncio.run(agent.plan("analyze this deeply", []))
         reply = asyncio.run(agent.respond_deep("analyze this deeply", []))
 
-    assert route == "reply_deep"
+    assert route == ["reply_deep"]
     assert reply == "deep:analysis"
     assert calls[0][0] == "openai:gemma4:e4b"
     assert calls[1][0] == "openai:gemma4:26b"
+    assert agent.last_action_plan == ["reply_deep"]
     assert agent.last_route_kind == "reply_deep"
     assert agent.last_reply_model == "openai:gemma4:26b"
     assert agent.last_tool_name == ""
@@ -617,8 +612,8 @@ def test_langgraph_router_agent_routes_to_list_sessions_tool(tmp_path: Path) -> 
 
         async def reply(self, user_prompt: str, chat_history: list[dict[str, str]]) -> str:
             calls.append((self.cfg.pydantic_model, user_prompt))
-            if user_prompt.startswith("You are a routing model"):
-                return "tool_list_sessions"
+            if user_prompt.startswith("You are a planning model"):
+                return '["tool_list_sessions", "reply_fast"]'
             return "Here are the latest sessions."
 
     with (
@@ -629,7 +624,7 @@ def test_langgraph_router_agent_routes_to_list_sessions_tool(tmp_path: Path) -> 
         ) as mock_tool,
     ):
         agent = LangGraphRouterChatAgent(cfg)
-        route = asyncio.run(agent.route("show me the latest sessions", []))
+        route = asyncio.run(agent.plan("show me the latest sessions", []))
         tool_output = run_list_sessions_tool(cfg)
         reply = asyncio.run(
             agent.respond_fast(
@@ -639,12 +634,13 @@ def test_langgraph_router_agent_routes_to_list_sessions_tool(tmp_path: Path) -> 
             )
         )
 
-    assert route == "tool_list_sessions"
+    assert route == ["tool_list_sessions", "reply_fast"]
     assert reply == "Here are the latest sessions."
     assert calls[0][0] == "openai:gemma4:e4b"
     assert calls[1][0] == "openai:gemma4:e4b"
     assert "Tool result:\nFound 1 session(s):\n  sess-123" in calls[1][1]
     mock_tool.assert_called_once_with(cfg)
+    assert agent.last_action_plan == ["tool_list_sessions", "reply_fast"]
     assert agent.last_route_kind == "tool_list_sessions"
     assert agent.last_reply_model == "openai:gemma4:e4b"
 
@@ -669,8 +665,8 @@ def test_langgraph_router_agent_routes_to_query_conversation_tool(tmp_path: Path
 
         async def reply(self, user_prompt: str, chat_history: list[dict[str, str]]) -> str:
             calls.append((self.cfg.pydantic_model, user_prompt))
-            if user_prompt.startswith("You are a routing model"):
-                return "tool_query_conversation"
+            if user_prompt.startswith("You are a planning model"):
+                return '["tool_query_conversation", "reply_fast"]'
             if user_prompt.startswith("You extract a session id"):
                 return "sess-123"
             return "Here is the transcript you asked for."
@@ -684,7 +680,7 @@ def test_langgraph_router_agent_routes_to_query_conversation_tool(tmp_path: Path
     ):
         agent = LangGraphRouterChatAgent(cfg)
         route = asyncio.run(
-            agent.route(
+            agent.plan(
                 "show session sess-123",
                 [],
             )
@@ -701,11 +697,11 @@ def test_langgraph_router_agent_routes_to_query_conversation_tool(tmp_path: Path
             )
         )
 
-    assert route == "tool_query_conversation"
+    assert route == ["tool_query_conversation", "reply_fast"]
     assert session_id == "sess-123"
     assert reply == "Here is the transcript you asked for."
     mock_tool.assert_called_once_with(cfg, "sess-123")
-    assert "Tool result:\nSpeaker A: hi\nSpeaker B: hello" in calls[1][1]
+    assert "Tool result:\nSpeaker A: hi\nSpeaker B: hello" in calls[2][1]
 
 
 def test_langgraph_router_agent_routes_to_analyze_summary_tool(tmp_path: Path) -> None:
@@ -728,8 +724,8 @@ def test_langgraph_router_agent_routes_to_analyze_summary_tool(tmp_path: Path) -
 
         async def reply(self, user_prompt: str, chat_history: list[dict[str, str]]) -> str:
             calls.append((self.cfg.pydantic_model, user_prompt))
-            if user_prompt.startswith("You are a routing model"):
-                return "tool_analyze_summary"
+            if user_prompt.startswith("You are a planning model"):
+                return '["tool_analyze_summary", "reply_fast"]'
             return "## Title\nStandard Analysis"
 
     with (
@@ -740,7 +736,7 @@ def test_langgraph_router_agent_routes_to_analyze_summary_tool(tmp_path: Path) -
         ) as mock_tool,
     ):
         agent = LangGraphRouterChatAgent(cfg)
-        route = asyncio.run(agent.route("run the standard analysis for session sess-123", []))
+        route = asyncio.run(agent.plan("run the standard analysis for session sess-123", []))
         tool_output = asyncio.run(run_analyze_summary_tool(cfg, "sess-123"))
         reply = asyncio.run(
             agent.respond_fast(
@@ -750,7 +746,7 @@ def test_langgraph_router_agent_routes_to_analyze_summary_tool(tmp_path: Path) -
             )
         )
 
-    assert route == "tool_analyze_summary"
+    assert route == ["tool_analyze_summary", "reply_fast"]
     assert reply == "## Title\nStandard Analysis"
     mock_tool.assert_called_once_with(cfg, "sess-123", save=False, title=None)
     assert "tool_analyze_summary" in calls[0][1]
@@ -776,8 +772,8 @@ def test_langgraph_router_agent_routes_to_save_to_siyuan_tool(tmp_path: Path) ->
 
         async def reply(self, user_prompt: str, chat_history: list[dict[str, str]]) -> str:
             calls.append((self.cfg.pydantic_model, user_prompt))
-            if user_prompt.startswith("You are a routing model"):
-                return "tool_save_to_siyuan"
+            if user_prompt.startswith("You are a planning model"):
+                return '["tool_save_to_siyuan", "reply_fast"]'
             return "Saved the report to SiYuan."
 
     with (
@@ -789,7 +785,7 @@ def test_langgraph_router_agent_routes_to_save_to_siyuan_tool(tmp_path: Path) ->
     ):
         agent = LangGraphRouterChatAgent(cfg)
         route = asyncio.run(
-            agent.route(
+            agent.plan(
                 "save the analysis into siyuan",
                 [],
                 latest_session_id="sess-123",
@@ -810,7 +806,7 @@ def test_langgraph_router_agent_routes_to_save_to_siyuan_tool(tmp_path: Path) ->
             )
         )
 
-    assert route == "tool_save_to_siyuan"
+    assert route == ["tool_save_to_siyuan", "reply_fast"]
     assert reply == "Saved the report to SiYuan."
     mock_tool.assert_called_once_with(
         cfg,
@@ -819,7 +815,8 @@ def test_langgraph_router_agent_routes_to_save_to_siyuan_tool(tmp_path: Path) ->
         title="Report",
         path=None,
     )
-    assert "Latest generated content available:\nyes" in calls[0][1]
+    assert "Session transcript cached:\nno" in calls[0][1]
+    assert "Latest generated content available (for context only — do NOT auto-save):\nyes" in calls[0][1]
     assert "tool_save_to_siyuan" in calls[0][1]
 
 
@@ -882,7 +879,7 @@ def test_tool_query_conversation_bootstraps_session_catalog_for_first_turn_looku
                 "a deep report ready for executive presentation"
             ),
             "requested_session_id": "",
-            "pending_save_to_siyuan": True,
+            "action_plan": ["tool_save_to_siyuan", "reply_fast"],
         },
         "durable_facts": {"latest_session_id": ""},
         "artifacts": {
@@ -914,7 +911,7 @@ def test_tool_query_conversation_bootstraps_session_catalog_for_first_turn_looku
     assert updated["artifacts"]["session_catalog_output"] == catalog_output
     assert updated["artifacts"]["tool_output"] == "Speaker A: hi\nSpeaker B: hello"
     assert updated["session_state"]["tool_name"] == "query_conversation"
-    assert updated["session_state"]["pending_save_to_siyuan"] is True
+    assert updated["session_state"]["action_plan"] == ["tool_save_to_siyuan", "reply_fast"]
     mock_list.assert_called_once_with(cfg)
     mock_query.assert_called_once_with(cfg, "tom-20260416")
 
@@ -1036,43 +1033,34 @@ def test_langgraph_chat_session_uses_deep_responder_after_query_for_executive_re
         def __init__(self, nodes) -> None:
             self._nodes = nodes
             self._route_fn = None
-            self._query_next_fn = None
-            self._after_response_fn = None
 
         def set_route_fn(self, route_fn) -> None:
             self._route_fn = route_fn
 
-        def set_query_next_fn(self, query_next_fn) -> None:
-            self._query_next_fn = query_next_fn
-
-        def set_after_response_fn(self, after_response_fn) -> None:
-            self._after_response_fn = after_response_fn
-
         async def ainvoke(self, payload):
+            import asyncio as _asyncio
             state = dict(payload)
             state = self._nodes["human_input"](state)
-            state = await self._nodes["route"](state)
-            next_node = self._route_fn(state)
-            if next_node == "extract_session_id":
-                state = await self._nodes["extract_session_id"](state)
-                state = self._nodes["tool_query_conversation"](state)
-                next_node = self._query_next_fn(state)
-            elif next_node in {"tool_list_sessions", "tool_save_to_siyuan"}:
-                state = self._nodes[next_node](state)
-                next_node = "respond_fast"
-            state = await self._nodes[next_node](state)
-            follow_up = self._after_response_fn(state)
-            if follow_up == "tool_save_to_siyuan":
-                state = self._nodes["tool_save_to_siyuan"](state)
-                state = await self._nodes["respond_fast"](state)
+            state = await self._nodes["plan"](state)
+            while True:
+                state = self._nodes["dispatch"](state)
+                next_node = self._route_fn(state)
+                if next_node == "__end__":
+                    break
+                if next_node == "extract_session_id":
+                    state = await self._nodes["extract_session_id"](state)
+                    route_kind = (state.get("session_state") or {}).get("route_kind", "")
+                    tool_name = "tool_analyze_summary" if route_kind == "tool_analyze_summary" else "tool_query_conversation"
+                    state = self._nodes[tool_name](state)
+                else:
+                    node_fn = self._nodes[next_node]
+                    state = await node_fn(state) if _asyncio.iscoroutinefunction(node_fn) else node_fn(state)
             return state
 
     class FakeStateGraph:
         def __init__(self, _state_schema) -> None:
             self._nodes: dict[str, object] = {}
             self._route_fn = None
-            self._query_next_fn = None
-            self._after_response_fn = None
 
         def add_node(self, name, fn) -> None:
             self._nodes[name] = fn
@@ -1080,38 +1068,33 @@ def test_langgraph_chat_session_uses_deep_responder_after_query_for_executive_re
         def add_edge(self, _start, _end) -> None:
             return None
 
-        def add_conditional_edges(self, start, fn, _path_map) -> None:
-            if start == "route":
-                self._route_fn = fn
-            elif start == "tool_query_conversation":
-                self._query_next_fn = fn
-            elif start in {"respond_fast", "respond_deep"}:
-                self._after_response_fn = fn
+        def add_conditional_edges(self, _start, fn, _path_map) -> None:
+            self._route_fn = fn
 
         def compile(self):
             graph = FakeCompiledGraph(self._nodes)
             graph.set_route_fn(self._route_fn)
-            graph.set_query_next_fn(self._query_next_fn)
-            graph.set_after_response_fn(self._after_response_fn)
             return graph
 
     class FakeChatAgent:
+        cfg = None
         last_route_kind = ""
         last_route_model = "openai:gemma4:e4b"
         last_reply_model = ""
         last_tool_name = ""
 
-        async def route(
+        async def plan(
             self,
             user_prompt: str,
             chat_history: list[dict[str, str]],
             *,
             latest_session_id: str = "",
             latest_generated_content: str = "",
-        ) -> str:
+            latest_session_transcript: str = "",
+        ) -> list[str]:
             assert "deep report ready for executive presentation" in user_prompt
             self.last_route_kind = "tool_query_conversation"
-            return "tool_query_conversation"
+            return ["tool_query_conversation", "reply_deep"]
 
         async def extract_requested_session_id(
             self,
@@ -1171,7 +1154,6 @@ def test_langgraph_chat_session_uses_deep_responder_after_query_for_executive_re
 
     assert reply == "# Executive Report\n\nDeep analysis from transcript."
     assert session._state["session_state"]["reply_model"] == "openai:gemma4:26b"
-    assert session._state["session_state"]["post_tool_reply_model"] == ""
     assert session._state["durable_facts"]["latest_session_id"] == "tom-20260416"
 
 
@@ -1223,7 +1205,7 @@ def test_langgraph_router_prompt_guides_followup_report_to_conversation_tool(tmp
 
     with patch("pawn_agent.core.langgraph_chat.PlainPydanticChatAgent"):
         agent = LangGraphRouterChatAgent(cfg)
-        prompt = agent._router_prompt(
+        prompt = agent._planner_prompt(
             "give me an executive report",
             [{"role": "assistant", "content": "I retrieved session oci-20260416."}],
             latest_session_id="oci-20260416",
@@ -1231,10 +1213,10 @@ def test_langgraph_router_prompt_guides_followup_report_to_conversation_tool(tmp
 
     assert "executive report" in prompt
     assert "tool_query_conversation" in prompt
-    assert "latest session is already in focus" in prompt
+    assert "reply_deep" in prompt
     assert "summary" in prompt
-    assert "action points" in prompt
-    assert "save it to siyuan in the same request" in prompt
+    assert "report" in prompt
+    assert "tool_save_to_siyuan" in prompt
 
 
 def test_langgraph_chat_session_handles_turns_and_reset(tmp_path: Path) -> None:
@@ -1312,17 +1294,24 @@ def test_langgraph_chat_session_reuses_and_overrides_latest_session_id(tmp_path:
             self._route_fn = route_fn
 
         async def ainvoke(self, payload):
+            import asyncio as _asyncio
             state = dict(payload)
             state = self._nodes["human_input"](state)
-            state = await self._nodes["route"](state)
-            next_node = self._route_fn(state)
-            if next_node == "extract_session_id":
-                state = await self._nodes[next_node](state)
-                next_node = "tool_query_conversation"
-            if next_node in {"tool_list_sessions", "tool_query_conversation"}:
-                state = self._nodes[next_node](state)
-                next_node = "respond_fast"
-            return await self._nodes[next_node](state)
+            state = await self._nodes["plan"](state)
+            while True:
+                state = self._nodes["dispatch"](state)
+                next_node = self._route_fn(state)
+                if next_node == "__end__":
+                    break
+                if next_node == "extract_session_id":
+                    state = await self._nodes["extract_session_id"](state)
+                    route_kind = (state.get("session_state") or {}).get("route_kind", "")
+                    tool_name = "tool_analyze_summary" if route_kind == "tool_analyze_summary" else "tool_query_conversation"
+                    state = self._nodes[tool_name](state)
+                else:
+                    node_fn = self._nodes[next_node]
+                    state = await node_fn(state) if _asyncio.iscoroutinefunction(node_fn) else node_fn(state)
+            return state
 
     class FakeStateGraph:
         def __init__(self, _state_schema) -> None:
@@ -1344,24 +1333,26 @@ def test_langgraph_chat_session_reuses_and_overrides_latest_session_id(tmp_path:
             return graph
 
     class FakeChatAgent:
+        cfg = None
         last_route_kind = ""
         last_route_model = "openai:gemma4:e4b"
         last_reply_model = ""
         last_tool_name = ""
         tool_session_ids: list[str] = []
 
-        async def route(
+        async def plan(
             self,
             user_prompt: str,
             chat_history: list[dict[str, str]],
             *,
             latest_session_id: str = "",
             latest_generated_content: str = "",
-        ) -> str:
+            latest_session_transcript: str = "",
+        ) -> list[str]:
             if user_prompt == "extract action points":
                 assert latest_session_id == "oci-20260416"
             self.last_route_kind = "tool_query_conversation"
-            return "tool_query_conversation"
+            return ["tool_query_conversation", "reply_fast"]
 
         async def extract_requested_session_id(
             self,
@@ -1452,17 +1443,24 @@ def test_langgraph_chat_session_promotes_latest_session_id_from_list_results(tmp
             self._route_fn = route_fn
 
         async def ainvoke(self, payload):
+            import asyncio as _asyncio
             state = dict(payload)
             state = self._nodes["human_input"](state)
-            state = await self._nodes["route"](state)
-            next_node = self._route_fn(state)
-            if next_node == "extract_session_id":
-                state = await self._nodes[next_node](state)
-                next_node = "tool_query_conversation"
-            if next_node in {"tool_list_sessions", "tool_query_conversation"}:
-                state = self._nodes[next_node](state)
-                next_node = "respond_fast"
-            return await self._nodes[next_node](state)
+            state = await self._nodes["plan"](state)
+            while True:
+                state = self._nodes["dispatch"](state)
+                next_node = self._route_fn(state)
+                if next_node == "__end__":
+                    break
+                if next_node == "extract_session_id":
+                    state = await self._nodes["extract_session_id"](state)
+                    route_kind = (state.get("session_state") or {}).get("route_kind", "")
+                    tool_name = "tool_analyze_summary" if route_kind == "tool_analyze_summary" else "tool_query_conversation"
+                    state = self._nodes[tool_name](state)
+                else:
+                    node_fn = self._nodes[next_node]
+                    state = await node_fn(state) if _asyncio.iscoroutinefunction(node_fn) else node_fn(state)
+            return state
 
     class FakeStateGraph:
         def __init__(self, _state_schema) -> None:
@@ -1476,7 +1474,7 @@ def test_langgraph_chat_session_promotes_latest_session_id_from_list_results(tmp
             return None
 
         def add_conditional_edges(self, start, fn, _path_map) -> None:
-            if start == "route":
+            if start == "dispatch":
                 self._route_fn = fn
 
         def compile(self):
@@ -1485,25 +1483,27 @@ def test_langgraph_chat_session_promotes_latest_session_id_from_list_results(tmp
             return graph
 
     class FakeChatAgent:
+        cfg = None
         last_route_kind = ""
         last_route_model = "openai:gemma4:e4b"
         last_reply_model = ""
         last_tool_name = ""
 
-        async def route(
+        async def plan(
             self,
             user_prompt: str,
             chat_history: list[dict[str, str]],
             *,
             latest_session_id: str = "",
             latest_generated_content: str = "",
-        ) -> str:
+            latest_session_transcript: str = "",
+        ) -> list[str]:
             if user_prompt == "retrieve last oci session":
                 assert latest_session_id == ""
-                return "tool_list_sessions"
+                return ["tool_list_sessions", "reply_fast"]
             if user_prompt == "extract an executive summary":
                 assert latest_session_id == "oci-20260416"
-                return "tool_query_conversation"
+                return ["tool_query_conversation", "reply_fast"]
             raise AssertionError(f"Unexpected prompt: {user_prompt}")
 
         async def extract_requested_session_id(
@@ -1597,17 +1597,24 @@ def test_langgraph_chat_session_resolves_named_session_and_confirmation_from_cat
             self._route_fn = route_fn
 
         async def ainvoke(self, payload):
+            import asyncio as _asyncio
             state = dict(payload)
             state = self._nodes["human_input"](state)
-            state = await self._nodes["route"](state)
-            next_node = self._route_fn(state)
-            if next_node == "extract_session_id":
-                state = await self._nodes[next_node](state)
-                next_node = "tool_query_conversation"
-            if next_node in {"tool_list_sessions", "tool_query_conversation"}:
-                state = self._nodes[next_node](state)
-                next_node = "respond_fast"
-            return await self._nodes[next_node](state)
+            state = await self._nodes["plan"](state)
+            while True:
+                state = self._nodes["dispatch"](state)
+                next_node = self._route_fn(state)
+                if next_node == "__end__":
+                    break
+                if next_node == "extract_session_id":
+                    state = await self._nodes["extract_session_id"](state)
+                    route_kind = (state.get("session_state") or {}).get("route_kind", "")
+                    tool_name = "tool_analyze_summary" if route_kind == "tool_analyze_summary" else "tool_query_conversation"
+                    state = self._nodes[tool_name](state)
+                else:
+                    node_fn = self._nodes[next_node]
+                    state = await node_fn(state) if _asyncio.iscoroutinefunction(node_fn) else node_fn(state)
+            return state
 
     class FakeStateGraph:
         def __init__(self, _state_schema) -> None:
@@ -1621,7 +1628,7 @@ def test_langgraph_chat_session_resolves_named_session_and_confirmation_from_cat
             return None
 
         def add_conditional_edges(self, start, fn, _path_map) -> None:
-            if start == "route":
+            if start == "dispatch":
                 self._route_fn = fn
 
         def compile(self):
@@ -1630,23 +1637,25 @@ def test_langgraph_chat_session_resolves_named_session_and_confirmation_from_cat
             return graph
 
     class FakeChatAgent:
+        cfg = None
         last_route_kind = ""
         last_route_model = "openai:gemma4:e4b"
         last_reply_model = ""
         last_tool_name = ""
 
-        async def route(
+        async def plan(
             self,
             user_prompt: str,
             chat_history: list[dict[str, str]],
             *,
             latest_session_id: str = "",
             latest_generated_content: str = "",
-        ) -> str:
+            latest_session_transcript: str = "",
+        ) -> list[str]:
             if user_prompt == "list latest sessions":
-                return "tool_list_sessions"
+                return ["tool_list_sessions", "reply_fast"]
             if user_prompt in {"retrieve latest tom session", "yes"}:
-                return "tool_query_conversation"
+                return ["tool_query_conversation", "reply_fast"]
             raise AssertionError(f"Unexpected prompt: {user_prompt}")
 
         async def extract_requested_session_id(
@@ -1753,17 +1762,23 @@ def test_langgraph_chat_session_preserves_session_focus_after_transcript_summary
             self._route_fn = route_fn
 
         async def ainvoke(self, payload):
+            import asyncio as _asyncio
             state = dict(payload)
             state = self._nodes["human_input"](state)
-            state = await self._nodes["route"](state)
-            next_node = self._route_fn(state)
-            if next_node == "extract_session_id":
-                state = await self._nodes[next_node](state)
-                next_node = "tool_query_conversation"
-            if next_node in {"tool_list_sessions", "tool_query_conversation", "tool_save_to_siyuan"}:
-                state = self._nodes[next_node](state)
-                next_node = "respond_fast"
-            state = await self._nodes[next_node](state)
+            state = await self._nodes["plan"](state)
+            while True:
+                state = self._nodes["dispatch"](state)
+                next_node = self._route_fn(state)
+                if next_node == "__end__":
+                    break
+                if next_node == "extract_session_id":
+                    state = await self._nodes["extract_session_id"](state)
+                    route_kind = (state.get("session_state") or {}).get("route_kind", "")
+                    tool_name = "tool_analyze_summary" if route_kind == "tool_analyze_summary" else "tool_query_conversation"
+                    state = self._nodes[tool_name](state)
+                else:
+                    node_fn = self._nodes[next_node]
+                    state = await node_fn(state) if _asyncio.iscoroutinefunction(node_fn) else node_fn(state)
             return state
 
     class FakeStateGraph:
@@ -1778,7 +1793,7 @@ def test_langgraph_chat_session_preserves_session_focus_after_transcript_summary
             return None
 
         def add_conditional_edges(self, start, fn, _path_map) -> None:
-            if start == "route":
+            if start == "dispatch":
                 self._route_fn = fn
 
         def compile(self):
@@ -1787,25 +1802,27 @@ def test_langgraph_chat_session_preserves_session_focus_after_transcript_summary
             return graph
 
     class FakeChatAgent:
+        cfg = None
         last_route_kind = ""
         last_route_model = "openai:gemma4:e4b"
         last_reply_model = ""
         last_tool_name = ""
 
-        async def route(
+        async def plan(
             self,
             user_prompt: str,
             chat_history: list[dict[str, str]],
             *,
             latest_session_id: str = "",
             latest_generated_content: str = "",
-        ) -> str:
+            latest_session_transcript: str = "",
+        ) -> list[str]:
             if user_prompt == "retrieve latest tom session":
-                return "tool_query_conversation"
+                return ["tool_query_conversation", "reply_fast"]
             if user_prompt == "save a deep analysis of the conversation in siyuan":
                 assert latest_session_id == "tom-20260416"
                 assert latest_generated_content == "Summary of tom-20260416."
-                return "tool_save_to_siyuan"
+                return ["tool_save_to_siyuan", "reply_fast"]
             raise AssertionError(f"Unexpected prompt: {user_prompt}")
 
         async def extract_requested_session_id(
@@ -1891,21 +1908,24 @@ def test_langgraph_chat_session_saves_latest_generated_content_to_siyuan(tmp_pat
             self._route_fn = route_fn
 
         async def ainvoke(self, payload):
+            import asyncio as _asyncio
             state = dict(payload)
             state = self._nodes["human_input"](state)
-            state = await self._nodes["route"](state)
-            next_node = self._route_fn(state)
-            if next_node == "extract_session_id":
-                state = await self._nodes[next_node](state)
-                next_node = "tool_query_conversation"
-            if next_node in {
-                "tool_list_sessions",
-                "tool_query_conversation",
-                "tool_save_to_siyuan",
-            }:
-                state = self._nodes[next_node](state)
-                next_node = "respond_fast"
-            return await self._nodes[next_node](state)
+            state = await self._nodes["plan"](state)
+            while True:
+                state = self._nodes["dispatch"](state)
+                next_node = self._route_fn(state)
+                if next_node == "__end__":
+                    break
+                if next_node == "extract_session_id":
+                    state = await self._nodes["extract_session_id"](state)
+                    route_kind = (state.get("session_state") or {}).get("route_kind", "")
+                    tool_name = "tool_analyze_summary" if route_kind == "tool_analyze_summary" else "tool_query_conversation"
+                    state = self._nodes[tool_name](state)
+                else:
+                    node_fn = self._nodes[next_node]
+                    state = await node_fn(state) if _asyncio.iscoroutinefunction(node_fn) else node_fn(state)
+            return state
 
     class FakeStateGraph:
         def __init__(self, _state_schema) -> None:
@@ -1927,28 +1947,30 @@ def test_langgraph_chat_session_saves_latest_generated_content_to_siyuan(tmp_pat
             return graph
 
     class FakeChatAgent:
+        cfg = None
         last_route_kind = ""
         last_route_model = "openai:gemma4:e4b"
         last_reply_model = ""
         last_tool_name = ""
 
-        async def route(
+        async def plan(
             self,
             user_prompt: str,
             chat_history: list[dict[str, str]],
             *,
             latest_session_id: str = "",
             latest_generated_content: str = "",
-        ) -> str:
+            latest_session_transcript: str = "",
+        ) -> list[str]:
             if user_prompt == "show session oci-20260416":
-                return "tool_query_conversation"
+                return ["tool_query_conversation", "reply_fast"]
             if user_prompt == "give me an executive report":
                 assert latest_session_id == "oci-20260416"
-                return "tool_query_conversation"
+                return ["tool_query_conversation", "reply_fast"]
             if user_prompt == "save the analysis into siyuan":
                 assert latest_session_id == "oci-20260416"
                 assert latest_generated_content.startswith("# Executive Report")
-                return "tool_save_to_siyuan"
+                return ["tool_save_to_siyuan", "reply_fast"]
             raise AssertionError(f"Unexpected prompt: {user_prompt}")
 
         async def extract_requested_session_id(
@@ -1987,6 +2009,7 @@ def test_langgraph_chat_session_saves_latest_generated_content_to_siyuan(tmp_pat
         ) -> str:
             raise AssertionError("Deep responder should not run in this test.")
 
+    FakeChatAgent.cfg = cfg
     fake_chat_agent = FakeChatAgent()
 
     with (
@@ -2045,24 +2068,23 @@ def test_langgraph_chat_session_refreshes_session_analysis_before_saving(tmp_pat
             self._route_fn = route_fn
 
         async def ainvoke(self, payload):
+            import asyncio as _asyncio
             state = dict(payload)
             state = self._nodes["human_input"](state)
-            state = await self._nodes["route"](state)
-            next_node = self._route_fn(state)
-            if next_node == "extract_session_id":
-                state = await self._nodes[next_node](state)
-                next_node = "tool_query_conversation"
-            if next_node in {
-                "tool_list_sessions",
-                "tool_query_conversation",
-                "tool_save_to_siyuan",
-            }:
-                state = self._nodes[next_node](state)
-                next_node = "respond_fast"
-            state = await self._nodes[next_node](state)
-            if state.get("pending_save_to_siyuan"):
-                state = self._nodes["tool_save_to_siyuan"](state)
-                state = await self._nodes["respond_fast"](state)
+            state = await self._nodes["plan"](state)
+            while True:
+                state = self._nodes["dispatch"](state)
+                next_node = self._route_fn(state)
+                if next_node == "__end__":
+                    break
+                if next_node == "extract_session_id":
+                    state = await self._nodes["extract_session_id"](state)
+                    route_kind = (state.get("session_state") or {}).get("route_kind", "")
+                    tool_name = "tool_analyze_summary" if route_kind == "tool_analyze_summary" else "tool_query_conversation"
+                    state = self._nodes[tool_name](state)
+                else:
+                    node_fn = self._nodes[next_node]
+                    state = await node_fn(state) if _asyncio.iscoroutinefunction(node_fn) else node_fn(state)
             return state
 
     class FakeStateGraph:
@@ -2077,7 +2099,7 @@ def test_langgraph_chat_session_refreshes_session_analysis_before_saving(tmp_pat
             return None
 
         def add_conditional_edges(self, start, fn, _path_map) -> None:
-            if start == "route":
+            if start == "dispatch":
                 self._route_fn = fn
 
         def compile(self):
@@ -2086,24 +2108,26 @@ def test_langgraph_chat_session_refreshes_session_analysis_before_saving(tmp_pat
             return graph
 
     class FakeChatAgent:
+        cfg = None
         last_route_kind = ""
         last_route_model = "openai:gemma4:e4b"
         last_reply_model = ""
         last_tool_name = ""
 
-        async def route(
+        async def plan(
             self,
             user_prompt: str,
             chat_history: list[dict[str, str]],
             *,
             latest_session_id: str = "",
             latest_generated_content: str = "",
-        ) -> str:
+            latest_session_transcript: str = "",
+        ) -> list[str]:
             assert user_prompt == "extract an executive summary and save it to siyuan"
             assert latest_session_id == "oci-20260416"
             assert latest_generated_content == "# Old Summary\n\nStale"
             self.last_route_kind = "tool_query_conversation"
-            return "tool_query_conversation"
+            return ["tool_query_conversation", "reply_fast", "tool_save_to_siyuan", "reply_fast"]
 
         async def extract_requested_session_id(
             self,
@@ -2138,6 +2162,7 @@ def test_langgraph_chat_session_refreshes_session_analysis_before_saving(tmp_pat
         ) -> str:
             raise AssertionError("Deep responder should not run in this test.")
 
+    FakeChatAgent.cfg = cfg
     fake_chat_agent = FakeChatAgent()
 
     with (
@@ -2173,7 +2198,6 @@ def test_langgraph_chat_session_refreshes_session_analysis_before_saving(tmp_pat
     )
     assert session._state["artifacts"]["latest_generated_content"] == "# Executive Summary\n\nFresh summary from transcript."
     assert session._state["artifacts"]["latest_generated_title"] == "Executive Summary"
-    assert session._state["session_state"]["pending_save_to_siyuan"] is False
 
 
 def test_langgraph_chat_session_save_to_siyuan_requires_session_id(tmp_path: Path) -> None:
@@ -2198,14 +2222,24 @@ def test_langgraph_chat_session_save_to_siyuan_requires_session_id(tmp_path: Pat
             self._route_fn = route_fn
 
         async def ainvoke(self, payload):
+            import asyncio as _asyncio
             state = dict(payload)
             state = self._nodes["human_input"](state)
-            state = await self._nodes["route"](state)
-            next_node = self._route_fn(state)
-            if next_node == "tool_save_to_siyuan":
-                state = self._nodes[next_node](state)
-                next_node = "respond_fast"
-            return await self._nodes[next_node](state)
+            state = await self._nodes["plan"](state)
+            while True:
+                state = self._nodes["dispatch"](state)
+                next_node = self._route_fn(state)
+                if next_node == "__end__":
+                    break
+                if next_node == "extract_session_id":
+                    state = await self._nodes["extract_session_id"](state)
+                    route_kind = (state.get("session_state") or {}).get("route_kind", "")
+                    tool_name = "tool_analyze_summary" if route_kind == "tool_analyze_summary" else "tool_query_conversation"
+                    state = self._nodes[tool_name](state)
+                else:
+                    node_fn = self._nodes[next_node]
+                    state = await node_fn(state) if _asyncio.iscoroutinefunction(node_fn) else node_fn(state)
+            return state
 
     class FakeStateGraph:
         def __init__(self, _state_schema) -> None:
@@ -2227,20 +2261,22 @@ def test_langgraph_chat_session_save_to_siyuan_requires_session_id(tmp_path: Pat
             return graph
 
     class FakeChatAgent:
+        cfg = None
         last_route_kind = ""
         last_route_model = "openai:gemma4:e4b"
         last_reply_model = ""
         last_tool_name = ""
 
-        async def route(
+        async def plan(
             self,
             user_prompt: str,
             chat_history: list[dict[str, str]],
             *,
             latest_session_id: str = "",
             latest_generated_content: str = "",
-        ) -> str:
-            return "tool_save_to_siyuan"
+            latest_session_transcript: str = "",
+        ) -> list[str]:
+            return ["tool_save_to_siyuan", "reply_fast"]
 
         async def respond_fast(
             self,
@@ -2305,14 +2341,18 @@ def test_langgraph_chat_session_save_to_siyuan_requires_generated_content(tmp_pa
             self._route_fn = route_fn
 
         async def ainvoke(self, payload):
+            import asyncio as _asyncio
             state = dict(payload)
             state = self._nodes["human_input"](state)
-            state = await self._nodes["route"](state)
-            next_node = self._route_fn(state)
-            if next_node == "tool_save_to_siyuan":
-                state = self._nodes[next_node](state)
-                next_node = "respond_fast"
-            return await self._nodes[next_node](state)
+            state = await self._nodes["plan"](state)
+            while True:
+                state = self._nodes["dispatch"](state)
+                next_node = self._route_fn(state)
+                if next_node == "__end__":
+                    break
+                node_fn = self._nodes[next_node]
+                state = await node_fn(state) if _asyncio.iscoroutinefunction(node_fn) else node_fn(state)
+            return state
 
     class FakeStateGraph:
         def __init__(self, _state_schema) -> None:
@@ -2334,21 +2374,23 @@ def test_langgraph_chat_session_save_to_siyuan_requires_generated_content(tmp_pa
             return graph
 
     class FakeChatAgent:
+        cfg = None
         last_route_kind = ""
         last_route_model = "openai:gemma4:e4b"
         last_reply_model = ""
         last_tool_name = ""
 
-        async def route(
+        async def plan(
             self,
             user_prompt: str,
             chat_history: list[dict[str, str]],
             *,
             latest_session_id: str = "",
             latest_generated_content: str = "",
-        ) -> str:
+            latest_session_transcript: str = "",
+        ) -> list[str]:
             assert latest_session_id == "oci-20260416"
-            return "tool_save_to_siyuan"
+            return ["tool_save_to_siyuan", "reply_fast"]
 
         async def respond_fast(
             self,
@@ -2413,17 +2455,24 @@ def test_langgraph_chat_session_reports_missing_session_id_for_session_tool(tmp_
             self._route_fn = route_fn
 
         async def ainvoke(self, payload):
+            import asyncio as _asyncio
             state = dict(payload)
             state = self._nodes["human_input"](state)
-            state = await self._nodes["route"](state)
-            next_node = self._route_fn(state)
-            if next_node == "extract_session_id":
-                state = await self._nodes[next_node](state)
-                next_node = "tool_query_conversation"
-            if next_node == "tool_query_conversation":
-                state = self._nodes[next_node](state)
-                next_node = "respond_fast"
-            return await self._nodes[next_node](state)
+            state = await self._nodes["plan"](state)
+            while True:
+                state = self._nodes["dispatch"](state)
+                next_node = self._route_fn(state)
+                if next_node == "__end__":
+                    break
+                if next_node == "extract_session_id":
+                    state = await self._nodes["extract_session_id"](state)
+                    route_kind = (state.get("session_state") or {}).get("route_kind", "")
+                    tool_name = "tool_analyze_summary" if route_kind == "tool_analyze_summary" else "tool_query_conversation"
+                    state = self._nodes[tool_name](state)
+                else:
+                    node_fn = self._nodes[next_node]
+                    state = await node_fn(state) if _asyncio.iscoroutinefunction(node_fn) else node_fn(state)
+            return state
 
     class FakeStateGraph:
         def __init__(self, _state_schema) -> None:
@@ -2445,22 +2494,24 @@ def test_langgraph_chat_session_reports_missing_session_id_for_session_tool(tmp_
             return graph
 
     class FakeChatAgent:
+        cfg = None
         last_route_kind = ""
         last_route_model = "openai:gemma4:e4b"
         last_reply_model = ""
         last_tool_name = ""
 
-        async def route(
+        async def plan(
             self,
             user_prompt: str,
             chat_history: list[dict[str, str]],
             *,
             latest_session_id: str = "",
             latest_generated_content: str = "",
-        ) -> str:
+            latest_session_transcript: str = "",
+        ) -> list[str]:
             assert latest_session_id == ""
             self.last_route_kind = "tool_query_conversation"
-            return "tool_query_conversation"
+            return ["tool_query_conversation", "reply_fast"]
 
         async def extract_requested_session_id(
             self,
@@ -2497,6 +2548,10 @@ def test_langgraph_chat_session_reports_missing_session_id_for_session_tool(tmp_
         ),
         patch("pawn_agent.core.langgraph_chat.LangGraphRouterChatAgent", return_value=FakeChatAgent()),
         patch("pawn_agent.core.langgraph_chat.build_phoenix_tracer", return_value=None),
+        patch(
+            "pawn_agent.core.langgraph_tools.run_list_sessions_tool",
+            return_value="",
+        ),
         patch(
             "pawn_agent.core.langgraph_tools.run_query_conversation_tool",
             side_effect=AssertionError("Tool should not run without a session id."),
@@ -2555,17 +2610,24 @@ def test_langgraph_chat_session_emits_phoenix_spans(tmp_path: Path) -> None:
             self._route_fn = route_fn
 
         async def ainvoke(self, payload):
+            import asyncio as _asyncio
             state = dict(payload)
             state = self._nodes["human_input"](state)
-            state = await self._nodes["route"](state)
-            next_node = self._route_fn(state)
-            if next_node == "extract_session_id":
-                state = await self._nodes[next_node](state)
-                next_node = "tool_query_conversation"
-            if next_node in {"tool_list_sessions", "tool_query_conversation"}:
-                state = self._nodes[next_node](state)
-                next_node = "respond_fast"
-            return await self._nodes[next_node](state)
+            state = await self._nodes["plan"](state)
+            while True:
+                state = self._nodes["dispatch"](state)
+                next_node = self._route_fn(state)
+                if next_node == "__end__":
+                    break
+                if next_node == "extract_session_id":
+                    state = await self._nodes["extract_session_id"](state)
+                    route_kind = (state.get("session_state") or {}).get("route_kind", "")
+                    tool_name = "tool_analyze_summary" if route_kind == "tool_analyze_summary" else "tool_query_conversation"
+                    state = self._nodes[tool_name](state)
+                else:
+                    node_fn = self._nodes[next_node]
+                    state = await node_fn(state) if _asyncio.iscoroutinefunction(node_fn) else node_fn(state)
+            return state
 
     class FakeStateGraph:
         def __init__(self, _state_schema) -> None:
@@ -2587,25 +2649,27 @@ def test_langgraph_chat_session_emits_phoenix_spans(tmp_path: Path) -> None:
             return graph
 
     class FakeChatAgent:
+        cfg = None
         last_route_kind = ""
         last_route_model = "openai:gemma4:e4b"
         last_reply_model = ""
         last_tool_name = ""
 
-        async def route(
+        async def plan(
             self,
             user_prompt: str,
             chat_history: list[dict[str, str]],
             *,
             latest_session_id: str = "",
             latest_generated_content: str = "",
-        ) -> str:
+            latest_session_transcript: str = "",
+        ) -> list[str]:
             assert user_prompt == "show latest sessions"
             assert chat_history == [{"role": "user", "content": "show latest sessions"}]
             assert latest_session_id == ""
             self.last_route_kind = "tool_list_sessions"
             self.last_tool_name = ""
-            return "tool_list_sessions"
+            return ["tool_list_sessions", "reply_fast"]
 
         async def respond_fast(
             self,
@@ -2649,11 +2713,14 @@ def test_langgraph_chat_session_emits_phoenix_spans(tmp_path: Path) -> None:
     assert span_names == [
         "langgraph-chat-turn",
         "langgraph-human-input",
-        "langgraph-route",
+        "langgraph-plan",
+        "langgraph-dispatch",
         "langgraph-tool-list-sessions",
+        "langgraph-dispatch",
         "langgraph-respond-fast",
+        "langgraph-dispatch",
     ]
-    assert ("attr", "langgraph-route", "output.route_kind", "tool_list_sessions") in span_events
+    assert ("attr", "langgraph-dispatch", "output.route_kind", "tool_list_sessions") in span_events
     assert ("attr", "langgraph-tool-list-sessions", "tool.name", "list_sessions") in span_events
     assert ("attr", "langgraph-respond-fast", "llm.model_name", "openai:gemma4:e4b") in span_events
     assert ("attr", "langgraph-respond-fast", "tool.name", "list_sessions") in span_events
@@ -2701,14 +2768,24 @@ def test_langgraph_chat_session_emits_save_to_siyuan_spans(tmp_path: Path) -> No
             self._route_fn = route_fn
 
         async def ainvoke(self, payload):
+            import asyncio as _asyncio
             state = dict(payload)
             state = self._nodes["human_input"](state)
-            state = await self._nodes["route"](state)
-            next_node = self._route_fn(state)
-            if next_node == "tool_save_to_siyuan":
-                state = self._nodes[next_node](state)
-                next_node = "respond_fast"
-            return await self._nodes[next_node](state)
+            state = await self._nodes["plan"](state)
+            while True:
+                state = self._nodes["dispatch"](state)
+                next_node = self._route_fn(state)
+                if next_node == "__end__":
+                    break
+                if next_node == "extract_session_id":
+                    state = await self._nodes["extract_session_id"](state)
+                    route_kind = (state.get("session_state") or {}).get("route_kind", "")
+                    tool_name = "tool_analyze_summary" if route_kind == "tool_analyze_summary" else "tool_query_conversation"
+                    state = self._nodes[tool_name](state)
+                else:
+                    node_fn = self._nodes[next_node]
+                    state = await node_fn(state) if _asyncio.iscoroutinefunction(node_fn) else node_fn(state)
+            return state
 
     class FakeStateGraph:
         def __init__(self, _state_schema) -> None:
@@ -2730,23 +2807,25 @@ def test_langgraph_chat_session_emits_save_to_siyuan_spans(tmp_path: Path) -> No
             return graph
 
     class FakeChatAgent:
+        cfg = None
         last_route_kind = ""
         last_route_model = "openai:gemma4:e4b"
         last_reply_model = ""
         last_tool_name = ""
 
-        async def route(
+        async def plan(
             self,
             user_prompt: str,
             chat_history: list[dict[str, str]],
             *,
             latest_session_id: str = "",
             latest_generated_content: str = "",
-        ) -> str:
+            latest_session_transcript: str = "",
+        ) -> list[str]:
             assert latest_session_id == "oci-20260416"
             assert latest_generated_content.startswith("# Executive Report")
             self.last_route_kind = "tool_save_to_siyuan"
-            return "tool_save_to_siyuan"
+            return ["tool_save_to_siyuan", "reply_fast"]
 
         async def respond_fast(
             self,
@@ -2790,9 +2869,12 @@ def test_langgraph_chat_session_emits_save_to_siyuan_spans(tmp_path: Path) -> No
     assert span_names == [
         "langgraph-chat-turn",
         "langgraph-human-input",
-        "langgraph-route",
+        "langgraph-plan",
+        "langgraph-dispatch",
         "langgraph-tool-save-to-siyuan",
+        "langgraph-dispatch",
         "langgraph-respond-fast",
+        "langgraph-dispatch",
     ]
     assert ("attr", "langgraph-tool-save-to-siyuan", "tool.name", "save_to_siyuan") in span_events
     assert ("attr", "langgraph-tool-save-to-siyuan", "session.id", "oci-20260416") in span_events
@@ -2841,11 +2923,18 @@ def test_langgraph_chat_session_traces_full_state_when_enabled(tmp_path: Path) -
             self._route_fn = route_fn
 
         async def ainvoke(self, payload):
+            import asyncio as _asyncio
             state = dict(payload)
             state = self._nodes["human_input"](state)
-            state = await self._nodes["route"](state)
-            next_node = self._route_fn(state)
-            return await self._nodes[next_node](state)
+            state = await self._nodes["plan"](state)
+            while True:
+                state = self._nodes["dispatch"](state)
+                next_node = self._route_fn(state)
+                if next_node == "__end__":
+                    break
+                node_fn = self._nodes[next_node]
+                state = await node_fn(state) if _asyncio.iscoroutinefunction(node_fn) else node_fn(state)
+            return state
 
     class FakeStateGraph:
         def __init__(self, _state_schema) -> None:
@@ -2859,7 +2948,7 @@ def test_langgraph_chat_session_traces_full_state_when_enabled(tmp_path: Path) -
             return None
 
         def add_conditional_edges(self, start, fn, _path_map) -> None:
-            if start == "route":
+            if start == "dispatch":
                 self._route_fn = fn
 
         def compile(self):
@@ -2868,21 +2957,23 @@ def test_langgraph_chat_session_traces_full_state_when_enabled(tmp_path: Path) -
             return graph
 
     class FakeChatAgent:
+        cfg = None
         last_route_kind = ""
         last_route_model = "openai:gemma4:e4b"
         last_reply_model = ""
         last_tool_name = ""
 
-        async def route(
+        async def plan(
             self,
             user_prompt: str,
             chat_history: list[dict[str, str]],
             *,
             latest_session_id: str = "",
             latest_generated_content: str = "",
-        ) -> str:
+            latest_session_transcript: str = "",
+        ) -> list[str]:
             self.last_route_kind = "reply_fast"
-            return "reply_fast"
+            return ["reply_fast"]
 
         async def respond_fast(
             self,

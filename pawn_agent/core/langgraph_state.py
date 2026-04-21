@@ -22,8 +22,7 @@ class LangGraphSessionState(TypedDict, total=False):
     reply_model: str
     tool_name: str
     requested_session_id: str
-    post_tool_reply_model: str
-    pending_save_to_siyuan: bool
+    action_plan: list[str]
 
 
 class LangGraphDurableFacts(TypedDict, total=False):
@@ -35,6 +34,7 @@ class LangGraphArtifacts(TypedDict, total=False):
     latest_generated_content: str
     latest_generated_title: str
     session_catalog_output: str
+    latest_session_transcript: str
 
 
 class StructuredLangGraphState(TypedDict, total=False):
@@ -54,8 +54,7 @@ SESSION_STATE_DEFAULTS: LangGraphSessionState = {
     "reply_model": "",
     "tool_name": "",
     "requested_session_id": "",
-    "post_tool_reply_model": "",
-    "pending_save_to_siyuan": False,
+    "action_plan": [],
 }
 
 DURABLE_FACT_DEFAULTS: LangGraphDurableFacts = {
@@ -67,6 +66,7 @@ ARTIFACT_DEFAULTS: LangGraphArtifacts = {
     "latest_generated_content": "",
     "latest_generated_title": "",
     "session_catalog_output": "",
+    "latest_session_transcript": "",
 }
 
 FIELD_BUCKETS = {
@@ -79,13 +79,13 @@ FIELD_BUCKETS = {
     "reply_model": "session_state",
     "tool_name": "session_state",
     "requested_session_id": "session_state",
-    "post_tool_reply_model": "session_state",
-    "pending_save_to_siyuan": "session_state",
+    "action_plan": "session_state",
     "latest_session_id": "durable_facts",
     "tool_output": "artifacts",
     "latest_generated_content": "artifacts",
     "latest_generated_title": "artifacts",
     "session_catalog_output": "artifacts",
+    "latest_session_transcript": "artifacts",
 }
 
 FIELD_DEFAULTS = {
