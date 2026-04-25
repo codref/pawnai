@@ -386,8 +386,6 @@ async def chat_completions(
 
     Send ``/reset`` as the last user message to clear the session history.
     """
-    from pawn_agent.core.session_store import delete_session as _delete_session  # noqa: PLC0415
-
     logger.debug("chat/completions raw payload: %s", req.model_dump())
     messages = [m.model_dump() for m in req.messages]
     session_id = _session_id(messages, req.user)
@@ -404,9 +402,8 @@ async def chat_completions(
         )
 
     if _is_reset(messages):
-        deleted = _delete_session(session_id, cfg.db_dsn)
         await _langgraph_registry.reset(session_id, cfg.db_dsn)
-        reply = f"Session reset. ({deleted} turn{'s' if deleted != 1 else ''} deleted)"
+        reply = "Session reset."
         if req.stream:
             return StreamingResponse(_stream_sse(reply, req.model), media_type="text/event-stream")
         return _build_openai_response(reply, req.model)
@@ -441,12 +438,7 @@ async def delete_session(
     the ``user`` field) will start fresh.  Returns 404 if the session does not
     exist.
     """
-    from pawn_agent.core.session_store import delete_session as _delete  # noqa: PLC0415
-
-    deleted = _delete(session_id, cfg.db_dsn)
     await _langgraph_registry.reset(session_id, cfg.db_dsn)
-    if deleted == 0:
-        raise HTTPException(status_code=404, detail=f"Session {session_id!r} not found")
     return Response(status_code=204)
 
 

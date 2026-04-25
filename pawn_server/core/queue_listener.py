@@ -1,54 +1,49 @@
 """Queue listener for pawn-server.
 
 Consumes messages from a pawn-queue S3-backed topic and dispatches them
-to the PydanticAgent.  Results are persisted in the ``agent_runs`` table
-so they can be inspected later (the listener is headless — no terminal).
+to registered command handlers.  Results are persisted in the
+``agent_runs`` table so they can be inspected later (the listener is
+headless — no terminal).
 
-Message format::
+Message format (published by pawn-diarize ``chain_agent``)::
 
     {
         "command": "run",
         "prompt": "Summarise session abc123 and push to SiYuan",
-        "session_id": "abc123",   // optional
-        "model": "openai:gpt-4o"  // optional
+        "session_id": "abc123",   // required — diarization session name
+        "model": "openai:gpt-4o"  // optional per-message override
     }
+
+The ``session_id`` is the diarization session name (not a conversation UUID).
+It is passed directly to the LangGraph registry so that agent tools such as
+``query_conversation`` can look up the correct transcript in the database.
+Subsequent ``run`` messages for the same session continue the same
+LangGraph conversation context.
 """
 
 from __future__ import annotations
 
 import asyncio
+import copy
 import logging
-import uuid
-from copy import deepcopy
 from typing import Any, Callable, Coroutine, Dict, Optional
 
+from pawn_agent.core.langgraph_registry import LangGraphSessionRegistry
+from pawn_agent.utils.db import create_agent_run, update_agent_run
+from pawn_agent.utils.model_utils import _apply_model_override
+
 logger = logging.getLogger(__name__)
+
+# Module-level registry — one LangGraph session per diarization session_id.
+_registry = LangGraphSessionRegistry()
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Per-command defaults
 # ──────────────────────────────────────────────────────────────────────────────
 
 COMMAND_DEFAULTS: Dict[str, Dict[str, Any]] = {
-    "run": {
-        "prompt": "",       # required — producer MUST supply
-        "session_id": None,
-        "model": None,
-    },
+    "run": {"prompt": None, "session_id": None, "model": None},
 }
-
-
-def _history_mode(cfg: Any) -> str:
-    return getattr(cfg, "history_mode", "raw")
-
-
-def _history_kwargs(cfg: Any) -> Dict[str, Any]:
-    return {
-        "strip_thinking": getattr(cfg, "strip_thinking", True),
-        "recent_turns": getattr(cfg, "history_recent_turns", 4),
-        "replay_max_tokens": getattr(cfg, "history_replay_max_tokens", 8000),
-        "max_text_chars": getattr(cfg, "history_max_text_chars", 500),
-        "sanitize_leaked_thoughts": getattr(cfg, "history_sanitize_leaked_thoughts", True),
-    }
 
 
 def _merge_params(command: str, payload: Dict[str, Any]) -> Dict[str, Any]:
@@ -56,6 +51,57 @@ def _merge_params(command: str, payload: Dict[str, Any]) -> Dict[str, Any]:
     merged = dict(COMMAND_DEFAULTS[command])
     merged.update(payload)
     return merged
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# "run" handler
+# ──────────────────────────────────────────────────────────────────────────────
+
+
+async def _run_langgraph(
+    params: Dict[str, Any],
+    cfg: Any,
+    message_id: Optional[str] = None,
+) -> None:
+    """Execute a ``run`` command via the LangGraph session registry.
+
+    Creates an ``agent_runs`` row immediately (so every attempt is tracked),
+    then validates required fields.  On any failure the row is marked *failed*
+    and the exception re-raised so the caller can nack the message.
+    """
+    prompt: Optional[str] = params.get("prompt") or None
+    session_id: Optional[str] = params.get("session_id") or None
+    model: Optional[str] = params.get("model") or None
+
+    effective_cfg = cfg
+    if model:
+        effective_cfg = copy.copy(cfg)
+        _apply_model_override(effective_cfg, model)
+
+    run_id = create_agent_run(
+        cfg.db_dsn,
+        message_id=message_id,
+        command="run",
+        prompt=prompt,
+        session_id=session_id,
+        model=effective_cfg.pydantic_model,
+    )
+    update_agent_run(cfg.db_dsn, run_id, "running")
+
+    try:
+        if not prompt:
+            raise ValueError("'prompt' is required for the 'run' command")
+        if not session_id:
+            raise ValueError(
+                "'session_id' is required for the 'run' command — "
+                "it must be the diarization session name used by agent tools"
+            )
+
+        reply = await _registry.handle_turn(session_id, prompt, effective_cfg, cfg.db_dsn)
+        update_agent_run(cfg.db_dsn, run_id, "completed", response=reply)
+    except Exception as exc:
+        update_agent_run(cfg.db_dsn, run_id, "failed", error=str(exc))
+        raise
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -71,122 +117,17 @@ async def dispatch(
 ) -> None:
     """Route *command* to the correct handler.
 
-    Heavy work runs in a thread executor to avoid blocking the event loop.
+    Raises :class:`ValueError` for any command not registered in
+    :data:`COMMAND_DEFAULTS`.
     """
-    if command != "run":
+    if command not in COMMAND_DEFAULTS:
         raise ValueError(f"Unsupported command: {command!r}")
 
-    loop = asyncio.get_running_loop()
-    await loop.run_in_executor(None, _run_prompt, params, cfg, message_id)
+    if command == "run":
+        await _run_langgraph(params, cfg, message_id)
+        return
 
-
-# ──────────────────────────────────────────────────────────────────────────────
-# Runners
-# ──────────────────────────────────────────────────────────────────────────────
-
-# Cache agents by (model, session_id) so session variables remain isolated.
-_agent_cache: Dict[tuple[str, Optional[str]], Any] = {}
-
-
-def _get_or_create_agent(
-    cfg: Any,
-    model_override: Optional[str] = None,
-    *,
-    session_id: Optional[str] = None,
-) -> Any:
-    """Return a cached PydanticAgent, creating one if needed.
-
-    Session-bound agents are required for session variable persistence
-    (e.g. ``listen_only``) because :class:`SessionVars` persists only when
-    instantiated with a session id.
-    """
-    from pawn_agent.core.pydantic_agent import PydanticAgent  # noqa: PLC0415
-
-    model_key = model_override or cfg.pydantic_model
-    cache_key = (model_key, session_id)
-
-    if cache_key not in _agent_cache:
-        agent_cfg = cfg
-        if model_override:
-            from pawn_agent.utils.model_utils import _apply_model_override  # noqa: PLC0415
-
-            agent_cfg = deepcopy(cfg)
-            _apply_model_override(agent_cfg, model_override)
-        _agent_cache[cache_key] = PydanticAgent(cfg=agent_cfg, session_id=session_id)
-
-    return _agent_cache[cache_key]
-
-
-def _run_prompt(
-    params: Dict[str, Any],
-    cfg: Any,
-    message_id: Optional[str] = None,
-) -> None:
-    """Execute a prompt through the PydanticAgent and persist the result."""
-    from pawn_agent.utils.db import create_agent_run, update_agent_run  # noqa: PLC0415
-    from pawn_agent.core.session_store import append_turn, build_replay_history, load_history  # noqa: PLC0415
-
-    prompt: str = params.get("prompt", "")
-    session_id: Optional[str] = params.get("session_id")
-    model_override: Optional[str] = params.get("model")
-
-    effective_model = model_override or cfg.pydantic_model
-
-    # Create a history record before any validation so every message is traceable
-    run_id = create_agent_run(
-        cfg.db_dsn,
-        message_id=message_id,
-        command="run",
-        prompt=prompt,
-        session_id=session_id,
-        model=effective_model,
-    )
-
-    if not prompt:
-        update_agent_run(
-            cfg.db_dsn,
-            run_id,
-            "failed",
-            error="Message is missing required 'prompt' field",
-        )
-        raise ValueError("Message is missing required 'prompt' field")
-
-    # Mark as running
-    update_agent_run(cfg.db_dsn, run_id, "running")
-
-    # Prepend session hint so the agent can locate the right conversation
-    effective_prompt = prompt
-    if session_id:
-        effective_prompt = f"[Session ID: {session_id}]\n{prompt}"
-
-    # Load conversation history from the session store
-    if _history_mode(cfg) == "raw":
-        history = load_history(
-            session_id or "",
-            cfg.db_dsn,
-            strip_thinking=getattr(cfg, "strip_thinking", True),
-        )
-    else:
-        history = build_replay_history(
-            session_id or "",
-            cfg.db_dsn,
-            **_history_kwargs(cfg),
-        )
-
-    try:
-        agent = _get_or_create_agent(cfg, model_override, session_id=session_id)
-        result = agent.run_sync(effective_prompt, message_history=history)
-        response = result.output
-
-        # Persist this turn — idempotent via source_id = message_id
-        source_id = message_id or str(uuid.uuid4())
-        append_turn(source_id, session_id or "", list(result.new_messages()), cfg.db_dsn)
-
-        update_agent_run(cfg.db_dsn, run_id, "completed", response=response)
-        logger.info("Run %s completed (%d chars)", run_id, len(response))
-    except Exception as exc:
-        update_agent_run(cfg.db_dsn, run_id, "failed", error=str(exc))
-        raise
+    raise NotImplementedError(f"Command {command!r} has no handler registered")
 
 
 # ──────────────────────────────────────────────────────────────────────────────
