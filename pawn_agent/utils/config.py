@@ -53,9 +53,9 @@ import os
 from pathlib import Path
 from typing import Literal, Optional
 
+import yaml
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field, PrivateAttr
 from pydantic_settings import SettingsConfigDict
-import yaml
 
 from pawn_core.config import (  # noqa: F401
     LoggingConfig,
@@ -64,7 +64,6 @@ from pawn_core.config import (  # noqa: F401
     S3Config,
     SiYuanConfig,
 )
-
 
 # ── Agent-specific section models ─────────────────────────────────────────────
 
@@ -117,21 +116,15 @@ class MlflowSection(BaseModel):
 
     enabled: bool = Field(
         default=False,
-        validation_alias=AliasChoices(
-            "PAWN_MLFLOW__ENABLED", "PAWN_AGENT_MLFLOW_ENABLED"
-        ),
+        validation_alias=AliasChoices("PAWN_MLFLOW__ENABLED", "PAWN_AGENT_MLFLOW_ENABLED"),
     )
     tracking_uri: Optional[str] = Field(
         default=None,
-        validation_alias=AliasChoices(
-            "PAWN_MLFLOW__TRACKING_URI", "MLFLOW_TRACKING_URI"
-        ),
+        validation_alias=AliasChoices("PAWN_MLFLOW__TRACKING_URI", "MLFLOW_TRACKING_URI"),
     )
     experiment: str = Field(
         default="pawn-agent",
-        validation_alias=AliasChoices(
-            "PAWN_MLFLOW__EXPERIMENT", "MLFLOW_EXPERIMENT_NAME"
-        ),
+        validation_alias=AliasChoices("PAWN_MLFLOW__EXPERIMENT", "MLFLOW_EXPERIMENT_NAME"),
     )
 
 
@@ -141,6 +134,16 @@ class AgentQueueConfig(BaseModel):
     topic: str = "pawn-agent-jobs"
     consumer_name: str = "pawn-agent-listener"
     bucket_name: str = "my-bucket"
+
+
+class QueueProducerConfig(BaseModel):
+    """Single named producer target for the queue-publishing tool."""
+
+    topic: str
+    bucket_name: str
+    producer_name: Optional[str] = None
+    polling: Optional[dict] = None
+    concurrency: Optional[dict] = None
 
 
 class PhoenixSection(BaseModel):
@@ -191,6 +194,7 @@ class AgentConfig(PawnConfig):
     mlflow: MlflowSection = Field(default_factory=MlflowSection)
     phoenix: PhoenixSection = Field(default_factory=PhoenixSection)
     agent_queue: Optional[AgentQueueConfig] = None
+    queue_producers: Optional[dict[str, QueueProducerConfig]] = None
 
     # ── Flat property aliases (old flat-field names used throughout pawn_agent) ─
 

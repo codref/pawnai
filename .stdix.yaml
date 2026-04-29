@@ -1,0 +1,9 @@
+registry:
+    source: remote
+    url: https://github.com/codref/stdix-registry/releases/latest/download/registry.db
+    repo: codref/stdix-registry  # GitHub repo for 'stdix push'
+outputs:
+    agents: true
+    claude: false
+    copilot: true
+    cursor: false

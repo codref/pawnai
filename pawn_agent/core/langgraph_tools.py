@@ -3,18 +3,19 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from typing import Awaitable
-from typing import Any, Callable
+from typing import Any, Awaitable, Callable
 
 from pawn_agent.core.chat_primitives import normalize_output
 from pawn_agent.core.langgraph_state import (
     ensure_langgraph_state,
+    get_recent_messages,
     get_state_field,
     serialize_langgraph_state,
     set_state_fields,
 )
 from pawn_agent.tools.analyze_summary import analyze_summary_impl
 from pawn_agent.tools.list_sessions import list_sessions_impl
+from pawn_agent.tools.push_queue_message import push_queue_message_impl
 from pawn_agent.tools.query_conversation import query_conversation_impl
 from pawn_agent.tools.save_to_siyuan import save_to_siyuan_impl
 from pawn_agent.tools.search_knowledge import search_knowledge_impl
@@ -242,7 +243,9 @@ def build_tool_list_sessions_node(
     def tool_list_sessions_node(state: dict[str, Any]) -> dict[str, Any]:
         current = ensure_langgraph_state(state)
         latest_user_message = normalize_output(get_state_field(current, "latest_user_message"))
-        existing_session_id = normalize_output(get_state_field(current, "latest_session_id")).strip()
+        existing_session_id = normalize_output(
+            get_state_field(current, "latest_session_id")
+        ).strip()
         if tracer is None:
             tool_output = run_list_sessions_tool(cfg)
             updated = set_state_fields(
@@ -306,8 +309,8 @@ def build_tool_query_conversation_node(
                     dict(current),
                     tool_name="query_conversation",
                     tool_output=(
-                    "I need a session id to retrieve a conversation. "
-                    "Ask for available sessions first or specify the session id."
+                        "I need a session id to retrieve a conversation. "
+                        "Ask for available sessions first or specify the session id."
                     ),
                 )
             tool_output = run_query_conversation_tool(cfg, session_id)
@@ -327,12 +330,14 @@ def build_tool_query_conversation_node(
                     dict(current),
                     tool_name="query_conversation",
                     tool_output=(
-                    "I need a session id to retrieve a conversation. "
-                    "Ask for available sessions first or specify the session id."
+                        "I need a session id to retrieve a conversation. "
+                        "Ask for available sessions first or specify the session id."
                     ),
                 )
                 span.set_attribute("tool.name", "query_conversation")
-                span.set_attribute("output.value", normalize_output(get_state_field(updated, "tool_output")))
+                span.set_attribute(
+                    "output.value", normalize_output(get_state_field(updated, "tool_output"))
+                )
                 if trace_full_state:
                     span.set_attribute("state.after.json", serialize_langgraph_state(updated))
                 return updated
@@ -439,8 +444,8 @@ def build_tool_save_to_siyuan_node(
                     tool_name="save_to_siyuan",
                     pending_save_to_siyuan=False,
                     tool_output=(
-                    "I need a session in focus before I can save to SiYuan. "
-                    "Retrieve or analyze a session first."
+                        "I need a session in focus before I can save to SiYuan. "
+                        "Retrieve or analyze a session first."
                     ),
                 )
             if not content.strip():
@@ -449,8 +454,8 @@ def build_tool_save_to_siyuan_node(
                     tool_name="save_to_siyuan",
                     pending_save_to_siyuan=False,
                     tool_output=(
-                    "I need generated content to save to SiYuan. "
-                    "Ask me to produce the report or analysis first."
+                        "I need generated content to save to SiYuan. "
+                        "Ask me to produce the report or analysis first."
                     ),
                 )
             tool_output = run_save_to_siyuan_tool(cfg, session_id, content, title=title)
@@ -469,12 +474,14 @@ def build_tool_save_to_siyuan_node(
                     tool_name="save_to_siyuan",
                     pending_save_to_siyuan=False,
                     tool_output=(
-                    "I need a session in focus before I can save to SiYuan. "
-                    "Retrieve or analyze a session first."
+                        "I need a session in focus before I can save to SiYuan. "
+                        "Retrieve or analyze a session first."
                     ),
                 )
                 span.set_attribute("tool.name", "save_to_siyuan")
-                span.set_attribute("output.value", normalize_output(get_state_field(updated, "tool_output")))
+                span.set_attribute(
+                    "output.value", normalize_output(get_state_field(updated, "tool_output"))
+                )
                 if trace_full_state:
                     span.set_attribute("state.after.json", serialize_langgraph_state(updated))
                 return updated
@@ -484,13 +491,15 @@ def build_tool_save_to_siyuan_node(
                     tool_name="save_to_siyuan",
                     pending_save_to_siyuan=False,
                     tool_output=(
-                    "I need generated content to save to SiYuan. "
-                    "Ask me to produce the report or analysis first."
+                        "I need generated content to save to SiYuan. "
+                        "Ask me to produce the report or analysis first."
                     ),
                 )
                 span.set_attribute("tool.name", "save_to_siyuan")
                 span.set_attribute("session.id", session_id)
-                span.set_attribute("output.value", normalize_output(get_state_field(updated, "tool_output")))
+                span.set_attribute(
+                    "output.value", normalize_output(get_state_field(updated, "tool_output"))
+                )
                 if trace_full_state:
                     span.set_attribute("state.after.json", serialize_langgraph_state(updated))
                 return updated
@@ -526,7 +535,9 @@ def build_tool_memorize_node(
         latest_user_message = normalize_output(get_state_field(current, "latest_user_message"))
 
         # Extract fact from tool_output field (set by prior nodes) or user message.
-        fact = normalize_output(get_state_field(current, "tool_output")).strip() or latest_user_message
+        fact = (
+            normalize_output(get_state_field(current, "tool_output")).strip() or latest_user_message
+        )
 
         # Build the tool and call it directly.
         tool = _build_memorize(cfg)
@@ -635,3 +646,111 @@ def build_tool_vectorize_node(
 
     return tool_vectorize_node
 
+
+def _build_progress_payload(state: Mapping[str, object]) -> dict[str, object]:
+    """Build an auto-generated progress notification payload from LangGraph state."""
+    completed = normalize_output(get_state_field(state, "tool_name")).strip()
+    remaining = list(get_state_field(state, "action_plan") or [])
+    session_id = normalize_output(get_state_field(state, "latest_session_id")).strip()
+    latest_user_message = normalize_output(get_state_field(state, "latest_user_message")).strip()
+
+    parts: list[str] = []
+    if completed:
+        parts.append(f"Completed: {completed}")
+    if remaining:
+        parts.append(f"Next: {', '.join(str(r) for r in remaining)}")
+    if session_id:
+        parts.append(f"Session: {session_id}")
+
+    message = " | ".join(parts) if parts else "Working on your request..."
+    payload: dict[str, object] = {
+        "message": message,
+        "completed_step": completed,
+        "remaining_steps": remaining,
+    }
+    if session_id:
+        payload["session_id"] = session_id
+    if latest_user_message:
+        payload["original_prompt"] = latest_user_message
+    return payload
+
+
+def _pick_notification_target(cfg: AgentConfig) -> str | None:
+    """Return the best default notification target from queue_producers."""
+    if not cfg.queue_producers:
+        return None
+    # Prefer a target named "matrix" if it exists.
+    if "matrix" in cfg.queue_producers:
+        return "matrix"
+    return next(iter(cfg.queue_producers.keys()))
+
+
+def build_tool_push_queue_message_node(
+    *,
+    cfg: AgentConfig,
+    chat_agent,
+    tracer=None,
+    trace_full_state: bool = False,
+) -> Callable[[dict[str, Any]], Awaitable[dict[str, Any]]]:
+    """Build the LangGraph node for sending progress notifications to a queue."""
+
+    async def tool_push_queue_message_node(state: dict[str, Any]) -> dict[str, Any]:
+        current = ensure_langgraph_state(state)
+        latest_user_message = normalize_output(
+            get_state_field(current, "latest_user_message")
+        ).strip()
+        chat_history = get_recent_messages(current)
+
+        valid_targets = list(cfg.queue_producers.keys()) if cfg.queue_producers else []
+        target = _pick_notification_target(cfg)
+        if not target:
+            return set_state_fields(
+                dict(current),
+                tool_name="push_queue_message",
+                tool_output="Error: no queue_producers configured in pawnai.yaml.",
+            )
+
+        # Try explicit extraction first (user said something like "publish X to matrix").
+        params = await chat_agent.extract_queue_publish_params(
+            latest_user_message, chat_history, valid_targets
+        )
+        if params:
+            payload = dict(params.get("payload") or {})
+            command = str(params.get("command") or "notify")
+        else:
+            # Auto-generate a progress notification.
+            command = "notify"
+            payload = _build_progress_payload(current)
+
+        try:
+            tool_output = await push_queue_message_impl(
+                cfg,
+                target=target,
+                command=command,
+                payload=payload,
+            )
+        except Exception as exc:
+            tool_output = f"Error pushing queue message: {exc}"
+
+        if tracer is None:
+            return set_state_fields(
+                dict(current),
+                tool_name="push_queue_message",
+                tool_output=tool_output,
+            )
+
+        with tracer.start_as_current_span("langgraph-tool-push-queue-message") as span:
+            if trace_full_state:
+                span.set_attribute("state.before.json", serialize_langgraph_state(current))
+            updated = set_state_fields(
+                dict(current),
+                tool_name="push_queue_message",
+                tool_output=tool_output,
+            )
+            span.set_attribute("tool.name", "push_queue_message")
+            span.set_attribute("output.value", tool_output)
+            if trace_full_state:
+                span.set_attribute("state.after.json", serialize_langgraph_state(updated))
+            return updated
+
+    return tool_push_queue_message_node

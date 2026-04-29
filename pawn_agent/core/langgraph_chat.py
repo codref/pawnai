@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from copy import deepcopy
 import json
 import re
+from copy import deepcopy
 from typing import Callable, TypedDict
 
 from prompt_toolkit import PromptSession
@@ -29,6 +29,7 @@ from pawn_agent.core.langgraph_tools import (
     build_tool_analyze_summary_node,
     build_tool_list_sessions_node,
     build_tool_memorize_node,
+    build_tool_push_queue_message_node,
     build_tool_query_conversation_node,
     build_tool_recall_memory_node,
     build_tool_save_to_siyuan_node,
@@ -116,6 +117,7 @@ class LangGraphRouterChatAgent:
         "tool_recall_memory",
         "tool_search_knowledge",
         "tool_vectorize",
+        "tool_push_queue_message",
     }
 
     def __init__(
@@ -188,15 +190,16 @@ class LangGraphRouterChatAgent:
         recent_memories: list[str] | None = None,
     ) -> str:
         session_focus = latest_session_id or "(none)"
-        has_generated_content = "yes" if normalize_output(latest_generated_content).strip() else "no"
-        has_session_transcript = "yes" if normalize_output(latest_session_transcript).strip() else "no"
+        has_generated_content = (
+            "yes" if normalize_output(latest_generated_content).strip() else "no"
+        )
+        has_session_transcript = (
+            "yes" if normalize_output(latest_session_transcript).strip() else "no"
+        )
         memories_section = ""
         if recent_memories:
             memory_lines = "\n".join(f"- {m}" for m in recent_memories)
-            memories_section = (
-                "\nRelevant memories from previous sessions:\n"
-                f"{memory_lines}\n"
-            )
+            memories_section = "\nRelevant memories from previous sessions:\n" f"{memory_lines}\n"
         return (
             "You are a planning model for a LangGraph chat system.\n"
             "Decompose the user's request into an ordered list of actions and return it as a JSON array of strings.\n"
@@ -211,7 +214,10 @@ class LangGraphRouterChatAgent:
             "- tool_memorize: Use when the user explicitly asks to remember, save, or memorize a fact or preference.\n"
             "- tool_recall_memory: Search persistent memory for facts the user previously asked to remember.\n"
             "- tool_search_knowledge: Semantic search over indexed session chunks and SiYuan notes.\n"
-            "- tool_vectorize: Index a session or SiYuan page into the knowledge store for future search.\n\n"
+            "- tool_vectorize: Index a session or SiYuan page into the knowledge store for future search.\n"
+            "- tool_push_queue_message: Send a progress / notification message to an external queue (e.g. Matrix). "
+            "Use when the user asks to be kept posted, alerted, notified, or when they say 'keep me updated'. "
+            "You MAY include this action MULTIPLE TIMES in the same plan to report progress after key steps.\n\n"
             "Rules:\n"
             "- Every plan must end with reply_fast or reply_deep.\n"
             "- Use reply_deep when the user asks for analysis, executive reports, comprehensive summaries, or complex reasoning.\n"
@@ -221,22 +227,23 @@ class LangGraphRouterChatAgent:
             "- Include tool_save_to_siyuan AFTER the reply step that produces the content, and BEFORE END.\n"
             "- If the user asks to save a specific earlier piece of content (not the latest), use reply_deep first to extract and reproduce it from the conversation history, then tool_save_to_siyuan.\n"
             "- Do NOT include extract_session_id — it is handled automatically.\n"
-            "- Include each action at most once (exception: you may include reply_fast after tool_save_to_siyuan to confirm the save).\n"
+            "- Include each action at most once, EXCEPT tool_push_queue_message which may appear multiple times to report progress.\n"
             "- Maximum 8 actions.\n\n"
             "Examples:\n"
-            "  User asks a simple question → [\"reply_fast\"]\n"
-            "  User asks for an analysis → [\"reply_deep\"]\n"
-            "  User asks to list sessions → [\"tool_list_sessions\", \"reply_fast\"]\n"
-            "  User asks to retrieve and summarize a session (transcript not cached) → [\"tool_query_conversation\", \"reply_deep\"]\n"
-            "  User asks a follow-up about an already-loaded session (transcript cached) → [\"reply_deep\"]\n"
-            "  User asks to write a draft or recap → [\"reply_deep\"]\n"
-            "  User asks to retrieve, write a report and save it to SiYuan → [\"tool_query_conversation\", \"reply_deep\", \"tool_save_to_siyuan\", \"reply_fast\"]\n"
-            "  User asks to save the latest generated content → [\"tool_save_to_siyuan\", \"reply_fast\"]\n"
-            "  User asks to save a specific earlier analysis or piece of content → [\"reply_deep\", \"tool_save_to_siyuan\", \"reply_fast\"]\n"
-            "  User says 'remember that...' → [\"tool_memorize\", \"reply_fast\"]\n"
-            "  User asks about a fact they may have mentioned before → [\"tool_recall_memory\", \"reply_fast\"]\n"
-            "  User asks to search across sessions → [\"tool_search_knowledge\", \"reply_deep\"]\n"
-            "  User asks to index a session for search → [\"tool_vectorize\", \"reply_fast\"]\n\n"
+            '  User asks a simple question → ["reply_fast"]\n'
+            '  User asks for an analysis → ["reply_deep"]\n'
+            '  User asks to list sessions → ["tool_list_sessions", "reply_fast"]\n'
+            '  User asks to retrieve and summarize a session (transcript not cached) → ["tool_query_conversation", "reply_deep"]\n'
+            '  User asks a follow-up about an already-loaded session (transcript cached) → ["reply_deep"]\n'
+            '  User asks to write a draft or recap → ["reply_deep"]\n'
+            '  User asks to retrieve, write a report and save it to SiYuan → ["tool_query_conversation", "reply_deep", "tool_save_to_siyuan", "reply_fast"]\n'
+            '  User asks to save the latest generated content → ["tool_save_to_siyuan", "reply_fast"]\n'
+            '  User asks to save a specific earlier analysis or piece of content → ["reply_deep", "tool_save_to_siyuan", "reply_fast"]\n'
+            '  User says \'remember that...\' → ["tool_memorize", "reply_fast"]\n'
+            '  User asks about a fact they may have mentioned before → ["tool_recall_memory", "reply_fast"]\n'
+            '  User asks to search across sessions → ["tool_search_knowledge", "reply_deep"]\n'
+            '  User asks to index a session for search → ["tool_vectorize", "reply_fast"]\n'
+            '  User asks for a deep analysis and to keep them posted → ["tool_push_queue_message", "tool_query_conversation", "tool_push_queue_message", "reply_deep", "tool_push_queue_message", "reply_fast"]\n\n'
             "Latest session in focus:\n"
             f"{session_focus}\n\n"
             "Session transcript cached:\n"
@@ -290,8 +297,7 @@ class LangGraphRouterChatAgent:
         if not isinstance(parsed, list):
             return ["reply_deep"]
         validated = [
-            item for item in parsed
-            if isinstance(item, str) and item in self.VALID_ACTIONS
+            item for item in parsed if isinstance(item, str) and item in self.VALID_ACTIONS
         ][:MAX_PLAN_LENGTH]
         return validated if validated else ["reply_deep"]
 
@@ -317,6 +323,72 @@ class LangGraphRouterChatAgent:
             [],
         )
         return self._normalize_requested_session_id(extraction_reply)
+
+    def _queue_publish_extraction_prompt(
+        self,
+        user_prompt: str,
+        chat_history: list[dict[str, str]],
+        valid_targets: list[str],
+    ) -> str:
+        targets_str = ", ".join(valid_targets)
+        return (
+            "You extract queue-publish parameters from a user request.\n"
+            "Return ONLY a JSON object with keys: target, command, payload.\n"
+            f"target must be one of: {targets_str}.\n"
+            "command is a string like 'run'.\n"
+            "payload is a JSON object (can be empty {}).\n"
+            "Do not explain. Return only the JSON object.\n\n"
+            "Conversation so far:\n"
+            f"{self._history_transcript(chat_history, user_prompt)}\n\n"
+            "Current user message:\n"
+            f"{user_prompt}\n"
+        )
+
+    def _normalize_queue_publish_params(
+        self, reply: str, valid_targets: list[str]
+    ) -> dict[str, object] | None:
+        raw = normalize_output(reply).strip() if reply else ""
+        if not raw:
+            return None
+        try:
+            parsed = json.loads(raw)
+        except json.JSONDecodeError:
+            # Fallback: extract first JSON object from reply
+            match = re.search(r"\{.*?\}", raw, re.DOTALL)
+            if not match:
+                return None
+            try:
+                parsed = json.loads(match.group(0))
+            except json.JSONDecodeError:
+                return None
+        if not isinstance(parsed, dict):
+            return None
+        target = str(parsed.get("target", "")).strip()
+        command = str(parsed.get("command", "")).strip()
+        payload = parsed.get("payload")
+        if not isinstance(payload, dict):
+            payload = {}
+        if target not in valid_targets:
+            return None
+        if not command:
+            return None
+        return {"target": target, "command": command, "payload": payload}
+
+    async def extract_queue_publish_params(
+        self,
+        user_prompt: str,
+        chat_history: list[dict[str, str]],
+        valid_targets: list[str],
+    ) -> dict[str, object] | None:
+        extraction_reply = await self._fast_agent.reply(
+            self._queue_publish_extraction_prompt(
+                user_prompt,
+                chat_history,
+                valid_targets,
+            ),
+            [],
+        )
+        return self._normalize_queue_publish_params(extraction_reply, valid_targets)
 
     async def plan(
         self,
@@ -431,6 +503,8 @@ def _next_node_from_dispatch(state: LangGraphChatState) -> str:
         return "tool_search_knowledge"
     if route_kind == "tool_vectorize":
         return "tool_vectorize"
+    if route_kind == "tool_push_queue_message":
+        return "tool_push_queue_message"
     if route_kind == "reply_fast":
         return "respond_fast"
     return "respond_deep"
@@ -466,7 +540,6 @@ async def build_langgraph_chat_graph(
         except Exception:
             memories = []
         return set_state_fields(dict(current), recent_memories=memories)
-
 
     def human_input_node(state: LangGraphChatState) -> LangGraphChatState:
         current = ensure_langgraph_state(state)
@@ -676,7 +749,9 @@ async def build_langgraph_chat_graph(
             span.set_attribute("llm.model_name", chat_agent.last_reply_model)
             span.set_attribute("input.value", latest_user_message)
             if normalize_output(get_state_field(current, "tool_name")):
-                span.set_attribute("tool.name", normalize_output(get_state_field(current, "tool_name")))
+                span.set_attribute(
+                    "tool.name", normalize_output(get_state_field(current, "tool_name"))
+                )
             if normalize_output(get_state_field(current, "latest_session_id")):
                 span.set_attribute(
                     "session.id",
@@ -826,6 +901,15 @@ async def build_langgraph_chat_graph(
             trace_full_state=trace_full_state,
         ),
     )
+    builder.add_node(
+        "tool_push_queue_message",
+        build_tool_push_queue_message_node(
+            cfg=chat_agent.cfg,
+            chat_agent=chat_agent,
+            tracer=tracer,
+            trace_full_state=trace_full_state,
+        ),
+    )
     builder.add_node("respond_fast", respond_fast_node)
     builder.add_node("respond_deep", respond_deep_node)
     builder.add_edge(START, "human_input")
@@ -840,6 +924,7 @@ async def build_langgraph_chat_graph(
     builder.add_edge("tool_recall_memory", "dispatch")
     builder.add_edge("tool_search_knowledge", "dispatch")
     builder.add_edge("tool_vectorize", "dispatch")
+    builder.add_edge("tool_push_queue_message", "dispatch")
     builder.add_edge("respond_fast", "dispatch")
     builder.add_edge("respond_deep", "dispatch")
     builder.add_conditional_edges(
@@ -861,6 +946,7 @@ async def build_langgraph_chat_graph(
             "tool_recall_memory": "tool_recall_memory",
             "tool_search_knowledge": "tool_search_knowledge",
             "tool_vectorize": "tool_vectorize",
+            "tool_push_queue_message": "tool_push_queue_message",
             "respond_fast": "respond_fast",
             "respond_deep": "respond_deep",
             "__end__": END,
@@ -932,11 +1018,19 @@ class LangGraphChatSession:
             state = set_state_fields(ensure_langgraph_state(result), incoming_prompt="")
             self._state = state
             output = normalize_output(get_state_field(self._state, "latest_assistant_message"))
-            span.set_attribute("route.kind", normalize_output(get_state_field(self._state, "route_kind")))
-            span.set_attribute("route.model", normalize_output(get_state_field(self._state, "route_model")))
-            span.set_attribute("llm.model_name", normalize_output(get_state_field(self._state, "reply_model")))
+            span.set_attribute(
+                "route.kind", normalize_output(get_state_field(self._state, "route_kind"))
+            )
+            span.set_attribute(
+                "route.model", normalize_output(get_state_field(self._state, "route_model"))
+            )
+            span.set_attribute(
+                "llm.model_name", normalize_output(get_state_field(self._state, "reply_model"))
+            )
             if normalize_output(get_state_field(self._state, "tool_name")):
-                span.set_attribute("tool.name", normalize_output(get_state_field(self._state, "tool_name")))
+                span.set_attribute(
+                    "tool.name", normalize_output(get_state_field(self._state, "tool_name"))
+                )
             if normalize_output(get_state_field(self._state, "latest_session_id")):
                 span.set_attribute(
                     "session.id",

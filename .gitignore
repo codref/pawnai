@@ -241,3 +241,5 @@ hf_cache
 mlflow.db
 
 temp
+
+.stdix

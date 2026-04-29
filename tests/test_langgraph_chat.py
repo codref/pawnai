@@ -140,6 +140,7 @@ def test_build_langgraph_chat_graph_registers_nodes_and_edges() -> None:
         "tool_recall_memory",
         "tool_search_knowledge",
         "tool_vectorize",
+        "tool_push_queue_message",
         "respond_fast",
         "respond_deep",
     }
@@ -156,6 +157,7 @@ def test_build_langgraph_chat_graph_registers_nodes_and_edges() -> None:
         ("tool_recall_memory", "dispatch"),
         ("tool_search_knowledge", "dispatch"),
         ("tool_vectorize", "dispatch"),
+        ("tool_push_queue_message", "dispatch"),
         ("respond_fast", "dispatch"),
         ("respond_deep", "dispatch"),
     ]
@@ -173,6 +175,7 @@ def test_build_langgraph_chat_graph_registers_nodes_and_edges() -> None:
         "tool_recall_memory": "tool_recall_memory",
         "tool_search_knowledge": "tool_search_knowledge",
         "tool_vectorize": "tool_vectorize",
+        "tool_push_queue_message": "tool_push_queue_message",
         "respond_fast": "respond_fast",
         "respond_deep": "respond_deep",
         "__end__": "__end__",
@@ -233,7 +236,9 @@ def test_build_phoenix_tracer_passes_configuration() -> None:
         register_calls.update(kwargs)
 
     with (
-        patch("pawn_agent.core.langgraph_chat._import_phoenix_register", return_value=fake_register),
+        patch(
+            "pawn_agent.core.langgraph_chat._import_phoenix_register", return_value=fake_register
+        ),
         patch("pawn_agent.core.langgraph_chat._import_trace_api", return_value=FakeTraceApi),
     ):
         built = build_phoenix_tracer(cfg)
@@ -439,9 +444,7 @@ def test_analyze_summary_impl_delegates_to_shared_helper() -> None:
             return_value="siyuan://blocks/doc-123",
         ) as mock_save,
     ):
-        reply = asyncio.run(
-            analyze_summary_impl(cfg, "sess-123", save=True, title=None)
-        )
+        reply = asyncio.run(analyze_summary_impl(cfg, "sess-123", save=True, title=None))
 
     assert reply.startswith("Analysis saved to database and SiYuan")
     mock_run.assert_called_once_with(cfg, "sess-123")
@@ -552,9 +555,7 @@ def test_langgraph_router_agent_routes_fast_reply(tmp_path: Path) -> None:
     with patch("pawn_agent.core.langgraph_chat.PlainPydanticChatAgent", FakeAgent):
         agent = LangGraphRouterChatAgent(cfg)
         route = asyncio.run(agent.plan("hello", [{"role": "user", "content": "hello"}]))
-        reply = asyncio.run(
-            agent.respond_fast("hello", [{"role": "user", "content": "hello"}])
-        )
+        reply = asyncio.run(agent.respond_fast("hello", [{"role": "user", "content": "hello"}]))
 
     assert route == ["reply_fast"]
     assert reply == "fast:hello"
@@ -700,9 +701,7 @@ def test_langgraph_router_agent_routes_to_query_conversation_tool(tmp_path: Path
                 [],
             )
         )
-        session_id = asyncio.run(
-            agent.extract_requested_session_id("show session sess-123", [])
-        )
+        session_id = asyncio.run(agent.extract_requested_session_id("show session sess-123", []))
         tool_output = run_query_conversation_tool(cfg, session_id or "")
         reply = asyncio.run(
             agent.respond_fast(
@@ -831,7 +830,10 @@ def test_langgraph_router_agent_routes_to_save_to_siyuan_tool(tmp_path: Path) ->
         path=None,
     )
     assert "Session transcript cached:\nno" in calls[0][1]
-    assert "Latest generated content available (for context only — do NOT auto-save):\nyes" in calls[0][1]
+    assert (
+        "Latest generated content available (for context only — do NOT auto-save):\nyes"
+        in calls[0][1]
+    )
     assert "tool_save_to_siyuan" in calls[0][1]
 
 
@@ -999,7 +1001,9 @@ def test_langgraph_list_sessions_helper_falls_back_to_first_session() -> None:
     )
 
 
-def test_langgraph_router_agent_session_id_extractor_returns_none_when_absent(tmp_path: Path) -> None:
+def test_langgraph_router_agent_session_id_extractor_returns_none_when_absent(
+    tmp_path: Path,
+) -> None:
     cfg_file = tmp_path / "pawnai.yaml"
     cfg_file.write_text(
         "agent:\n"
@@ -1022,9 +1026,7 @@ def test_langgraph_router_agent_session_id_extractor_returns_none_when_absent(tm
 
     with patch("pawn_agent.core.langgraph_chat.PlainPydanticChatAgent", FakeAgent):
         agent = LangGraphRouterChatAgent(cfg)
-        session_id = asyncio.run(
-            agent.extract_requested_session_id("extract action points", [])
-        )
+        session_id = asyncio.run(agent.extract_requested_session_id("extract action points", []))
 
     assert session_id == ""
 
@@ -1054,6 +1056,7 @@ def test_langgraph_chat_session_uses_deep_responder_after_query_for_executive_re
 
         async def ainvoke(self, payload):
             import asyncio as _asyncio
+
             state = dict(payload)
             state = self._nodes["human_input"](state)
             state = await self._nodes["plan"](state)
@@ -1065,11 +1068,19 @@ def test_langgraph_chat_session_uses_deep_responder_after_query_for_executive_re
                 if next_node == "extract_session_id":
                     state = await self._nodes["extract_session_id"](state)
                     route_kind = (state.get("session_state") or {}).get("route_kind", "")
-                    tool_name = "tool_analyze_summary" if route_kind == "tool_analyze_summary" else "tool_query_conversation"
+                    tool_name = (
+                        "tool_analyze_summary"
+                        if route_kind == "tool_analyze_summary"
+                        else "tool_query_conversation"
+                    )
                     state = self._nodes[tool_name](state)
                 else:
                     node_fn = self._nodes[next_node]
-                    state = await node_fn(state) if _asyncio.iscoroutinefunction(node_fn) else node_fn(state)
+                    state = (
+                        await node_fn(state)
+                        if _asyncio.iscoroutinefunction(node_fn)
+                        else node_fn(state)
+                    )
             return state
 
     class FakeStateGraph:
@@ -1206,7 +1217,9 @@ def test_langgraph_router_agent_session_id_extractor_returns_model_value(tmp_pat
     assert session_id == "oci-20260416"
 
 
-def test_langgraph_router_prompt_guides_followup_report_to_conversation_tool(tmp_path: Path) -> None:
+def test_langgraph_router_prompt_guides_followup_report_to_conversation_tool(
+    tmp_path: Path,
+) -> None:
     cfg_file = tmp_path / "pawnai.yaml"
     cfg_file.write_text(
         "agent:\n"
@@ -1271,7 +1284,9 @@ def test_langgraph_chat_session_handles_turns_and_reset(tmp_path: Path) -> None:
 
     with (
         patch("pawn_agent.core.langgraph_chat.LangGraphRouterChatAgent", return_value=object()),
-        patch("pawn_agent.core.langgraph_chat.build_langgraph_chat_graph", return_value=FakeGraph()),
+        patch(
+            "pawn_agent.core.langgraph_chat.build_langgraph_chat_graph", return_value=FakeGraph()
+        ),
     ):
         session = asyncio.run(LangGraphChatSession.create(cfg=cfg, emit=lambda _text: None))
         first = asyncio.run(session.handle_user_input("hello"))
@@ -1311,6 +1326,7 @@ def test_langgraph_chat_session_reuses_and_overrides_latest_session_id(tmp_path:
 
         async def ainvoke(self, payload):
             import asyncio as _asyncio
+
             state = dict(payload)
             state = self._nodes["human_input"](state)
             state = await self._nodes["plan"](state)
@@ -1322,11 +1338,19 @@ def test_langgraph_chat_session_reuses_and_overrides_latest_session_id(tmp_path:
                 if next_node == "extract_session_id":
                     state = await self._nodes["extract_session_id"](state)
                     route_kind = (state.get("session_state") or {}).get("route_kind", "")
-                    tool_name = "tool_analyze_summary" if route_kind == "tool_analyze_summary" else "tool_query_conversation"
+                    tool_name = (
+                        "tool_analyze_summary"
+                        if route_kind == "tool_analyze_summary"
+                        else "tool_query_conversation"
+                    )
                     state = self._nodes[tool_name](state)
                 else:
                     node_fn = self._nodes[next_node]
-                    state = await node_fn(state) if _asyncio.iscoroutinefunction(node_fn) else node_fn(state)
+                    state = (
+                        await node_fn(state)
+                        if _asyncio.iscoroutinefunction(node_fn)
+                        else node_fn(state)
+                    )
             return state
 
     class FakeStateGraph:
@@ -1410,7 +1434,9 @@ def test_langgraph_chat_session_reuses_and_overrides_latest_session_id(tmp_path:
             "pawn_agent.core.langgraph_chat._import_langgraph_core",
             return_value=(FakeStateGraph, "__start__", "__end__"),
         ),
-        patch("pawn_agent.core.langgraph_chat.LangGraphRouterChatAgent", return_value=fake_chat_agent),
+        patch(
+            "pawn_agent.core.langgraph_chat.LangGraphRouterChatAgent", return_value=fake_chat_agent
+        ),
         patch("pawn_agent.core.langgraph_chat.build_phoenix_tracer", return_value=None),
         patch(
             "pawn_agent.core.langgraph_tools.run_query_conversation_tool",
@@ -1438,7 +1464,9 @@ def test_langgraph_chat_session_reuses_and_overrides_latest_session_id(tmp_path:
     assert session._state["artifacts"]["tool_output"] == ""
 
 
-def test_langgraph_chat_session_promotes_latest_session_id_from_list_results(tmp_path: Path) -> None:
+def test_langgraph_chat_session_promotes_latest_session_id_from_list_results(
+    tmp_path: Path,
+) -> None:
     cfg_file = tmp_path / "pawnai.yaml"
     cfg_file.write_text(
         "agent:\n"
@@ -1461,6 +1489,7 @@ def test_langgraph_chat_session_promotes_latest_session_id_from_list_results(tmp
 
         async def ainvoke(self, payload):
             import asyncio as _asyncio
+
             state = dict(payload)
             state = self._nodes["human_input"](state)
             state = await self._nodes["plan"](state)
@@ -1472,11 +1501,19 @@ def test_langgraph_chat_session_promotes_latest_session_id_from_list_results(tmp
                 if next_node == "extract_session_id":
                     state = await self._nodes["extract_session_id"](state)
                     route_kind = (state.get("session_state") or {}).get("route_kind", "")
-                    tool_name = "tool_analyze_summary" if route_kind == "tool_analyze_summary" else "tool_query_conversation"
+                    tool_name = (
+                        "tool_analyze_summary"
+                        if route_kind == "tool_analyze_summary"
+                        else "tool_query_conversation"
+                    )
                     state = self._nodes[tool_name](state)
                 else:
                     node_fn = self._nodes[next_node]
-                    state = await node_fn(state) if _asyncio.iscoroutinefunction(node_fn) else node_fn(state)
+                    state = (
+                        await node_fn(state)
+                        if _asyncio.iscoroutinefunction(node_fn)
+                        else node_fn(state)
+                    )
             return state
 
     class FakeStateGraph:
@@ -1616,6 +1653,7 @@ def test_langgraph_chat_session_resolves_named_session_and_confirmation_from_cat
 
         async def ainvoke(self, payload):
             import asyncio as _asyncio
+
             state = dict(payload)
             state = self._nodes["human_input"](state)
             state = await self._nodes["plan"](state)
@@ -1627,11 +1665,19 @@ def test_langgraph_chat_session_resolves_named_session_and_confirmation_from_cat
                 if next_node == "extract_session_id":
                     state = await self._nodes["extract_session_id"](state)
                     route_kind = (state.get("session_state") or {}).get("route_kind", "")
-                    tool_name = "tool_analyze_summary" if route_kind == "tool_analyze_summary" else "tool_query_conversation"
+                    tool_name = (
+                        "tool_analyze_summary"
+                        if route_kind == "tool_analyze_summary"
+                        else "tool_query_conversation"
+                    )
                     state = self._nodes[tool_name](state)
                 else:
                     node_fn = self._nodes[next_node]
-                    state = await node_fn(state) if _asyncio.iscoroutinefunction(node_fn) else node_fn(state)
+                    state = (
+                        await node_fn(state)
+                        if _asyncio.iscoroutinefunction(node_fn)
+                        else node_fn(state)
+                    )
             return state
 
     class FakeStateGraph:
@@ -1782,6 +1828,7 @@ def test_langgraph_chat_session_preserves_session_focus_after_transcript_summary
 
         async def ainvoke(self, payload):
             import asyncio as _asyncio
+
             state = dict(payload)
             state = self._nodes["human_input"](state)
             state = await self._nodes["plan"](state)
@@ -1793,11 +1840,19 @@ def test_langgraph_chat_session_preserves_session_focus_after_transcript_summary
                 if next_node == "extract_session_id":
                     state = await self._nodes["extract_session_id"](state)
                     route_kind = (state.get("session_state") or {}).get("route_kind", "")
-                    tool_name = "tool_analyze_summary" if route_kind == "tool_analyze_summary" else "tool_query_conversation"
+                    tool_name = (
+                        "tool_analyze_summary"
+                        if route_kind == "tool_analyze_summary"
+                        else "tool_query_conversation"
+                    )
                     state = self._nodes[tool_name](state)
                 else:
                     node_fn = self._nodes[next_node]
-                    state = await node_fn(state) if _asyncio.iscoroutinefunction(node_fn) else node_fn(state)
+                    state = (
+                        await node_fn(state)
+                        if _asyncio.iscoroutinefunction(node_fn)
+                        else node_fn(state)
+                    )
             return state
 
     class FakeStateGraph:
@@ -1899,7 +1954,9 @@ def test_langgraph_chat_session_preserves_session_focus_after_transcript_summary
     ):
         session = asyncio.run(LangGraphChatSession.create(cfg=cfg, emit=lambda _text: None))
         first = asyncio.run(session.handle_user_input("retrieve latest tom session"))
-        second = asyncio.run(session.handle_user_input("save a deep analysis of the conversation in siyuan"))
+        second = asyncio.run(
+            session.handle_user_input("save a deep analysis of the conversation in siyuan")
+        )
 
     assert first == "Summary of tom-20260416."
     assert second == "Saved to SiYuan: siyuan://blocks/doc-123"
@@ -1929,6 +1986,7 @@ def test_langgraph_chat_session_saves_latest_generated_content_to_siyuan(tmp_pat
 
         async def ainvoke(self, payload):
             import asyncio as _asyncio
+
             state = dict(payload)
             state = self._nodes["human_input"](state)
             state = await self._nodes["plan"](state)
@@ -1940,11 +1998,19 @@ def test_langgraph_chat_session_saves_latest_generated_content_to_siyuan(tmp_pat
                 if next_node == "extract_session_id":
                     state = await self._nodes["extract_session_id"](state)
                     route_kind = (state.get("session_state") or {}).get("route_kind", "")
-                    tool_name = "tool_analyze_summary" if route_kind == "tool_analyze_summary" else "tool_query_conversation"
+                    tool_name = (
+                        "tool_analyze_summary"
+                        if route_kind == "tool_analyze_summary"
+                        else "tool_query_conversation"
+                    )
                     state = self._nodes[tool_name](state)
                 else:
                     node_fn = self._nodes[next_node]
-                    state = await node_fn(state) if _asyncio.iscoroutinefunction(node_fn) else node_fn(state)
+                    state = (
+                        await node_fn(state)
+                        if _asyncio.iscoroutinefunction(node_fn)
+                        else node_fn(state)
+                    )
             return state
 
     class FakeStateGraph:
@@ -2038,7 +2104,9 @@ def test_langgraph_chat_session_saves_latest_generated_content_to_siyuan(tmp_pat
             "pawn_agent.core.langgraph_chat._import_langgraph_core",
             return_value=(FakeStateGraph, "__start__", "__end__"),
         ),
-        patch("pawn_agent.core.langgraph_chat.LangGraphRouterChatAgent", return_value=fake_chat_agent),
+        patch(
+            "pawn_agent.core.langgraph_chat.LangGraphRouterChatAgent", return_value=fake_chat_agent
+        ),
         patch("pawn_agent.core.langgraph_chat.build_phoenix_tracer", return_value=None),
         patch(
             "pawn_agent.core.langgraph_tools.run_query_conversation_tool",
@@ -2062,7 +2130,10 @@ def test_langgraph_chat_session_saves_latest_generated_content_to_siyuan(tmp_pat
         "# Executive Report\n\nThis is the report.",
         title="Executive Report",
     )
-    assert session._state["artifacts"]["latest_generated_content"] == "# Executive Report\n\nThis is the report."
+    assert (
+        session._state["artifacts"]["latest_generated_content"]
+        == "# Executive Report\n\nThis is the report."
+    )
     assert session._state["artifacts"]["latest_generated_title"] == "Executive Report"
     assert session._state["durable_facts"]["latest_session_id"] == "oci-20260416"
 
@@ -2090,6 +2161,7 @@ def test_langgraph_chat_session_refreshes_session_analysis_before_saving(tmp_pat
 
         async def ainvoke(self, payload):
             import asyncio as _asyncio
+
             state = dict(payload)
             state = self._nodes["human_input"](state)
             state = await self._nodes["plan"](state)
@@ -2101,11 +2173,19 @@ def test_langgraph_chat_session_refreshes_session_analysis_before_saving(tmp_pat
                 if next_node == "extract_session_id":
                     state = await self._nodes["extract_session_id"](state)
                     route_kind = (state.get("session_state") or {}).get("route_kind", "")
-                    tool_name = "tool_analyze_summary" if route_kind == "tool_analyze_summary" else "tool_query_conversation"
+                    tool_name = (
+                        "tool_analyze_summary"
+                        if route_kind == "tool_analyze_summary"
+                        else "tool_query_conversation"
+                    )
                     state = self._nodes[tool_name](state)
                 else:
                     node_fn = self._nodes[next_node]
-                    state = await node_fn(state) if _asyncio.iscoroutinefunction(node_fn) else node_fn(state)
+                    state = (
+                        await node_fn(state)
+                        if _asyncio.iscoroutinefunction(node_fn)
+                        else node_fn(state)
+                    )
             return state
 
     class FakeStateGraph:
@@ -2192,7 +2272,9 @@ def test_langgraph_chat_session_refreshes_session_analysis_before_saving(tmp_pat
             "pawn_agent.core.langgraph_chat._import_langgraph_core",
             return_value=(FakeStateGraph, "__start__", "__end__"),
         ),
-        patch("pawn_agent.core.langgraph_chat.LangGraphRouterChatAgent", return_value=fake_chat_agent),
+        patch(
+            "pawn_agent.core.langgraph_chat.LangGraphRouterChatAgent", return_value=fake_chat_agent
+        ),
         patch("pawn_agent.core.langgraph_chat.build_phoenix_tracer", return_value=None),
         patch(
             "pawn_agent.core.langgraph_tools.run_query_conversation_tool",
@@ -2218,7 +2300,10 @@ def test_langgraph_chat_session_refreshes_session_analysis_before_saving(tmp_pat
         "# Executive Summary\n\nFresh summary from transcript.",
         title="Executive Summary",
     )
-    assert session._state["artifacts"]["latest_generated_content"] == "# Executive Summary\n\nFresh summary from transcript."
+    assert (
+        session._state["artifacts"]["latest_generated_content"]
+        == "# Executive Summary\n\nFresh summary from transcript."
+    )
     assert session._state["artifacts"]["latest_generated_title"] == "Executive Summary"
 
 
@@ -2245,6 +2330,7 @@ def test_langgraph_chat_session_save_to_siyuan_requires_session_id(tmp_path: Pat
 
         async def ainvoke(self, payload):
             import asyncio as _asyncio
+
             state = dict(payload)
             state = self._nodes["human_input"](state)
             state = await self._nodes["plan"](state)
@@ -2256,11 +2342,19 @@ def test_langgraph_chat_session_save_to_siyuan_requires_session_id(tmp_path: Pat
                 if next_node == "extract_session_id":
                     state = await self._nodes["extract_session_id"](state)
                     route_kind = (state.get("session_state") or {}).get("route_kind", "")
-                    tool_name = "tool_analyze_summary" if route_kind == "tool_analyze_summary" else "tool_query_conversation"
+                    tool_name = (
+                        "tool_analyze_summary"
+                        if route_kind == "tool_analyze_summary"
+                        else "tool_query_conversation"
+                    )
                     state = self._nodes[tool_name](state)
                 else:
                     node_fn = self._nodes[next_node]
-                    state = await node_fn(state) if _asyncio.iscoroutinefunction(node_fn) else node_fn(state)
+                    state = (
+                        await node_fn(state)
+                        if _asyncio.iscoroutinefunction(node_fn)
+                        else node_fn(state)
+                    )
             return state
 
     class FakeStateGraph:
@@ -2325,7 +2419,9 @@ def test_langgraph_chat_session_save_to_siyuan_requires_session_id(tmp_path: Pat
             "pawn_agent.core.langgraph_chat._import_langgraph_core",
             return_value=(FakeStateGraph, "__start__", "__end__"),
         ),
-        patch("pawn_agent.core.langgraph_chat.LangGraphRouterChatAgent", return_value=FakeChatAgent()),
+        patch(
+            "pawn_agent.core.langgraph_chat.LangGraphRouterChatAgent", return_value=FakeChatAgent()
+        ),
         patch("pawn_agent.core.langgraph_chat.build_phoenix_tracer", return_value=None),
         patch(
             "pawn_agent.core.langgraph_tools.run_save_to_siyuan_tool",
@@ -2365,6 +2461,7 @@ def test_langgraph_chat_session_save_to_siyuan_requires_generated_content(tmp_pa
 
         async def ainvoke(self, payload):
             import asyncio as _asyncio
+
             state = dict(payload)
             state = self._nodes["human_input"](state)
             state = await self._nodes["plan"](state)
@@ -2374,7 +2471,11 @@ def test_langgraph_chat_session_save_to_siyuan_requires_generated_content(tmp_pa
                 if next_node == "__end__":
                     break
                 node_fn = self._nodes[next_node]
-                state = await node_fn(state) if _asyncio.iscoroutinefunction(node_fn) else node_fn(state)
+                state = (
+                    await node_fn(state)
+                    if _asyncio.iscoroutinefunction(node_fn)
+                    else node_fn(state)
+                )
             return state
 
     class FakeStateGraph:
@@ -2440,7 +2541,9 @@ def test_langgraph_chat_session_save_to_siyuan_requires_generated_content(tmp_pa
             "pawn_agent.core.langgraph_chat._import_langgraph_core",
             return_value=(FakeStateGraph, "__start__", "__end__"),
         ),
-        patch("pawn_agent.core.langgraph_chat.LangGraphRouterChatAgent", return_value=FakeChatAgent()),
+        patch(
+            "pawn_agent.core.langgraph_chat.LangGraphRouterChatAgent", return_value=FakeChatAgent()
+        ),
         patch("pawn_agent.core.langgraph_chat.build_phoenix_tracer", return_value=None),
         patch(
             "pawn_agent.core.langgraph_tools.run_save_to_siyuan_tool",
@@ -2480,6 +2583,7 @@ def test_langgraph_chat_session_reports_missing_session_id_for_session_tool(tmp_
 
         async def ainvoke(self, payload):
             import asyncio as _asyncio
+
             state = dict(payload)
             state = self._nodes["human_input"](state)
             state = await self._nodes["plan"](state)
@@ -2491,11 +2595,19 @@ def test_langgraph_chat_session_reports_missing_session_id_for_session_tool(tmp_
                 if next_node == "extract_session_id":
                     state = await self._nodes["extract_session_id"](state)
                     route_kind = (state.get("session_state") or {}).get("route_kind", "")
-                    tool_name = "tool_analyze_summary" if route_kind == "tool_analyze_summary" else "tool_query_conversation"
+                    tool_name = (
+                        "tool_analyze_summary"
+                        if route_kind == "tool_analyze_summary"
+                        else "tool_query_conversation"
+                    )
                     state = self._nodes[tool_name](state)
                 else:
                     node_fn = self._nodes[next_node]
-                    state = await node_fn(state) if _asyncio.iscoroutinefunction(node_fn) else node_fn(state)
+                    state = (
+                        await node_fn(state)
+                        if _asyncio.iscoroutinefunction(node_fn)
+                        else node_fn(state)
+                    )
             return state
 
     class FakeStateGraph:
@@ -2571,7 +2683,9 @@ def test_langgraph_chat_session_reports_missing_session_id_for_session_tool(tmp_
             "pawn_agent.core.langgraph_chat._import_langgraph_core",
             return_value=(FakeStateGraph, "__start__", "__end__"),
         ),
-        patch("pawn_agent.core.langgraph_chat.LangGraphRouterChatAgent", return_value=FakeChatAgent()),
+        patch(
+            "pawn_agent.core.langgraph_chat.LangGraphRouterChatAgent", return_value=FakeChatAgent()
+        ),
         patch("pawn_agent.core.langgraph_chat.build_phoenix_tracer", return_value=None),
         patch(
             "pawn_agent.core.langgraph_tools.run_list_sessions_tool",
@@ -2636,6 +2750,7 @@ def test_langgraph_chat_session_emits_phoenix_spans(tmp_path: Path) -> None:
 
         async def ainvoke(self, payload):
             import asyncio as _asyncio
+
             state = dict(payload)
             state = self._nodes["human_input"](state)
             state = await self._nodes["plan"](state)
@@ -2647,11 +2762,19 @@ def test_langgraph_chat_session_emits_phoenix_spans(tmp_path: Path) -> None:
                 if next_node == "extract_session_id":
                     state = await self._nodes["extract_session_id"](state)
                     route_kind = (state.get("session_state") or {}).get("route_kind", "")
-                    tool_name = "tool_analyze_summary" if route_kind == "tool_analyze_summary" else "tool_query_conversation"
+                    tool_name = (
+                        "tool_analyze_summary"
+                        if route_kind == "tool_analyze_summary"
+                        else "tool_query_conversation"
+                    )
                     state = self._nodes[tool_name](state)
                 else:
                     node_fn = self._nodes[next_node]
-                    state = await node_fn(state) if _asyncio.iscoroutinefunction(node_fn) else node_fn(state)
+                    state = (
+                        await node_fn(state)
+                        if _asyncio.iscoroutinefunction(node_fn)
+                        else node_fn(state)
+                    )
             return state
 
     class FakeStateGraph:
@@ -2724,7 +2847,9 @@ def test_langgraph_chat_session_emits_phoenix_spans(tmp_path: Path) -> None:
             "pawn_agent.core.langgraph_chat._import_langgraph_core",
             return_value=(FakeStateGraph, "__start__", "__end__"),
         ),
-        patch("pawn_agent.core.langgraph_chat.LangGraphRouterChatAgent", return_value=FakeChatAgent()),
+        patch(
+            "pawn_agent.core.langgraph_chat.LangGraphRouterChatAgent", return_value=FakeChatAgent()
+        ),
         patch("pawn_agent.core.langgraph_chat.build_phoenix_tracer", return_value=FakeTracer()),
         patch(
             "pawn_agent.core.langgraph_tools.run_list_sessions_tool",
@@ -2795,6 +2920,7 @@ def test_langgraph_chat_session_emits_save_to_siyuan_spans(tmp_path: Path) -> No
 
         async def ainvoke(self, payload):
             import asyncio as _asyncio
+
             state = dict(payload)
             state = self._nodes["human_input"](state)
             state = await self._nodes["plan"](state)
@@ -2806,11 +2932,19 @@ def test_langgraph_chat_session_emits_save_to_siyuan_spans(tmp_path: Path) -> No
                 if next_node == "extract_session_id":
                     state = await self._nodes["extract_session_id"](state)
                     route_kind = (state.get("session_state") or {}).get("route_kind", "")
-                    tool_name = "tool_analyze_summary" if route_kind == "tool_analyze_summary" else "tool_query_conversation"
+                    tool_name = (
+                        "tool_analyze_summary"
+                        if route_kind == "tool_analyze_summary"
+                        else "tool_query_conversation"
+                    )
                     state = self._nodes[tool_name](state)
                 else:
                     node_fn = self._nodes[next_node]
-                    state = await node_fn(state) if _asyncio.iscoroutinefunction(node_fn) else node_fn(state)
+                    state = (
+                        await node_fn(state)
+                        if _asyncio.iscoroutinefunction(node_fn)
+                        else node_fn(state)
+                    )
             return state
 
     class FakeStateGraph:
@@ -2878,7 +3012,9 @@ def test_langgraph_chat_session_emits_save_to_siyuan_spans(tmp_path: Path) -> No
             "pawn_agent.core.langgraph_chat._import_langgraph_core",
             return_value=(FakeStateGraph, "__start__", "__end__"),
         ),
-        patch("pawn_agent.core.langgraph_chat.LangGraphRouterChatAgent", return_value=FakeChatAgent()),
+        patch(
+            "pawn_agent.core.langgraph_chat.LangGraphRouterChatAgent", return_value=FakeChatAgent()
+        ),
         patch("pawn_agent.core.langgraph_chat.build_phoenix_tracer", return_value=FakeTracer()),
         patch(
             "pawn_agent.core.langgraph_tools.run_save_to_siyuan_tool",
@@ -2951,6 +3087,7 @@ def test_langgraph_chat_session_traces_full_state_when_enabled(tmp_path: Path) -
 
         async def ainvoke(self, payload):
             import asyncio as _asyncio
+
             state = dict(payload)
             state = self._nodes["human_input"](state)
             state = await self._nodes["plan"](state)
@@ -2960,7 +3097,11 @@ def test_langgraph_chat_session_traces_full_state_when_enabled(tmp_path: Path) -
                 if next_node == "__end__":
                     break
                 node_fn = self._nodes[next_node]
-                state = await node_fn(state) if _asyncio.iscoroutinefunction(node_fn) else node_fn(state)
+                state = (
+                    await node_fn(state)
+                    if _asyncio.iscoroutinefunction(node_fn)
+                    else node_fn(state)
+                )
             return state
 
     class FakeStateGraph:
@@ -3027,7 +3168,9 @@ def test_langgraph_chat_session_traces_full_state_when_enabled(tmp_path: Path) -
             "pawn_agent.core.langgraph_chat._import_langgraph_core",
             return_value=(FakeStateGraph, "__start__", "__end__"),
         ),
-        patch("pawn_agent.core.langgraph_chat.LangGraphRouterChatAgent", return_value=FakeChatAgent()),
+        patch(
+            "pawn_agent.core.langgraph_chat.LangGraphRouterChatAgent", return_value=FakeChatAgent()
+        ),
         patch("pawn_agent.core.langgraph_chat.build_phoenix_tracer", return_value=FakeTracer()),
     ):
         session = asyncio.run(
