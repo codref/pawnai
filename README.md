@@ -1,6 +1,6 @@
 # PawnAI
 
-A Python monolith for speaker diarization, audio transcription, and LLM-powered conversation analysis. Provides two CLI applications: **pawn-diarize** for audio processing and embedding management, and **pawn-agent** for conversational analysis of recorded sessions.
+A Python monolith for speaker diarization, audio transcription, and LLM-powered conversation analysis. Provides three CLI applications: **pawn-diarize** for audio processing and embedding management, **pawn-agent** for conversational analysis of recorded sessions, and **pawn-server** for the HTTP API, queue listener, and durable agent scheduler.
 
 ## Features
 
@@ -16,6 +16,7 @@ A Python monolith for speaker diarization, audio transcription, and LLM-powered 
 - **S3 Storage Management**: List, filter, and delete objects in S3-compatible storage
 - **SiYuan Notes Integration**: Push analysis documents back to a SiYuan Notes instance
 - **Background Queue Worker**: S3-backed job queue with lease-based concurrency
+- **Durable Agent Scheduler**: Store scheduled agent prompts in PostgreSQL and run them from pawn-server
 - **GPU Support**: Accelerated processing on CUDA-enabled devices
 
 ## Installation
@@ -101,10 +102,18 @@ rag:
   embed_dim: 1024
   embed_device: cpu
 
-queue:
-  topic: pawn-jobs
-  consumer_name: worker-1
+agent_queue:
+  topic: pawn-agent-jobs
+  consumer_name: pawn-agent-listener
   bucket_name: my-audio-bucket
+
+agent_scheduler:
+  enabled: true
+  poll_interval_seconds: 30
+  max_due_per_tick: 5
+  default_timezone: UTC
+  stale_fire_after_seconds: 3600
+  allow_agent_auto_apply: false
 ```
 
 ---
@@ -499,6 +508,75 @@ pawn-agent models [--config TEXT]
 | `save_to_siyuan` | Save Markdown content to SiYuan Notes as a child page under the session node; title inferred from the first `# Heading` |
 | `fetch_siyuan_page` | Fetch the text content of a SiYuan page by path |
 | `rag_stats` | Show a summary of the RAG vector index (sources and chunk counts) |
+| `push_queue_message` | Publish progress updates or notifications to configured queue producers |
+| `propose_schedule_change` | Create schedule-change proposals for application approval; it does not directly mutate schedules |
+
+---
+
+## pawn-server
+
+HTTP API server, queue listener, and scheduler host for `pawn-agent`.
+
+### Serve
+
+```bash
+pawn-server serve [OPTIONS]
+```
+
+Options:
+
+```text
+--config, -c TEXT          Path to pawnai.yaml
+--host, -H TEXT            Bind host, overriding api.host
+--port, -p INTEGER         Bind port, overriding api.port
+--model, -m TEXT           PydanticAI model string override
+--topic, -T TEXT           Queue topic override
+--consumer-name, -n TEXT   Queue consumer name override
+--no-queue                 Disable the queue listener
+--disable-scheduler        Disable the durable scheduler
+--scheduler-only           Run only the durable scheduler
+```
+
+`pawn-server serve` starts the OpenAI-compatible HTTP API and, when configured,
+the queue listener and scheduler. The scheduler claims due rows from PostgreSQL,
+runs them through the same LangGraph session registry used by API and queue
+turns, and records each execution in `agent_runs`.
+
+```bash
+# API + queue listener + scheduler
+pawn-server serve
+
+# API only
+pawn-server serve --no-queue --disable-scheduler
+
+# Scheduler worker only
+pawn-server serve --scheduler-only
+```
+
+### Schedule Management
+
+Schedules live in PostgreSQL. Agent-facing tools create proposals only; the
+application owns approval and all actual schedule mutations.
+
+```bash
+pawn-server schedules list
+pawn-server schedules show <schedule-id>
+pawn-server schedules proposals
+pawn-server schedules approve <proposal-id>
+pawn-server schedules reject <proposal-id>
+pawn-server schedules pause <schedule-id>
+pawn-server schedules resume <schedule-id>
+pawn-server schedules cancel <schedule-id>
+```
+
+Schedule kinds:
+
+- `once`: one run at an ISO 8601 `run_at`
+- `interval`: repeat every `interval_seconds`
+- `cron`: cron expression in the configured timezone; requires `croniter`
+
+See `docs/AGENT_SCHEDULER.md` for the schedule contract and proposal approval
+model.
 
 ---
 
@@ -528,7 +606,8 @@ parakeet/
 │   ├── cli/commands.py       # run, chat, tools, models
 │   ├── core/
 │   │   ├── agent.py          # ConversationAgent (Copilot SDK)
-│   │   └── pydantic_agent.py # PydanticAI multi-provider agent
+│   │   ├── langgraph_chat.py # LangGraph chat orchestration
+│   │   └── scheduler.py      # Durable agent scheduler service
 │   ├── tools/                # Auto-discovered tool modules
 │   └── utils/
 │       ├── config.py         # AgentConfig loader
@@ -537,6 +616,12 @@ parakeet/
 │       ├── siyuan.py         # SiYuan helpers
 │       ├── analysis.py       # Analysis runner
 │       └── vectorize.py      # RAG vectorization
+├── pawn_server/
+│   ├── __main__.py           # Entry point → pawn-server
+│   ├── cli/commands.py       # serve and schedules commands
+│   └── core/
+│       ├── api_server.py     # FastAPI OpenAI-compatible API
+│       └── queue_listener.py # pawn-agent queue consumer
 ├── migrations/               # Alembic schema versions
 ├── pawnai.yaml               # Project configuration
 └── alembic.ini
@@ -554,6 +639,7 @@ parakeet/
 | LLM agent | PydanticAI (multi-provider) + GitHub Copilot SDK |
 | S3 storage | boto3 / aioboto3 |
 | Job queue | pawn-queue (S3-backed) |
+| Scheduler | PostgreSQL + croniter |
 | Notes integration | SiYuan Notes API |
 | CLI | Typer + Rich |
 

@@ -143,6 +143,17 @@ class AgentQueueConfig(BaseModel):
     bucket_name: str = "my-bucket"
 
 
+class AgentSchedulerConfig(BaseModel):
+    """``agent_scheduler:`` section — durable pawn-agent run scheduler."""
+
+    enabled: bool = True
+    poll_interval_seconds: float = 30.0
+    max_due_per_tick: int = 5
+    default_timezone: str = "UTC"
+    stale_fire_after_seconds: int = 3600
+    allow_agent_auto_apply: bool = False
+
+
 class QueueProducerConfig(BaseModel):
     """Single named producer target for the queue-publishing tool."""
 
@@ -200,6 +211,7 @@ class AgentConfig(PawnConfig):
     api: ApiSection = Field(default_factory=ApiSection)
     mlflow: MlflowSection = Field(default_factory=MlflowSection)
     phoenix: PhoenixSection = Field(default_factory=PhoenixSection)
+    agent_scheduler: AgentSchedulerConfig = Field(default_factory=AgentSchedulerConfig)
     agent_queue: Optional[AgentQueueConfig] = None
     queue_producers: Optional[dict[str, QueueProducerConfig]] = None
 
@@ -425,8 +437,13 @@ def load_config(config_path: Optional[str] = None) -> AgentConfig:
     yaml_file = config_path or os.environ.get("PAWN_AGENT_CONFIG")
     cfg: AgentConfig
     if yaml_file and Path(yaml_file).exists():
-        raw = yaml.safe_load(Path(yaml_file).read_text(encoding="utf-8")) or {}
-        cfg = AgentConfig(**raw)
+        yaml_path = Path(yaml_file).resolve()
+        raw = yaml.safe_load(yaml_path.read_text(encoding="utf-8")) or {}
+
+        class ExplicitAgentConfig(AgentConfig):
+            model_config = {**AgentConfig.model_config, "yaml_file": [str(yaml_path)]}
+
+        cfg = ExplicitAgentConfig(**raw)
     else:
         cfg = AgentConfig()
     logging.basicConfig(

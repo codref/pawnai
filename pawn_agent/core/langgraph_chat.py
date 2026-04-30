@@ -29,6 +29,7 @@ from pawn_agent.core.langgraph_tools import (
     build_tool_analyze_summary_node,
     build_tool_list_sessions_node,
     build_tool_memorize_node,
+    build_tool_propose_schedule_change_node,
     build_tool_push_queue_message_node,
     build_tool_query_conversation_node,
     build_tool_recall_memory_node,
@@ -118,6 +119,7 @@ class LangGraphRouterChatAgent:
         "tool_search_knowledge",
         "tool_vectorize",
         "tool_push_queue_message",
+        "tool_propose_schedule_change",
     }
 
     def __init__(
@@ -218,6 +220,9 @@ class LangGraphRouterChatAgent:
             "- tool_push_queue_message: Send a progress / notification message to an external queue (e.g. Matrix). "
             "Use when the user asks to be kept posted, alerted, notified, or when they say 'keep me updated'. "
             "You MAY include this action MULTIPLE TIMES in the same plan to report progress after key steps.\n\n"
+            "- tool_propose_schedule_change: Propose schedule changes for future agent work. "
+            "Use ONLY when the user explicitly asks to schedule, reschedule, pause, resume, or cancel a future/recurring agent task. "
+            "The tool creates an approval proposal only; it does not directly apply changes.\n\n"
             "Rules:\n"
             "- Every plan must end with reply_fast or reply_deep.\n"
             "- Use reply_deep when the user asks for analysis, executive reports, comprehensive summaries, or complex reasoning.\n"
@@ -228,6 +233,8 @@ class LangGraphRouterChatAgent:
             "- If the user asks to save a specific earlier piece of content (not the latest), use reply_deep first to extract and reproduce it from the conversation history, then tool_save_to_siyuan.\n"
             "- Do NOT include extract_session_id — it is handled automatically.\n"
             "- Include each action at most once, EXCEPT tool_push_queue_message which may appear multiple times to report progress.\n"
+            "- Do not infer schedules from casual wording. Use tool_propose_schedule_change only for explicit scheduling intent.\n"
+            "- After tool_propose_schedule_change, end with a reply that asks the user/application to confirm the exact proposal.\n"
             "- Maximum 8 actions.\n\n"
             "Examples:\n"
             '  User asks a simple question → ["reply_fast"]\n'
@@ -244,6 +251,7 @@ class LangGraphRouterChatAgent:
             '  User asks to search across sessions → ["tool_search_knowledge", "reply_deep"]\n'
             '  User asks to index a session for search → ["tool_vectorize", "reply_fast"]\n'
             '  User asks for a deep analysis and to keep them posted → ["tool_push_queue_message", "tool_query_conversation", "tool_push_queue_message", "reply_deep", "tool_push_queue_message", "reply_fast"]\n\n'
+            '  User says \'every morning, summarize session abc\' → ["tool_propose_schedule_change", "reply_fast"]\n\n'
             "Latest session in focus:\n"
             f"{session_focus}\n\n"
             "Session transcript cached:\n"
@@ -300,6 +308,26 @@ class LangGraphRouterChatAgent:
             item for item in parsed if isinstance(item, str) and item in self.VALID_ACTIONS
         ][:MAX_PLAN_LENGTH]
         return validated if validated else ["reply_deep"]
+
+    def _has_explicit_schedule_intent(self, user_prompt: str) -> bool:
+        normalized = normalize_output(user_prompt).strip().lower()
+        if not normalized:
+            return False
+        if any(word in normalized for word in ("schedule", "reschedule", "recurring", "every")):
+            return True
+        return (
+            ("pause" in normalized or "resume" in normalized or "cancel" in normalized)
+            and "schedule" in normalized
+        )
+
+    def _postprocess_plan(self, user_prompt: str, plan: list[str]) -> list[str]:
+        if not self._has_explicit_schedule_intent(user_prompt):
+            return plan
+        if plan and plan[0] == "tool_propose_schedule_change":
+            if plan[-1] not in {"reply_fast", "reply_deep"}:
+                return plan + ["reply_fast"]
+            return plan
+        return ["tool_propose_schedule_change", "reply_fast"]
 
     def _normalize_requested_session_id(self, reply: str) -> str:
         value = normalize_output(reply).strip().splitlines()[0].strip() if reply else ""
@@ -390,6 +418,79 @@ class LangGraphRouterChatAgent:
         )
         return self._normalize_queue_publish_params(extraction_reply, valid_targets)
 
+    def _schedule_proposal_extraction_prompt(
+        self,
+        user_prompt: str,
+        chat_history: list[dict[str, str]],
+        *,
+        latest_session_id: str = "",
+    ) -> str:
+        return (
+            "You extract schedule proposal parameters from a user request.\n"
+            "Return ONLY a JSON object with keys: action, schedule_id, name, prompt, schedule, timezone, model, rationale.\n"
+            "action must be one of: create, update, pause, resume, cancel.\n"
+            "schedule_id is required for update/pause/resume/cancel if the user provided one; otherwise use null.\n"
+            "schedule is a JSON object for create/update and may include session_id, schedule_kind, run_at, interval_seconds, cron_expression.\n"
+            "Use schedule_kind values once, interval, or cron. Use ISO 8601 for run_at. Do not invent exact dates or ids.\n"
+            "If the user refers to the current session and a latest session is available, use that as schedule.session_id.\n"
+            "Do not explain. Return only the JSON object.\n\n"
+            f"Latest session in focus: {latest_session_id or '(none)'}\n\n"
+            "Conversation so far:\n"
+            f"{self._history_transcript(chat_history, user_prompt)}\n\n"
+            "Current user message:\n"
+            f"{user_prompt}\n"
+        )
+
+    def _normalize_schedule_proposal_params(self, reply: str) -> dict[str, object] | None:
+        raw = normalize_output(reply).strip() if reply else ""
+        if not raw:
+            return None
+        try:
+            parsed = json.loads(raw)
+        except json.JSONDecodeError:
+            match = re.search(r"\{.*?\}", raw, re.DOTALL)
+            if not match:
+                return None
+            try:
+                parsed = json.loads(match.group(0))
+            except json.JSONDecodeError:
+                return None
+        if not isinstance(parsed, dict):
+            return None
+        action = str(parsed.get("action") or "").strip().lower()
+        if action not in {"create", "update", "pause", "resume", "cancel"}:
+            return None
+        schedule = parsed.get("schedule")
+        if schedule is not None and not isinstance(schedule, dict):
+            schedule = None
+        return {
+            "action": action,
+            "schedule_id": parsed.get("schedule_id"),
+            "name": parsed.get("name"),
+            "prompt": parsed.get("prompt"),
+            "schedule": schedule,
+            "timezone": parsed.get("timezone"),
+            "model": parsed.get("model"),
+            "rationale": parsed.get("rationale"),
+        }
+
+    async def extract_schedule_proposal_params(
+        self,
+        user_prompt: str,
+        chat_history: list[dict[str, str]],
+        *,
+        latest_session_id: str = "",
+    ) -> dict[str, object] | None:
+        extraction_reply = await self._fast_agent.reply(
+            self._schedule_proposal_extraction_prompt(
+                user_prompt,
+                chat_history,
+                latest_session_id=latest_session_id,
+            ),
+            [],
+        )
+        return self._normalize_schedule_proposal_params(extraction_reply)
+
     async def plan(
         self,
         user_prompt: str,
@@ -418,7 +519,10 @@ class LangGraphRouterChatAgent:
             ),
             [],
         )
-        self.last_action_plan = self._normalize_plan(plan_reply)
+        self.last_action_plan = self._postprocess_plan(
+            user_prompt,
+            self._normalize_plan(plan_reply),
+        )
         self.last_route_kind = self.last_action_plan[0] if self.last_action_plan else ""
         return self.last_action_plan
 
@@ -505,6 +609,8 @@ def _next_node_from_dispatch(state: LangGraphChatState) -> str:
         return "tool_vectorize"
     if route_kind == "tool_push_queue_message":
         return "tool_push_queue_message"
+    if route_kind == "tool_propose_schedule_change":
+        return "tool_propose_schedule_change"
     if route_kind == "reply_fast":
         return "respond_fast"
     return "respond_deep"
@@ -910,6 +1016,15 @@ async def build_langgraph_chat_graph(
             trace_full_state=trace_full_state,
         ),
     )
+    builder.add_node(
+        "tool_propose_schedule_change",
+        build_tool_propose_schedule_change_node(
+            cfg=chat_agent.cfg,
+            chat_agent=chat_agent,
+            tracer=tracer,
+            trace_full_state=trace_full_state,
+        ),
+    )
     builder.add_node("respond_fast", respond_fast_node)
     builder.add_node("respond_deep", respond_deep_node)
     builder.add_edge(START, "human_input")
@@ -925,6 +1040,7 @@ async def build_langgraph_chat_graph(
     builder.add_edge("tool_search_knowledge", "dispatch")
     builder.add_edge("tool_vectorize", "dispatch")
     builder.add_edge("tool_push_queue_message", "dispatch")
+    builder.add_edge("tool_propose_schedule_change", "dispatch")
     builder.add_edge("respond_fast", "dispatch")
     builder.add_edge("respond_deep", "dispatch")
     builder.add_conditional_edges(
@@ -947,6 +1063,7 @@ async def build_langgraph_chat_graph(
             "tool_search_knowledge": "tool_search_knowledge",
             "tool_vectorize": "tool_vectorize",
             "tool_push_queue_message": "tool_push_queue_message",
+            "tool_propose_schedule_change": "tool_propose_schedule_change",
             "respond_fast": "respond_fast",
             "respond_deep": "respond_deep",
             "__end__": END,

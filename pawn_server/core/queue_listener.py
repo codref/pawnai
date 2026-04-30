@@ -24,13 +24,11 @@ LangGraph conversation context.
 from __future__ import annotations
 
 import asyncio
-import copy
 import logging
 from typing import Any, Callable, Coroutine, Dict, Optional
 
+from pawn_agent.core.agent_runner import run_agent_turn
 from pawn_agent.core.langgraph_registry import LangGraphSessionRegistry
-from pawn_agent.utils.db import create_agent_run, update_agent_run
-from pawn_agent.utils.model_utils import _apply_model_override
 
 logger = logging.getLogger(__name__)
 
@@ -73,35 +71,16 @@ async def _run_langgraph(
     session_id: Optional[str] = params.get("session_id") or None
     model: Optional[str] = params.get("model") or None
 
-    effective_cfg = cfg
-    if model:
-        effective_cfg = copy.copy(cfg)
-        _apply_model_override(effective_cfg, model)
-
-    run_id = create_agent_run(
-        cfg.db_dsn,
+    await run_agent_turn(
+        cfg=cfg,
+        registry=_registry,
         message_id=message_id,
+        source="queue",
         command="run",
         prompt=prompt,
         session_id=session_id,
-        model=effective_cfg.pydantic_model,
+        model=model,
     )
-    update_agent_run(cfg.db_dsn, run_id, "running")
-
-    try:
-        if not prompt:
-            raise ValueError("'prompt' is required for the 'run' command")
-        if not session_id:
-            raise ValueError(
-                "'session_id' is required for the 'run' command — "
-                "it must be the diarization session name used by agent tools"
-            )
-
-        reply = await _registry.handle_turn(session_id, prompt, effective_cfg, cfg.db_dsn)
-        update_agent_run(cfg.db_dsn, run_id, "completed", response=reply)
-    except Exception as exc:
-        update_agent_run(cfg.db_dsn, run_id, "failed", error=str(exc))
-        raise
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -151,9 +130,7 @@ def make_message_handler(
         command: Optional[str] = payload.pop("command", None)
 
         if not command:
-            logger.error(
-                "Message %s has no 'command' key — sending to dead-letter", msg.id
-            )
+            logger.error("Message %s has no 'command' key — sending to dead-letter", msg.id)
             await msg.nack()
             return
 
@@ -176,7 +153,9 @@ def make_message_handler(
             await msg.ack()
         except Exception as exc:
             logger.error(
-                "Message %s failed: %s — sending to dead-letter", msg.id, exc,
+                "Message %s failed: %s — sending to dead-letter",
+                msg.id,
+                exc,
                 exc_info=True,
             )
             await msg.nack()
@@ -209,9 +188,7 @@ async def start_listener(
     try:
         from pawn_queue import PawnQueueBuilder
     except ImportError as exc:
-        raise ImportError(
-            "pawn-queue is not installed. Run: uv pip install pawn-queue"
-        ) from exc
+        raise ImportError("pawn-queue is not installed. Run: uv pip install pawn-queue") from exc
 
     queue_cfg: Optional[Dict[str, Any]] = cfg.queue_config
     if queue_cfg is None:
@@ -249,16 +226,20 @@ async def start_listener(
     )
 
     if polling_section:
-        builder = builder.polling(**{
-            k: v for k, v in polling_section.items()
-            if k in (
-                "interval_seconds",
-                "max_messages_per_poll",
-                "visibility_timeout_seconds",
-                "lease_refresh_interval_seconds",
-                "jitter_max_ms",
-            )
-        })
+        builder = builder.polling(
+            **{
+                k: v
+                for k, v in polling_section.items()
+                if k
+                in (
+                    "interval_seconds",
+                    "max_messages_per_poll",
+                    "visibility_timeout_seconds",
+                    "lease_refresh_interval_seconds",
+                    "jitter_max_ms",
+                )
+            }
+        )
 
     if concurrency_section.get("strategy"):
         builder = builder.concurrency(strategy=concurrency_section["strategy"])

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+import re
 from typing import Any, Awaitable, Callable
 
 from pawn_agent.core.chat_primitives import normalize_output
@@ -16,11 +17,22 @@ from pawn_agent.core.langgraph_state import (
 from pawn_agent.tools.analyze_summary import analyze_summary_impl
 from pawn_agent.tools.list_sessions import list_sessions_impl
 from pawn_agent.tools.push_queue_message import push_queue_message_impl
+from pawn_agent.tools.propose_schedule import propose_schedule_change_impl
 from pawn_agent.tools.query_conversation import query_conversation_impl
 from pawn_agent.tools.save_to_siyuan import save_to_siyuan_impl
 from pawn_agent.tools.search_knowledge import search_knowledge_impl
 from pawn_agent.tools.vectorize import vectorize_impl
 from pawn_agent.utils.config import AgentConfig
+
+
+_INTERVAL_MINUTES_RE = re.compile(
+    r"\b(?:every|each)\s+(\d+)\s*(?:minutes?|mins?|minute|hours?|hrs?|hour)\b",
+    re.IGNORECASE,
+)
+_INTERVAL_HOURS_RE = re.compile(
+    r"\b(?:every|each)\s+(\d+)\s*(?:hours?|hrs?|hour)\b",
+    re.IGNORECASE,
+)
 
 
 def _resolve_session_id_from_state(state: Mapping[str, object]) -> str:
@@ -685,6 +697,112 @@ def _pick_notification_target(cfg: AgentConfig) -> str | None:
     return next(iter(cfg.queue_producers.keys()))
 
 
+def _schedule_prompt_from_user_message(user_prompt: str, session_id: str) -> str:
+    """Derive a useful scheduled prompt from the user's wording."""
+    lowered = normalize_output(user_prompt).strip().lower()
+    if "analy" in lowered and "siyuan" in lowered:
+        return (
+            f"Run the standard structured analysis for session {session_id} "
+            "and save it to SiYuan."
+        )
+    if "analy" in lowered:
+        return f"Run the standard structured analysis for session {session_id}."
+    if "summar" in lowered and "siyuan" in lowered:
+        return f"Summarize session {session_id} and save the result to SiYuan."
+    if "siyuan" in lowered:
+        return f"Review session {session_id} and save the result to SiYuan."
+    return f"Analyze the latest conversation for session {session_id}."
+
+
+def _infer_schedule_from_user_message(
+    user_prompt: str,
+    latest_session_id: str,
+) -> dict[str, object] | None:
+    """Best-effort deterministic fallback for common scheduling requests."""
+    session_id = latest_session_id.strip()
+    if not session_id:
+        return None
+
+    normalized = normalize_output(user_prompt).strip()
+    lowered = normalized.lower()
+    if not any(word in lowered for word in ("schedule", "every", "hour", "minute", "scan")):
+        return None
+
+    interval_seconds: int | None = None
+    hour_match = _INTERVAL_HOURS_RE.search(normalized)
+    minute_match = _INTERVAL_MINUTES_RE.search(normalized)
+    if hour_match:
+        interval_seconds = int(hour_match.group(1)) * 3600
+    elif minute_match:
+        interval_seconds = int(minute_match.group(1)) * 60
+
+    if interval_seconds is None and "every half hour" in lowered:
+        interval_seconds = 1800
+    if interval_seconds is None and "every 30" in lowered:
+        interval_seconds = 1800
+    if interval_seconds is None and "scan every 30 minute" in lowered:
+        interval_seconds = 1800
+
+    if interval_seconds is None:
+        return None
+
+    return {
+        "action": "create",
+        "name": "Recurring latest conversation analysis",
+        "prompt": _schedule_prompt_from_user_message(normalized, session_id),
+        "schedule": {
+            "session_id": session_id,
+            "schedule_kind": "interval",
+            "interval_seconds": interval_seconds,
+        },
+        "rationale": normalized,
+    }
+
+
+def _normalize_schedule_tool_params(
+    params: dict[str, object] | None,
+    *,
+    user_prompt: str,
+    latest_session_id: str,
+) -> dict[str, object] | None:
+    """Fill obvious gaps in extracted schedule params before proposal creation."""
+    resolved = dict(params or {})
+    inferred = _infer_schedule_from_user_message(user_prompt, latest_session_id) or {}
+    if not resolved:
+        resolved = inferred
+    schedule = resolved.get("schedule")
+    if not isinstance(schedule, dict):
+        schedule = {}
+    else:
+        schedule = dict(schedule)
+    inferred_schedule = inferred.get("schedule")
+    if isinstance(inferred_schedule, dict):
+        for key, value in inferred_schedule.items():
+            if key not in schedule or schedule.get(key) in (None, ""):
+                schedule[key] = value
+
+    if latest_session_id and not schedule.get("session_id"):
+        if "latest conversation" in user_prompt.lower() or "latest session" in user_prompt.lower():
+            schedule["session_id"] = latest_session_id
+        elif resolved.get("action") == "create":
+            schedule["session_id"] = latest_session_id
+
+    if resolved.get("action") == "create":
+        if not resolved.get("name"):
+            resolved["name"] = inferred.get("name") or "Recurring latest conversation analysis"
+        if not resolved.get("prompt") and schedule.get("session_id"):
+            resolved["prompt"] = _schedule_prompt_from_user_message(
+                user_prompt,
+                str(schedule["session_id"]),
+            )
+        if not resolved.get("rationale") and inferred.get("rationale"):
+            resolved["rationale"] = inferred["rationale"]
+
+    if schedule:
+        resolved["schedule"] = schedule
+    return resolved or None
+
+
 def build_tool_push_queue_message_node(
     *,
     cfg: AgentConfig,
@@ -754,3 +872,98 @@ def build_tool_push_queue_message_node(
             return updated
 
     return tool_push_queue_message_node
+
+
+def build_tool_propose_schedule_change_node(
+    *,
+    cfg: AgentConfig,
+    chat_agent,
+    tracer=None,
+    trace_full_state: bool = False,
+) -> Callable[[dict[str, Any]], Awaitable[dict[str, Any]]]:
+    """Build the LangGraph node for creating schedule-change proposals."""
+
+    async def tool_propose_schedule_change_node(state: dict[str, Any]) -> dict[str, Any]:
+        current = ensure_langgraph_state(state)
+        current, resolved_session_id = resolve_session_id(current, cfg)
+        if resolved_session_id and (
+            normalize_output(get_state_field(current, "latest_session_id")).strip()
+            != resolved_session_id
+        ):
+            current = set_state_fields(dict(current), latest_session_id=resolved_session_id)
+        latest_user_message = normalize_output(
+            get_state_field(current, "latest_user_message")
+        ).strip()
+        latest_session_id = normalize_output(get_state_field(current, "latest_session_id")).strip()
+        chat_history = get_recent_messages(current)
+
+        params = await chat_agent.extract_schedule_proposal_params(
+            latest_user_message,
+            chat_history,
+            latest_session_id=latest_session_id,
+        )
+        params = _normalize_schedule_tool_params(
+            params,
+            user_prompt=latest_user_message,
+            latest_session_id=latest_session_id,
+        )
+        if not params:
+            tool_output = (
+                "I could not extract a valid schedule proposal. "
+                "Please provide the action, schedule timing, prompt, and session id."
+            )
+        else:
+            schedule = params.get("schedule")
+            if isinstance(schedule, dict) and latest_session_id and not schedule.get("session_id"):
+                schedule = dict(schedule)
+                schedule["session_id"] = latest_session_id
+            try:
+                tool_output = await propose_schedule_change_impl(
+                    cfg,
+                    action=str(params.get("action") or ""),
+                    schedule_id=(
+                        str(params.get("schedule_id")).strip()
+                        if params.get("schedule_id")
+                        else None
+                    ),
+                    name=str(params.get("name")).strip() if params.get("name") else None,
+                    prompt=str(params.get("prompt")).strip() if params.get("prompt") else None,
+                    schedule=schedule if isinstance(schedule, dict) else None,
+                    timezone=(
+                        str(params.get("timezone")).strip() if params.get("timezone") else None
+                    ),
+                    model=str(params.get("model")).strip() if params.get("model") else None,
+                    rationale=(
+                        str(params.get("rationale")).strip()
+                        if params.get("rationale")
+                        else latest_user_message
+                    ),
+                    proposed_by_session_id=latest_session_id or None,
+                )
+            except Exception as exc:
+                tool_output = f"Error creating schedule proposal: {exc}"
+
+        if tracer is None:
+            return set_state_fields(
+                dict(current),
+                tool_name="propose_schedule_change",
+                tool_output=tool_output,
+            )
+
+        with tracer.start_as_current_span("langgraph-tool-propose-schedule-change") as span:
+            if trace_full_state:
+                span.set_attribute("state.before.json", serialize_langgraph_state(current))
+            updated = set_state_fields(
+                dict(current),
+                tool_name="propose_schedule_change",
+                tool_output=tool_output,
+            )
+            span.set_attribute("tool.name", "propose_schedule_change")
+            span.set_attribute("output.value", tool_output)
+            if latest_session_id:
+                span.set_attribute("session.id", latest_session_id)
+            if trace_full_state:
+                span.set_attribute("state.after.json", serialize_langgraph_state(updated))
+            return updated
+
+    return tool_propose_schedule_change_node

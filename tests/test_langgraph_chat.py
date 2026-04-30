@@ -16,6 +16,7 @@ from pawn_agent.core.langgraph_chat import (
 )
 from pawn_agent.core.langgraph_tools import (
     build_tool_analyze_summary_node,
+    build_tool_propose_schedule_change_node,
     build_tool_query_conversation_node,
     resolve_session_id,
     resolve_session_id_from_list_output,
@@ -141,6 +142,7 @@ def test_build_langgraph_chat_graph_registers_nodes_and_edges() -> None:
         "tool_search_knowledge",
         "tool_vectorize",
         "tool_push_queue_message",
+        "tool_propose_schedule_change",
         "respond_fast",
         "respond_deep",
     }
@@ -158,6 +160,7 @@ def test_build_langgraph_chat_graph_registers_nodes_and_edges() -> None:
         ("tool_search_knowledge", "dispatch"),
         ("tool_vectorize", "dispatch"),
         ("tool_push_queue_message", "dispatch"),
+        ("tool_propose_schedule_change", "dispatch"),
         ("respond_fast", "dispatch"),
         ("respond_deep", "dispatch"),
     ]
@@ -176,6 +179,7 @@ def test_build_langgraph_chat_graph_registers_nodes_and_edges() -> None:
         "tool_search_knowledge": "tool_search_knowledge",
         "tool_vectorize": "tool_vectorize",
         "tool_push_queue_message": "tool_push_queue_message",
+        "tool_propose_schedule_change": "tool_propose_schedule_change",
         "respond_fast": "respond_fast",
         "respond_deep": "respond_deep",
         "__end__": "__end__",
@@ -253,6 +257,111 @@ def test_build_phoenix_tracer_passes_configuration() -> None:
         "headers": {"authorization": "Bearer secret-token"},
     }
     assert trace_calls == ["pawn_agent.core.langgraph_chat"]
+
+
+def test_schedule_tool_infers_latest_session_interval_and_siyuan_prompt() -> None:
+    state = {
+        "session_state": {
+            "latest_user_message": (
+                "schedule the analysis of the latest conversation and save it to siyuan, "
+                "scan every 30 minutes"
+            ),
+            "tool_output": "",
+        },
+        "durable_facts": {"latest_session_id": "oci-20260416"},
+        "artifacts": {},
+        "recent_messages": [],
+    }
+    captured: dict[str, object] = {}
+
+    async def fake_extract_schedule_proposal_params(*args, **kwargs):
+        return {"action": "create", "schedule": {"schedule_kind": "interval"}}
+
+    async def fake_propose_schedule_change_impl(cfg, **kwargs):
+        captured.update(kwargs)
+        return "Schedule proposal created. proposal_id=demo."
+
+    node = build_tool_propose_schedule_change_node(
+        cfg=SimpleNamespace(),
+        chat_agent=SimpleNamespace(
+            extract_schedule_proposal_params=fake_extract_schedule_proposal_params
+        ),
+    )
+
+    with patch(
+        "pawn_agent.core.langgraph_tools.propose_schedule_change_impl",
+        side_effect=fake_propose_schedule_change_impl,
+    ):
+        updated = asyncio.run(node(state))
+
+    assert updated["session_state"]["tool_name"] == "propose_schedule_change"
+    assert "proposal_id=demo" in updated["artifacts"]["tool_output"]
+    assert captured["action"] == "create"
+    assert captured["name"] == "Recurring latest conversation analysis"
+    assert (
+        captured["prompt"]
+        == "Run the standard structured analysis for session oci-20260416 and save it to SiYuan."
+    )
+    assert captured["schedule"] == {
+        "session_id": "oci-20260416",
+        "schedule_kind": "interval",
+        "interval_seconds": 1800,
+    }
+
+
+def test_schedule_tool_bootstraps_latest_session_from_catalog() -> None:
+    state = {
+        "session_state": {
+            "latest_user_message": (
+                "schedule the analysis of the latest conversation and save it to siyuan, "
+                "scan every 30 minutes"
+            ),
+            "tool_output": "",
+            "requested_session_id": "",
+        },
+        "durable_facts": {"latest_session_id": ""},
+        "artifacts": {"session_catalog_output": ""},
+        "recent_messages": [],
+    }
+    captured: dict[str, object] = {}
+
+    async def fake_extract_schedule_proposal_params(*args, **kwargs):
+        return {"action": "create", "schedule": {"schedule_kind": "interval"}}
+
+    async def fake_propose_schedule_change_impl(cfg, **kwargs):
+        captured.update(kwargs)
+        return "Schedule proposal created. proposal_id=demo."
+
+    node = build_tool_propose_schedule_change_node(
+        cfg=SimpleNamespace(),
+        chat_agent=SimpleNamespace(
+            extract_schedule_proposal_params=fake_extract_schedule_proposal_params
+        ),
+    )
+
+    with (
+        patch(
+            "pawn_agent.core.langgraph_tools.run_list_sessions_tool",
+            return_value=(
+                "Found 2 session(s):\n"
+                "oci-20260416 | 2026-04-16 10:00:00 | 3 segments\n"
+                "oci-20260415 | 2026-04-15 09:00:00 | 4 segments"
+            ),
+        ),
+        patch(
+            "pawn_agent.core.langgraph_tools.propose_schedule_change_impl",
+            side_effect=fake_propose_schedule_change_impl,
+        ),
+    ):
+        updated = asyncio.run(node(state))
+
+    assert updated["durable_facts"]["latest_session_id"] == "oci-20260416"
+    assert "Found 2 session(s):" in updated["artifacts"]["session_catalog_output"]
+    assert captured["schedule"] == {
+        "session_id": "oci-20260416",
+        "schedule_kind": "interval",
+        "interval_seconds": 1800,
+    }
 
 
 def test_serialize_langgraph_state_returns_json_snapshot() -> None:
@@ -459,11 +568,8 @@ def test_analyze_summary_build_delegates_to_shared_helper() -> None:
         def __init__(self, fn) -> None:
             captured["fn"] = fn
 
-    fake_pydantic_ai = ModuleType("pydantic_ai")
-    fake_pydantic_ai.Tool = FakeTool
-
     with (
-        patch.dict(sys.modules, {"pydantic_ai": fake_pydantic_ai}),
+        patch("pawn_agent.tools.analyze_summary.Tool", FakeTool),
         patch(
             "pawn_agent.tools.analyze_summary.analyze_summary_impl",
             return_value="## Title\nDemo",
@@ -835,6 +941,44 @@ def test_langgraph_router_agent_routes_to_save_to_siyuan_tool(tmp_path: Path) ->
         in calls[0][1]
     )
     assert "tool_save_to_siyuan" in calls[0][1]
+
+
+def test_langgraph_router_agent_prefers_schedule_tool_for_recurring_requests(tmp_path: Path) -> None:
+    cfg_file = tmp_path / "pawnai.yaml"
+    cfg_file.write_text(
+        "agent:\n"
+        "  openai:\n"
+        "    fast_model: gemma4:e4b\n"
+        "    model: gemma4:26b\n"
+        "    base_url: http://localhost:11434/v1\n"
+        "    api_key: ollama\n",
+        encoding="utf-8",
+    )
+    cfg = load_config(str(cfg_file))
+
+    class FakeAgent:
+        def __init__(self, cfg, on_thinking=None) -> None:
+            self.cfg = cfg
+
+        async def reply(self, user_prompt: str, chat_history: list[dict[str, str]]) -> str:
+            if user_prompt.startswith("You are a planning model"):
+                return '["tool_save_to_siyuan", "reply_fast"]'
+            return "ok"
+
+    with patch("pawn_agent.core.langgraph_chat.PlainPydanticChatAgent", FakeAgent):
+        agent = LangGraphRouterChatAgent(cfg)
+        route = asyncio.run(
+            agent.plan(
+                (
+                    "schedule the analysis of the latest conversation and save it to siyuan, "
+                    "scan every 30 minutes"
+                ),
+                [],
+                latest_session_id="sess-123",
+            )
+        )
+
+    assert route == ["tool_propose_schedule_change", "reply_fast"]
 
 
 def test_langgraph_session_tool_helper_prefers_current_turn_id() -> None:

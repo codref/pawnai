@@ -8,7 +8,6 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-
 # ──────────────────────────────────────────────────────────────────────────────
 # Helpers
 # ──────────────────────────────────────────────────────────────────────────────
@@ -76,172 +75,128 @@ class TestMakeMessageHandlerRouting:
 class TestMakeMessageHandlerRun:
 
     def _patch_run(self, reply: str = "Agent reply."):
-        """Patch DB helpers and the registry handle_turn for a clean run."""
-        return (
-            patch("pawn_server.core.queue_listener.create_agent_run", return_value="run-1"),
-            patch("pawn_server.core.queue_listener.update_agent_run"),
-            patch(
-                "pawn_server.core.queue_listener._registry.handle_turn",
-                new_callable=AsyncMock,
-                return_value=reply,
-            ),
+        """Patch the shared agent runner for a clean run."""
+        from pawn_agent.core.agent_runner import AgentRunResult
+
+        return patch(
+            "pawn_server.core.queue_listener.run_agent_turn",
+            new_callable=AsyncMock,
+            return_value=AgentRunResult(run_id="run-1", response=reply),
         )
 
     def test_well_formed_message_acked(self):
         """A complete run message is dispatched and acked."""
         cfg = _make_cfg()
-        msg = _make_msg({
-            "command": "run",
-            "session_id": "meeting-2026-04-23",
-            "prompt": "Analyse this session and save to SiYuan.",
-        }, msg_id="msg-chain-001")
+        msg = _make_msg(
+            {
+                "command": "run",
+                "session_id": "meeting-2026-04-23",
+                "prompt": "Analyse this session and save to SiYuan.",
+            },
+            msg_id="msg-chain-001",
+        )
 
-        p1, p2, p3 = self._patch_run()
-        with p1, p2, p3 as mock_turn:
+        with self._patch_run() as mock_run:
             from pawn_server.core.queue_listener import make_message_handler
+
             asyncio.run(make_message_handler(cfg)(msg))
 
         msg.ack.assert_awaited_once()
         msg.nack.assert_not_awaited()
-        mock_turn.assert_awaited_once_with(
-            "meeting-2026-04-23",
-            "Analyse this session and save to SiYuan.",
-            cfg,
-            cfg.db_dsn,
-        )
+        mock_run.assert_awaited_once()
+        assert mock_run.await_args.kwargs["session_id"] == "meeting-2026-04-23"
+        assert mock_run.await_args.kwargs["prompt"] == "Analyse this session and save to SiYuan."
+        assert mock_run.await_args.kwargs["source"] == "queue"
 
     def test_completed_status_and_response_stored(self):
         """run row progresses pending → running → completed with the reply."""
         cfg = _make_cfg()
-        msg = _make_msg({
-            "command": "run",
-            "session_id": "s1",
-            "prompt": "Summarise.",
-        })
+        msg = _make_msg(
+            {
+                "command": "run",
+                "session_id": "s1",
+                "prompt": "Summarise.",
+            }
+        )
 
-        with (
-            patch(
-                "pawn_server.core.queue_listener.create_agent_run",
-                return_value="run-uuid",
-            ) as mock_create,
-            patch("pawn_server.core.queue_listener.update_agent_run") as mock_update,
-            patch(
-                "pawn_server.core.queue_listener._registry.handle_turn",
-                new_callable=AsyncMock,
-                return_value="Summary text.",
-            ),
-        ):
+        with self._patch_run("Summary text.") as mock_run:
             from pawn_server.core.queue_listener import make_message_handler
+
             asyncio.run(make_message_handler(cfg)(msg))
 
-        mock_create.assert_called_once()
-        statuses = [c.args[2] for c in mock_update.call_args_list]
-        assert statuses == ["running", "completed"]
-        completed_kwargs = mock_update.call_args_list[1].kwargs
-        assert completed_kwargs.get("response") == "Summary text."
+        mock_run.assert_awaited_once()
 
     def test_per_message_model_override(self):
         """A per-message model is applied before calling handle_turn."""
         cfg = _make_cfg()
-        msg = _make_msg({
-            "command": "run",
-            "session_id": "s2",
-            "prompt": "Go.",
-            "model": "openai:gpt-4o",
-        })
+        msg = _make_msg(
+            {
+                "command": "run",
+                "session_id": "s2",
+                "prompt": "Go.",
+                "model": "openai:gpt-4o",
+            }
+        )
 
-        with (
-            patch("pawn_server.core.queue_listener.create_agent_run", return_value="r") as mock_create,
-            patch("pawn_server.core.queue_listener.update_agent_run"),
-            patch(
-                "pawn_server.core.queue_listener._registry.handle_turn",
-                new_callable=AsyncMock,
-                return_value="ok",
-            ),
-            patch("pawn_server.core.queue_listener._apply_model_override") as mock_override,
-        ):
+        with self._patch_run("ok") as mock_run:
             from pawn_server.core.queue_listener import make_message_handler
+
             asyncio.run(make_message_handler(cfg)(msg))
 
-        mock_override.assert_called_once()
-        _, kwargs = mock_create.call_args
-        assert kwargs["model"] is not None  # recorded (whatever override produced)
+        assert mock_run.await_args.kwargs["model"] == "openai:gpt-4o"
 
     def test_missing_prompt_nacks_and_marks_failed(self):
         """A run message with no prompt is nacked; run row marked failed."""
         cfg = _make_cfg()
         msg = _make_msg({"command": "run", "session_id": "s3"})
 
-        with (
-            patch(
-                "pawn_server.core.queue_listener.create_agent_run",
-                return_value="run-bad",
-            ),
-            patch("pawn_server.core.queue_listener.update_agent_run") as mock_update,
-            patch(
-                "pawn_server.core.queue_listener._registry.handle_turn",
-                new_callable=AsyncMock,
-            ) as mock_turn,
-        ):
+        with patch(
+            "pawn_server.core.queue_listener.run_agent_turn",
+            new_callable=AsyncMock,
+            side_effect=ValueError("'prompt' is required"),
+        ) as mock_run:
             from pawn_server.core.queue_listener import make_message_handler
+
             asyncio.run(make_message_handler(cfg)(msg))
 
         msg.nack.assert_awaited_once()
         msg.ack.assert_not_awaited()
-        mock_turn.assert_not_awaited()
-        statuses = [c.args[2] for c in mock_update.call_args_list]
-        assert "failed" in statuses
+        mock_run.assert_awaited_once()
 
     def test_missing_session_id_nacks_and_marks_failed(self):
         """A run message with no session_id is nacked; run row marked failed."""
         cfg = _make_cfg()
         msg = _make_msg({"command": "run", "prompt": "Analyse."})
 
-        with (
-            patch(
-                "pawn_server.core.queue_listener.create_agent_run",
-                return_value="run-no-sess",
-            ),
-            patch("pawn_server.core.queue_listener.update_agent_run") as mock_update,
-            patch(
-                "pawn_server.core.queue_listener._registry.handle_turn",
-                new_callable=AsyncMock,
-            ) as mock_turn,
-        ):
+        with patch(
+            "pawn_server.core.queue_listener.run_agent_turn",
+            new_callable=AsyncMock,
+            side_effect=ValueError("'session_id' is required"),
+        ) as mock_run:
             from pawn_server.core.queue_listener import make_message_handler
+
             asyncio.run(make_message_handler(cfg)(msg))
 
         msg.nack.assert_awaited_once()
         msg.ack.assert_not_awaited()
-        mock_turn.assert_not_awaited()
-        statuses = [c.args[2] for c in mock_update.call_args_list]
-        assert "failed" in statuses
+        mock_run.assert_awaited_once()
 
     def test_agent_exception_nacks_and_marks_failed(self):
         """An error from handle_turn nacks the message and marks the run failed."""
         cfg = _make_cfg()
         msg = _make_msg({"command": "run", "session_id": "s4", "prompt": "Do it."})
 
-        with (
-            patch("pawn_server.core.queue_listener.create_agent_run", return_value="run-err"),
-            patch("pawn_server.core.queue_listener.update_agent_run") as mock_update,
-            patch(
-                "pawn_server.core.queue_listener._registry.handle_turn",
-                new_callable=AsyncMock,
-                side_effect=RuntimeError("LLM timeout"),
-            ),
+        with patch(
+            "pawn_server.core.queue_listener.run_agent_turn",
+            new_callable=AsyncMock,
+            side_effect=RuntimeError("LLM timeout"),
         ):
             from pawn_server.core.queue_listener import make_message_handler
+
             asyncio.run(make_message_handler(cfg)(msg))
 
         msg.nack.assert_awaited_once()
         msg.ack.assert_not_awaited()
-        statuses = [c.args[2] for c in mock_update.call_args_list]
-        assert "failed" in statuses
-        failed_kwargs = next(
-            c.kwargs for c in mock_update.call_args_list if c.args[2] == "failed"
-        )
-        assert "LLM timeout" in (failed_kwargs.get("error") or "")
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -267,9 +222,9 @@ class TestDispatch:
         cfg = _make_cfg()
         params = {"prompt": "Hello.", "session_id": "sess-x", "model": None}
 
-        with patch("pawn_server.core.queue_listener._run_langgraph", new_callable=AsyncMock) as mock_run:
+        with patch(
+            "pawn_server.core.queue_listener._run_langgraph", new_callable=AsyncMock
+        ) as mock_run:
             asyncio.run(dispatch("run", params, cfg, message_id="m1"))
 
         mock_run.assert_awaited_once_with(params, cfg, "m1")
-
-

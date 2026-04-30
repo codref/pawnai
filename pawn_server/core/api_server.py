@@ -99,6 +99,8 @@ _tts_idle_handle: Optional[asyncio.TimerHandle] = None
 
 # LangGraph session registry — lazily populated, survives across requests.
 from pawn_agent.core.langgraph_registry import LangGraphSessionRegistry  # noqa: E402
+from pawn_agent.core.agent_runner import run_agent_turn  # noqa: E402
+
 _langgraph_registry = LangGraphSessionRegistry()
 
 _security = HTTPBearer(auto_error=False)
@@ -413,7 +415,15 @@ async def chat_completions(
         raise HTTPException(status_code=422, detail="No user message found in messages")
 
     try:
-        reply = await _langgraph_registry.handle_turn(session_id, prompt, cfg, cfg.db_dsn)
+        result = await run_agent_turn(
+            cfg=cfg,
+            registry=_langgraph_registry,
+            prompt=prompt,
+            session_id=session_id,
+            source="api",
+            command="run",
+        )
+        reply = result.response
     except Exception as exc:
         logger.error("LangGraph agent error for session %r: %s", session_id, exc, exc_info=True)
         reply = f"Agent error: {exc}"
