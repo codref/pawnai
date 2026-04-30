@@ -1,0 +1,250 @@
+# PawnAI example configuration.
+#
+# Copy this file to pawnai.yaml and edit values for your machine. The real
+# pawnai.yaml is gitignored because it may contain API keys and tokens.
+#
+# Precedence:
+#   CLI flags > pawnai.yaml > environment variables > defaults
+#
+# Environment variable convention:
+#   PAWN_DB_DSN -> db_dsn
+#   PAWN_MODELS__HF_TOKEN -> models.hf_token
+#   PAWN_MODELS__TRANSCRIPTION_BACKEND -> models.transcription_backend
+#   PAWN_DEVICE__TYPE -> device.type
+#   DATABASE_URL -> db_dsn
+#   HF_TOKEN -> models.hf_token
+
+# PostgreSQL database used by diarization, agent memory, RAG, and run history.
+# The default project Docker Compose maps postgres to host port 5433.
+db_dsn: postgresql+psycopg://postgres:postgres@localhost:5433/pawnai
+
+# Default local audio directory used by pawn-diarize.
+audio_dir: audio/
+
+models:
+  # NeMo Parakeet ASR model.
+  transcription_model: nvidia/parakeet-tdt-0.6b-v3
+
+  # Transcription backend: nemo or whisper.
+  transcription_backend: nemo
+
+  # faster-whisper model name, used only when transcription_backend is whisper.
+  whisper_model: large-v3
+
+  # Pyannote diarization model. Some models require a Hugging Face token.
+  diarization_model: pyannote/speaker-diarization-community-1
+
+  # Speaker embedding model used for speaker matching.
+  embedding_model: pyannote/embedding
+
+  # Hugging Face token for gated models. Prefer PAWN_MODELS__HF_TOKEN or HF_TOKEN.
+  hf_token: ""
+
+  # Optional Hugging Face cache directory. Also sets HF_HUB_CACHE when present.
+  hf_cache_dir: ""
+
+  # Idle timeout for heavy transcription models.
+  model_idle_timeout_minutes: 10.0
+
+  # Text-to-speech defaults for the pawn-server speech endpoint.
+  tts_language: en
+  tts_voice: af_heart
+
+  # null means use device.type. Set cpu if CUDA is unavailable.
+  tts_device: null
+
+  # Idle timeout for TTS models.
+  tts_idle_timeout_minutes: 10.0
+
+device:
+  # auto, cuda, or cpu.
+  type: auto
+
+s3:
+  # Shared S3-compatible storage settings. Used by audio commands and all
+  # pawn-queue listeners/producers. Works with AWS S3, MinIO, Ceph, Hetzner,
+  # Cloudflare R2, and similar services.
+  bucket: my-audio-bucket
+  endpoint_url: https://s3.amazonaws.com
+  access_key: ""
+  secret_key: ""
+  region: us-east-1
+
+  # Optional prefix prepended to object keys for audio/object operations.
+  prefix: ""
+
+  # Set false only for local/dev endpoints with self-signed certificates.
+  verify_ssl: true
+
+  # Usually true for MinIO and many S3-compatible providers.
+  path_style: true
+
+siyuan:
+  # SiYuan Notes API settings.
+  url: http://127.0.0.1:6806
+  token: ""
+  notebook: ""
+
+  # Template used when saving conversation analysis pages.
+  path_template: /Conversations/{date}/{session_id}/{title}
+
+  # Template used for daily note paths.
+  daily_note_path: /daily note/{year}/{month}/{date}
+
+rag:
+  # Embedding model and vector dimensionality for transcript/SiYuan RAG.
+  embed_model: Qwen/Qwen3-Embedding-0.6B
+  embed_dim: 1024
+  embed_device: cpu
+
+  # true keeps embedding loads offline/local-only where supported.
+  embed_local_files_only: true
+
+logging:
+  # DEBUG, INFO, WARNING, ERROR, or CRITICAL.
+  level: WARNING
+
+agent:
+  # Display/name identity used by pawn-agent.
+  name: Bob
+
+  # Optional system prompt/personality file.
+  anima: anima.md
+
+  # Strip model "thinking" blocks from final chat output when supported.
+  strip_thinking: true
+
+  # The first configured provider in this order is used by pawn-agent:
+  # openai, anthropic, google, groq, mistral.
+  openai:
+    model: gpt-4o
+    fast_model: gpt-4o-mini
+    api_key: ""
+    base_url: https://api.openai.com/v1
+
+  anthropic:
+    model: claude-sonnet-4-5
+    fast_model: claude-haiku-4-5
+    api_key: ""
+    base_url: null
+
+  google:
+    model: gemini-2.5-pro
+    fast_model: gemini-2.5-flash
+    api_key: ""
+    base_url: null
+
+  groq:
+    model: llama-3.3-70b-versatile
+    fast_model: llama-3.1-8b-instant
+    api_key: ""
+    base_url: null
+
+  mistral:
+    model: mistral-large-latest
+    fast_model: mistral-small-latest
+    api_key: ""
+    base_url: null
+
+  copilot:
+    # Sub-agent settings used by copilot-backed helper flows.
+    model: claude-sonnet-4.6
+    backend: copilot
+    base_url: null
+    api_key: ollama
+
+api:
+  # pawn-server HTTP API settings.
+  # If token is empty/null, the server starts without bearer-token auth.
+  token: ""
+  host: 0.0.0.0
+  port: 8000
+
+  # Idle timeout for API-managed model resources.
+  model_idle_timeout_minutes: 10.0
+
+mlflow:
+  # Optional MLflow tracing/experiment logging.
+  enabled: false
+  tracking_uri: null
+  experiment: pawn-agent
+
+phoenix:
+  # Optional Phoenix/OpenTelemetry tracing for LangGraph flows.
+  enabled: false
+  endpoint: http://localhost:6006/v1/traces
+  project_name: parakeet-langgraph
+  protocol: http/protobuf
+  api_key: null
+
+diarize_queue:
+  # Queue consumed by `pawn-diarize listen`.
+  # Credentials and endpoint come from the top-level s3 section.
+  topic: pawn-diarize-jobs
+  consumer_name: pawn-diarize-listener
+  bucket_name: pawn-diarize-queue
+
+  polling:
+    interval_seconds: 5
+    max_messages_per_poll: 1
+    visibility_timeout_seconds: 300
+    lease_refresh_interval_seconds: 60
+    jitter_max_ms: 200
+
+  concurrency:
+    # auto, conditional_write, or csprng_verify.
+    strategy: auto
+
+  chain_agent:
+    # When enabled, successful transcribe-diarize jobs enqueue a pawn-agent
+    # "run" message so the transcript can be analyzed automatically.
+    enabled: false
+    topic: pawn-agent-jobs
+    prompt: Analyze this conversation and save the analysis to SiYuan.
+
+agent_queue:
+  # Queue consumed by `pawn-agent listen` / pawn-server queue listener.
+  # Credentials and endpoint come from the top-level s3 section.
+  topic: pawn-agent-jobs
+  consumer_name: pawn-agent-listener
+  bucket_name: pawn-agent-queue
+
+  polling:
+    interval_seconds: 5
+    max_messages_per_poll: 1
+    visibility_timeout_seconds: 300
+    lease_refresh_interval_seconds: 60
+    jitter_max_ms: 200
+
+  concurrency:
+    # auto, conditional_write, or csprng_verify.
+    strategy: auto
+
+queue_producers:
+  # Named producer targets used by pawn-agent's push_queue_message tool.
+  # The agent prefers a target named "matrix" for notification-style updates.
+  matrix:
+    topic: matrix-bot-notifications
+    bucket_name: pawn-agent-queue
+
+    # Optional explicit producer name. If omitted, the tool generates one from
+    # the target name.
+    producer_name: pawn-agent-producer-matrix
+
+    polling:
+      interval_seconds: 5
+      max_messages_per_poll: 1
+      visibility_timeout_seconds: 300
+      lease_refresh_interval_seconds: 60
+      jitter_max_ms: 200
+
+    concurrency:
+      # auto, conditional_write, or csprng_verify.
+      strategy: auto
+
+  downstream:
+    # Example target for explicit publish requests such as handing work to
+    # another service.
+    topic: downstream-jobs
+    bucket_name: pawn-agent-queue
+    producer_name: pawn-agent-producer-downstream

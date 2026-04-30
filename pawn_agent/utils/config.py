@@ -44,6 +44,11 @@ Config file schema (all keys optional)::
       topic: pawn-agent-jobs
       consumer_name: pawn-agent-listener
       bucket_name: my-bucket
+
+    queue_producers:
+      matrix:
+        topic: matrix-jobs
+        bucket_name: my-bucket
 """
 
 from __future__ import annotations
@@ -130,6 +135,8 @@ class MlflowSection(BaseModel):
 
 class AgentQueueConfig(BaseModel):
     """``agent_queue:`` section — pawn-queue listener for pawn-agent jobs."""
+
+    model_config = ConfigDict(extra="allow")
 
     topic: str = "pawn-agent-jobs"
     consumer_name: str = "pawn-agent-listener"

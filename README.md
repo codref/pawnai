@@ -46,6 +46,7 @@ alembic upgrade head
 
 All settings live in `pawnai.yaml` (auto-discovered in the current directory, or passed via `--config`).
 Precedence: **CLI flags → `pawnai.yaml` → environment variables → defaults**.
+See `pawnai.example.yaml` for a full commented configuration with every supported section.
 
 ```yaml
 models:
@@ -70,6 +71,14 @@ s3:
   prefix: ""
   verify_ssl: true
   path_style: true
+
+queue_producers:
+  matrix:
+    topic: matrix-jobs
+    bucket_name: my-audio-bucket
+  downstream:
+    topic: downstream-jobs
+    bucket_name: my-audio-bucket
 
 siyuan:
   url: http://localhost:6806
