@@ -1,100 +1,91 @@
 # AGENTS.md
 
-Compact instruction file for future OpenCode sessions working in the PawnAI repository.
+Compact operating notes for future Codex/OpenCode sessions in PawnAI.
 
-## Project Structure
+## Repo Shape
 
-Python monolith with **three CLI entry points**:
-- `pawn-diarize` — audio diarization, transcription, embedding management
-- `pawn-agent` — LLM-powered conversational agent for analyzing sessions
-- `pawn-server` — HTTP API server (`POST /v1/chat/completions`) + queue listener
+Python monolith with three console scripts from `pyproject.toml`:
+- `pawn-diarize`: diarization/transcription/embeddings and queue publishing.
+- `pawn-agent`: LangGraph/PydanticAI conversational agent and tools.
+- `pawn-server`: FastAPI OpenAI-compatible API, S3 queue listener, durable scheduler.
 
-Package boundaries (all in `pyproject.toml` `[tool.setuptools] packages`):
-- `pawn_core/` — shared primitives: config, database ORM (`Base`), transcription engine, TTS, SiYuan client
-- `pawn_diarize/` — CLI (`cli/commands.py`) and core business logic (`core/`)
-- `pawn_agent/` — CLI, PydanticAI agent, auto-discovered tools (`tools/`), utilities
-- `pawn_server/` — FastAPI server (`core/api_server.py`) and queue listener
+Packages:
+- `pawn_core/`: shared config, DB base, transcription, TTS, SiYuan client.
+- `pawn_diarize/`: CLI and audio business logic. Real transcription engine is `pawn_core/transcription.py`; `pawn_diarize/core/transcription.py` is only a compatibility re-export.
+- `pawn_agent/`: CLI, LangGraph router/chat, scheduler, auto-discovered tools, agent DB models.
+- `pawn_server/`: HTTP API, queue listener, scheduler CLI/server runner.
 
-**Important**: `pawn_core/transcription.py` is the real transcription engine. `pawn_diarize/core/transcription.py` is only a backward-compatible re-export.
+## Setup / Commands
 
-## Setup
+Use `uv sync --extra dev` from `uv.lock` when possible. Pip fallback: `pip install -e ".[dev]"`.
 
-The repo has a `uv.lock` file and supports both traditional pip and uv workflows.
-
-**With uv (recommended):**
+DB/deps:
 ```bash
-uv venv
-uv sync --extra dev          # installs from uv.lock
-# or, to also update the lockfile from pyproject.toml:
-# uv sync --extra dev --upgrade
-```
-
-**With pip:**
-```bash
-python -m venv .venv
-source .venv/bin/activate
-pip install -e ".[dev]"
-```
-
-**Database required before first run:**
-```bash
+docker compose -f docker/docker-compose.yml up -d postgres
 alembic upgrade head
 ```
 
-Docker Compose provides dependencies (postgres on **5433**, siyuan, litellm proxy, phoenix):
+Quality checks:
 ```bash
-docker compose -f docker/docker-compose.yml up -d postgres
-```
-
-## Developer Commands
-
-Format:
-```bash
-black pawn_diarize pawn_agent tests       # line-length 100
-isort pawn_diarize pawn_agent tests       # black profile
-```
-
-Lint / typecheck:
-```bash
+black pawn_diarize pawn_agent tests
+isort pawn_diarize pawn_agent tests
 flake8 pawn_diarize pawn_agent tests
-mypy pawn_diarize pawn_agent              # NOTE: does NOT include pawn_core, pawn_server, or tests by default
+mypy pawn_diarize pawn_agent
+pytest --no-cov
+pytest
 ```
 
-Test:
-```bash
-pytest                                    # default adds --cov=pawn_diarize --cov-report=term-missing
-pytest tests/test_cli.py::test_status     # single test
-pytest --cov=pawn_diarize --cov-report=html
-```
+Notes: pytest defaults to `--cov=pawn_diarize --cov-report=term-missing`; pass `--no-cov` for faster targeted runs. Mypy config intentionally checks only `pawn_diarize pawn_agent` unless paths are added explicitly.
 
-## Architecture Quirks
+## Runtime Architecture
 
-- **Lazy-loaded ML models**: `pawn_diarize/core/__init__.py` uses `__getattr__` to defer importing heavy modules (pyannote, NeMo). Lightweight commands (`s3 ls`, `status`) stay fast because they never touch the lazy imports.
-- **Auto-discovered tools**: `pawn_agent/tools/` modules are registered automatically at runtime. Any non-private module exporting `NAME`, `DESCRIPTION`, and `build(cfg)` (or `build(cfg, session_vars=…)`) becomes a tool. No registration boilerplate required.
-- **Shared ORM base**: `pawn_core.database.Base` is the single declarative base for all packages. Package-specific models (e.g., `Embedding` in pawn_diarize, `AgentRun` in pawn_agent) inherit from it in their own modules.
-- **Alembic DSN resolution**: `alembic.ini` intentionally omits `sqlalchemy.url`. The DSN is read at runtime from `PawnConfig().db_dsn` inside `migrations/env.py`.
+- `pawn-server` always routes chat completions through LangGraph; the OpenAI `model` field is accepted for compatibility but ignored by the API server. Queue/scheduler runs can still pass model overrides through `run_agent_turn`.
+- LangGraph state lives in `pawn_agent/core/langgraph_state.py` as bucketed `session_state`, `durable_facts`, `artifacts`, plus trimmed `recent_messages` (`RECENT_MESSAGE_LIMIT = 12`). Use helpers like `ensure_langgraph_state`, `get_state_field`, `set_state_fields`, `get_recent_messages`.
+- LangGraph tool adapters and routing helpers live in `pawn_agent/core/langgraph_tools.py`; they call tool `*_impl` functions directly for graph nodes.
+- Session discovery uses `pawn_agent/core/session_candidates.py`. `list_sessions` now has both text output (`list_sessions_impl`) and structured candidates (`list_session_candidates_impl`); LangGraph uses candidates to resolve vague prompts like "latest session".
+- Queue listener (`pawn_server/core/queue_listener.py`) expects `{"command": "run", "prompt": ..., "session_id": ..., "model": ...}`. `session_id` is the diarization session name and also keys the LangGraph registry conversation.
+- Agent run persistence is centralized in `pawn_agent/core/agent_runner.py`; it creates/updates `agent_runs` for queue and scheduled runs.
 
-## Configuration
+## Agent Tools
 
-`pawnai.yaml` is **gitignored** (do not commit tokens). It is auto-discovered in cwd or passed via `--config`.
+`pawn_agent/tools/` is auto-discovered by `pawn_agent/tools/__init__.py`: every non-private module with `build(cfg)` is imported. Tool modules should export `NAME`, `DESCRIPTION`, and `build()`.
 
-Precedence: CLI flags → `pawnai.yaml` → environment variables → defaults.
+If a tool needs request/session metadata, declare `build(cfg, session_vars=None)`. The loader passes `session_vars` only when that parameter exists. Keep reusable logic in an importable `*_impl` function so LangGraph nodes and tests can call it without PydanticAI wrapping.
 
-Env-var convention: prefix `PAWN_` with `__` for nesting:
-- `PAWN_DB_DSN` → `db_dsn`
-- `PAWN_MODELS__HF_TOKEN` → `models.hf_token`
-- `DATABASE_URL` → `db_dsn` (legacy alias)
-- `HF_TOKEN` → `models.hf_token` (legacy alias)
+Current scheduling tool: `propose_schedule_change` only creates proposals. It never directly mutates schedules; proposals must be approved by the application/CLI.
 
-## Testing Notes
+## Scheduler
 
-- `tests/conftest.py` provides minimal fixtures (`temp_audio_file`, `temp_db_path`).
-- `pyproject.toml` `[tool.pytest.ini_options]` sets `--cov=pawn_diarize --cov-report=term-missing` as default. To run without coverage, pass `--no-cov`.
+Durable schedules are in `pawn_agent/core/scheduler.py` and DB models in `pawn_agent/utils/db.py`:
+- Tables include `agent_schedules`, `agent_schedule_proposals`, `agent_schedule_fires`, and `agent_runs`.
+- Supported kinds: `once`, `interval`, `cron` (`croniter` dependency).
+- `AgentSchedulerConfig` defaults: enabled, 30s poll, max 5 due per tick, timezone `UTC`, stale fire 3600s.
+- `pawn-server run` starts API/queue/scheduler according to config and flags; `--scheduler-only` runs only the scheduler.
+- CLI management is under `pawn-server schedules`: `list`, `show`, `proposals`, `approve`, `reject`, `pause`, `resume`, `cancel`.
+
+## Config
+
+`pawnai.yaml` / `pawnai.yml` are auto-discovered and gitignored. Do not stage them; this working copy may contain real tokens.
+
+Precedence is CLI/explicit overrides, YAML, env vars, defaults. Env vars use `PAWN_` plus `__` nesting:
+- `PAWN_DB_DSN`, legacy `DATABASE_URL`
+- `PAWN_MODELS__HF_TOKEN`, legacy `HF_TOKEN`
+- `PAWN_AGENT__OPENAI__API_KEY`, `PAWN_AGENT__OPENAI__FAST_MODEL`, etc.
+
+Default DB uses PostgreSQL on port `5433` and requires `pgvector`.
+
+## Testing Pointers
+
+- `tests/conftest.py` has minimal audio/DB fixtures.
+- Scheduler coverage: `tests/test_agent_scheduler.py`.
+- LangGraph/router coverage: `tests/test_langgraph_chat.py`, `tests/test_pawn_agent_cli.py`, `tests/test_push_queue_message.py`.
+- Queue listener coverage: `tests/test_agent_queue_listener.py`.
 - No CI workflows are present in `.github/workflows/`.
 
-## Important Constraints
+## Constraints / Gotchas
 
-- PostgreSQL **pgvector** extension is required.
-- Default DB DSN in config uses port **5433** (matching docker-compose), not 5432.
-- `pawnai.yaml` contains real tokens in this working copy — never stage or commit it.
-- If adding a new tool to `pawn_agent/tools/`, ensure it exports `NAME`, `DESCRIPTION`, and `build()`. The `__init__.py` loader inspects signatures and will pass `session_vars` only if the `build` function declares that parameter.
+- `pawn_diarize/core/__init__.py` lazy-loads heavy ML modules via `__getattr__`; keep lightweight commands from importing pyannote/NeMo accidentally.
+- `pawn_core.database.Base` is the shared SQLAlchemy declarative base. Package-specific models must inherit from it.
+- `alembic.ini` intentionally omits `sqlalchemy.url`; `migrations/env.py` reads `PawnConfig().db_dsn`.
+- Prefer structured DB/API helpers over parsing human-readable tool output. Only parse rendered output where compatibility requires it.
+- Keep secrets out of commits, especially `pawnai.yaml`.
