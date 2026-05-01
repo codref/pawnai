@@ -15,7 +15,9 @@ from pawn_agent.core.langgraph_chat import (
     new_langgraph_chat_state,
 )
 from pawn_agent.core.langgraph_tools import (
+    _parse_interval_seconds,
     build_tool_analyze_summary_node,
+    build_tool_list_sessions_node,
     build_tool_propose_schedule_change_node,
     build_tool_query_conversation_node,
     resolve_session_id,
@@ -25,6 +27,7 @@ from pawn_agent.core.langgraph_tools import (
     run_query_conversation_tool,
     run_save_to_siyuan_tool,
 )
+from pawn_agent.core.session_candidates import SessionCandidate
 from pawn_agent.tools.analyze_summary import analyze_summary_impl
 from pawn_agent.tools.analyze_summary import build as build_analyze_summary_tool
 from pawn_agent.tools.list_sessions import build as build_list_sessions_tool
@@ -59,6 +62,7 @@ def test_new_langgraph_chat_state_resets_history() -> None:
             "latest_generated_content": "",
             "latest_generated_title": "",
             "session_catalog_output": "",
+            "session_candidates": [],
             "latest_session_transcript": "",
         },
         "recent_messages": [],
@@ -343,9 +347,7 @@ def test_schedule_tool_bootstraps_latest_session_from_catalog() -> None:
         patch(
             "pawn_agent.core.langgraph_tools.run_list_sessions_tool",
             return_value=(
-                "Found 2 session(s):\n"
-                "oci-20260416 | 2026-04-16 10:00:00 | 3 segments\n"
-                "oci-20260415 | 2026-04-15 09:00:00 | 4 segments"
+                "Found 1 session(s):\n" "oci-20260416 | 2026-04-16 10:00:00 | 3 segments\n"
             ),
         ),
         patch(
@@ -356,12 +358,23 @@ def test_schedule_tool_bootstraps_latest_session_from_catalog() -> None:
         updated = asyncio.run(node(state))
 
     assert updated["durable_facts"]["latest_session_id"] == "oci-20260416"
-    assert "Found 2 session(s):" in updated["artifacts"]["session_catalog_output"]
+    assert "Found 1 session(s):" in updated["artifacts"]["session_catalog_output"]
     assert captured["schedule"] == {
         "session_id": "oci-20260416",
         "schedule_kind": "interval",
         "interval_seconds": 1800,
     }
+
+
+def test_parse_interval_seconds_handles_supported_forms() -> None:
+    assert _parse_interval_seconds("every 30 minutes") == 1800
+    assert _parse_interval_seconds("each 15 mins") == 900
+    assert _parse_interval_seconds("every 2 hours") == 7200
+    assert _parse_interval_seconds("every half hour") == 1800
+    assert _parse_interval_seconds("scan every 30 minutes") == 1800
+    assert _parse_interval_seconds("hourly") == 3600
+    assert _parse_interval_seconds("daily") == 86400
+    assert _parse_interval_seconds("schedule analysis") is None
 
 
 def test_serialize_langgraph_state_returns_json_snapshot() -> None:
@@ -392,6 +405,10 @@ def test_list_sessions_impl_formats_rows() -> None:
         def all(self):
             return rows
 
+    class FakeEmptyResult:
+        def all(self):
+            return []
+
     class FakeDbSession:
         def __init__(self, _engine) -> None:
             pass
@@ -404,6 +421,9 @@ def test_list_sessions_impl_formats_rows() -> None:
 
         def execute(self, _stmt):
             return FakeResult()
+
+        def scalars(self, _stmt):
+            return FakeEmptyResult()
 
     class FakeFuncs:
         @staticmethod
@@ -432,7 +452,10 @@ def test_list_sessions_impl_formats_rows() -> None:
             return self
 
     fake_segment = SimpleNamespace(
-        session_id=SimpleNamespace(ilike=lambda _value: "ilike"),
+        session_id=SimpleNamespace(
+            ilike=lambda _value: "ilike",
+            is_not=lambda _value: "not-null",
+        ),
         id="id",
         start_time="start_time",
         end_time="end_time",
@@ -448,6 +471,10 @@ def test_list_sessions_impl_formats_rows() -> None:
     fake_sqlalchemy_orm.Session = FakeDbSession
 
     fake_db = ModuleType("pawn_agent.utils.db")
+    fake_db.SessionAnalysis = SimpleNamespace(
+        session_id=SimpleNamespace(in_=lambda _value: "in"),
+        analyzed_at=SimpleNamespace(desc=lambda: "desc"),
+    )
     fake_db.TranscriptionSegment = fake_segment
 
     with patch.dict(
@@ -943,7 +970,9 @@ def test_langgraph_router_agent_routes_to_save_to_siyuan_tool(tmp_path: Path) ->
     assert "tool_save_to_siyuan" in calls[0][1]
 
 
-def test_langgraph_router_agent_prefers_schedule_tool_for_recurring_requests(tmp_path: Path) -> None:
+def test_langgraph_router_agent_prefers_schedule_tool_for_recurring_requests(
+    tmp_path: Path,
+) -> None:
     cfg_file = tmp_path / "pawnai.yaml"
     cfg_file.write_text(
         "agent:\n"
@@ -1028,6 +1057,114 @@ def test_langgraph_session_tool_helper_resolves_named_session_from_catalog() -> 
 
     _, session_id = resolve_session_id(state, cfg, bootstrap_catalog=False)
     assert session_id == "tom-20260416"
+
+
+def test_langgraph_session_tool_helper_exact_match_uses_structured_candidates() -> None:
+    cfg = SimpleNamespace()
+    state = {
+        "session_state": {"requested_session_id": "sess-200"},
+        "durable_facts": {"latest_session_id": ""},
+        "artifacts": {
+            "session_candidates": [
+                {"session_id": "sess-100"},
+                {"session_id": "sess-200"},
+            ]
+        },
+        "recent_messages": [],
+    }
+
+    _, session_id = resolve_session_id(state, cfg, bootstrap_catalog=False)
+    assert session_id == "sess-200"
+
+
+def test_langgraph_session_tool_helper_unknown_id_shaped_request_is_unresolved() -> None:
+    cfg = SimpleNamespace()
+    state = {
+        "session_state": {
+            "requested_session_id": "sess-999",
+            "latest_user_message": "show session sess-999",
+        },
+        "durable_facts": {"latest_session_id": ""},
+        "artifacts": {
+            "session_candidates": [
+                {"session_id": "sess-100"},
+                {"session_id": "sess-200"},
+            ]
+        },
+        "recent_messages": [],
+    }
+
+    _, session_id = resolve_session_id(state, cfg, bootstrap_catalog=False)
+    assert session_id == ""
+
+
+def test_langgraph_session_tool_helper_single_candidate_is_selected() -> None:
+    cfg = SimpleNamespace()
+    state = {
+        "session_state": {"requested_session_id": "", "latest_user_message": "retrieve session"},
+        "durable_facts": {"latest_session_id": ""},
+        "artifacts": {"session_candidates": [{"session_id": "solo-100"}]},
+        "recent_messages": [],
+    }
+
+    _, session_id = resolve_session_id(state, cfg, bootstrap_catalog=False)
+    assert session_id == "solo-100"
+
+
+def test_langgraph_session_tool_helper_matches_candidate_title_and_summary() -> None:
+    cfg = SimpleNamespace()
+    title_state = {
+        "session_state": {
+            "requested_session_id": "",
+            "latest_user_message": "retrieve the planning discussion",
+        },
+        "durable_facts": {"latest_session_id": ""},
+        "artifacts": {
+            "session_candidates": [
+                {"session_id": "sales-100", "title": "Sales review"},
+                {"session_id": "plan-200", "title": "Roadmap planning"},
+            ]
+        },
+        "recent_messages": [],
+    }
+    summary_state = {
+        "session_state": {
+            "requested_session_id": "",
+            "latest_user_message": "retrieve onboarding discussion",
+        },
+        "durable_facts": {"latest_session_id": ""},
+        "artifacts": {
+            "session_candidates": [
+                {"session_id": "sales-100", "summary": "Quarterly sales review"},
+                {"session_id": "team-200", "summary": "New hire onboarding details"},
+            ]
+        },
+        "recent_messages": [],
+    }
+
+    _, title_session_id = resolve_session_id(title_state, cfg, bootstrap_catalog=False)
+    _, summary_session_id = resolve_session_id(summary_state, cfg, bootstrap_catalog=False)
+
+    assert title_session_id == "plan-200"
+    assert summary_session_id == "team-200"
+
+
+def test_langgraph_session_tool_helper_multiple_candidates_without_match_is_unresolved() -> None:
+    cfg = SimpleNamespace()
+    state = {
+        "session_state": {"requested_session_id": "", "latest_user_message": "retrieve session"},
+        "durable_facts": {"latest_session_id": ""},
+        "artifacts": {
+            "session_candidates": [
+                {"session_id": "sess-100"},
+                {"session_id": "sess-200"},
+            ]
+        },
+        "recent_messages": [],
+    }
+
+    _, session_id = resolve_session_id(state, cfg, bootstrap_catalog=False)
+    assert session_id == ""
 
 
 def test_tool_query_conversation_bootstraps_session_catalog_for_first_turn_lookup() -> None:
@@ -1132,7 +1269,7 @@ def test_langgraph_list_sessions_helper_prefers_matching_session() -> None:
     )
 
 
-def test_langgraph_list_sessions_helper_falls_back_to_first_session() -> None:
+def test_langgraph_list_sessions_helper_resolves_explicit_latest_session() -> None:
     tool_output = (
         "Found 2 session(s):\n"
         "  sess-200  |  segments: 3  |  duration: 2m 10s  |  updated: 2026-04-17 11:00\n"
@@ -1143,6 +1280,59 @@ def test_langgraph_list_sessions_helper_falls_back_to_first_session() -> None:
         resolve_session_id_from_list_output("retrieve the latest session", tool_output)
         == "sess-200"
     )
+
+
+def test_langgraph_list_sessions_helper_does_not_guess_vague_multiple_sessions() -> None:
+    tool_output = (
+        "Found 2 session(s):\n"
+        "  sess-200  |  segments: 3  |  duration: 2m 10s  |  updated: 2026-04-17 11:00\n"
+        "  sess-100  |  segments: 9  |  duration: 12m 00s  |  updated: 2026-04-16 15:57"
+    )
+
+    assert resolve_session_id_from_list_output("retrieve a session", tool_output) == ""
+
+
+def test_tool_list_sessions_tracing_preserves_node_output() -> None:
+    state = {
+        "session_state": {"latest_user_message": "show demo session"},
+        "durable_facts": {"latest_session_id": ""},
+        "artifacts": {},
+        "recent_messages": [],
+    }
+    candidate = SessionCandidate(session_id="demo-100")
+    span_events: list[tuple[str, object, object | None]] = []
+
+    class FakeSpan:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb) -> None:
+            return None
+
+        def set_attribute(self, key: str, value: object) -> None:
+            span_events.append(("attr", key, value))
+
+    class FakeTracer:
+        def start_as_current_span(self, name: str):
+            span_events.append(("span", name, None))
+            return FakeSpan()
+
+    with patch(
+        "pawn_agent.core.langgraph_tools.run_list_session_candidates_tool",
+        return_value=[candidate],
+    ):
+        plain = build_tool_list_sessions_node(cfg=SimpleNamespace())(state)
+        traced = build_tool_list_sessions_node(
+            cfg=SimpleNamespace(),
+            tracer=FakeTracer(),
+            trace_full_state=True,
+        )(state)
+
+    assert traced == plain
+    assert ("span", "langgraph-tool-list-sessions", None) in span_events
+    assert ("attr", "tool.name", "list_sessions") in span_events
+    assert any(event[1] == "state.before.json" for event in span_events)
+    assert any(event[1] == "state.after.json" for event in span_events)
 
 
 def test_langgraph_router_agent_session_id_extractor_returns_none_when_absent(

@@ -32,6 +32,7 @@ _PERSISTENT_ARTIFACT_KEYS = (
     "latest_generated_content",
     "latest_generated_title",
     "session_catalog_output",
+    "session_candidates",
     "latest_session_transcript",
 )
 

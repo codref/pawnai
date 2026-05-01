@@ -35,6 +35,7 @@ class LangGraphArtifacts(TypedDict, total=False):
     latest_generated_content: str
     latest_generated_title: str
     session_catalog_output: str
+    session_candidates: list[dict[str, Any]]
     latest_session_transcript: str
 
 
@@ -68,6 +69,7 @@ ARTIFACT_DEFAULTS: LangGraphArtifacts = {
     "latest_generated_content": "",
     "latest_generated_title": "",
     "session_catalog_output": "",
+    "session_candidates": [],
     "latest_session_transcript": "",
 }
 
@@ -88,6 +90,7 @@ FIELD_BUCKETS = {
     "latest_generated_content": "artifacts",
     "latest_generated_title": "artifacts",
     "session_catalog_output": "artifacts",
+    "session_candidates": "artifacts",
     "latest_session_transcript": "artifacts",
 }
 
