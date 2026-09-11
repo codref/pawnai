@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import json
 import re
+import time
+import uuid
 from copy import deepcopy
-from typing import Callable, TypedDict
+from typing import Any, Callable
 
 from prompt_toolkit import PromptSession
 
@@ -15,6 +17,7 @@ from pawn_agent.core.chat_primitives import (
     apply_user_message,
     normalize_output,
 )
+from pawn_agent.core.graph_events import GraphEventRecorder, instrument_node, instrument_router
 from pawn_agent.core.langgraph_state import (
     StructuredLangGraphState,
     ensure_langgraph_state,
@@ -38,6 +41,7 @@ from pawn_agent.core.langgraph_tools import (
     build_tool_vectorize_node,
 )
 from pawn_agent.utils.config import AgentConfig
+from pawn_agent.utils.db import create_agent_run, update_agent_run
 
 
 class LangGraphChatState(StructuredLangGraphState, total=False):
@@ -316,9 +320,8 @@ class LangGraphRouterChatAgent:
         if any(word in normalized for word in ("schedule", "reschedule", "recurring", "every")):
             return True
         return (
-            ("pause" in normalized or "resume" in normalized or "cancel" in normalized)
-            and "schedule" in normalized
-        )
+            "pause" in normalized or "resume" in normalized or "cancel" in normalized
+        ) and "schedule" in normalized
 
     def _postprocess_plan(self, user_prompt: str, plan: list[str]) -> list[str]:
         if not self._has_explicit_schedule_intent(user_prompt):
@@ -621,6 +624,7 @@ async def build_langgraph_chat_graph(
     tracer=None,
     *,
     trace_full_state: bool = False,
+    graph_recorder: GraphEventRecorder | Callable[[], GraphEventRecorder | None] | None = None,
 ):
     """Build the minimal LangGraph chatbot graph."""
     StateGraph, START, END = _import_langgraph_core()
@@ -937,96 +941,139 @@ async def build_langgraph_chat_graph(
                 _trace_full_state_snapshot(span, updated, label="after")
             return updated
 
+    def add_instrumented_node(name: str, fn: Callable[..., Any]) -> None:
+        builder.add_node(name, instrument_node(name, fn, graph_recorder))
+
     builder = StateGraph(LangGraphChatState)
-    builder.add_node("human_input", human_input_node)
-    builder.add_node("recall_memories", recall_memories_node)
-    builder.add_node("plan", plan_node)
-    builder.add_node("dispatch", dispatch_node)
-    builder.add_node("extract_session_id", extract_session_id_node)
+    add_instrumented_node("human_input", human_input_node)
+    add_instrumented_node("recall_memories", recall_memories_node)
+    add_instrumented_node("plan", plan_node)
+    add_instrumented_node("dispatch", dispatch_node)
+    add_instrumented_node("extract_session_id", extract_session_id_node)
     builder.add_node(
         "tool_list_sessions",
-        build_tool_list_sessions_node(
-            cfg=chat_agent.cfg,
-            tracer=tracer,
-            trace_full_state=trace_full_state,
+        instrument_node(
+            "tool_list_sessions",
+            build_tool_list_sessions_node(
+                cfg=chat_agent.cfg,
+                tracer=tracer,
+                trace_full_state=trace_full_state,
+            ),
+            graph_recorder,
         ),
     )
     builder.add_node(
         "tool_analyze_summary",
-        build_tool_analyze_summary_node(
-            cfg=chat_agent.cfg,
-            tracer=tracer,
-            trace_full_state=trace_full_state,
+        instrument_node(
+            "tool_analyze_summary",
+            build_tool_analyze_summary_node(
+                cfg=chat_agent.cfg,
+                tracer=tracer,
+                trace_full_state=trace_full_state,
+            ),
+            graph_recorder,
         ),
     )
     builder.add_node(
         "tool_query_conversation",
-        build_tool_query_conversation_node(
-            cfg=chat_agent.cfg,
-            tracer=tracer,
-            trace_full_state=trace_full_state,
+        instrument_node(
+            "tool_query_conversation",
+            build_tool_query_conversation_node(
+                cfg=chat_agent.cfg,
+                tracer=tracer,
+                trace_full_state=trace_full_state,
+            ),
+            graph_recorder,
         ),
     )
     builder.add_node(
         "tool_save_to_siyuan",
-        build_tool_save_to_siyuan_node(
-            cfg=chat_agent.cfg,
-            tracer=tracer,
-            trace_full_state=trace_full_state,
+        instrument_node(
+            "tool_save_to_siyuan",
+            build_tool_save_to_siyuan_node(
+                cfg=chat_agent.cfg,
+                tracer=tracer,
+                trace_full_state=trace_full_state,
+            ),
+            graph_recorder,
         ),
     )
     builder.add_node(
         "tool_memorize",
-        build_tool_memorize_node(
-            cfg=chat_agent.cfg,
-            tracer=tracer,
-            trace_full_state=trace_full_state,
+        instrument_node(
+            "tool_memorize",
+            build_tool_memorize_node(
+                cfg=chat_agent.cfg,
+                tracer=tracer,
+                trace_full_state=trace_full_state,
+            ),
+            graph_recorder,
         ),
     )
     builder.add_node(
         "tool_recall_memory",
-        build_tool_recall_memory_node(
-            cfg=chat_agent.cfg,
-            tracer=tracer,
-            trace_full_state=trace_full_state,
+        instrument_node(
+            "tool_recall_memory",
+            build_tool_recall_memory_node(
+                cfg=chat_agent.cfg,
+                tracer=tracer,
+                trace_full_state=trace_full_state,
+            ),
+            graph_recorder,
         ),
     )
     builder.add_node(
         "tool_search_knowledge",
-        build_tool_search_knowledge_node(
-            cfg=chat_agent.cfg,
-            tracer=tracer,
-            trace_full_state=trace_full_state,
+        instrument_node(
+            "tool_search_knowledge",
+            build_tool_search_knowledge_node(
+                cfg=chat_agent.cfg,
+                tracer=tracer,
+                trace_full_state=trace_full_state,
+            ),
+            graph_recorder,
         ),
     )
     builder.add_node(
         "tool_vectorize",
-        build_tool_vectorize_node(
-            cfg=chat_agent.cfg,
-            tracer=tracer,
-            trace_full_state=trace_full_state,
+        instrument_node(
+            "tool_vectorize",
+            build_tool_vectorize_node(
+                cfg=chat_agent.cfg,
+                tracer=tracer,
+                trace_full_state=trace_full_state,
+            ),
+            graph_recorder,
         ),
     )
     builder.add_node(
         "tool_push_queue_message",
-        build_tool_push_queue_message_node(
-            cfg=chat_agent.cfg,
-            chat_agent=chat_agent,
-            tracer=tracer,
-            trace_full_state=trace_full_state,
+        instrument_node(
+            "tool_push_queue_message",
+            build_tool_push_queue_message_node(
+                cfg=chat_agent.cfg,
+                chat_agent=chat_agent,
+                tracer=tracer,
+                trace_full_state=trace_full_state,
+            ),
+            graph_recorder,
         ),
     )
     builder.add_node(
         "tool_propose_schedule_change",
-        build_tool_propose_schedule_change_node(
-            cfg=chat_agent.cfg,
-            chat_agent=chat_agent,
-            tracer=tracer,
-            trace_full_state=trace_full_state,
+        instrument_node(
+            "tool_propose_schedule_change",
+            build_tool_propose_schedule_change_node(
+                cfg=chat_agent.cfg,
+                chat_agent=chat_agent,
+                tracer=tracer,
+                trace_full_state=trace_full_state,
+            ),
+            graph_recorder,
         ),
     )
-    builder.add_node("respond_fast", respond_fast_node)
-    builder.add_node("respond_deep", respond_deep_node)
+    add_instrumented_node("respond_fast", respond_fast_node)
+    add_instrumented_node("respond_deep", respond_deep_node)
     builder.add_edge(START, "human_input")
     builder.add_edge("human_input", "recall_memories")
     builder.add_edge("recall_memories", "plan")
@@ -1045,7 +1092,9 @@ async def build_langgraph_chat_graph(
     builder.add_edge("respond_deep", "dispatch")
     builder.add_conditional_edges(
         "extract_session_id",
-        _next_node_after_extract_session_id,
+        instrument_router(
+            "extract_session_id", _next_node_after_extract_session_id, graph_recorder
+        ),
         {
             "tool_analyze_summary": "tool_analyze_summary",
             "tool_query_conversation": "tool_query_conversation",
@@ -1053,7 +1102,7 @@ async def build_langgraph_chat_graph(
     )
     builder.add_conditional_edges(
         "dispatch",
-        _next_node_from_dispatch,
+        instrument_router("dispatch", _next_node_from_dispatch, graph_recorder),
         {
             "tool_list_sessions": "tool_list_sessions",
             "extract_session_id": "extract_session_id",
@@ -1088,6 +1137,7 @@ class LangGraphChatSession:
         self._chat_agent = LangGraphRouterChatAgent(cfg=cfg, on_thinking=on_thinking)
         self._tracer = build_phoenix_tracer(cfg)
         self._graph = None
+        self._graph_recorder: GraphEventRecorder | None = None
         self._state: LangGraphChatState = new_langgraph_chat_state()
 
     @classmethod
@@ -1108,15 +1158,26 @@ class LangGraphChatSession:
             session._chat_agent,
             session._tracer,
             trace_full_state=trace_full_state,
+            graph_recorder=lambda: session._graph_recorder,
         )
         return session
 
     async def reset(self) -> None:
         self._state = new_langgraph_chat_state()
 
-    async def handle_user_input(self, text: str) -> str:
+    async def handle_user_input(
+        self, text: str, graph_recorder: GraphEventRecorder | None = None
+    ) -> str:
         if self._graph is None:
             raise RuntimeError("LangGraph chat application is not initialized.")
+        previous_recorder = self._graph_recorder
+        self._graph_recorder = graph_recorder
+        try:
+            return await self._handle_user_input_with_active_recorder(text)
+        finally:
+            self._graph_recorder = previous_recorder
+
+    async def _handle_user_input_with_active_recorder(self, text: str) -> str:
         if self._tracer is None:
             payload = set_state_fields(dict(self._state), incoming_prompt=text)
             result = await self._graph.ainvoke(payload)
@@ -1172,6 +1233,7 @@ async def run_langgraph_chat(
         on_thinking=on_thinking,
         trace_full_state=trace_full_state,
     )
+    cli_session_id = f"cli-{uuid.uuid4()}"
     prompt_session = PromptSession()
     while True:
         try:
@@ -1189,4 +1251,50 @@ async def run_langgraph_chat(
         if text.startswith("/"):
             emit("LangGraph chat supports only /reset, /exit, and /quit.")
             continue
-        emit(await session.handle_user_input(text))
+        run_id = create_agent_run(
+            cfg.db_dsn,
+            source="cli",
+            command="chat",
+            prompt=text,
+            session_id=cli_session_id,
+            model=cfg.pydantic_model,
+        )
+        update_agent_run(cfg.db_dsn, run_id, "running")
+        graph_recorder = GraphEventRecorder(
+            cfg.db_dsn,
+            run_id=run_id,
+            thread_id=cli_session_id,
+        )
+        run_start = time.perf_counter()
+        graph_recorder.record(
+            "run_start",
+            status="running",
+            payload={
+                "source": "cli",
+                "command": "chat",
+                "model": cfg.pydantic_model,
+            },
+        )
+        try:
+            reply = await session.handle_user_input(text, graph_recorder=graph_recorder)
+        except Exception as exc:
+            update_agent_run(cfg.db_dsn, run_id, "failed", error=str(exc))
+            graph_recorder.record(
+                "error",
+                status="failed",
+                duration_ms=int((time.perf_counter() - run_start) * 1000),
+                payload={"error": str(exc)},
+            )
+            graph_recorder.record(
+                "run_end",
+                status="failed",
+                duration_ms=int((time.perf_counter() - run_start) * 1000),
+            )
+            raise
+        update_agent_run(cfg.db_dsn, run_id, "completed", response=reply)
+        graph_recorder.record(
+            "run_end",
+            status="completed",
+            duration_ms=int((time.perf_counter() - run_start) * 1000),
+        )
+        emit(reply)

@@ -119,9 +119,7 @@ def _delete_session_state(session_id: str, db_dsn: str) -> None:
     try:
         with engine.begin() as conn:
             conn.execute(
-                sa.text(
-                    "DELETE FROM langgraph_session_state WHERE session_id = :sid"
-                ),
+                sa.text("DELETE FROM langgraph_session_state WHERE session_id = :sid"),
                 {"sid": session_id},
             )
     finally:
@@ -167,9 +165,7 @@ class LangGraphSessionRegistry:
         session = await LangGraphChatSession.create(cfg, emit=lambda _: None)
 
         loop = asyncio.get_running_loop()
-        saved = await loop.run_in_executor(
-            None, _load_session_state, session_id, db_dsn
-        )
+        saved = await loop.run_in_executor(None, _load_session_state, session_id, db_dsn)
         if saved:
             state = set_state_fields(
                 dict(session._state),
@@ -191,13 +187,17 @@ class LangGraphSessionRegistry:
         async with self._registry_lock:
             # Double-check after acquiring the lock
             if session_id not in self._sessions:
-                self._sessions[session_id] = await self._build_session(
-                    session_id, cfg, db_dsn
-                )
+                self._sessions[session_id] = await self._build_session(session_id, cfg, db_dsn)
         return self._sessions[session_id]
 
     async def handle_turn(
-        self, session_id: str, text: str, cfg: Any, db_dsn: str
+        self,
+        session_id: str,
+        text: str,
+        cfg: Any,
+        db_dsn: str,
+        *,
+        graph_recorder: Any = None,
     ) -> str:
         """Process one user turn and persist the resulting state.
 
@@ -206,7 +206,7 @@ class LangGraphSessionRegistry:
         """
         session = await self.get_or_create(session_id, cfg, db_dsn)
         async with self._session_lock(session_id):
-            reply = await session.handle_user_input(text)
+            reply = await session.handle_user_input(text, graph_recorder=graph_recorder)
             loop = asyncio.get_running_loop()
             try:
                 await loop.run_in_executor(
@@ -230,9 +230,7 @@ class LangGraphSessionRegistry:
 
         loop = asyncio.get_running_loop()
         try:
-            await loop.run_in_executor(
-                None, _delete_session_state, session_id, db_dsn
-            )
+            await loop.run_in_executor(None, _delete_session_state, session_id, db_dsn)
         except Exception:
             logger.warning(
                 "Failed to delete LangGraph state for session %r",

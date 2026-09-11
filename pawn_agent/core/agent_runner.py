@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import copy
+import time
 from dataclasses import dataclass
 from typing import Any, Optional
 
+from pawn_agent.core.graph_events import GraphEventRecorder
 from pawn_agent.utils.db import create_agent_run, update_agent_run
 from pawn_agent.utils.model_utils import _apply_model_override
 
@@ -53,6 +55,23 @@ async def run_agent_turn(
         model=effective_cfg.pydantic_model,
     )
     update_agent_run(cfg.db_dsn, run_id, "running")
+    graph_recorder = GraphEventRecorder(
+        cfg.db_dsn,
+        run_id=run_id,
+        thread_id=session_id,
+    )
+    run_start = time.perf_counter()
+    graph_recorder.record(
+        "run_start",
+        status="running",
+        payload={
+            "source": source,
+            "command": command,
+            "model": effective_cfg.pydantic_model,
+            "schedule_id": schedule_id,
+            "scheduled_fire_id": scheduled_fire_id,
+        },
+    )
 
     try:
         if not prompt:
@@ -63,9 +82,31 @@ async def run_agent_turn(
                 "it must be the diarization session name used by agent tools"
             )
 
-        reply = await registry.handle_turn(session_id, prompt, effective_cfg, cfg.db_dsn)
+        reply = await registry.handle_turn(
+            session_id,
+            prompt,
+            effective_cfg,
+            cfg.db_dsn,
+            graph_recorder=graph_recorder,
+        )
         update_agent_run(cfg.db_dsn, run_id, "completed", response=reply)
+        graph_recorder.record(
+            "run_end",
+            status="completed",
+            duration_ms=int((time.perf_counter() - run_start) * 1000),
+        )
         return AgentRunResult(run_id=run_id, response=reply)
     except Exception as exc:
         update_agent_run(cfg.db_dsn, run_id, "failed", error=str(exc))
+        graph_recorder.record(
+            "error",
+            status="failed",
+            duration_ms=int((time.perf_counter() - run_start) * 1000),
+            payload={"error": str(exc)},
+        )
+        graph_recorder.record(
+            "run_end",
+            status="failed",
+            duration_ms=int((time.perf_counter() - run_start) * 1000),
+        )
         raise

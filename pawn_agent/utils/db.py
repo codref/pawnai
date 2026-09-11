@@ -16,6 +16,7 @@ from sqlalchemy import (
     UniqueConstraint,
     create_engine,
 )
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, Session, mapped_column
 
 from pawn_core.database import (  # noqa: F401
@@ -48,6 +49,49 @@ class AgentRun(_Base):
     created_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     started_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     completed_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+
+
+class GraphTopology(_Base):
+    """Static topology snapshot for a graph version."""
+
+    __tablename__ = "graph_topologies"
+    __table_args__ = (
+        UniqueConstraint("graph_name", "graph_version", name="uq_graph_topologies_name_version"),
+    )
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    graph_name: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    graph_version: Mapped[str] = mapped_column(String, nullable=False)
+    topology: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    created_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+
+
+class GraphRunEvent(_Base):
+    """Append-only graph execution event for an ``agent_runs`` row."""
+
+    __tablename__ = "graph_run_events"
+    __table_args__ = (
+        UniqueConstraint("run_id", "sequence", name="uq_graph_run_events_run_sequence"),
+    )
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    run_id: Mapped[str] = mapped_column(
+        String, ForeignKey("agent_runs.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    sequence: Mapped[int] = mapped_column(Integer, nullable=False)
+    thread_id: Mapped[Optional[str]] = mapped_column(String, nullable=True, index=True)
+    trace_id: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    graph_name: Mapped[str] = mapped_column(String, nullable=False)
+    graph_version: Mapped[str] = mapped_column(String, nullable=False)
+    event_type: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    node_name: Mapped[Optional[str]] = mapped_column(String, nullable=True, index=True)
+    from_node: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    to_node: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    router_choice: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    timestamp: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    duration_ms: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    status: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    payload: Mapped[Optional[dict[str, Any]]] = mapped_column(JSONB, nullable=True)
 
 
 class AgentSchedule(_Base):
@@ -269,3 +313,78 @@ def update_agent_run(
             row.response = response
         if error is not None:
             row.error = error
+
+
+# ---------------------------------------------------------------------------
+# Graph run event helpers
+# ---------------------------------------------------------------------------
+
+
+def upsert_graph_topology(
+    dsn: str,
+    *,
+    graph_name: str,
+    graph_version: str,
+    topology: dict[str, Any],
+) -> str:
+    """Insert or update one static graph topology snapshot."""
+    row_id = f"{graph_name}:{graph_version}"
+    with _get_session(dsn) as db:
+        row = db.get(GraphTopology, row_id)
+        if row is None:
+            db.add(
+                GraphTopology(
+                    id=row_id,
+                    graph_name=graph_name,
+                    graph_version=graph_version,
+                    topology=topology,
+                    created_at=datetime.now(timezone.utc),
+                )
+            )
+        else:
+            row.topology = topology
+    return row_id
+
+
+def save_graph_run_event(
+    dsn: str,
+    *,
+    run_id: str,
+    sequence: int,
+    thread_id: Optional[str],
+    trace_id: Optional[str],
+    graph_name: str,
+    graph_version: str,
+    event_type: str,
+    timestamp: datetime,
+    node_name: Optional[str] = None,
+    from_node: Optional[str] = None,
+    to_node: Optional[str] = None,
+    router_choice: Optional[str] = None,
+    duration_ms: Optional[int] = None,
+    status: Optional[str] = None,
+    payload: Optional[dict[str, Any]] = None,
+) -> str:
+    """Append one graph execution event and return its UUID."""
+    row_id = str(uuid.uuid4())
+    row = GraphRunEvent(
+        id=row_id,
+        run_id=run_id,
+        sequence=sequence,
+        thread_id=thread_id,
+        trace_id=trace_id,
+        graph_name=graph_name,
+        graph_version=graph_version,
+        event_type=event_type,
+        node_name=node_name,
+        from_node=from_node,
+        to_node=to_node,
+        router_choice=router_choice,
+        timestamp=timestamp,
+        duration_ms=duration_ms,
+        status=status,
+        payload=payload,
+    )
+    with _get_session(dsn) as db:
+        db.add(row)
+    return row_id
