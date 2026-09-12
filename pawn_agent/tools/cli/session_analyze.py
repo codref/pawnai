@@ -17,7 +17,18 @@ def main(argv: list[str] | None = None) -> int:
             "and persist it. Optional --save also writes to SiYuan."
         ),
     )
-    parser.add_argument("--session-id", required=True, help="Diarization session id")
+    # Positional is accepted because models often omit the flag name.
+    parser.add_argument(
+        "session_id_pos",
+        nargs="?",
+        default=None,
+        help="Diarization session id (same as --session-id)",
+    )
+    parser.add_argument(
+        "--session-id",
+        default=None,
+        help="Diarization session id (preferred flag form)",
+    )
     parser.add_argument(
         "--save",
         action="store_true",
@@ -31,13 +42,17 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--config", default=None, help="Optional path to pawnai.yaml")
     args = parser.parse_args(argv)
 
+    session_id = args.session_id or args.session_id_pos
+    if not session_id:
+        return fail("session id required: pass --session-id ID (or a bare ID)")
+
     try:
         cfg = load_agent_config(args.config)
         # analyze_summary_impl is async (LLM analysis); CliTool runner is sync.
         text = asyncio.run(
             analyze_summary_impl(
                 cfg,
-                args.session_id,
+                session_id,
                 save=bool(args.save),
                 title=args.title,
             )

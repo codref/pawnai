@@ -55,6 +55,18 @@ Config file schema (all keys optional)::
       matrix:
         topic: matrix-jobs
         bucket_name: my-bucket
+
+    matrix_bot:
+      enabled: false
+      homeserver_url: https://matrix.example.com
+      user_id: "@pawn:example.com"
+      user_token: "..."
+      device_id: PAWNBOT01
+      device_name: pawn-matrix
+      store_path: .matrix-store
+      command_prefix: "!pawn"
+      inviters:
+        - "@you:example.com"
 """
 
 from __future__ import annotations
@@ -189,6 +201,21 @@ class QueueProducerConfig(BaseModel):
     concurrency: Optional[dict] = None
 
 
+class MatrixBotConfig(BaseModel):
+    """``matrix_bot:`` section — inbound Matrix chatbot under ``pawn-server serve``."""
+
+    enabled: bool = False
+    homeserver_url: str = ""
+    user_id: str = ""
+    user_token: Optional[str] = None
+    user_password: Optional[str] = None
+    device_id: str = "PAWNBOT01"
+    device_name: str = "pawn-matrix"
+    store_path: str = ".matrix-store"
+    command_prefix: str = "!pawn"
+    inviters: list[str] = Field(default_factory=list)
+
+
 # ── AgentConfig ───────────────────────────────────────────────────────────────
 
 # PydanticAI-style prefixes (colon) → LiteLLM-style prefixes (slash).
@@ -238,6 +265,7 @@ class AgentConfig(PawnConfig):
     agent_scheduler: AgentSchedulerConfig = Field(default_factory=AgentSchedulerConfig)
     agent_queue: Optional[AgentQueueConfig] = None
     queue_producers: Optional[dict[str, QueueProducerConfig]] = None
+    matrix_bot: MatrixBotConfig = Field(default_factory=MatrixBotConfig)
 
     # ── Flat property aliases (old flat-field names used throughout pawn_agent) ─
 

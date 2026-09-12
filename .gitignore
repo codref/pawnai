@@ -243,3 +243,8 @@ mlflow.db
 temp
 
 .stdix
+# sallm local agent state (SQLite + Lance)
+.sallm/
+
+# Matrix nio E2EE device store
+.matrix-store/

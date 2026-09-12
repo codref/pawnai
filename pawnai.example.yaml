@@ -220,9 +220,27 @@ agent_queue:
     # auto, conditional_write, or csprng_verify.
     strategy: auto
 
+matrix_bot:
+  # Inbound Matrix chatbot (pawn-server serve). Opt-in; needs `uv sync --extra matrix`.
+  # Agent runs in-process — does not call the HTTP API.
+  enabled: false
+  homeserver_url: https://matrix.example.com
+  user_id: "@pawn:example.com"
+  # Prefer an access token; password is a fallback for first login.
+  user_token: ""
+  # user_password: ""
+  # Reuse a stable device_id with store_path; a new id in encrypted rooms drops messages.
+  device_id: PAWNBOT01
+  device_name: pawn-matrix
+  store_path: .matrix-store
+  command_prefix: "!pawn"
+  inviters:
+    - "@you:example.com"
+
 queue_producers:
   # Named producer targets used by pawn-agent's push_queue_message tool.
   # The agent prefers a target named "matrix" for notification-style updates.
+  # Outbound notifications only — not the inbound matrix_bot worker above.
   matrix:
     topic: matrix-bot-notifications
     bucket_name: pawn-agent-queue

@@ -71,13 +71,24 @@ def test_sessions_list_calls_impl() -> None:
 
 
 def test_session_transcript_requires_session_id() -> None:
-    try:
-        session_transcript.main([])
-        raised = False
-    except SystemExit as exc:
-        raised = True
-        assert exc.code != 0
-    assert raised
+    assert session_transcript.main([]) != 0
+
+
+def test_session_transcript_accepts_positional_id() -> None:
+    with (
+        patch(
+            "pawn_agent.tools.cli.session_transcript.load_agent_config",
+            return_value=object(),
+        ),
+        patch(
+            "pawn_agent.tools.cli.session_transcript.query_conversation_impl",
+            return_value="transcript ok",
+        ) as mock_impl,
+    ):
+        code = session_transcript.main(["daniel-20260630"])
+    assert code == 0
+    mock_impl.assert_called_once()
+    assert mock_impl.call_args.args[1] == "daniel-20260630"
 
 
 def test_siyuan_save_from_analysis_calls_impl() -> None:

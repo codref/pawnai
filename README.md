@@ -1,6 +1,6 @@
 # PawnAI
 
-A Python monolith for speaker diarization, audio transcription, and LLM-powered conversation analysis. Provides three CLI applications: **pawn-diarize** for audio processing and embedding management, **pawn-agent** for conversational analysis of recorded sessions, and **pawn-server** for the HTTP API, queue listener, and durable agent scheduler.
+A Python monolith for speaker diarization, audio transcription, and LLM-powered conversation analysis. Provides three CLI applications: **pawn-diarize** for audio processing and embedding management, **pawn-agent** for conversational analysis of recorded sessions, and **pawn-server** for the HTTP API, queue listener, durable agent scheduler, and optional Matrix bot.
 
 ## Features
 
@@ -512,7 +512,7 @@ Tools are sallm CliTools (`pawn_agent/tools/cli/`). See [docs/TOOLS.md](docs/TOO
 
 ## pawn-server
 
-HTTP API server, queue listener, and scheduler host for `pawn-agent`.
+HTTP API server, queue listener, scheduler, and optional Matrix bot for `pawn-agent`.
 
 ### Serve
 
@@ -532,22 +532,27 @@ Options:
 --no-queue                 Disable the queue listener
 --disable-scheduler        Disable the durable scheduler
 --scheduler-only           Run only the durable scheduler
+--no-matrix                Disable the Matrix bot
+--matrix-only              Run only the Matrix bot
 ```
 
 `pawn-server serve` starts the OpenAI-compatible HTTP API and, when configured,
-the queue listener and scheduler. The scheduler claims due rows from PostgreSQL,
-runs them through the same LangGraph session registry used by API and queue
-turns, and records each execution in `agent_runs`.
+the queue listener, scheduler, and Matrix bot. Agent turns use the in-process
+sallm registry and are recorded in `agent_runs`. Matrix chat needs
+`uv sync --extra matrix` and `matrix_bot.enabled` — see [docs/MATRIX_BOT.md](docs/MATRIX_BOT.md).
 
 ```bash
-# API + queue listener + scheduler
+# API + queue listener + scheduler (+ Matrix if enabled)
 pawn-server serve
 
 # API only
-pawn-server serve --no-queue --disable-scheduler
+pawn-server serve --no-queue --disable-scheduler --no-matrix
 
 # Scheduler worker only
 pawn-server serve --scheduler-only
+
+# Matrix bot only
+pawn-server serve --matrix-only
 ```
 
 ### Schedule Management
@@ -618,6 +623,7 @@ parakeet/
 │   ├── cli/commands.py       # serve and schedules commands
 │   └── core/
 │       ├── api_server.py     # FastAPI OpenAI-compatible API
+│       ├── matrix_bot.py     # Inbound Matrix chatbot worker
 │       └── queue_listener.py # pawn-agent queue consumer
 ├── migrations/               # Alembic schema versions
 ├── pawnai.yaml               # Project configuration

@@ -17,16 +17,26 @@ def main(argv: list[str] | None = None) -> int:
         ),
     )
     parser.add_argument(
+        "session_id_pos",
+        nargs="?",
+        default=None,
+        help="Diarization session id (same as --session-id)",
+    )
+    parser.add_argument(
         "--session-id",
-        required=True,
+        default=None,
         help="Diarization session identifier stored in the database",
     )
     parser.add_argument("--config", default=None, help="Optional path to pawnai.yaml")
     args = parser.parse_args(argv)
 
+    session_id = args.session_id or args.session_id_pos
+    if not session_id:
+        return fail("session id required: pass --session-id ID (or a bare ID)")
+
     try:
         cfg = load_agent_config(args.config)
-        print_out(query_conversation_impl(cfg, args.session_id))
+        print_out(query_conversation_impl(cfg, session_id))
         return 0
     except Exception as exc:
         return fail(str(exc))

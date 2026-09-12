@@ -10,7 +10,7 @@ from rich.table import Table
 
 app = typer.Typer(
     name="pawn-server",
-    help="HTTP API server and queue listener for pawn-agent.",
+    help="HTTP API, queue listener, scheduler, and optional Matrix bot for pawn-agent.",
     add_completion=False,
     rich_markup_mode="rich",
 )
@@ -203,15 +203,21 @@ def serve(
         "--scheduler-only",
         help="Run only the durable scheduler, without HTTP API or queue listener.",
     ),
+    no_matrix: bool = typer.Option(
+        False,
+        "--no-matrix",
+        help="Disable the Matrix bot even if matrix_bot.enabled is true.",
+    ),
+    matrix_only: bool = typer.Option(
+        False,
+        "--matrix-only",
+        help="Run only the Matrix bot (no HTTP API, queue, or scheduler).",
+    ),
 ) -> None:
-    """Start the HTTP API server and queue listener together.
+    """Start the HTTP API and optional workers (queue, scheduler, Matrix bot).
 
-    Runs both the REST API and the S3-backed queue listener in a single
-    process.  Either can be reached independently — HTTP clients hit the
-    API while queue producers push jobs via pawn-queue.
-
-    Pass [bold]--no-queue[/bold] to start only the HTTP API (e.g. when the
-    queue infrastructure is unavailable).
+    Workers are armed from config and can be forced off with ``--no-*`` flags.
+    Use ``--matrix-only`` or ``--scheduler-only`` for a single-worker process.
 
     \b
     API Endpoints
@@ -242,6 +248,7 @@ def serve(
     from pawn_agent.utils.config import load_config  # noqa: PLC0415
     from pawn_agent.utils.model_utils import _apply_model_override  # noqa: PLC0415
     from pawn_server.core.api_server import create_app  # noqa: PLC0415
+    from pawn_server.core.matrix_bot import start_matrix_bot  # noqa: PLC0415
     from pawn_server.core.queue_listener import (  # noqa: PLC0415
         DEFAULT_CONSUMER_NAME,
         DEFAULT_TOPIC,
@@ -264,14 +271,20 @@ def serve(
     if model:
         _apply_model_override(cfg, model)
 
+    if scheduler_only and matrix_only:
+        console.print("[red]Use only one of --scheduler-only / --matrix-only.[/red]")
+        raise typer.Exit(1)
+
     effective_host = host or cfg.api_host
     effective_port = port or cfg.api_port
 
     queue_cfg = cfg.queue_config or {}
     with_queue = not no_queue and bool(queue_cfg)
     with_scheduler = bool(cfg.agent_scheduler.enabled) and not disable_scheduler
+    with_matrix = bool(cfg.matrix_bot.enabled) and not no_matrix
     effective_topic = topic or queue_cfg.get("topic", DEFAULT_TOPIC)
     effective_consumer = consumer_name or queue_cfg.get("consumer_name", DEFAULT_CONSUMER_NAME)
+    only_mode = scheduler_only or matrix_only
 
     console.print(
         f"[bold green]pawn-server serve starting[/bold green]\n"
@@ -280,12 +293,11 @@ def serve(
         f"  model    : [dim]{cfg.pydantic_model}[/dim]\n"
         f"  idle     : [dim]{cfg.api_model_idle_timeout_minutes} min[/dim]\n"
         f"  auth     : [dim]{'token set' if cfg.api_token else 'NO TOKEN — open access'}[/dim]\n"
-        f"  queue    : [dim]{'topic=' + effective_topic + ' consumer=' + effective_consumer if with_queue and not scheduler_only else 'disabled'}[/dim]\n"
-        f"  scheduler: [dim]{'enabled' if with_scheduler else 'disabled'}[/dim]"
+        f"  queue    : [dim]{'topic=' + effective_topic + ' consumer=' + effective_consumer if with_queue and not only_mode else 'disabled'}[/dim]\n"
+        f"  scheduler: [dim]{'enabled' if with_scheduler and not matrix_only else 'disabled'}[/dim]\n"
+        f"  matrix   : [dim]{'enabled' if with_matrix and not scheduler_only else 'disabled'}[/dim]"
     )
     console.print("[dim]Press Ctrl-C to stop.[/dim]\n")
-
-    fastapi_app = create_app(cfg)
 
     async def _main() -> None:
         if scheduler_only:
@@ -294,12 +306,19 @@ def serve(
             await start_scheduler(cfg)
             return
 
+        if matrix_only:
+            if not with_matrix:
+                raise RuntimeError("Matrix bot is disabled by config or --no-matrix")
+            await start_matrix_bot(cfg)
+            return
+
+        fastapi_app = create_app(cfg)
         uv_config = uvicorn.Config(
             fastapi_app, host=effective_host, port=effective_port, log_level="info"
         )
         server = uvicorn.Server(uv_config)
 
-        if not with_queue and not with_scheduler:
+        if not with_queue and not with_scheduler and not with_matrix:
             await server.serve()
             return
 
@@ -312,8 +331,10 @@ def serve(
             )
         if with_scheduler:
             tasks.append(asyncio.create_task(start_scheduler(cfg)))
+        if with_matrix:
+            tasks.append(asyncio.create_task(start_matrix_bot(cfg)))
 
-        # Stop both when either exits (Ctrl-C, error, or natural completion)
+        # Stop all when any exits (Ctrl-C, error, or natural completion)
         done, pending = await asyncio.wait(
             tasks,
             return_when=asyncio.FIRST_COMPLETED,

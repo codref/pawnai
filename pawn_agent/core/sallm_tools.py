@@ -50,9 +50,11 @@ def build_pawn_clitools() -> dict[str, CliTool]:
             name="session_analyze",
             argv=_cli_argv("session_analyze.py"),
             summary=(
-                "Run the standard structured session analysis and persist it. "
-                "Flags: --session-id ID (required) --save --title TEXT. "
-                "--save also writes the report to SiYuan."
+                "Run the standard structured session analysis and persist it "
+                "to the database. "
+                "Required: --session-id ID (or bare ID). "
+                "Optional: --save --title TEXT — ONLY when the user asks to "
+                "save to SiYuan. Analyze one session per invocation."
             ),
         ),
         "siyuan_save": CliTool(
