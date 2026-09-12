@@ -235,17 +235,18 @@ def serve(
     """
     import asyncio  # noqa: PLC0415
     import logging  # noqa: PLC0415
+
     import uvicorn  # noqa: PLC0415
 
+    from pawn_agent.core.scheduler import start_scheduler  # noqa: PLC0415
     from pawn_agent.utils.config import load_config  # noqa: PLC0415
     from pawn_agent.utils.model_utils import _apply_model_override  # noqa: PLC0415
     from pawn_server.core.api_server import create_app  # noqa: PLC0415
     from pawn_server.core.queue_listener import (  # noqa: PLC0415
-        start_listener,
-        DEFAULT_TOPIC,
         DEFAULT_CONSUMER_NAME,
+        DEFAULT_TOPIC,
+        start_listener,
     )
-    from pawn_agent.core.scheduler import start_scheduler  # noqa: PLC0415
 
     cfg = load_config(config)
 

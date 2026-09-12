@@ -163,27 +163,23 @@ and returns the confirmation message. The `/chat` endpoint is never called.
 
 ## What the agent can do
 
-The agent auto-discovers tools from `pawn_agent/tools/`. Currently available:
+The agent uses sallm CliTools (see [TOOLS.md](TOOLS.md)):
 
-| Tool | What it does |
+| CliTool | What it does |
 |---|---|
-| `query_conversation` | Fetch the full transcript for a diarization session |
-| `search_knowledge` | Semantic search over transcripts and SiYuan pages (RAG) |
-| `extract_graph` | Extract knowledge-graph triples (subject → relation → object) |
-| `fetch_siyuan_page` | Read a SiYuan note by path |
-| `get_analysis` | Return stored analysis (title, summary, topics, sentiment, tags) |
-| `analyze_summary` | Run a fresh standard analysis on a session |
-| `save_to_siyuan` | Write Markdown content to a SiYuan note |
-| `rag_stats` | Show RAG index summary |
-| `vectorize` | Embed a session or SiYuan page into the RAG index |
+| `sessions_list` | List diarization sessions |
+| `session_transcript` | Fetch a full transcript |
+| `session_analyze` | Run structured analysis (optional SiYuan save) |
+| `siyuan_save` | Save Markdown / stored analysis to SiYuan (`--from-analysis`) |
+| `schedule_propose` | Propose schedule changes (approve via `pawn-server schedules`) |
+| `queue_push` | Publish notifications to configured queue producers |
 
-Prompt the agent in natural language. It selects and chains tools automatically.
+Prompt the agent in natural language. It selects tools via ReAct `` ```run `` blocks.
 
 Example prompts:
-- `"Summarise session abc123"` → uses `analyze_summary`
-- `"What did Alice say about the budget in session abc123?"` → uses `query_conversation` or `search_knowledge`
-- `"Save a note titled Meeting Notes with the summary of session abc123 to SiYuan"` → chains `analyze_summary` → `save_to_siyuan`
-- `"Index session abc123 into the knowledge base"` → uses `vectorize`
+- `"Summarise session abc123"` → `session_analyze`
+- `"What did Alice say about the budget in session abc123?"` → `session_transcript`
+- `"Store the daniel-20260630 analysis on SiYuan"` → `siyuan_save --from-analysis`
 
 ---
 

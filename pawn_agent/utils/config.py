@@ -21,6 +21,12 @@ Config file schema (all keys optional)::
         api_key: sk-...
         base_url: http://localhost:11434/v1
 
+      # Durable sallm harness (SQLite + Lance memory). Chat model still comes
+      # from the provider block above; this section only owns memory paths.
+      sallm:
+        state_dir: .sallm
+        max_steps: 8
+
       copilot:
         model: gpt-4.1
 
@@ -56,7 +62,7 @@ from __future__ import annotations
 import logging
 import os
 from pathlib import Path
-from typing import Literal, Optional
+from typing import Optional
 
 import yaml
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field, PrivateAttr
@@ -91,6 +97,24 @@ class CopilotConfig(BaseModel):
     api_key: str = "ollama"
 
 
+class SallmSection(BaseModel):
+    """``agent.sallm:`` — durable ReAct harness settings (not the chat model).
+
+    Chat model / api_key / base_url still come from ``agent.openai`` (etc.).
+    This section only controls session memory files and optional Tempo metrics.
+    """
+
+    # Directory for state.db + vectors/ (relative paths resolve from cwd).
+    state_dir: str = ".sallm"
+    max_steps: int = 8
+    # Observability off by default for the server; CLI may enable.
+    otlp_endpoint: Optional[str] = None
+    metrics_port: int = 0
+    # Embedding defaults match sallm (local Ollama). Override when needed.
+    embedding_model: str = "ollama/qwen3-embedding:0.6b"
+    embedding_api_base: str = "http://localhost:11434"
+
+
 class AgentSection(BaseModel):
     """Top-level ``agent:`` section."""
 
@@ -102,6 +126,7 @@ class AgentSection(BaseModel):
     google: Optional[AgentProviderConfig] = None
     groq: Optional[AgentProviderConfig] = None
     mistral: Optional[AgentProviderConfig] = None
+    sallm: SallmSection = Field(default_factory=SallmSection)
     copilot: CopilotConfig = Field(default_factory=CopilotConfig)
 
 
@@ -164,22 +189,22 @@ class QueueProducerConfig(BaseModel):
     concurrency: Optional[dict] = None
 
 
-class PhoenixSection(BaseModel):
-    """``phoenix:`` section — optional Phoenix observability settings."""
-
-    enabled: bool = False
-    endpoint: str = "http://localhost:6006/v1/traces"
-    project_name: str = "parakeet-langgraph"
-    protocol: Literal["grpc", "http/protobuf"] = "http/protobuf"
-    api_key: Optional[str] = None
-
-
 # ── AgentConfig ───────────────────────────────────────────────────────────────
 
+# PydanticAI-style prefixes (colon) → LiteLLM-style prefixes (slash).
 _PROVIDER_PREFIXES = {
     "openai": "openai",
     "anthropic": "anthropic",
     "google": "google-gla",
+    "groq": "groq",
+    "mistral": "mistral",
+}
+
+_LITELLM_PREFIXES = {
+    "openai": "openai",
+    "anthropic": "anthropic",
+    "google-gla": "gemini",
+    "google": "gemini",
     "groq": "groq",
     "mistral": "mistral",
 }
@@ -210,7 +235,6 @@ class AgentConfig(PawnConfig):
     agent: AgentSection = Field(default_factory=AgentSection)
     api: ApiSection = Field(default_factory=ApiSection)
     mlflow: MlflowSection = Field(default_factory=MlflowSection)
-    phoenix: PhoenixSection = Field(default_factory=PhoenixSection)
     agent_scheduler: AgentSchedulerConfig = Field(default_factory=AgentSchedulerConfig)
     agent_queue: Optional[AgentQueueConfig] = None
     queue_producers: Optional[dict[str, QueueProducerConfig]] = None
@@ -272,26 +296,6 @@ class AgentConfig(PawnConfig):
     @property
     def mlflow_experiment(self) -> Optional[str]:
         return self.mlflow.experiment
-
-    @property
-    def phoenix_enabled(self) -> bool:
-        return self.phoenix.enabled
-
-    @property
-    def phoenix_endpoint(self) -> str:
-        return self.phoenix.endpoint
-
-    @property
-    def phoenix_project_name(self) -> str:
-        return self.phoenix.project_name
-
-    @property
-    def phoenix_protocol(self) -> str:
-        return self.phoenix.protocol
-
-    @property
-    def phoenix_api_key(self) -> Optional[str]:
-        return self.phoenix.api_key
 
     # Transcription (consumed by api_server.py transcription endpoint)
     @property
@@ -355,24 +359,21 @@ class AgentConfig(PawnConfig):
         return None
 
     @property
-    def langgraph_fast_model(self) -> str:
-        for provider, prefix in _PROVIDER_PREFIXES.items():
-            p = getattr(self.agent, provider)
-            if p is not None and p.fast_model:
-                return f"{prefix}:{p.fast_model}"
-        return self.pydantic_model
+    def sallm(self) -> SallmSection:
+        """Shortcut to ``agent.sallm`` memory / harness settings."""
+        return self.agent.sallm
 
     @property
-    def langgraph_deep_model(self) -> str:
-        return self.pydantic_model
-
-    @property
-    def langgraph_api_key(self) -> Optional[str]:
-        return self.pydantic_api_key
-
-    @property
-    def langgraph_base_url(self) -> Optional[str]:
-        return self.pydantic_base_url
+    def litellm_model(self) -> str:
+        """Map ``openai:gpt-4o`` (PydanticAI) → ``openai/gpt-4o`` (LiteLLM/sallm)."""
+        raw = self.pydantic_model
+        if "/" in raw and ":" not in raw.split("/", 1)[0]:
+            return raw
+        if ":" not in raw:
+            return f"openai/{raw}"
+        prefix, rest = raw.split(":", 1)
+        litellm_prefix = _LITELLM_PREFIXES.get(prefix, prefix)
+        return f"{litellm_prefix}/{rest}"
 
     # Copilot sub-agent flat attrs
     @property

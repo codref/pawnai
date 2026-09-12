@@ -2,8 +2,8 @@
 
 import pytest
 from typer.testing import CliRunner
-from pawn_diarize.cli.commands import app
 
+from pawn_diarize.cli.commands import app
 
 runner = CliRunner()
 

@@ -6,7 +6,6 @@ from typing import Optional
 
 import typer
 from rich.console import Console
-from rich.markdown import Markdown
 
 app = typer.Typer(
     name="pawn-agent",
@@ -22,26 +21,32 @@ from pawn_agent.utils.model_utils import _PYDANTIC_PREFIXES, _apply_model_overri
 @app.command()
 def chat(
     config: Optional[str] = typer.Option(
-        None, "--config", "-c",
-        help="Path to YAML config file. Defaults to pawnai.yaml in cwd."
+        None, "--config", "-c", help="Path to YAML config file. Defaults to pawnai.yaml in cwd."
     ),
     model: Optional[str] = typer.Option(
-        None, "--model", "-m",
-        help="Model string override (e.g. 'openai:gpt-4o', 'anthropic:claude-sonnet-4-5-20251001')."
+        None,
+        "--model",
+        "-m",
+        help="Model string override (e.g. 'openai:gpt-4o', 'anthropic:claude-sonnet-4-5-20251001').",
     ),
     db_dsn: Optional[str] = typer.Option(
-        None, "--db-dsn",
-        help="PostgreSQL DSN. Overrides DATABASE_URL env var and config."
+        None, "--db-dsn", help="PostgreSQL DSN. Overrides DATABASE_URL env var and config."
     ),
-    trace_state: bool = typer.Option(
-        False, "--trace-state",
-        help="Attach the full LangGraph state as JSON to Phoenix spans for debugging.",
+    otlp: Optional[str] = typer.Option(
+        None,
+        "--otlp",
+        help="Optional OTLP/HTTP endpoint for sallm Tempo traces.",
+    ),
+    metrics_port: int = typer.Option(
+        0,
+        "--metrics-port",
+        help="Optional Prometheus /metrics port (0 = off).",
     ),
 ) -> None:
-    """Start an interactive multi-turn [bold]CHAT[/bold] session (LangGraph).
+    """Start an interactive multi-turn [bold]CHAT[/bold] session (sallm).
 
-    Uses the LangGraph router with fast/deep reply routing, session-aware
-    tool nodes, artifact carry-forward, and optional Phoenix tracing.
+    Uses the durable sallm ReAct agent with skills and CliTools for
+    sessions, SiYuan, schedules, and queue publish.
 
     Type [bold]/exit[/bold] or [bold]/quit[/bold] to end, or press Ctrl-D / Ctrl-C.
     Type [bold]/reset[/bold] to clear the conversation state and start fresh.
@@ -54,15 +59,20 @@ def chat(
     """
     import asyncio  # noqa: PLC0415
 
-    from pawn_agent.utils.config import load_config  # noqa: PLC0415
     from rich.markdown import Markdown  # noqa: PLC0415
-    from pawn_agent.core.langgraph_chat import run_langgraph_chat  # noqa: PLC0415
+
+    from pawn_agent.core.sallm_session import run_sallm_chat  # noqa: PLC0415
+    from pawn_agent.utils.config import load_config  # noqa: PLC0415
 
     cfg = load_config(config)
     if model:
         _apply_model_override(cfg, model)
     if db_dsn:
         cfg.db_dsn = db_dsn
+    if otlp:
+        cfg.agent.sallm.otlp_endpoint = otlp
+    if metrics_port:
+        cfg.agent.sallm.metrics_port = metrics_port
 
     name = cfg.agent_name
     status = console.status(f"[dim]{name} is thinking…[/dim]")
@@ -78,17 +88,17 @@ def chat(
 
     console.print(
         f"\n[bold cyan]pawn-agent chat[/bold cyan] "
-        f"[dim]model={cfg.pydantic_model}  agent={name}  mode=langgraph[/dim]\n"
-        "[dim]Fast/deep routing, session-aware tool nodes, artifact carry-forward. "
-        "Type /exit or /quit to end. /reset starts a fresh LangGraph state.[/dim]\n"
+        f"[dim]model={cfg.litellm_model}  agent={name}  mode=sallm[/dim]\n"
+        "[dim]Durable ReAct + skills/CliTools. "
+        "Type /exit or /quit to end. /reset clears sallm session memory.[/dim]\n"
     )
     try:
         asyncio.run(
-            run_langgraph_chat(
+            run_sallm_chat(
                 cfg=cfg,
                 emit=_rich_emit,
                 on_thinking=_on_thinking,
-                trace_full_state=trace_state,
+                conversation_id="cli",
             )
         )
     except Exception as exc:
@@ -103,15 +113,16 @@ def chat(
 def list_tools() -> None:
     """List available agent tools and a brief description of each."""
     from rich.table import Table  # noqa: PLC0415
-    from pawn_agent.tools import get_registry  # noqa: PLC0415
 
-    table = Table(title="Available Tools", show_lines=True, show_header=True)
+    from pawn_agent.core.sallm_tools import build_pawn_clitools  # noqa: PLC0415
+
+    table = Table(title="Available CliTools (sallm)", show_lines=True, show_header=True)
     table.add_column("#", justify="right", style="dim", no_wrap=True)
     table.add_column("Tool", style="cyan", no_wrap=True)
     table.add_column("Description")
 
-    for i, (name, description) in enumerate(get_registry(), start=1):
-        table.add_row(str(i), name, description)
+    for i, (name, tool) in enumerate(sorted(build_pawn_clitools().items()), start=1):
+        table.add_row(str(i), name, tool.summary)
 
     console.print(table)
 
@@ -120,8 +131,9 @@ def list_tools() -> None:
 def models() -> None:
     """List available Copilot models."""
     import asyncio  # noqa: PLC0415
-    from rich.table import Table  # noqa: PLC0415
+
     from copilot import CopilotClient  # noqa: PLC0415
+    from rich.table import Table  # noqa: PLC0415
 
     async def _list() -> list:
         client = CopilotClient()
@@ -149,7 +161,9 @@ def models() -> None:
         policy_state = m.policy.state if m.policy else "—"
         policy_color = {"enabled": "green", "disabled": "red"}.get(policy_state, "yellow")
         multiplier = f"{m.billing.multiplier:.2f}x" if m.billing is not None else "—"
-        reasoning = ", ".join(m.supported_reasoning_efforts) if m.supported_reasoning_efforts else "—"
+        reasoning = (
+            ", ".join(m.supported_reasoning_efforts) if m.supported_reasoning_efforts else "—"
+        )
         table.add_row(
             m.id,
             m.name,

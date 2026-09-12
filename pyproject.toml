@@ -7,7 +7,7 @@ name = "pawn-diarize"
 dynamic = ["version"]
 description = "Speaker diarization and transcription CLI tool"
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.12"
 license = {text = "MIT"}
 authors = [
     {name = "Pawn Diarize Contributors"},
@@ -50,12 +50,10 @@ dependencies = [
     "uvicorn[standard]>=0.29.0",
     "mlflow[genai]>=3.0.0",
     "pydantic-settings[yaml]>=2.3.0",
-    "langgraph>=0.2.0",
-    "langgraph-checkpoint-postgres>=2.0.4",
-    "arize-phoenix-otel>=0.9.0",
     "litellm>=1.40.0",
-    "smolagents>=1.24.0",
     "croniter>=2.0.0",
+    # Local editable by default; switch to git+https://github.com/codref/sallm-agent.git when needed.
+    "sallm-agent",
 ]
 
 [project.optional-dependencies]
@@ -93,23 +91,28 @@ Repository = "https://github.com/example/pawn-diarize.git"
 packages = [
     "pawn_core",
     "pawn_diarize", "pawn_diarize.core", "pawn_diarize.cli", "pawn_diarize.utils",
-    "pawn_agent", "pawn_agent.core", "pawn_agent.cli", "pawn_agent.utils", "pawn_agent.tools",
+    "pawn_agent", "pawn_agent.core", "pawn_agent.cli", "pawn_agent.utils",
+    "pawn_agent.tools", "pawn_agent.tools.cli",
     "pawn_server", "pawn_server.core", "pawn_server.cli",
 ]
 
+# Resolve the local sallm-agent checkout during development.
+[tool.uv.sources]
+sallm-agent = { path = "../sallm-agent", editable = true }
+
+[tool.mypy]
+python_version = "3.12"
+warn_return_any = true
+warn_unused_configs = true
+ignore_missing_imports = true
+
 [tool.black]
 line-length = 100
-target-version = ['py38']
+target-version = ['py312']
 
 [tool.isort]
 profile = "black"
 line_length = 100
-
-[tool.mypy]
-python_version = "3.8"
-warn_return_any = true
-warn_unused_configs = true
-ignore_missing_imports = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

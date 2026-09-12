@@ -9,7 +9,7 @@ from typing import Optional
 from sqlalchemy import select
 
 from pawn_agent.utils.config import AgentConfig
-from pawn_agent.utils.db import make_db_session, TranscriptionSegment, SpeakerName
+from pawn_agent.utils.db import SpeakerName, TranscriptionSegment, make_db_session
 
 logger = logging.getLogger(__name__)
 

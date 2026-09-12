@@ -1,91 +1,56 @@
 # pawn-agent Tools
 
-Tools are auto-discovered at runtime from the `pawn_agent/tools/` package.
-Any non-private Python module placed there is picked up automatically — no
-registration or import changes required.
+Production tools are **sallm CliTools**: thin CLI scripts under
+`pawn_agent/tools/cli/` that call `*_impl` helpers in sibling modules.
 
-## Listing available tools
+There is no PydanticAI / Copilot auto-discovery registry anymore.
+`pawn-agent tools` lists the CliTool registry from `sallm_tools.py`.
 
+## Layout
+
+```text
+pawn_agent/tools/
+  list_sessions.py       # list_sessions_impl / list_session_candidates_impl
+  query_conversation.py  # query_conversation_impl
+  analyze_summary.py     # analyze_summary_impl
+  save_to_siyuan.py      # save_to_siyuan_impl / save_analysis_to_siyuan_impl
+  propose_schedule.py    # propose_schedule_change_impl
+  push_queue_message.py  # push_queue_message_impl
+  cli/
+    sessions_list.py
+    session_transcript.py
+    session_analyze.py
+    siyuan_save.py
+    schedule_propose.py
+    queue_push.py
 ```
-pawn-agent tools
-```
 
-## Writing a new tool
+## Adding a tool
 
-Create a file in `pawn_agent/tools/`. The module must export three things:
+1. Put reusable logic in `pawn_agent/tools/<name>.py` as an `*_impl` function.
+2. Add `pawn_agent/tools/cli/<tool_name>.py` with `argparse` + `--help`.
+3. Register a `CliTool` in `pawn_agent/core/sallm_tools.py` (summary = flag cheat-sheet).
+4. Optionally expose it from a skill in `sallm_skills.py`.
 
-| Export | Type | Purpose |
+CLI contract: flags only, human-readable stdout, inherit `pawnai.yaml` / `PAWN_*`
+from the parent process.
+
+## Available CliTools
+
+| CliTool | Impl module | Description |
 |---|---|---|
-| `NAME` | `str` | Tool name shown to the LLM and in `pawn-agent tools` |
-| `DESCRIPTION` | `str` | One-line description shown in `pawn-agent tools` |
-| `build(cfg, client)` | callable | Factory that returns a Copilot SDK `Tool` |
-
-### Minimal example
-
-```python
-# pawn_agent/tools/my_tool.py
-
-from copilot import CopilotClient, Tool, define_tool
-from pydantic import BaseModel, Field
-
-from pawn_agent.utils.config import AgentConfig
-
-NAME = "my_tool"
-DESCRIPTION = "One-line description shown in pawn-agent tools."
-
-
-class MyToolParams(BaseModel):
-    session_id: str = Field(description="Unique session identifier.")
-
-
-def build(cfg: AgentConfig, client: CopilotClient) -> Tool:
-    @define_tool(description="Full description seen by the LLM when selecting tools.")
-    def my_tool(params: MyToolParams) -> str:
-        # cfg and client are available via closure
-        return "result"
-
-    return my_tool  # type: ignore[return-value]
-```
-
-### Async tools
-
-Tools that call the LLM (e.g. via `client.create_session`) must be `async`:
-
-```python
-def build(cfg: AgentConfig, client: CopilotClient) -> Tool:
-    @define_tool(description="...")
-    async def my_tool(params: MyToolParams) -> str:
-        session = await client.create_session({"model": cfg.model, ...})
-        try:
-            response = await session.send_and_wait(MessageOptions(prompt="..."), timeout=120)
-            return response.data.content or ""
-        finally:
-            await session.disconnect()
-
-    return my_tool  # type: ignore[return-value]
-```
+| `sessions_list` | `list_sessions` | List diarization sessions |
+| `session_transcript` | `query_conversation` | Fetch one transcript |
+| `session_analyze` | `analyze_summary` | Structured analysis (+ optional SiYuan) |
+| `siyuan_save` | `save_to_siyuan` | Save Markdown / `--from-analysis` to SiYuan |
+| `schedule_propose` | `propose_schedule` | Create schedule proposals (approve via CLI) |
+| `queue_push` | `push_queue_message` | Publish to a named queue producer |
 
 ## Shared helpers
 
-Shared code lives in `pawn_agent/utils/` and is imported directly by tools:
-
 | Module | Contents |
 |---|---|
-| `utils/db.py` | ORM models (`TranscriptionSegment`, `SpeakerName`, `SessionAnalysis`) and `make_db_session()` |
-| `utils/transcript.py` | `fetch_transcript(cfg, session_id)`, `parse_sections()`, `ANALYSIS_PROMPT` |
-| `utils/siyuan.py` | `do_save_to_siyuan(cfg, ...)`, `siyuan_post()`, `resolve_path()`, `build_siyuan_markdown()` |
-
-## Discovery rules
-
-- Module filename must **not** start with `_`
-- Module must expose a `build` callable
-- `NAME` and `DESCRIPTION` are optional but strongly recommended (`pawn-agent tools` falls back to the module name and an empty string)
-- Modules are loaded in alphabetical order
-
-## Available tools
-
-| Tool | Description |
-|---|---|
-| `query_conversation` | Fetch and return the full transcript for a session from the database. |
-| `analyze_custom` | Perform a free-form analysis; set `save` to the user's phrasing to also persist to SiYuan. |
-| `save_to_siyuan` | Save already-generated Markdown content to SiYuan Notes as a new document. |
+| `utils/db.py` | ORM + `get_session_analysis` / schedule helpers |
+| `utils/transcript.py` | `fetch_transcript` |
+| `utils/siyuan.py` | `do_save_to_siyuan` |
+| `utils/analysis.py` | `run_analysis` (uses `llm_sub`) |

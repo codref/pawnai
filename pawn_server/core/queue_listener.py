@@ -15,10 +15,10 @@ Message format (published by pawn-diarize ``chain_agent``)::
     }
 
 The ``session_id`` is the diarization session name (not a conversation UUID).
-It is passed directly to the LangGraph registry so that agent tools such as
-``query_conversation`` can look up the correct transcript in the database.
+It is passed directly to the sallm registry so that agent tools such as
+``session_transcript`` can look up the correct transcript in the database.
 Subsequent ``run`` messages for the same session continue the same
-LangGraph conversation context.
+sallm conversation context.
 """
 
 from __future__ import annotations
@@ -28,12 +28,12 @@ import logging
 from typing import Any, Callable, Coroutine, Dict, Optional
 
 from pawn_agent.core.agent_runner import run_agent_turn
-from pawn_agent.core.langgraph_registry import LangGraphSessionRegistry
+from pawn_agent.core.sallm_registry import SallmSessionRegistry
 
 logger = logging.getLogger(__name__)
 
-# Module-level registry — one LangGraph session per diarization session_id.
-_registry = LangGraphSessionRegistry()
+# Module-level registry — one sallm session per diarization session_id.
+_registry = SallmSessionRegistry()
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Per-command defaults
@@ -56,12 +56,12 @@ def _merge_params(command: str, payload: Dict[str, Any]) -> Dict[str, Any]:
 # ──────────────────────────────────────────────────────────────────────────────
 
 
-async def _run_langgraph(
+async def _run_sallm(
     params: Dict[str, Any],
     cfg: Any,
     message_id: Optional[str] = None,
 ) -> None:
-    """Execute a ``run`` command via the LangGraph session registry.
+    """Execute a ``run`` command via the sallm session registry.
 
     Creates an ``agent_runs`` row immediately (so every attempt is tracked),
     then validates required fields.  On any failure the row is marked *failed*
@@ -103,7 +103,7 @@ async def dispatch(
         raise ValueError(f"Unsupported command: {command!r}")
 
     if command == "run":
-        await _run_langgraph(params, cfg, message_id)
+        await _run_sallm(params, cfg, message_id)
         return
 
     raise NotImplementedError(f"Command {command!r} has no handler registered")

@@ -215,15 +215,15 @@ class TestDispatch:
         with pytest.raises(ValueError, match="Unsupported command"):
             asyncio.run(dispatch("transcribe-diarize", {}, cfg))
 
-    def test_dispatch_run_calls_run_langgraph(self):
-        """dispatch('run') delegates to _run_langgraph."""
+    def test_dispatch_run_calls_run_sallm(self):
+        """dispatch('run') delegates to _run_sallm."""
         from pawn_server.core.queue_listener import dispatch
 
         cfg = _make_cfg()
         params = {"prompt": "Hello.", "session_id": "sess-x", "model": None}
 
         with patch(
-            "pawn_server.core.queue_listener._run_langgraph", new_callable=AsyncMock
+            "pawn_server.core.queue_listener._run_sallm", new_callable=AsyncMock
         ) as mock_run:
             asyncio.run(dispatch("run", params, cfg, message_id="m1"))
 

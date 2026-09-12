@@ -1,9 +1,8 @@
 """Single-turn completion via the primary OpenAI-compatible LLM.
 
-Mirrors the interface of :mod:`pawn_agent.core.copilot_sub` but routes
-through the PydanticAI model configured in ``agent.openai`` (or equivalent
-provider) rather than the Copilot SDK.  Use this for analysis tools that
-should bill against the same model as the main agent.
+Used by structured analysis (`utils/analysis.py` → `analyze_summary_impl`).
+Routes through the PydanticAI model configured in ``agent.openai`` (or an
+equivalent provider section).
 """
 
 from __future__ import annotations
@@ -30,6 +29,7 @@ async def run(
         The model's response as a plain string.
     """
     import os
+
     from pydantic_ai import Agent
 
     model_str = cfg.pydantic_model
@@ -40,7 +40,7 @@ async def run(
         from pydantic_ai.models.openai import OpenAIChatModel
         from pydantic_ai.providers.openai import OpenAIProvider
 
-        model_name = model_str[len("openai:"):]
+        model_name = model_str[len("openai:") :]
         provider = OpenAIProvider(base_url=base_url, api_key=api_key or "no-key")
         model = OpenAIChatModel(model_name, provider=provider)
     else:

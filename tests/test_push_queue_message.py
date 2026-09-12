@@ -4,10 +4,7 @@ import asyncio
 from pathlib import Path
 from unittest.mock import patch
 
-from pawn_agent.core.langgraph_chat import (
-    LangGraphRouterChatAgent,
-    _next_node_from_dispatch,
-)
+from pawn_agent.core.sallm_tools import build_pawn_clitools
 from pawn_agent.tools.push_queue_message import push_queue_message_impl
 from pawn_agent.utils.config import AgentConfig, QueueProducerConfig, load_config
 
@@ -170,7 +167,9 @@ def test_push_queue_message_impl_rejects_payload_with_command() -> None:
 
 
 def test_push_queue_message_impl_rejects_no_queue_producers() -> None:
-    cfg = AgentConfig(s3={"bucket": "b"})
+    cfg = AgentConfig(s3={"bucket": "b"}, queue_producers=None)
+    # Explicit None — AgentConfig() alone may pick up cwd pawnai.yaml producers.
+    cfg.queue_producers = None
     result = asyncio.run(
         push_queue_message_impl(
             cfg,
@@ -182,25 +181,10 @@ def test_push_queue_message_impl_rejects_no_queue_producers() -> None:
     assert "no queue_producers configured" in result
 
 
-# ── LangGraph wiring ──────────────────────────────────────────────────────────
+# ── Sallm CliTool wiring ──────────────────────────────────────────────────────
 
 
-def test_langgraph_router_valid_actions_includes_push_queue_message() -> None:
-    assert "tool_push_queue_message" in LangGraphRouterChatAgent.VALID_ACTIONS
-
-
-def test_next_node_from_dispatch_routes_push_queue_message() -> None:
-    class FakeState:
-        def __init__(self, route_kind: str):
-            self._route_kind = route_kind
-
-    def fake_get_state_field(state, key):
-        if key == "route_kind":
-            return state._route_kind
-        return ""
-
-    with patch("pawn_agent.core.langgraph_chat.get_state_field", fake_get_state_field):
-        assert (
-            _next_node_from_dispatch(FakeState("tool_push_queue_message"))
-            == "tool_push_queue_message"
-        )
+def test_sallm_clitools_include_queue_push() -> None:
+    tools = build_pawn_clitools()
+    assert "queue_push" in tools
+    assert "queue" in tools["queue_push"].summary.lower()

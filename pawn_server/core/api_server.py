@@ -52,7 +52,7 @@ mode with a warning — useful for local development.
 
 Model selection
 ---------------
-The server always routes through the LangGraph agent.  The ``model`` field
+The server always routes through the sallm agent.  The ``model`` field
 is accepted for OpenAI client compatibility but its value is ignored.
 
 Session management
@@ -97,11 +97,12 @@ _tts_engine: Optional[Any] = None  # pawn_core.TTSEngine, lazy-loaded
 _tts_lock = threading.Lock()
 _tts_idle_handle: Optional[asyncio.TimerHandle] = None
 
-# LangGraph session registry — lazily populated, survives across requests.
-from pawn_agent.core.langgraph_registry import LangGraphSessionRegistry  # noqa: E402
 from pawn_agent.core.agent_runner import run_agent_turn  # noqa: E402
 
-_langgraph_registry = LangGraphSessionRegistry()
+# Sallm session registry — lazily populated, survives across requests.
+from pawn_agent.core.sallm_registry import SallmSessionRegistry  # noqa: E402
+
+_sallm_registry = SallmSessionRegistry()
 
 _security = HTTPBearer(auto_error=False)
 
@@ -166,10 +167,10 @@ class SpeechRequest(BaseModel):
 
     model: str
     input: str
-    voice: str = "alloy"                  # accepted for OpenAI compat; ignored
-    response_format: str = "wav"          # wav | mp3 | opus | aac | flac | pcm
-    speed: float = 1.0                    # 0.25 – 4.0
-    language: Optional[str] = None        # BCP-47 code, e.g. "en", "it", "fr"; falls back to config
+    voice: str = "alloy"  # accepted for OpenAI compat; ignored
+    response_format: str = "wav"  # wav | mp3 | opus | aac | flac | pcm
+    speed: float = 1.0  # 0.25 – 4.0
+    language: Optional[str] = None  # BCP-47 code, e.g. "en", "it", "fr"; falls back to config
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -232,8 +233,8 @@ def _require_token(
 
 
 def _clear_agent_cache() -> None:
-    _langgraph_registry.evict_all()
-    logger.info("Model idle timeout reached — LangGraph sessions evicted")
+    _sallm_registry.evict_all()
+    logger.info("Model idle timeout reached — sallm sessions evicted")
 
 
 def _schedule_idle_reset(loop: asyncio.AbstractEventLoop, timeout_seconds: float) -> None:
@@ -291,7 +292,6 @@ def _session_id(messages: List[dict], user: Optional[str]) -> str:
     return str(uuid.uuid4())
 
 
-
 def _build_openai_response(reply: str, model: str) -> ChatCompletionResponse:
     completion_tokens = len(reply) // 4
     return ChatCompletionResponse(
@@ -325,7 +325,9 @@ async def _stream_sse(reply: str, model: str) -> AsyncIterator[str]:
         "object": "chat.completion.chunk",
         "created": created,
         "model": model,
-        "choices": [{"index": 0, "delta": {"role": "assistant", "content": ""}, "finish_reason": None}],
+        "choices": [
+            {"index": 0, "delta": {"role": "assistant", "content": ""}, "finish_reason": None}
+        ],
     }
     yield f"data: {json.dumps(opening)}\n\n"
 
@@ -352,7 +354,6 @@ async def _stream_sse(reply: str, model: str) -> AsyncIterator[str]:
     }
     yield f"data: {json.dumps(final)}\n\n"
     yield "data: [DONE]\n\n"
-
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -383,7 +384,7 @@ async def chat_completions(
 ) -> Union[ChatCompletionResponse, StreamingResponse]:
     """OpenAI-compatible chat completions endpoint.
 
-    All requests are handled by the LangGraph agent.  The ``model`` field is
+    All requests are handled by the sallm agent.  The ``model`` field is
     accepted for OpenAI client compatibility but ignored.
 
     Send ``/reset`` as the last user message to clear the session history.
@@ -400,11 +401,12 @@ async def chat_completions(
         logger.warning(
             "chat/completions: session_id=%r model=%r "
             "— 'user' field not set in request payload, session_id derived from message hash",
-            session_id, req.model,
+            session_id,
+            req.model,
         )
 
     if _is_reset(messages):
-        await _langgraph_registry.reset(session_id, cfg.db_dsn)
+        await _sallm_registry.reset(session_id, cfg.db_dsn)
         reply = "Session reset."
         if req.stream:
             return StreamingResponse(_stream_sse(reply, req.model), media_type="text/event-stream")
@@ -417,7 +419,7 @@ async def chat_completions(
     try:
         result = await run_agent_turn(
             cfg=cfg,
-            registry=_langgraph_registry,
+            registry=_sallm_registry,
             prompt=prompt,
             session_id=session_id,
             source="api",
@@ -425,7 +427,7 @@ async def chat_completions(
         )
         reply = result.response
     except Exception as exc:
-        logger.error("LangGraph agent error for session %r: %s", session_id, exc, exc_info=True)
+        logger.error("sallm agent error for session %r: %s", session_id, exc, exc_info=True)
         reply = f"Agent error: {exc}"
 
     if req.stream:
@@ -448,7 +450,7 @@ async def delete_session(
     the ``user`` field) will start fresh.  Returns 404 if the session does not
     exist.
     """
-    await _langgraph_registry.reset(session_id, cfg.db_dsn)
+    await _sallm_registry.reset(session_id, cfg.db_dsn)
     return Response(status_code=204)
 
 
@@ -459,7 +461,7 @@ async def delete_session(
 )
 async def audio_transcriptions(
     file: UploadFile = File(...),
-    model: str = Form(default="whisper-1"),       # accepted for OpenAI compat; always uses parakeet
+    model: str = Form(default="whisper-1"),  # accepted for OpenAI compat; always uses parakeet
     response_format: str = Form(default="json"),  # "json" | "text"
     cfg: Any = Depends(_get_cfg),
 ) -> Union[TranscriptionResponse, PlainTextResponse, dict]:
@@ -523,6 +525,7 @@ async def audio_transcriptions(
 
     loop = asyncio.get_running_loop()
     try:
+
         def _do_transcribe() -> dict:
             engine = _get_transcription_engine(cfg)
             results = engine.transcribe([transcribe_path], include_timestamps=verbose)
@@ -558,11 +561,11 @@ async def audio_transcriptions(
 
 _SPEECH_FORMATS: dict = {
     # format → (ffmpeg output args, media_type)
-    "mp3":  (["-f", "mp3"],                           "audio/mpeg"),
-    "opus": (["-f", "opus"],                          "audio/ogg"),
-    "aac":  (["-f", "adts"],                          "audio/aac"),
-    "flac": (["-f", "flac"],                          "audio/flac"),
-    "pcm":  (["-f", "s16le", "-ac", "1"], "audio/pcm"),
+    "mp3": (["-f", "mp3"], "audio/mpeg"),
+    "opus": (["-f", "opus"], "audio/ogg"),
+    "aac": (["-f", "adts"], "audio/aac"),
+    "flac": (["-f", "flac"], "audio/flac"),
+    "pcm": (["-f", "s16le", "-ac", "1"], "audio/pcm"),
 }
 
 
@@ -636,9 +639,7 @@ async def audio_speech(
         )
     except subprocess.CalledProcessError as exc:
         stderr = exc.stderr.decode(errors="replace") if exc.stderr else ""
-        raise HTTPException(
-            status_code=500, detail=f"Audio conversion failed: {stderr}"
-        ) from exc
+        raise HTTPException(status_code=500, detail=f"Audio conversion failed: {stderr}") from exc
 
     return Response(content=proc.stdout, media_type=media_type)
 

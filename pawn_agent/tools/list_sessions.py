@@ -1,14 +1,9 @@
+"""List diarization sessions (``sessions_list`` CliTool)."""
+
 from __future__ import annotations
 
 from pawn_agent.core.session_candidates import SessionCandidate, render_session_catalog
 from pawn_agent.utils.config import AgentConfig
-
-NAME = "list_sessions"
-DESCRIPTION = (
-    "List available conversation sessions from the database, "
-    "with segment counts, duration, and last-updated timestamps. "
-    "Use this before query_conversation when you need to discover session IDs."
-)
 
 
 def list_session_candidates_impl(
@@ -85,18 +80,7 @@ def list_session_candidates_impl(
 
 
 def list_sessions_impl(cfg: AgentConfig, name_filter: str = "", limit: int = 10) -> str:
-    """List conversation sessions stored in the database.
-
-    Returns session IDs with segment counts, duration, and last-updated
-    time, most recent first. Use this to discover which sessions exist
-    before calling query_conversation or get_analysis.
-
-    Args:
-        cfg: Agent configuration containing the DB DSN.
-        name_filter: Optional substring to match against session_id
-            (case-insensitive). Empty string returns all sessions.
-        limit: Maximum number of sessions to return (default 10).
-    """
+    """List conversation sessions as a human-readable catalog string."""
     try:
         candidates = list_session_candidates_impl(cfg, name_filter=name_filter, limit=limit)
         if not candidates:
@@ -107,23 +91,3 @@ def list_sessions_impl(cfg: AgentConfig, name_filter: str = "", limit: int = 10)
 
     except Exception as exc:
         return f"Error listing sessions: {exc}"
-
-
-def build(cfg: AgentConfig):
-    from pydantic_ai import Tool
-
-    def list_sessions(name_filter: str = "", limit: int = 10) -> str:
-        """List conversation sessions stored in the database.
-
-        Returns session IDs with segment counts, duration, and last-updated
-        time, most recent first. Use this to discover which sessions exist
-        before calling query_conversation or get_analysis.
-
-        Args:
-            name_filter: Optional substring to match against session_id
-                (case-insensitive). Empty string returns all sessions.
-            limit: Maximum number of sessions to return (default 10).
-        """
-        return list_sessions_impl(cfg, name_filter=name_filter, limit=limit)
-
-    return Tool(list_sessions)

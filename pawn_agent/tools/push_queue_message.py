@@ -1,18 +1,10 @@
-"""Tool: push_queue_message — publish notifications / progress updates to a queue."""
+"""Queue publish (``queue_push`` CliTool)."""
 
 from __future__ import annotations
 
 from typing import Any
 
-from pydantic_ai import Tool
-
 from pawn_agent.utils.config import AgentConfig
-
-NAME = "push_queue_message"
-DESCRIPTION = (
-    "Send a progress update or notification message to an external queue "
-    "(e.g. Matrix). Use when the user asks to be kept posted, alerted, or notified."
-)
 
 
 async def push_queue_message_impl(
@@ -96,25 +88,3 @@ async def push_queue_message_impl(
         return f"Error publishing to {target!r}: {exc}"
 
     return f"Published to target={target} topic={producer_cfg.topic} " f"message_id={message_id}"
-
-
-def build(cfg: AgentConfig) -> Tool:
-    async def push_queue_message(
-        target: str,
-        command: str,
-        payload: dict[str, Any],
-    ) -> str:
-        """Publish a JSON command-envelope message to a named queue target.
-
-        Use this ONLY when the user explicitly asks to enqueue, publish, push,
-        schedule, or hand work off to a queue.
-
-        Args:
-            target: Named producer target configured in pawnai.yaml (e.g. "matrix").
-            command: Consumer command string (e.g. "run", "process").
-            payload: Free-form JSON-serializable dictionary. Must NOT contain a
-                "command" key — it will be added automatically.
-        """
-        return await push_queue_message_impl(cfg, target, command, payload)
-
-    return Tool(push_queue_message)

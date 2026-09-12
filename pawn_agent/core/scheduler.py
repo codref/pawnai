@@ -13,7 +13,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 import sqlalchemy as sa
 
 from pawn_agent.core.agent_runner import run_agent_turn
-from pawn_agent.core.langgraph_registry import LangGraphSessionRegistry
+from pawn_agent.core.sallm_registry import SallmSessionRegistry
 from pawn_agent.utils.db import AgentSchedule, AgentScheduleFire, AgentScheduleProposal
 from pawn_core.database import _get_session
 
@@ -636,7 +636,7 @@ class AgentSchedulerService:
 async def run_scheduler_tick(
     cfg: Any,
     *,
-    registry: Optional[LangGraphSessionRegistry] = None,
+    registry: Optional[SallmSessionRegistry] = None,
 ) -> int:
     """Claim and execute one batch of due schedule fires."""
     service = AgentSchedulerService(
@@ -650,7 +650,7 @@ async def run_scheduler_tick(
     if not claimed:
         return 0
 
-    active_registry = registry or LangGraphSessionRegistry()
+    active_registry = registry or SallmSessionRegistry()
     for fire in claimed:
         run_id: Optional[str] = None
         try:
@@ -675,7 +675,7 @@ async def run_scheduler_tick(
 async def start_scheduler(
     cfg: Any,
     *,
-    registry: Optional[LangGraphSessionRegistry] = None,
+    registry: Optional[SallmSessionRegistry] = None,
 ) -> None:
     """Run the durable scheduler loop until cancelled."""
     logger.info(

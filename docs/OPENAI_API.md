@@ -293,8 +293,10 @@ Content-Type: application/json
 Authorization: Bearer <token>
 ```
 
-Indexes content into the pgvector RAG store for use by the agent's
-`search_knowledge` tool.
+Indexes content into the pgvector RAG store (legacy HTTP helper). The chat
+agent no longer exposes a `search_knowledge` CliTool — durable chat memory
+is handled by sallm (SQLite + Lance). Prefer `Agent.remember` / retrieval
+for conversational recall.
 
 ```json
 { "text": "Inline plain text to index..." }

@@ -1,4 +1,8 @@
-"""Shared LangGraph execution helper for queue and scheduled agent runs."""
+"""Shared turn runner for API, queue, and scheduled agent runs.
+
+Owns: ``agent_runs`` row lifecycle around one registry turn.
+Does not own: queue ack/nack or schedule-fire status (callers handle that).
+"""
 
 from __future__ import annotations
 
@@ -31,10 +35,10 @@ async def run_agent_turn(
     schedule_id: Optional[str] = None,
     scheduled_fire_id: Optional[str] = None,
 ) -> AgentRunResult:
-    """Persist and execute one LangGraph turn.
+    """Persist and execute one sallm agent turn.
 
-    The caller owns acknowledgement semantics (queue ack/nack, schedule-fire
-    status). This helper owns the common ``agent_runs`` lifecycle.
+    ``session_id`` is the conversation key. For queue/scheduler sources it is
+    also the diarization session name tools should prefer.
     """
     effective_cfg = cfg
     if model:

@@ -56,36 +56,52 @@ def do_save_to_siyuan(
     title = title or infer_title(content, session_id)
     resolved_path = path or resolve_path(cfg.siyuan_path_template, session_id, title)
     try:
-        ids_data = siyuan_post(url, token, "/api/filetree/getIDsByHPath",
-                               {"path": resolved_path, "notebook": notebook})
+        ids_data = siyuan_post(
+            url, token, "/api/filetree/getIDsByHPath", {"path": resolved_path, "notebook": notebook}
+        )
         for doc_id in (ids_data if isinstance(ids_data, list) else []):
             siyuan_post(url, token, "/api/filetree/removeDocByID", {"id": doc_id})
     except Exception:
         pass
-    doc_id = siyuan_post(url, token, "/api/filetree/createDocWithMd",
-                         {"notebook": notebook, "path": resolved_path, "markdown": content})
+    doc_id = siyuan_post(
+        url,
+        token,
+        "/api/filetree/createDocWithMd",
+        {"notebook": notebook, "path": resolved_path, "markdown": content},
+    )
     if doc_id:
         try:
             attrs: dict = {"custom-session-id": session_id}
             if tags:
                 attrs["tags"] = ",".join(tags)
-            siyuan_post(url, token, "/api/attr/setBlockAttrs",
-                        {"id": doc_id, "attrs": attrs})
+            siyuan_post(url, token, "/api/attr/setBlockAttrs", {"id": doc_id, "attrs": attrs})
         except Exception:
             pass
     try:
         daily_path = resolve_path(cfg.siyuan_daily_template, session_id, None)
-        daily_ids = siyuan_post(url, token, "/api/filetree/getIDsByHPath",
-                                {"path": daily_path, "notebook": notebook})
+        daily_ids = siyuan_post(
+            url, token, "/api/filetree/getIDsByHPath", {"path": daily_path, "notebook": notebook}
+        )
         if isinstance(daily_ids, list) and daily_ids:
             daily_doc_id = daily_ids[0]
         else:
-            daily_doc_id = siyuan_post(url, token, "/api/filetree/createDocWithMd",
-                                       {"notebook": notebook, "path": daily_path, "markdown": ""})
+            daily_doc_id = siyuan_post(
+                url,
+                token,
+                "/api/filetree/createDocWithMd",
+                {"notebook": notebook, "path": daily_path, "markdown": ""},
+            )
         if daily_doc_id and doc_id:
-            siyuan_post(url, token, "/api/block/appendBlock",
-                        {"dataType": "markdown", "data": f'(({doc_id} "{title}"))',
-                         "parentID": daily_doc_id})
+            siyuan_post(
+                url,
+                token,
+                "/api/block/appendBlock",
+                {
+                    "dataType": "markdown",
+                    "data": f'(({doc_id} "{title}"))',
+                    "parentID": daily_doc_id,
+                },
+            )
     except Exception:
         pass
     if doc_id:

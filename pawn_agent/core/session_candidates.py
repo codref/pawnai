@@ -2,13 +2,20 @@
 
 from __future__ import annotations
 
+import re
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from datetime import datetime
-import re
 from typing import Any
 
-from pawn_agent.core.chat_primitives import normalize_output
+
+def normalize_output(value: Any) -> str:
+    """Coerce tool/DB values to a plain string for catalog parsing."""
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value
+    return str(value)
 
 
 @dataclass(frozen=True)

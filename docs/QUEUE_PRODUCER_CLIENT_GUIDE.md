@@ -1,6 +1,6 @@
 # Queue Producer Client Guide
 
-The `push_queue_message` tool lets the LangGraph agent send **progress notifications** and **alerts** to an external queue (e.g. a Matrix bot).  When a user says *"keep me posted"*, the planner inserts `tool_push_queue_message` at key points in the action plan so downstream consumers can surface live status updates.
+The `queue_push` CliTool lets the sallm agent send **progress notifications** and **alerts** to an external queue (e.g. a Matrix bot). When a user asks to be kept posted, the agent can invoke `queue_push` via a `` ```run `` block.
 
 This guide covers the producer configuration, the notification message contract, and how to implement a client-side consumer.
 

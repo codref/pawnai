@@ -7,10 +7,10 @@ from datetime import datetime, timezone
 from typing import Any, List, Optional, Tuple
 
 from sqlalchemy import (
+    JSON,
     DateTime,
     ForeignKey,
     Integer,
-    JSON,
     String,
     Text,
     UniqueConstraint,
@@ -18,8 +18,8 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import Mapped, Session, mapped_column
 
-from pawn_core.database import (  # noqa: F401
-    Base as _Base,
+from pawn_core.database import Base as _Base  # noqa: F401
+from pawn_core.database import (
     GraphTriple,
     SessionAnalysis,
     SpeakerName,

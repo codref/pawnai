@@ -1,29 +1,11 @@
-"""Tool: propose_schedule_change - create schedule-management proposals."""
+"""Schedule proposals (``schedule_propose`` CliTool)."""
 
 from __future__ import annotations
 
 from typing import Any, Optional
 
-from pydantic_ai import Tool
-
 from pawn_agent.core.scheduler import AgentSchedulerService
 from pawn_agent.utils.config import AgentConfig
-
-NAME = "propose_schedule_change"
-DESCRIPTION = (
-    "Propose creating, updating, pausing, resuming, or cancelling scheduled "
-    "agent work. The proposal must be approved by the application before it applies."
-)
-
-
-def _session_var(session_vars: Any, key: str) -> Optional[str]:
-    if not session_vars:
-        return None
-    if isinstance(session_vars, dict):
-        value = session_vars.get(key)
-    else:
-        value = getattr(session_vars, key, None)
-    return str(value) if value else None
 
 
 async def propose_schedule_change_impl(
@@ -82,50 +64,3 @@ async def propose_schedule_change_impl(
         f"proposal_id={proposal_id}. "
         "It has not been applied yet; the application must approve it first."
     )
-
-
-def build(cfg: AgentConfig, session_vars=None) -> Tool:
-    async def propose_schedule_change(
-        action: str,
-        schedule_id: Optional[str] = None,
-        name: Optional[str] = None,
-        prompt: Optional[str] = None,
-        schedule: Optional[dict[str, Any]] = None,
-        timezone: Optional[str] = None,
-        model: Optional[str] = None,
-        rationale: Optional[str] = None,
-    ) -> str:
-        """Propose a durable schedule mutation for application approval.
-
-        Use only when the user explicitly asks to schedule, reschedule, pause,
-        resume, or cancel future agent work. This tool creates a proposal only;
-        it does not directly mutate schedules.
-
-        Args:
-            action: create, update, pause, resume, or cancel.
-            schedule_id: Required for update, pause, resume, and cancel.
-            name: Human-readable schedule name for create/update.
-            prompt: The future prompt the agent should run for create/update.
-            schedule: JSON object describing the schedule. Use
-                {"schedule_kind": "once", "run_at": "...", "session_id": "..."},
-                {"schedule_kind": "interval", "interval_seconds": 3600, ...},
-                or {"schedule_kind": "cron", "cron_expression": "0 9 * * *", ...}.
-            timezone: IANA timezone name, such as "UTC" or "Europe/Rome".
-            model: Optional per-schedule model override.
-            rationale: Why the proposal matches the user's request.
-        """
-        return await propose_schedule_change_impl(
-            cfg,
-            action=action,
-            schedule_id=schedule_id,
-            name=name,
-            prompt=prompt,
-            schedule=schedule,
-            timezone=timezone,
-            model=model,
-            rationale=rationale,
-            proposed_by_session_id=_session_var(session_vars, "session_id"),
-            proposed_by_run_id=_session_var(session_vars, "run_id"),
-        )
-
-    return Tool(propose_schedule_change)

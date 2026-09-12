@@ -497,19 +497,16 @@ pawn-agent models [--config TEXT]
 
 ### Available Tools
 
-| Tool | Description |
+| CliTool | Description |
 |------|-------------|
-| `query_conversation` | Fetch the full transcript for a session from the database |
-| `analyze_summary` | Run structured analysis (title, summary, topics, sentiment, tags) and persist to DB |
-| `get_analysis` | Retrieve the most recent stored analysis for a session |
-| `extract_graph` | Extract knowledge-graph triples from a transcript and persist to DB |
-| `vectorize` | Embed session transcripts or SiYuan pages into the RAG index |
-| `search_knowledge` | Semantic similarity search over transcript chunks and SiYuan notes |
-| `save_to_siyuan` | Save Markdown content to SiYuan Notes as a child page under the session node; title inferred from the first `# Heading` |
-| `fetch_siyuan_page` | Fetch the text content of a SiYuan page by path |
-| `rag_stats` | Show a summary of the RAG vector index (sources and chunk counts) |
-| `push_queue_message` | Publish progress updates or notifications to configured queue producers |
-| `propose_schedule_change` | Create schedule-change proposals for application approval; it does not directly mutate schedules |
+| `sessions_list` | List diarization sessions from the database |
+| `session_transcript` | Fetch the full transcript for a session |
+| `session_analyze` | Run structured analysis (title, summary, topics, sentiment, tags); optional `--save` to SiYuan |
+| `siyuan_save` | Save Markdown to SiYuan; prefer `--from-analysis` after analyze |
+| `queue_push` | Publish progress updates or notifications to configured queue producers |
+| `schedule_propose` | Create schedule-change proposals for application approval |
+
+Tools are sallm CliTools (`pawn_agent/tools/cli/`). See [docs/TOOLS.md](docs/TOOLS.md).
 
 ---
 
@@ -603,19 +600,19 @@ parakeet/
 │   └── utils/
 ├── pawn_agent/
 │   ├── __main__.py           # Entry point → pawn-agent
-│   ├── cli/commands.py       # run, chat, tools, models
+│   ├── cli/commands.py       # chat, tools, models
 │   ├── core/
-│   │   ├── agent.py          # ConversationAgent (Copilot SDK)
-│   │   ├── langgraph_chat.py # LangGraph chat orchestration
-│   │   └── scheduler.py      # Durable agent scheduler service
-│   ├── tools/                # Auto-discovered tool modules
+│   │   ├── sallm_*.py        # Embedded sallm harness (factory/session/registry/skills/tools)
+│   │   ├── agent_runner.py   # Persisted turn helper for API/queue/scheduler
+│   │   ├── scheduler.py      # Durable agent scheduler service
+│   │   └── session_candidates.py
+│   ├── tools/                # *_impl helpers + cli/ CliTool entrypoints
 │   └── utils/
-│       ├── config.py         # AgentConfig loader
-│       ├── db.py             # DB session factory + RAG tables
+│       ├── config.py         # AgentConfig loader (incl. agent.sallm)
+│       ├── db.py             # Agent/schedule ORM helpers
 │       ├── transcript.py     # Fetch/format session transcripts
 │       ├── siyuan.py         # SiYuan helpers
-│       ├── analysis.py       # Analysis runner
-│       └── vectorize.py      # RAG vectorization
+│       └── analysis.py       # Analysis runner
 ├── pawn_server/
 │   ├── __main__.py           # Entry point → pawn-server
 │   ├── cli/commands.py       # serve and schedules commands
