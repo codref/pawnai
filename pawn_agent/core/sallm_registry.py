@@ -94,6 +94,12 @@ class SallmSessionRegistry:
         if existing is not None:
             await existing.reset()
 
+    async def stats(self, session_id: str, cfg: Any, db_dsn: str = "") -> str:
+        """Format context-aware stats for *session_id* (creates session if needed)."""
+        session = await self.get_or_create(session_id, cfg, db_dsn)
+        async with self._session_lock(session_id):
+            return await asyncio.to_thread(session.format_stats)
+
     def evict_all(self) -> int:
         """Drop in-memory sessions (idle timeout). Durable files remain.
 

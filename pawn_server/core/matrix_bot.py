@@ -69,6 +69,20 @@ def chunk_text(text: str, limit: int = _MAX_CHUNK) -> list[str]:
     return [text[i : i + limit] for i in range(0, len(text), limit)]
 
 
+def matrix_reply_body(raw: str) -> str:
+    """Drop CLI ``[tool]`` trail lines; Matrix users only need the answer."""
+    text = (raw or "").strip()
+    if not text.startswith("[tool]"):
+        return text
+    # handle_user_input joins tool lines + "\\n\\n" + answer
+    parts = text.split("\n\n", 1)
+    if len(parts) == 2 and parts[1].strip():
+        return parts[1].strip()
+    # No answer body — strip tool prefixes line by line
+    kept = [ln for ln in text.splitlines() if not ln.startswith("[tool]")]
+    return "\n".join(kept).strip() or text
+
+
 def verification_allowed(
     sender: str,
     *,
@@ -333,12 +347,16 @@ async def _send_text(client: Any, room_id: str, text: str) -> None:
     # Clients render formatted_body as HTML; body stays plain markdown fallback.
     from markdown import markdown
 
-    for chunk in chunk_text(text):
+    body = matrix_reply_body(text)
+    for chunk in chunk_text(body):
         content = {
             "msgtype": "m.text",
             "body": chunk,
             "format": "org.matrix.custom.html",
-            "formatted_body": markdown(chunk, extensions=["fenced_code", "nl2br"]),
+            "formatted_body": markdown(
+                chunk,
+                extensions=["fenced_code", "nl2br", "sane_lists"],
+            ),
         }
         await client.room_send(
             room_id,
@@ -532,6 +550,10 @@ def _register_callbacks(client: Any, cfg: Any, registry: Any) -> None:
             if prompt.strip() == "/reset":
                 await registry.reset(session_id)
                 await _send_text(client, room.room_id, "Session reset.")
+                return
+            if prompt.strip() == "/stats":
+                text = await registry.stats(session_id, cfg)
+                await _send_text(client, room.room_id, text)
                 return
 
             from pawn_agent.core.agent_runner import run_agent_turn

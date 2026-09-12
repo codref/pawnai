@@ -49,7 +49,8 @@ def chat(
     sessions, SiYuan, schedules, and queue publish.
 
     Type [bold]/exit[/bold] or [bold]/quit[/bold] to end, or press Ctrl-D / Ctrl-C.
-    Type [bold]/reset[/bold] to clear the conversation state and start fresh.
+    Type [bold]/stats[/bold] for session metrics, [bold]/reset[/bold] to clear
+    conversation state.
 
     \b
     Examples
@@ -90,7 +91,8 @@ def chat(
         f"\n[bold cyan]pawn-agent chat[/bold cyan] "
         f"[dim]model={cfg.litellm_model}  agent={name}  mode=sallm[/dim]\n"
         "[dim]Durable ReAct + skills/CliTools. "
-        "Type /exit or /quit to end. /reset clears sallm session memory.[/dim]\n"
+        "Type /exit or /quit to end. /stats shows session metrics; "
+        "/reset clears sallm session memory.[/dim]\n"
     )
     try:
         asyncio.run(

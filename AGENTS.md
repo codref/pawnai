@@ -83,7 +83,7 @@ Durable schedules are in `pawn_agent/core/scheduler.py` and DB models in `pawn_a
 Inbound chatbot under `pawn-server serve` (not a separate console script):
 - Config: `matrix_bot:` (`enabled` default false). Env: `PAWN_MATRIX_BOT__*`.
 - Flags: `--no-matrix`, `--matrix-only` (mutually exclusive with `--scheduler-only`).
-- Rooms need `command_prefix` (default `!pawn`); DMs are free-speak; `/reset` clears the room conversation.
+- Rooms need `command_prefix` (default `!pawn`); DMs are free-speak; `/reset` clears the room conversation; `/stats` shows sallm session metrics (also on `pawn-agent chat`).
 - Keep `device_id` + `store_path` stable for E2EE. Do not confuse with `queue_producers.matrix` (outbound notifications only).
 
 ## Config

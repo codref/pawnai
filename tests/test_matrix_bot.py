@@ -13,6 +13,7 @@ from pawn_server.core.matrix_bot import (
     conversation_id,
     extract_prompt,
     is_direct_room,
+    matrix_reply_body,
     normalize_body,
     verification_allowed,
 )
@@ -65,6 +66,16 @@ def test_verification_allowed() -> None:
     assert verification_allowed("@a:hs", bot_user_id=bot, inviters=["@a:hs"]) is True
     assert verification_allowed("@x:hs", bot_user_id=bot, inviters=["@a:hs"]) is False
     assert verification_allowed("@x:hs", bot_user_id=bot, inviters=[]) is True
+
+
+def test_matrix_reply_body_strips_tool_trail() -> None:
+    raw = (
+        "[tool] sessions_list → Found 10 session(s): daniel | segments: 327\n"
+        "[tool] session_analyze → ok\n\n"
+        "Here are your sessions."
+    )
+    assert matrix_reply_body(raw) == "Here are your sessions."
+    assert matrix_reply_body("Just an answer.") == "Just an answer."
 
 
 def test_matrix_bot_config_defaults() -> None:

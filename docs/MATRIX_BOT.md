@@ -57,6 +57,7 @@ pawn-server serve --no-matrix
 | DM (≤2 members) | Free-speak; every text message is a turn |
 | Group room | Message must start with `command_prefix` |
 | `/reset` | Clears sallm conversation for that room |
+| `/stats` | Session stats (skill, messages, memory, last-turn tokens) |
 | Session key | `matrix:{room_id}` (chat memory, not diarization id) |
 
 Discover diarization sessions with the `sessions_list` tool, same as CLI/API chat.
