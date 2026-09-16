@@ -11,6 +11,7 @@ class TestAgentConfig:
         assert cfg.backend == "copilot"
         assert "postgres" in cfg.db_dsn
         assert cfg.sallm.max_steps == 8
+        assert cfg.sallm.profile == "large.yaml"
         assert cfg.litellm_model.startswith("openai/")
 
     def test_load_config_missing_file(self):
@@ -31,7 +32,8 @@ class TestAgentConfig:
             "    base_url: http://localhost:11434/v1\n"
             "  sallm:\n"
             "    state_dir: .sallm-test\n"
-            "    max_steps: 5\n",
+            "    max_steps: 5\n"
+            "    profile: large.yaml\n",
             encoding="utf-8",
         )
         cfg = load_config(str(cfg_file))
@@ -39,3 +41,4 @@ class TestAgentConfig:
         assert cfg.pydantic_base_url == "http://localhost:11434/v1"
         assert cfg.sallm.max_steps == 5
         assert cfg.sallm.state_dir == ".sallm-test"
+        assert cfg.sallm.profile == "large.yaml"

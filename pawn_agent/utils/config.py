@@ -22,10 +22,13 @@ Config file schema (all keys optional)::
         base_url: http://localhost:11434/v1
 
       # Durable sallm harness (SQLite + Lance memory). Chat model still comes
-      # from the provider block above; this section only owns memory paths.
+      # from the provider block above; this section owns memory paths + profile.
       sallm:
         state_dir: .sallm
         max_steps: 8
+        # CompiledProfile YAML/JSON (budgets overlay). Default: packaged large
+        # (10× token budgets). Set "" to use stock sallm ModelProfile limits.
+        profile: large.yaml
 
       copilot:
         model: gpt-4.1
@@ -49,6 +52,11 @@ Config file schema (all keys optional)::
     agent_queue:
       topic: pawn-agent-jobs
       consumer_name: pawn-agent-listener
+      bucket_name: my-bucket
+
+    diarize_queue:
+      topic: audio-chunks
+      consumer_name: pawn-diarize-listener
       bucket_name: my-bucket
 
     queue_producers:
@@ -113,12 +121,17 @@ class SallmSection(BaseModel):
     """``agent.sallm:`` — durable ReAct harness settings (not the chat model).
 
     Chat model / api_key / base_url still come from ``agent.openai`` (etc.).
-    This section only controls session memory files and optional Tempo metrics.
+    This section controls session memory files, the CompiledProfile overlay,
+    and optional Tempo metrics.
     """
 
     # Directory for state.db + vectors/ (relative paths resolve from cwd).
     state_dir: str = ".sallm"
     max_steps: int = 8
+    # sallm CompiledProfile path (YAML/JSON). Relative names resolve from cwd
+    # then ``pawn_agent/profiles/``. Default ``large.yaml`` = 10× budgets.
+    # Empty string disables the overlay (stock ModelProfile limits).
+    profile: Optional[str] = "large.yaml"
     # Observability off by default for the server; CLI may enable.
     otlp_endpoint: Optional[str] = None
     metrics_port: int = 0
@@ -264,6 +277,7 @@ class AgentConfig(PawnConfig):
     mlflow: MlflowSection = Field(default_factory=MlflowSection)
     agent_scheduler: AgentSchedulerConfig = Field(default_factory=AgentSchedulerConfig)
     agent_queue: Optional[AgentQueueConfig] = None
+    diarize_queue: Optional[AgentQueueConfig] = None
     queue_producers: Optional[dict[str, QueueProducerConfig]] = None
     matrix_bot: MatrixBotConfig = Field(default_factory=MatrixBotConfig)
 

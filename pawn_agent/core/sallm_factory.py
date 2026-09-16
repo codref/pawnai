@@ -20,6 +20,7 @@ from sallm.trace import Tracer, jsonl_sink, multi_sink, otlp_http_sink
 
 from pawn_agent.core.sallm_skills import build_pawn_skills
 from pawn_agent.core.sallm_tools import build_pawn_clitools
+from pawn_agent.profiles import load_profile_from_config
 from pawn_agent.utils.config import AgentConfig
 
 logger = logging.getLogger(__name__)
@@ -107,11 +108,14 @@ def build_sallm_agent(
     # /v1). Pure cloud OpenAI can leave this None and LiteLLM uses defaults.
     api_base = cfg.pydantic_base_url
 
+    compiled = load_profile_from_config(cfg.sallm.profile)
+
     logger.debug(
-        "Building sallm Agent conversation_id=%r model=%s state_dir=%s",
+        "Building sallm Agent conversation_id=%r model=%s state_dir=%s profile=%s",
         conversation_id,
         cfg.litellm_model,
         state_dir,
+        cfg.sallm.profile,
     )
 
     return Agent(
@@ -131,6 +135,7 @@ def build_sallm_agent(
             use_hyde=False,
         ),
         max_steps=int(cfg.sallm.max_steps),
+        compiled_profile=compiled,
         trace=trace,
     )
 

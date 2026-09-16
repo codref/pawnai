@@ -57,6 +57,18 @@ def build_pawn_clitools() -> dict[str, CliTool]:
                 "save to SiYuan. Analyze one session per invocation."
             ),
         ),
+        "session_delete": CliTool(
+            name="session_delete",
+            argv=_cli_argv("session_delete.py"),
+            summary=(
+                "Permanently delete one diarization session from PostgreSQL "
+                "(segments, analyses, session_state, graph triples). "
+                "Required: --session-id ID --confirm ID where both values "
+                "match exactly. ALWAYS ask the user to confirm the exact "
+                "session name in chat before calling. Never invent ids. "
+                "Does not clear sallm chat memory or SiYuan notes."
+            ),
+        ),
         "siyuan_save": CliTool(
             name="siyuan_save",
             argv=_cli_argv("siyuan_save.py"),

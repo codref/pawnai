@@ -59,7 +59,13 @@ Notes: pytest defaults to `--cov=pawn_diarize --cov-report=term-missing`; pass `
 
 Domain logic stays in `pawn_agent/tools/*_impl`. Production path uses **CliTools** under `pawn_agent/tools/cli/` registered in `sallm_tools.py`.
 
-Migrated CliTools: `sessions_list`, `session_transcript`, `session_analyze`, `siyuan_save`, `schedule_propose`, `queue_push`.
+Migrated CliTools: `sessions_list`, `session_transcript`, `session_analyze`,
+`session_delete`, `siyuan_save`, `schedule_propose`, `queue_push`.
+
+`session_delete` permanently wipes diarization DB rows (segments, analyses,
+`session_state`, graph triples) for one session name. It always requires
+`--confirm` to exactly match `--session-id`; the agent must ask the user
+in chat before calling. It does not clear sallm chat memory or SiYuan notes.
 
 Skills (modes): `converse`, `sessions`, `notes`, `scheduling`, `ops` — see `sallm_skills.py`.
 
@@ -77,6 +83,11 @@ Durable schedules are in `pawn_agent/core/scheduler.py` and DB models in `pawn_a
 - `AgentSchedulerConfig` defaults: enabled, 30s poll, max 5 due per tick, timezone `UTC`, stale fire 3600s.
 - `pawn-server serve` starts API/queue/scheduler/Matrix according to config and flags; `--scheduler-only` / `--matrix-only` run a single worker.
 - CLI management is under `pawn-server schedules`: `list`, `show`, `proposals`, `approve`, `reject`, `pause`, `resume`, `cancel`.
+- Queue admin is under `pawn-server queue`: `stats`, `pause`, `resume`, `empty`.
+  Discovers `agent_queue`, `diarize_queue`, and `queue_producers` from config.
+  `stats` lists all by default; mutating commands take `--name` / `--topic` / `--all`.
+  Pause writes `{topic}/.paused` in the queue bucket; agent and diarize listeners
+  stop claiming new messages until `resume`.
 
 ## Matrix bot
 
@@ -94,10 +105,11 @@ Precedence is CLI/explicit overrides, YAML, env vars, defaults. Env vars use `PA
 - `PAWN_DB_DSN`, legacy `DATABASE_URL`
 - `PAWN_MODELS__HF_TOKEN`, legacy `HF_TOKEN`
 - `PAWN_AGENT__OPENAI__API_KEY`, `PAWN_AGENT__OPENAI__FAST_MODEL`, etc.
-- `PAWN_AGENT__SALLM__STATE_DIR`, `PAWN_AGENT__SALLM__MAX_STEPS`, `PAWN_AGENT__SALLM__OTLP_ENDPOINT`
+- `PAWN_AGENT__SALLM__STATE_DIR`, `PAWN_AGENT__SALLM__MAX_STEPS`, `PAWN_AGENT__SALLM__PROFILE`, `PAWN_AGENT__SALLM__OTLP_ENDPOINT`
 - `PAWN_MATRIX_BOT__ENABLED`, `PAWN_MATRIX_BOT__HOMESERVER_URL`, `PAWN_MATRIX_BOT__USER_TOKEN`, etc.
 
 Chat model comes from `agent.openai` (etc.) and is mapped to LiteLLM via `cfg.litellm_model` (`openai:gpt-4o` → `openai/gpt-4o`). Optional Tempo: `agent.sallm.otlp_endpoint` / `metrics_port` (off by default for the server).
+`agent.sallm.profile` is a sallm CompiledProfile YAML/JSON path (default `large.yaml` in `pawn_agent/profiles/`, 10× token budgets). Empty string uses stock sallm limits.
 
 Default DB uses PostgreSQL on port `5433` and requires `pgvector`.
 

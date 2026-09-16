@@ -571,6 +571,25 @@ pawn-server schedules resume <schedule-id>
 pawn-server schedules cancel <schedule-id>
 ```
 
+### Queue Management
+
+Inspect or control configured pawn-queue topics from `agent_queue`,
+`diarize_queue`, and `queue_producers`:
+
+```bash
+pawn-server queue stats
+pawn-server queue stats --name diarize
+pawn-server queue pause --name agent
+pawn-server queue pause --topic audio-chunks
+pawn-server queue resume --all
+pawn-server queue empty --name agent --dry-run
+pawn-server queue empty --name diarize --yes
+```
+
+`stats` lists every configured queue by default. Mutating commands need
+`--name`, `--topic`, or `--all`. Pause/resume toggle `{topic}/.paused` in the
+queue bucket; agent and diarize listeners stop claiming new work while paused.
+
 Schedule kinds:
 
 - `once`: one run at an ISO 8601 `run_at`

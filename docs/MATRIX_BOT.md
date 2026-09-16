@@ -68,6 +68,10 @@ Discover diarization sessions with the `sessions_list` tool, same as CLI/API cha
   encrypted rooms often causes silent drops until verification.
 - Invites are accepted only from `inviters` when that list is non-empty.
 - Runs are persisted in `agent_runs` with `source=matrix`.
+- Sync uses `set_presence=online` and reconnects with backoff on transport
+  failures so Element presence stays green while the worker is up. Transient
+  nio `next_batch` validation warnings usually mean a bad `/sync` body (proxy
+  timeout / homeserver blip); the bot logs them and re-asserts online.
 
 ## Device verification (Element red shield)
 

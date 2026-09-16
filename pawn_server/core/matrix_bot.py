@@ -9,6 +9,7 @@ Install: ``uv sync --extra matrix``
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from pathlib import Path
 from typing import Any, Optional
@@ -17,6 +18,10 @@ logger = logging.getLogger(__name__)
 
 # Matrix event content soft limit; leave headroom under the hard ~65k byte cap.
 _MAX_CHUNK = 30_000
+# Long-poll sync; keep under typical reverse-proxy idle timeouts when possible.
+_SYNC_TIMEOUT_MS = 30_000
+_SYNC_BACKOFF_START_S = 1.0
+_SYNC_BACKOFF_MAX_S = 60.0
 
 
 # ── Pure helpers (unit-tested without nio) ────────────────────────────────────
@@ -616,6 +621,72 @@ def _register_callbacks(client: Any, cfg: Any, registry: Any) -> None:
     client.add_event_callback(on_megolm, (MegolmEvent,))
 
 
+# ── Sync / presence ───────────────────────────────────────────────────────────
+
+
+def next_sync_backoff(seconds: float, *, max_s: float = _SYNC_BACKOFF_MAX_S) -> float:
+    """Exponential backoff cap for sync reconnect sleeps."""
+    return min(max(seconds, _SYNC_BACKOFF_START_S) * 2.0, max_s)
+
+
+async def _assert_online(client: Any) -> None:
+    """Best-effort presence refresh so Element stays green between turns."""
+    try:
+        await client.set_presence("online")
+    except Exception:
+        logger.debug("Matrix set_presence(online) failed", exc_info=True)
+
+
+async def run_sync_with_reconnect(
+    client: Any,
+    *,
+    timeout_ms: int = _SYNC_TIMEOUT_MS,
+    max_backoff_s: float = _SYNC_BACKOFF_MAX_S,
+) -> None:
+    """Keep ``sync_forever`` running with online presence and reconnect.
+
+    Failed ``/sync`` bodies (nio ``SyncError`` / ``next_batch`` warnings) do not
+    crash the loop, but they stop refreshing presence — so we log them and
+    re-assert online. Transport crashes restart sync with backoff.
+    """
+    from nio import SyncError, SyncResponse
+
+    async def on_sync_response(response: Any) -> None:
+        if isinstance(response, SyncError):
+            logger.warning(
+                "Matrix sync error (presence may go offline): %s",
+                getattr(response, "message", response),
+            )
+            await _assert_online(client)
+        elif isinstance(response, SyncResponse):
+            logger.debug("Matrix sync ok")
+
+    client.add_response_callback(on_sync_response, (SyncResponse, SyncError))
+
+    backoff = _SYNC_BACKOFF_START_S
+    while True:
+        try:
+            await _assert_online(client)
+            logger.info(
+                "Matrix sync starting (presence=online, timeout=%sms)", timeout_ms
+            )
+            await client.sync_forever(
+                timeout=timeout_ms,
+                full_state=True,
+                set_presence="online",
+            )
+            logger.info("Matrix sync_forever stopped")
+            return
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception(
+                "Matrix sync crashed; reconnecting in %.0fs", backoff
+            )
+            await asyncio.sleep(backoff)
+            backoff = next_sync_backoff(backoff, max_s=max_backoff_s)
+
+
 # ── Entrypoint ────────────────────────────────────────────────────────────────
 
 
@@ -634,6 +705,6 @@ async def start_matrix_bot(cfg: Any) -> None:
         await _login(client, mb)
         _register_callbacks(client, cfg, registry)
         logger.info("Matrix bot logged in as %s", mb.user_id)
-        await client.sync_forever(timeout=60_000, full_state=True)
+        await run_sync_with_reconnect(client)
     finally:
         await client.close()

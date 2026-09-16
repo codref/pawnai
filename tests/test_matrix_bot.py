@@ -14,7 +14,9 @@ from pawn_server.core.matrix_bot import (
     extract_prompt,
     is_direct_room,
     matrix_reply_body,
+    next_sync_backoff,
     normalize_body,
+    run_sync_with_reconnect,
     verification_allowed,
 )
 
@@ -76,6 +78,31 @@ def test_matrix_reply_body_strips_tool_trail() -> None:
     )
     assert matrix_reply_body(raw) == "Here are your sessions."
     assert matrix_reply_body("Just an answer.") == "Just an answer."
+
+
+def test_next_sync_backoff() -> None:
+    assert next_sync_backoff(1.0) == 2.0
+    assert next_sync_backoff(40.0, max_s=60.0) == 60.0
+
+
+def test_run_sync_with_reconnect_sets_online_and_retries() -> None:
+    import asyncio
+    from unittest.mock import AsyncMock, MagicMock
+
+    client = MagicMock()
+    client.set_presence = AsyncMock()
+    client.add_response_callback = MagicMock()
+    client.sync_forever = AsyncMock(side_effect=[RuntimeError("boom"), None])
+
+    asyncio.run(
+        run_sync_with_reconnect(client, timeout_ms=1000, max_backoff_s=0.01)
+    )
+
+    assert client.set_presence.await_count >= 2
+    client.sync_forever.assert_awaited()
+    kwargs = client.sync_forever.await_args.kwargs
+    assert kwargs.get("set_presence") == "online"
+    assert kwargs.get("full_state") is True
 
 
 def test_matrix_bot_config_defaults() -> None:

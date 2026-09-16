@@ -264,6 +264,8 @@ async def start_listener(
 
         logger.info("Listening on topic %r as consumer %r …", topic, consumer_name)
         try:
-            await consumer.listen(handler)
+            from pawn_core.queue_control import listen_respecting_pause  # noqa: PLC0415
+
+            await listen_respecting_pause(consumer, handler, pq._client, topic)
         except asyncio.CancelledError:
             logger.info("Listener cancelled — shutting down cleanly")

@@ -21,7 +21,14 @@ schedules_app = typer.Typer(
     add_completion=False,
     rich_markup_mode="rich",
 )
+queue_app = typer.Typer(
+    name="queue",
+    help="Manage the pawn-agent S3-backed job queue.",
+    add_completion=False,
+    rich_markup_mode="rich",
+)
 app.add_typer(schedules_app, name="schedules")
+app.add_typer(queue_app, name="queue")
 
 
 def _load_scheduler_service(config: Optional[str]):
@@ -162,6 +169,277 @@ def schedules_cancel(
     _, service = _load_scheduler_service(config)
     service.cancel_schedule(schedule_id)
     console.print("[yellow]Schedule cancelled.[/yellow]")
+
+
+@queue_app.command("empty")
+def queue_empty(
+    config: Optional[str] = typer.Option(
+        None, "--config", "-c", help="Path to YAML config file. Defaults to pawnai.yaml in cwd."
+    ),
+    name: Optional[str] = typer.Option(
+        None,
+        "--name",
+        "-N",
+        help="Configured queue name: agent, diarize, or a queue_producers key.",
+    ),
+    topic: Optional[str] = typer.Option(
+        None,
+        "--topic",
+        "-T",
+        help="Select by topic name (e.g. audio-chunks, pawn-agent-jobs).",
+    ),
+    all_targets: bool = typer.Option(
+        False, "--all", help="Empty every configured queue."
+    ),
+    include_dead_letter: bool = typer.Option(
+        False,
+        "--include-dead-letter",
+        help="Also delete dead-letter messages for the topic.",
+    ),
+    dry_run: bool = typer.Option(
+        False, "--dry-run", "-n", help="Show what would be deleted without deleting."
+    ),
+    yes: bool = typer.Option(False, "--yes", "-y", help="Skip the confirmation prompt."),
+) -> None:
+    """Delete pending messages (and leases) from one or more configured queues.
+
+    Leaves topic registration markers in place. Dead-letter objects are kept
+    unless ``--include-dead-letter`` is set. With multiple queues configured,
+    pass ``--name``, ``--topic``, or ``--all``.
+    """
+    import asyncio  # noqa: PLC0415
+
+    from pawn_agent.utils.config import load_config  # noqa: PLC0415
+    from pawn_server.core.queue_admin import (  # noqa: PLC0415
+        empty_queue,
+        resolve_queue_targets,
+    )
+
+    cfg = load_config(config)
+    try:
+        targets = resolve_queue_targets(
+            cfg, name=name, topic=topic, all_targets=all_targets
+        )
+    except RuntimeError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1)
+
+    if not dry_run and not yes:
+        labels = ", ".join(f"{t.name}={t.topic}" for t in targets)
+        extras = " (including dead-letter)" if include_dead_letter else ""
+        console.print(
+            f"[yellow]About to empty pending messages and leases for "
+            f"{labels}{extras}.[/yellow]"
+        )
+        if not typer.confirm("Proceed?", default=False):
+            console.print("[dim]Aborted.[/dim]")
+            raise typer.Exit(0)
+
+    try:
+        results = asyncio.run(
+            empty_queue(
+                cfg,
+                name=name,
+                topic=topic,
+                all_targets=all_targets,
+                include_dead_letter=include_dead_letter,
+                dry_run=dry_run,
+            )
+        )
+    except (RuntimeError, ImportError, ValueError) as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1)
+    except Exception as exc:
+        console.print(f"[red]Error emptying queue: {exc}[/red]")
+        raise typer.Exit(1)
+
+    prefix = "[dim][dry-run] would delete[/dim]" if dry_run else "[green]Deleted[/green]"
+    for result in results:
+        if result.total == 0:
+            console.print(
+                f"[dim]{result.name} topic {result.topic!r} is already empty"
+                f"{' (dead-letter included)' if include_dead_letter else ''}.[/dim]"
+            )
+            continue
+        if dry_run:
+            for key in result.keys:
+                console.print(f"{prefix}: {key}")
+        console.print(
+            f"{prefix}: {result.name} topic={result.topic!r} "
+            f"{result.total} object(s) "
+            f"(messages={result.messages}, leases={result.leases}"
+            f"{', dead_letters=' + str(result.dead_letters) if include_dead_letter else ''})"
+        )
+
+
+@queue_app.command("stats")
+def queue_stats_cmd(
+    config: Optional[str] = typer.Option(
+        None, "--config", "-c", help="Path to YAML config file. Defaults to pawnai.yaml in cwd."
+    ),
+    name: Optional[str] = typer.Option(
+        None,
+        "--name",
+        "-N",
+        help="Configured queue name: agent, diarize, or a queue_producers key.",
+    ),
+    topic: Optional[str] = typer.Option(
+        None,
+        "--topic",
+        "-T",
+        help="Select by topic name (e.g. audio-chunks, pawn-agent-jobs).",
+    ),
+) -> None:
+    """Show pending message, lease, dead-letter, and pause state.
+
+    With no selector, lists every configured queue (agent, diarize, producers).
+    """
+    import asyncio  # noqa: PLC0415
+
+    from pawn_agent.utils.config import load_config  # noqa: PLC0415
+    from pawn_server.core.queue_admin import queue_stats  # noqa: PLC0415
+
+    cfg = load_config(config)
+    try:
+        rows = asyncio.run(queue_stats(cfg, name=name, topic=topic))
+    except (RuntimeError, ImportError, ValueError) as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1)
+    except Exception as exc:
+        console.print(f"[red]Error reading queue stats: {exc}[/red]")
+        raise typer.Exit(1)
+
+    table = Table(show_header=True)
+    table.add_column("Name", style="cyan", no_wrap=True)
+    table.add_column("Source", no_wrap=True)
+    table.add_column("Topic", no_wrap=True)
+    table.add_column("Bucket", no_wrap=True)
+    table.add_column("Paused", no_wrap=True)
+    table.add_column("Pending", justify="right", no_wrap=True)
+    table.add_column("Leases", justify="right", no_wrap=True)
+    table.add_column("Dead", justify="right", no_wrap=True)
+    for stats in rows:
+        if stats.paused and stats.paused_at:
+            paused = f"[yellow]yes[/yellow]\n[dim]{stats.paused_at}[/dim]"
+        elif stats.paused:
+            paused = "[yellow]yes[/yellow]"
+        else:
+            paused = "[green]no[/green]"
+        table.add_row(
+            stats.name,
+            stats.source,
+            stats.topic,
+            stats.bucket,
+            paused,
+            str(stats.messages),
+            str(stats.leases),
+            str(stats.dead_letters),
+        )
+    console.print(table)
+
+
+@queue_app.command("pause")
+def queue_pause(
+    config: Optional[str] = typer.Option(
+        None, "--config", "-c", help="Path to YAML config file. Defaults to pawnai.yaml in cwd."
+    ),
+    name: Optional[str] = typer.Option(
+        None,
+        "--name",
+        "-N",
+        help="Configured queue name: agent, diarize, or a queue_producers key.",
+    ),
+    topic: Optional[str] = typer.Option(
+        None,
+        "--topic",
+        "-T",
+        help="Select by topic name (e.g. audio-chunks, pawn-agent-jobs).",
+    ),
+    all_targets: bool = typer.Option(
+        False, "--all", help="Pause every configured queue."
+    ),
+) -> None:
+    """Pause processing: listeners stop claiming new messages for the topic(s)."""
+    import asyncio  # noqa: PLC0415
+
+    from pawn_agent.utils.config import load_config  # noqa: PLC0415
+    from pawn_server.core.queue_admin import set_queue_paused  # noqa: PLC0415
+
+    cfg = load_config(config)
+    try:
+        results = asyncio.run(
+            set_queue_paused(
+                cfg, paused=True, name=name, topic=topic, all_targets=all_targets
+            )
+        )
+    except (RuntimeError, ImportError, ValueError) as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1)
+    except Exception as exc:
+        console.print(f"[red]Error pausing queue: {exc}[/red]")
+        raise typer.Exit(1)
+
+    for result in results:
+        if result.changed:
+            console.print(
+                f"[yellow]Paused {result.name} topic={result.topic!r}.[/yellow]"
+            )
+        else:
+            console.print(
+                f"[dim]{result.name} topic={result.topic!r} was already paused.[/dim]"
+            )
+
+
+@queue_app.command("resume")
+def queue_resume(
+    config: Optional[str] = typer.Option(
+        None, "--config", "-c", help="Path to YAML config file. Defaults to pawnai.yaml in cwd."
+    ),
+    name: Optional[str] = typer.Option(
+        None,
+        "--name",
+        "-N",
+        help="Configured queue name: agent, diarize, or a queue_producers key.",
+    ),
+    topic: Optional[str] = typer.Option(
+        None,
+        "--topic",
+        "-T",
+        help="Select by topic name (e.g. audio-chunks, pawn-agent-jobs).",
+    ),
+    all_targets: bool = typer.Option(
+        False, "--all", help="Resume every configured queue."
+    ),
+) -> None:
+    """Resume processing after ``queue pause``."""
+    import asyncio  # noqa: PLC0415
+
+    from pawn_agent.utils.config import load_config  # noqa: PLC0415
+    from pawn_server.core.queue_admin import set_queue_paused  # noqa: PLC0415
+
+    cfg = load_config(config)
+    try:
+        results = asyncio.run(
+            set_queue_paused(
+                cfg, paused=False, name=name, topic=topic, all_targets=all_targets
+            )
+        )
+    except (RuntimeError, ImportError, ValueError) as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1)
+    except Exception as exc:
+        console.print(f"[red]Error resuming queue: {exc}[/red]")
+        raise typer.Exit(1)
+
+    for result in results:
+        if result.changed:
+            console.print(
+                f"[green]Resumed {result.name} topic={result.topic!r}.[/green]"
+            )
+        else:
+            console.print(
+                f"[dim]{result.name} topic={result.topic!r} was not paused.[/dim]"
+            )
 
 
 @app.command()

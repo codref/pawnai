@@ -26,6 +26,12 @@ CONVERSE = Skill(
         "When the user asks to list / show / find stored sessions, call "
         "sessions_list via a ```run block (optionally --limit N).\n"
         "For transcripts or analysis use session_transcript / session_analyze.\n"
+        "To delete a diarization session, ALWAYS ask the user to confirm the "
+        "exact session name in chat first, then call:\n"
+        "```run\n"
+        "session_delete --session-id <id> --confirm <id>\n"
+        "```\n"
+        "Never call session_delete without that matching confirmation.\n"
         "Do NOT pass --save / do NOT call siyuan_save unless the user "
         "explicitly asks to save or push to SiYuan Notes.\n"
         "When they do ask, run exactly:\n"
@@ -40,21 +46,35 @@ CONVERSE = Skill(
 SESSIONS = Skill(
     name="sessions",
     description=(
-        "User wants to list, discover, inspect, quote, or summarize diarization "
-        "conversation sessions / transcripts. Prefer this (push/replace) whenever "
-        "the request mentions sessions, transcripts, or session analysis."
+        "User wants to list, discover, inspect, quote, summarize, or delete "
+        "diarization conversation sessions / transcripts. Prefer this "
+        "(push/replace) whenever the request mentions sessions, transcripts, "
+        "or session analysis."
     ),
     prompt=(
         "Active skill: sessions.\n"
-        "Use sessions_list / session_transcript / session_analyze via ```run blocks.\n"
+        "Use sessions_list / session_transcript / session_analyze / "
+        "session_delete via ```run blocks.\n"
         "Never invent session ids — list first when the id is unclear.\n"
         "session_analyze persists to the DB only; do NOT pass --save unless "
         "the user explicitly asks for SiYuan.\n"
+        "Before session_delete, ALWAYS ask the user to confirm the exact "
+        "session name in chat. Only then call:\n"
+        "```run\n"
+        "session_delete --session-id <id> --confirm <id>\n"
+        "```\n"
+        "(--confirm must exactly equal --session-id). Never delete without "
+        "that confirmation.\n"
         "When the conversation key itself is a diarization session name "
         "(typical for queue/scheduler runs), prefer that id for transcript tools.\n"
         "Keep answers short; prefer summaries over dumping full transcripts."
     ),
-    tools=("sessions_list", "session_transcript", "session_analyze"),
+    tools=(
+        "sessions_list",
+        "session_transcript",
+        "session_analyze",
+        "session_delete",
+    ),
 )
 
 NOTES = Skill(

@@ -1,0 +1,28 @@
+# sallm CompiledProfile — 10× default ModelProfile token budgets.
+# Loaded via agent.sallm.profile (YAML or JSON). Budgets overlay ModelProfile.
+schema_version: 1
+target_model: ""
+instructions:
+  controller: ""
+  extractor: ""
+  ingest: ""
+  converse: ""
+  rewriter: ""
+demonstrations:
+  controller: ""
+  extractor: ""
+  ingest: ""
+  converse: ""
+  rewriter: ""
+budgets:
+  prompt_budget: 40960
+  max_output_tokens: 10240
+  recent_history_tokens: 18000
+  retrieval_tokens: 8000
+  control_max_tokens: 2560
+  extract_max_tokens: 3840
+  instruction_tokens: 4000
+  demo_tokens: 4000
+metadata:
+  note: "Pawn large profile — 10× sallm ModelProfile defaults for long replies."
+  version: large-10x-v1
