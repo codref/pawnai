@@ -673,6 +673,14 @@ def transcribe_diarize(
             )
             console.print(f"[green]✓ Session state updated: '{session_id}'[/green]")
 
+        # Best-effort SiYuan diary projection (opt-in via siyuan.auto_push_transcript).
+        try:
+            from ..core.siyuan_transcript import maybe_push_transcript_to_siyuan
+
+            maybe_push_transcript_to_siyuan(session_id, app_cfg, db_dsn=db_dsn)
+        except Exception as exc:
+            console.print(f"[yellow]SiYuan transcript push skipped: {exc}[/yellow]")
+
         # ------------------------------------------------------------------
         # Write --output file (full accumulated transcript)
         # ------------------------------------------------------------------
@@ -1891,6 +1899,143 @@ def sync_siyuan(
         raise typer.Exit(1)
 
 
+@app.command(name="push-siyuan")
+def push_siyuan(
+    session: Optional[str] = typer.Option(
+        None, "--session", "-s",
+        help="Diarization session ID to project into SiYuan.",
+    ),
+    latest: bool = typer.Option(
+        False, "--latest",
+        help="Push the most recently updated session that has segments.",
+    ),
+    all_sessions: bool = typer.Option(
+        False, "--all",
+        help="Push every session that has transcription segments.",
+    ),
+    since: Optional[str] = typer.Option(
+        None,
+        "--since",
+        help=(
+            "Push sessions updated on/after this date "
+            "(YYYY-MM-DD or ISO datetime, UTC)."
+        ),
+    ),
+    dry_run: bool = typer.Option(
+        False, "--dry-run",
+        help="Print what would be pushed without calling SiYuan.",
+    ),
+    daily_note: bool = typer.Option(
+        True, "--daily-note/--no-daily-note",
+        help="Append a backlink in the SiYuan daily note (once per session).",
+    ),
+    db_dsn: Optional[str] = typer.Option(
+        None, help="PostgreSQL DSN for the speaker database.",
+    ),
+    config: Optional[str] = typer.Option(
+        None, "--config", help="Path to YAML configuration file (pawnai.yaml).",
+    ),
+) -> None:
+    """Push session transcript(s) to SiYuan as a diary page.
+
+    Unlike [bold]sync-siyuan[/bold] (analysis + transcript, destructive upsert),
+    this command creates a stable session document with Speakers + Transcript
+    (managed) and Annotations (preserved across chunk updates).
+
+    Example:
+        pawn-diarize push-siyuan --latest
+        pawn-diarize push-siyuan --session myconv
+        pawn-diarize push-siyuan --since 2026-09-01
+        pawn-diarize push-siyuan --all --dry-run
+    """
+    from ..core.config import AppConfig
+    from ..core.database import get_engine, init_db
+    from ..core.siyuan import DEFAULT_DAILY_PATH_TEMPLATE, DEFAULT_PATH_TEMPLATE
+    from ..core.siyuan_transcript import (
+        list_session_ids_with_segments,
+        parse_since,
+        push_session_transcript,
+    )
+
+    app_cfg = AppConfig(config_path=config)
+    db_dsn = db_dsn or app_cfg.get("db_dsn")
+    sy_cfg = app_cfg.get_siyuan_config() or {}
+
+    resolved_url = sy_cfg.get("url", "http://127.0.0.1:6806")
+    resolved_token = sy_cfg.get("token", "")
+    resolved_notebook = sy_cfg.get("notebook", "")
+    resolved_path_tpl = sy_cfg.get("path_template", DEFAULT_PATH_TEMPLATE)
+    resolved_daily_tpl = sy_cfg.get("daily_note_path", DEFAULT_DAILY_PATH_TEMPLATE)
+
+    modes = sum(bool(x) for x in (session, latest, all_sessions, since))
+    if modes != 1:
+        console.print(
+            "[red]Error: provide exactly one of "
+            "--session, --latest, --all, or --since.[/red]"
+        )
+        raise typer.Exit(1)
+
+    since_dt = None
+    if since:
+        try:
+            since_dt = parse_since(since)
+        except ValueError as exc:
+            console.print(f"[red]Error: invalid --since value: {exc}[/red]")
+            raise typer.Exit(1)
+
+    if not dry_run and not resolved_notebook:
+        console.print(
+            "[red]Error: No SiYuan notebook ID. Set siyuan.notebook in pawnai.yaml.[/red]"
+        )
+        raise typer.Exit(1)
+
+    engine = get_engine(db_dsn)
+    init_db(engine)
+
+    if session:
+        session_ids = [session]
+    elif latest:
+        session_ids = list_session_ids_with_segments(engine, latest=True)
+    elif since_dt is not None:
+        session_ids = list_session_ids_with_segments(engine, since=since_dt)
+    else:
+        session_ids = list_session_ids_with_segments(engine, latest=False)
+
+    if not session_ids:
+        console.print("[yellow]No sessions with segments found.[/yellow]")
+        raise typer.Exit(0)
+
+    console.print(
+        f"[cyan]Pushing {len(session_ids)} session(s) → SiYuan "
+        f"{resolved_url} notebook={resolved_notebook or '(dry-run)'}[/cyan]"
+    )
+
+    success = 0
+    errors = 0
+    for sid in session_ids:
+        try:
+            status = push_session_transcript(
+                sid,
+                db_dsn=str(db_dsn),
+                url=resolved_url,
+                token=resolved_token,
+                notebook=resolved_notebook or "dry-run",
+                path_template=resolved_path_tpl,
+                daily_path_template=resolved_daily_tpl,
+                daily_note=daily_note,
+                dry_run=dry_run,
+            )
+            console.print(f"[green]✓ {status}[/green]")
+            success += 1
+        except Exception as exc:
+            console.print(f"[red]✗ {sid!r}: {exc}[/red]")
+            errors += 1
+
+    console.print(f"\n[bold]Done:[/bold] {success} ok, {errors} failed.")
+    if errors:
+        raise typer.Exit(1)
+
+
 @app.command()
 def sessions(
     session: Optional[str] = typer.Option(
@@ -2166,6 +2311,8 @@ def status(
     console.print("  session-relabel    - Bulk-rename a speaker across an entire session")
     console.print("  session-info       - Show speakers & embedding sources for a session")
     console.print("  sessions           - List or inspect transcription sessions")
+    console.print("  sync-siyuan        - Push analysis+transcript to SiYuan (legacy upsert)")
+    console.print("  push-siyuan        - Push/update diary transcript pages in SiYuan")
     console.print("  s3-ls              - List objects in the configured S3 bucket")
     console.print("  status             - Show this status message")
 

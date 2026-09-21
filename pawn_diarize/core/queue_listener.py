@@ -367,6 +367,14 @@ def _run_transcribe_diarize(
             if result.get("segments"):
                 save_transcription_segments(result["segments"], session, engine, start_index=prior_segment_count)
 
+            # Best-effort SiYuan diary projection (never fails this job).
+            try:
+                from .siyuan_transcript import maybe_push_transcript_to_siyuan
+
+                maybe_push_transcript_to_siyuan(session, cfg, db_dsn=db_dsn)
+            except Exception as exc:
+                logger.warning("siyuan transcript auto-push failed: %s", exc)
+
         # Format and write output
         text = format_transcript_with_speakers(
             result, include_timestamps=not no_timestamps

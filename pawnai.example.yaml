@@ -85,11 +85,16 @@ siyuan:
   token: ""
   notebook: ""
 
-  # Template used when saving conversation analysis pages.
-  path_template: /Conversations/{date}/{session_id}/{title}
+  # Template used when saving conversation / transcript pages.
+  # Prefer {session_id} (stable) over {title} for chunked diary sync.
+  path_template: /Conversations/{year}/{month}/{date}/{session_id}
 
-  # Template used for daily note paths.
+  # Template used for daily note paths (align with SiYuan notebook dailyNoteSavePath).
   daily_note_path: /daily note/{year}/{month}/{date}
+
+  # When true, each successful transcribe-diarize chunk pushes/updates the
+  # session transcript page in SiYuan (best-effort). Also: pawn-diarize push-siyuan.
+  auto_push_transcript: false
 
 rag:
   # Embedding model and vector dimensionality for transcript/SiYuan RAG.

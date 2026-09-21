@@ -34,7 +34,9 @@ CONVERSE = Skill(
         "Never call session_delete without that matching confirmation.\n"
         "Do NOT pass --save / do NOT call siyuan_save unless the user "
         "explicitly asks to save or push to SiYuan Notes.\n"
-        "If they ask for a (deep) analysis AND SiYuan, use ONE call only:\n"
+        "If they ask for a (deep) analysis AND SiYuan, resolve a real "
+        "diarization session id first (sessions_list / ask the user), then "
+        "ONE call only:\n"
         "```run\n"
         "session_analyze --session-id <id> --save\n"
         "```\n"
@@ -45,7 +47,7 @@ CONVERSE = Skill(
         "siyuan_save --session-id <id> --from-analysis\n"
         "```\n"
         "Free-form / chat-thread Markdown only when it is NOT a session "
-        "analysis:\n"
+        "analysis and the user asked to save that substance:\n"
         "```run\n"
         "siyuan_save --session-id <id> --title \"…\" --content-file @note\n"
         "```\n"
@@ -53,7 +55,11 @@ CONVERSE = Skill(
         "…full markdown…\n"
         "```\n"
         "Never paste Markdown into --content; never invent session ids; "
-        "never print tool argv as prose."
+        "never print tool argv as prose.\n"
+        "NEVER save tool failures, --help output, fallback recipes, or "
+        "agent self-troubleshooting into SiYuan. If session_analyze cannot "
+        "run (no diarization id), ask which session to use — do not invent a "
+        "meta-note about the tooling problem."
     ),
     tools=None,
 )
@@ -103,7 +109,9 @@ NOTES = Skill(
     prompt=(
         "Active skill: notes.\n"
         "Tools MUST be called inside ```run fences — never print bare argv.\n"
-        "Never invent session ids — use sessions_list first when unclear.\n"
+        "session_analyze / --from-analysis need a real diarization session id "
+        "(not the Matrix/API chat key). When the id is unclear, call "
+        "sessions_list first; if still ambiguous, ask the user which session.\n"
         "ONE SiYuan write per user request. Never call session_analyze twice. "
         "Never call both session_analyze --save and siyuan_save in the same turn.\n"
         "Pick exactly one recipe:\n"
@@ -116,17 +124,28 @@ NOTES = Skill(
         "```run\n"
         "siyuan_save --session-id <id> --from-analysis\n"
         "```\n"
-        "C) Free-form / chat-thread Markdown that is NOT a session analysis "
-        "(never --content):\n"
+        "C) Free-form note of user-facing chat substance (NOT session analysis, "
+        "never --content). Only when the user asked to save that content and "
+        "recipe A/B do not apply:\n"
         "```run\n"
         "siyuan_save --session-id <id> --title \"…\" --content-file @note\n"
         "```\n"
         "```file note\n"
-        "…full markdown…\n"
+        "…full markdown about the discussion topics…\n"
         "```\n"
+        "Hard rules for SiYuan content:\n"
+        "- Save the substance of the conversation / transcript analysis.\n"
+        "- NEVER save tool probing, unknown-tool errors, missing --session-id, "
+        "--help output, fallback patterns, iterative verification, or other "
+        "agent self-troubleshooting.\n"
+        "- If recipe A cannot run because no diarization session is identified, "
+        "STOP and ask which session — do not invent a meta-analysis of the "
+        "tooling problem as a free-form note.\n"
+        "- Repeated \"analyze and save\" means re-do recipe A on the same "
+        "session (or ask), not a new note about process maturity.\n"
         "After the tool succeeds, answer briefly; do not re-analyze or re-save."
     ),
-    tools=("siyuan_save", "session_analyze"),
+    tools=("sessions_list", "siyuan_save", "session_analyze"),
 )
 
 SCHEDULING = Skill(

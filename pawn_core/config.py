@@ -105,6 +105,9 @@ class SiYuanConfig(BaseModel):
     notebook: str = ""
     path_template: str = "/Conversations/{date}/{session_id}/{title}"
     daily_note_path: str = "/daily note/{year}/{month}/{date}"
+    # When true, each successful transcribe-diarize chunk projects the
+    # session transcript into SiYuan (best-effort; never fails diarization).
+    auto_push_transcript: bool = False
 
 
 class RagConfig(BaseModel):

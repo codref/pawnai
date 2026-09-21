@@ -64,12 +64,20 @@ Migrated CliTools: `sessions_list`, `session_transcript`, `session_analyze`,
 
 `siyuan_save`: prefer `--from-analysis` or `session_analyze --save`. Free-form
 Markdown uses `--content-file @note` plus a ```file note` block (sallm writes a
-temp file). Do not paste long bodies into `--content`.
+temp file). Do not paste long bodies into `--content`. Notes skill includes
+`sessions_list` so analyze+save can resolve a diarization id; never dump tool
+errors / fallback journaling into SiYuan.
 
 `session_delete` permanently wipes diarization DB rows (segments, analyses,
 `session_state`, graph triples) for one session name. It always requires
 `--confirm` to exactly match `--session-id`; the agent must ask the user
 in chat before calling. It does not clear sallm chat memory or SiYuan notes.
+
+SiYuan diary transcripts (diarize, not agent): `pawn-diarize push-siyuan`
+creates/updates a stable session doc (Speakers + Transcript managed;
+Annotations preserved). Opt-in auto-push after each `transcribe-diarize`
+chunk via `siyuan.auto_push_transcript`. Mapping table: `siyuan_session_docs`.
+Legacy analysis upsert remains `pawn-diarize sync-siyuan`.
 
 Skills (modes): `converse`, `sessions`, `notes`, `scheduling`, `ops` — see `sallm_skills.py`.
 

@@ -40,7 +40,6 @@ from typing import Any, Dict, List, Optional
 
 from pawn_core.siyuan import siyuan_post  # noqa: F401
 
-
 # ──────────────────────────────────────────────────────────────────────────────
 # Default path templates
 # ──────────────────────────────────────────────────────────────────────────────
@@ -350,6 +349,27 @@ class SiyuanClient:
         )
         ops = data[0]["doOperations"] if data else []
         return ops[0]["id"] if ops else ""
+
+    def update_block(self, block_id: str, markdown: str) -> None:
+        """Replace the content of an existing block (keeps the same block id).
+
+        Used by transcript diary sync so chunk updates do not break daily-note
+        block-refs. Prefer this over delete+recreate.
+        """
+        self._post(
+            "/api/block/updateBlock",
+            {"dataType": "markdown", "data": markdown, "id": block_id},
+        )
+
+    def get_block_kramdown(self, block_id: str) -> str:
+        """Return the kramdown source for *block_id* (empty string on failure)."""
+        try:
+            data = self._post("/api/block/getBlockKramdown", {"id": block_id})
+            if isinstance(data, dict):
+                return str(data.get("kramdown") or "")
+            return ""
+        except SiyuanError:
+            return ""
 
     # ── attributes ────────────────────────────────────────────────────────────
 

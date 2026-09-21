@@ -14,7 +14,7 @@ A Python monolith for speaker diarization, audio transcription, and LLM-powered 
 - **Knowledge Graph Extraction**: Extract semantic triples (subject, relation, object) from transcripts
 - **RAG Index**: Embed transcripts and SiYuan notes for semantic similarity search
 - **S3 Storage Management**: List, filter, and delete objects in S3-compatible storage
-- **SiYuan Notes Integration**: Push analysis documents back to a SiYuan Notes instance
+- **SiYuan Notes Integration**: Push analysis documents and diary transcript pages to SiYuan
 - **Background Queue Worker**: S3-backed job queue with lease-based concurrency
 - **Durable Agent Scheduler**: Store scheduled agent prompts in PostgreSQL and run them from pawn-server
 - **GPU Support**: Accelerated processing on CUDA-enabled devices
@@ -323,6 +323,30 @@ Options:
   --config TEXT
 ```
 
+#### `push-siyuan`
+
+Project diarization transcripts into SiYuan as diary pages (Speakers + Transcript,
+user Annotations preserved). Postgres stays source of truth; chunked
+`transcribe-diarize` updates the same stable document. Enable automatic pushes
+with `siyuan.auto_push_transcript: true` in `pawnai.yaml`.
+
+```bash
+pawn-diarize push-siyuan --latest
+pawn-diarize push-siyuan --session myconv
+pawn-diarize push-siyuan --since 2026-09-01
+pawn-diarize push-siyuan --all --dry-run
+
+Options:
+  --session TEXT          Session ID to push
+  --latest                Most recently updated session with segments
+  --all                   Every session with segments
+  --since TEXT            Sessions updated on/after YYYY-MM-DD (or ISO datetime, UTC)
+  --dry-run               Print actions without calling SiYuan
+  --daily-note/--no-daily-note
+  --db-dsn TEXT
+  --config TEXT
+```
+
 #### `s3 ls`
 
 List objects in the configured S3 bucket with POSIX-style output (timestamp and size always shown).
@@ -620,6 +644,7 @@ parakeet/
 │   │   ├── analysis.py       # Session analysis via Copilot
 │   │   ├── s3.py             # S3/MinIO client and transparent download helpers
 │   │   ├── siyuan.py         # SiYuan Notes API client
+│   │   ├── siyuan_transcript.py  # Diary transcript push (chunk-safe)
 │   │   └── queue_listener.py # Background job worker
 │   └── utils/
 ├── pawn_agent/

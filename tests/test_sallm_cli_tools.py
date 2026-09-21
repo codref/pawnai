@@ -35,6 +35,19 @@ def test_build_pawn_skills_includes_sessions() -> None:
     assert "session_delete" in sessions.tools
 
 
+def test_notes_skill_exposes_sessions_list() -> None:
+    """Notes mode must list sessions; otherwise analyze+save falls back to meta-notes."""
+    registry = build_pawn_skills()
+    available = build_pawn_clitools()
+    notes = registry.get("notes")
+    assert notes.tools is not None
+    assert "sessions_list" in notes.tools
+    visible = registry.resolve_tools("notes", available)
+    assert "sessions_list" in visible
+    assert "session_analyze" in visible
+    assert "siyuan_save" in visible
+
+
 def test_converse_exposes_all_tools_including_sessions_list() -> None:
     """Root skill must not hide CliTools — controller often keeps converse."""
     registry = build_pawn_skills()
