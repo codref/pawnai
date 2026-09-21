@@ -113,11 +113,7 @@ def load_session_segments(
             for s in orm_segments
         ]
 
-        pairs = {
-            (s["audio_file"], s["label"])
-            for s in segments
-            if s["label"] is not None
-        }
+        pairs = {(s["audio_file"], s["label"]) for s in segments if s["label"] is not None}
         name_lookup: Dict[Tuple[str, str], str] = {}
         if pairs:
             audio_files = list({p[0] for p in pairs})
@@ -128,10 +124,7 @@ def load_session_segments(
                     SpeakerName.local_speaker_label.in_(labels),
                 )
             ).all()
-            name_lookup = {
-                (r.audio_file, r.local_speaker_label): r.speaker_name
-                for r in rows
-            }
+            name_lookup = {(r.audio_file, r.local_speaker_label): r.speaker_name for r in rows}
         return segments, name_lookup
 
 
@@ -242,9 +235,7 @@ def _session_when(session_id: str, engine) -> datetime:
     return datetime.now(timezone.utc)
 
 
-def _load_session_meta(
-    session_id: str, engine
-) -> Tuple[Optional[int], Optional[float]]:
+def _load_session_meta(session_id: str, engine) -> Tuple[Optional[int], Optional[float]]:
     with get_session(engine) as db:
         row = db.get(SessionState, session_id)
         if not row:
@@ -343,9 +334,7 @@ def list_session_ids_with_segments(
             since_naive = since.astimezone(timezone.utc).replace(tzinfo=None)
 
             from_state = db.execute(
-                select(SessionState.session_id).where(
-                    SessionState.updated_at >= since_naive
-                )
+                select(SessionState.session_id).where(SessionState.updated_at >= since_naive)
             ).all()
             ids = {r[0] for r in from_state if r[0]}
 
@@ -430,11 +419,7 @@ def push_session_transcript(
     )
 
     speaker_names = sorted(
-        {
-            _display_name(s, name_lookup)
-            for s in segments
-            if (s.get("text") or "").strip()
-        }
+        {_display_name(s, name_lookup) for s in segments if (s.get("text") or "").strip()}
     )
     attrs = {
         "custom-session-id": session_id,
@@ -453,16 +438,11 @@ def push_session_transcript(
 
     if mapping is None:
         annotations = _DEFAULT_ANNOTATIONS
-        markdown = build_document_markdown(
-            session_id, speakers_md, annotations, transcript_md
-        )
+        markdown = build_document_markdown(session_id, speakers_md, annotations, transcript_md)
         # Create once — do not upsert/delete; doc_id must remain stable.
         doc_id = client.create_doc(notebook, doc_path, markdown)
         if not doc_id:
-            return (
-                f"error: SiYuan createDoc returned empty id "
-                f"for {session_id!r}"
-            )
+            return f"error: SiYuan createDoc returned empty id " f"for {session_id!r}"
         client.set_block_attrs(doc_id, attrs)
         daily_linked = False
         if daily_note:
@@ -499,9 +479,7 @@ def push_session_transcript(
     # Update path: preserve Annotations, rewrite Speakers + Transcript.
     kramdown = client.get_block_kramdown(mapping.doc_id)
     annotations = extract_annotations(kramdown)
-    markdown = build_document_markdown(
-        session_id, speakers_md, annotations, transcript_md
-    )
+    markdown = build_document_markdown(session_id, speakers_md, annotations, transcript_md)
     client.update_block(mapping.doc_id, markdown)
     client.set_block_attrs(mapping.doc_id, attrs)
 
@@ -539,6 +517,58 @@ def push_session_transcript(
     return f"updated: {session_id} → {mapping.path} (doc_id={mapping.doc_id})"
 
 
+def refresh_transcript_after_relabel(
+    session_id: str,
+    *,
+    db_dsn: str,
+    url: str = "http://127.0.0.1:6806",
+    token: str = "",
+    notebook: str = "",
+    path_template: str = DEFAULT_PATH_TEMPLATE,
+    daily_path_template: str = DEFAULT_DAILY_PATH_TEMPLATE,
+    daily_note: bool = True,
+    force: bool = False,
+) -> Optional[str]:
+    """Refresh the SiYuan Speakers+Transcript page after a DB speaker rename.
+
+    When *force* is False, only pushes if a ``siyuan_session_docs`` mapping
+    already exists (so an existing diary page picks up the new name). When
+    *force* is True, creates or updates like ``push-siyuan --session``.
+
+    Returns a status string, or ``None`` when skipped. Never raises.
+    """
+    try:
+        if not notebook:
+            if force:
+                return "skipped: siyuan.notebook not configured"
+            return None
+
+        engine = get_engine(db_dsn)
+        init_db(engine)
+        mapping = _get_mapping(session_id, engine)
+        if mapping is None and not force:
+            return None
+
+        return push_session_transcript(
+            session_id,
+            db_dsn=db_dsn,
+            url=url,
+            token=token,
+            notebook=notebook,
+            path_template=path_template,
+            daily_path_template=daily_path_template,
+            daily_note=daily_note,
+        )
+    except Exception as exc:
+        logger.warning(
+            "siyuan transcript refresh after relabel "
+            "failed for %r: %s",
+            session_id,
+            exc,
+        )
+        return f"siyuan error: {exc}"
+
+
 def maybe_push_transcript_to_siyuan(
     session_id: str,
     cfg: Any,
@@ -565,18 +595,13 @@ def maybe_push_transcript_to_siyuan(
         notebook = sy_dict.get("notebook") or ""
         if not notebook:
             logger.warning(
-                "siyuan auto_push_transcript enabled but notebook "
-                "is empty — skipping"
+                "siyuan auto_push_transcript enabled but notebook " "is empty — skipping"
             )
             return
 
-        resolved_dsn = (
-            db_dsn or getattr(cfg, "db_dsn", None) or cfg.get("db_dsn")
-        )
+        resolved_dsn = db_dsn or getattr(cfg, "db_dsn", None) or cfg.get("db_dsn")
         path_tpl = sy_dict.get("path_template") or DEFAULT_PATH_TEMPLATE
-        daily_tpl = (
-            sy_dict.get("daily_note_path") or DEFAULT_DAILY_PATH_TEMPLATE
-        )
+        daily_tpl = sy_dict.get("daily_note_path") or DEFAULT_DAILY_PATH_TEMPLATE
         status = push_session_transcript(
             session_id,
             db_dsn=str(resolved_dsn),

@@ -14,12 +14,16 @@ pawn_agent/tools/
   query_conversation.py  # query_conversation_impl
   analyze_summary.py     # analyze_summary_impl
   save_to_siyuan.py      # save_to_siyuan_impl / save_analysis_to_siyuan_impl
+  delete_session.py      # delete_session_impl
+  session_relabel.py     # session_relabel_impl (wraps pawn_diarize session_relabel)
   propose_schedule.py    # propose_schedule_change_impl
   push_queue_message.py  # push_queue_message_impl
   cli/
     sessions_list.py
     session_transcript.py
     session_analyze.py
+    session_delete.py
+    session_relabel.py
     siyuan_save.py
     schedule_propose.py
     queue_push.py
@@ -52,6 +56,8 @@ long strings). Prefer:
 | `sessions_list` | `list_sessions` | List diarization sessions |
 | `session_transcript` | `query_conversation` | Fetch one transcript |
 | `session_analyze` | `analyze_summary` | Structured analysis (+ optional SiYuan) |
+| `session_delete` | `delete_session` | Permanently delete one session (requires `--confirm`) |
+| `session_relabel` | `session_relabel` | Rename a speaker across a session (segments + embeddings) |
 | `siyuan_save` | `save_to_siyuan` | Save Markdown / `--from-analysis` / `--content-file` to SiYuan |
 | `schedule_propose` | `propose_schedule` | Create schedule proposals (approve via CLI) |
 | `queue_push` | `push_queue_message` | Publish to a named queue producer |

@@ -71,6 +71,22 @@ def build_pawn_clitools() -> dict[str, CliTool]:
                 "Does not clear sallm chat memory or SiYuan notes."
             ),
         ),
+        "session_relabel": CliTool(
+            name="session_relabel",
+            argv=_cli_argv("session_relabel.py"),
+            summary=(
+                "Rename a speaker across one diarization session and propagate "
+                "the display name to speaker_names / embeddings / session_state. "
+                "Required: --session-id ID --from LABEL --to NAME. "
+                "--from may be SPEAKER_XX or a current display name "
+                "(e.g. --from SPEAKER_00 --to Davide). "
+                "Existing SiYuan diary Speakers+Transcript pages refresh "
+                "automatically; pass --push-siyuan to create/update even "
+                "without a prior mapping. "
+                "Use when the user asks to change / correct / rename a speaker "
+                "on a session. Never invent session ids — sessions_list first."
+            ),
+        ),
         "siyuan_save": CliTool(
             name="siyuan_save",
             argv=_cli_argv("siyuan_save.py"),

@@ -60,7 +60,8 @@ Notes: pytest defaults to `--cov=pawn_diarize --cov-report=term-missing`; pass `
 Domain logic stays in `pawn_agent/tools/*_impl`. Production path uses **CliTools** under `pawn_agent/tools/cli/` registered in `sallm_tools.py`.
 
 Migrated CliTools: `sessions_list`, `session_transcript`, `session_analyze`,
-`session_delete`, `siyuan_save`, `schedule_propose`, `queue_push`.
+`session_delete`, `session_relabel`, `siyuan_save`, `schedule_propose`,
+`queue_push`.
 
 `siyuan_save`: prefer `--from-analysis` or `session_analyze --save`. Free-form
 Markdown uses `--content-file @note` plus a ```file note` block (sallm writes a
@@ -72,6 +73,13 @@ errors / fallback journaling into SiYuan.
 `session_state`, graph triples) for one session name. It always requires
 `--confirm` to exactly match `--session-id`; the agent must ask the user
 in chat before calling. It does not clear sallm chat memory or SiYuan notes.
+
+`session_relabel` renames a speaker across one session (`--from SPEAKER_00
+--to Davide` or a wrong display name). Updates transcript labels,
+`speaker_names` (so embedding matches resolve to the new name), and
+`session_state` prior-speaker keys. Same core as `pawn-diarize session-relabel`.
+Existing SiYuan diary Speakers+Transcript pages refresh automatically after
+relabel; pass `--push-siyuan` to create/update even without a prior mapping.
 
 SiYuan diary transcripts (diarize, not agent): `pawn-diarize push-siyuan`
 creates/updates a stable session doc (Speakers + Transcript managed;

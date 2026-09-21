@@ -270,7 +270,10 @@ pawn-diarize label --list
 
 #### `session-relabel`
 
-Bulk-rename a mis-identified speaker across an entire session.
+Bulk-rename a mis-identified speaker across an entire session. Accepts a raw
+`SPEAKER_XX` label or a wrong display name; updates transcript segments,
+`speaker_names` (so future embedding matches resolve correctly), and
+`session_state` prior-speaker keys.
 
 ```bash
 pawn-diarize session-relabel --session SESSION_ID --from OLD_NAME --to NEW_NAME [OPTIONS]
@@ -280,6 +283,17 @@ Options:
   --db-dsn TEXT
   --config TEXT
 ```
+
+```bash
+pawn-diarize session-relabel --session my-session --from SPEAKER_00 --to Davide --yes
+pawn-diarize session-relabel --session my-session -F SPEAKER_00 -T Davide --yes --push-siyuan
+```
+
+Existing SiYuan diary Speakers+Transcript pages refresh automatically after
+relabel (Annotations preserved). `--push-siyuan` forces create/update even
+when no `siyuan_session_docs` mapping exists yet.
+
+The agent exposes the same operation as the `session_relabel` CliTool.
 
 #### `session-info`
 
@@ -526,6 +540,8 @@ pawn-agent models [--config TEXT]
 | `sessions_list` | List diarization sessions from the database |
 | `session_transcript` | Fetch the full transcript for a session |
 | `session_analyze` | Run structured analysis (title, summary, topics, sentiment, tags); optional `--save` to SiYuan |
+| `session_delete` | Permanently delete one diarization session (requires matching `--confirm`) |
+| `session_relabel` | Rename a speaker across a session (`--from SPEAKER_00 --to Davide`) |
 | `siyuan_save` | Save Markdown to SiYuan; prefer `--from-analysis` or `--content-file @note` |
 | `queue_push` | Publish progress updates or notifications to configured queue producers |
 | `schedule_propose` | Create schedule-change proposals for application approval |

@@ -50,9 +50,7 @@ def _resolve_s3_paths(
 
     s3_cfg = app_cfg.get_s3_config()
     if s3_cfg is None:
-        console.print(
-            "[red]Error: S3 paths require an 's3:' section in pawnai.yaml[/red]"
-        )
+        console.print("[red]Error: S3 paths require an 's3:' section in pawnai.yaml[/red]")
         raise typer.Exit(1)
 
     client = S3Client.from_dict(s3_cfg)
@@ -68,7 +66,9 @@ def _resolve_s3_paths(
     # Create a single randomly-named subdirectory for this invocation so that
     # downloaded files keep their original S3 key name (e.g. 260224183013_01.flac)
     # and the speaker ID stored in PostgreSQL is derived from the original filename.
-    tmp_dir = Path(tempfile.mkdtemp(prefix="pawn-diarize_s3_", dir=str(_base_dir) if _base_dir else None))
+    tmp_dir = Path(
+        tempfile.mkdtemp(prefix="pawn-diarize_s3_", dir=str(_base_dir) if _base_dir else None)
+    )
 
     # Expand any wildcard URIs before downloading
     expanded_paths: List[str] = []
@@ -78,9 +78,7 @@ def _resolve_s3_paths(
             if not matches:
                 console.print(f"[yellow]Warning: no S3 objects matched {path!r}[/yellow]")
             else:
-                console.print(
-                    f"[cyan]Expanded {path!r} → {len(matches)} file(s)[/cyan]"
-                )
+                console.print(f"[cyan]Expanded {path!r} → {len(matches)} file(s)[/cyan]")
                 expanded_paths.extend(matches)
         else:
             expanded_paths.append(path)
@@ -112,26 +110,31 @@ def _resolve_s3_paths(
 @app.command()
 def diarize(
     audio_paths: List[str] = typer.Argument(
-        ..., help="One or more audio files to diarize (treated as ordered chunks of one conversation)"
+        ...,
+        help="One or more audio files to diarize (treated as ordered chunks of one conversation)",
     ),
     output: Optional[str] = typer.Option(
-        None, "--output", "-o", help="Output file path (format inferred from extension: .txt or .json)"
+        None,
+        "--output",
+        "-o",
+        help="Output file path (format inferred from extension: .txt or .json)",
     ),
     config: Optional[str] = typer.Option(
         None, "--config", help="Path to YAML configuration file (pawnai.yaml)"
     ),
-    db_dsn: Optional[str] = typer.Option(
-        None, help="PostgreSQL DSN for speaker database"
-    ),
+    db_dsn: Optional[str] = typer.Option(None, help="PostgreSQL DSN for speaker database"),
     threshold: float = typer.Option(
-        0.7, "--threshold", "-t", help="Similarity threshold for speaker matching (0-1, default: 0.7)"
+        0.7,
+        "--threshold",
+        "-t",
+        help="Similarity threshold for speaker matching (0-1, default: 0.7)",
     ),
     store_new: bool = typer.Option(
         True, "--store-new/--no-store", help="Store embeddings for unknown speakers"
     ),
 ) -> None:
     """Perform speaker diarization on one or more audio files.
-    
+
     When multiple files are given they are treated as ordered chunks of the
     same conversation – they are concatenated before diarization so speaker
     labels are consistent across all files.
@@ -139,7 +142,7 @@ def diarize(
     Analyzes the audio to identify and separate different speakers,
     showing when each speaker talks with timestamps. Automatically
     recognizes known speakers from the database.
-    
+
     Example:
         pawn-diarize diarize audio.wav
         pawn-diarize diarize part1.wav part2.wav part3.wav -o result.json
@@ -180,71 +183,83 @@ def diarize(
             store_new_speakers=store_new,
             source_map=_path_map,
         )
-        
+
         console.print(f"[green]✓ Diarization complete[/green]")
-        
+
         # Show matched speakers if any
-        if result.get('matched_speakers'):
+        if result.get("matched_speakers"):
             console.print(f"\n[bold green]Matched speakers:[/bold green]")
-            for original, matched in result['matched_speakers'].items():
+            for original, matched in result["matched_speakers"].items():
                 console.print(f"  {original} → {matched}")
-        
+
         # Show new speakers if any
-        if result.get('new_speakers'):
-            console.print(f"\n[bold yellow]New/Unknown speakers:[/bold yellow] {', '.join(result['new_speakers'])}")
+        if result.get("new_speakers"):
+            console.print(
+                f"\n[bold yellow]New/Unknown speakers:[/bold yellow] {', '.join(result['new_speakers'])}"
+            )
             if store_new:
                 console.print(f"  [dim](Embeddings stored for future recognition)[/dim]")
             else:
                 console.print(f"  [dim](Use 'pawn-diarize label' to assign names)[/dim]")
-        
-        console.print(f"\n[bold]Detected {result['num_speakers']} speaker(s):[/bold] {', '.join(result['speakers'])}")
-        
+
+        console.print(
+            f"\n[bold]Detected {result['num_speakers']} speaker(s):[/bold] {', '.join(result['speakers'])}"
+        )
+
         # Handle output file if specified
         if output:
             output_path = Path(output)
             output_format = output_path.suffix.lower()
-            
+
             if output_format == ".json":
                 # Save as JSON
-                with open(output_path, 'w', encoding='utf-8') as f:
+                with open(output_path, "w", encoding="utf-8") as f:
                     json.dump(result, f, indent=2, ensure_ascii=False)
                 console.print(f"[green]✓ Saved JSON to: {output}[/green]")
-            
+
             elif output_format == ".txt":
                 # Save as plain text
-                with open(output_path, 'w', encoding='utf-8') as f:
+                with open(output_path, "w", encoding="utf-8") as f:
                     f.write(f"Speaker Diarization Results\n")
                     f.write(f"===========================\n\n")
-                    f.write(f"Detected {result['num_speakers']} speaker(s): {', '.join(result['speakers'])}\n\n")
+                    f.write(
+                        f"Detected {result['num_speakers']} speaker(s): {', '.join(result['speakers'])}\n\n"
+                    )
                     f.write(f"Timeline:\n")
                     f.write(f"---------\n\n")
-                    
-                    for seg in result['segments']:
+
+                    for seg in result["segments"]:
                         start_time = f"{int(seg['start']//60):02d}:{seg['start']%60:05.2f}"
                         end_time = f"{int(seg['end']//60):02d}:{seg['end']%60:05.2f}"
-                        f.write(f"[{start_time} → {end_time}] {seg['speaker']} ({seg['duration']:.2f}s)\n")
-                
+                        f.write(
+                            f"[{start_time} → {end_time}] {seg['speaker']} ({seg['duration']:.2f}s)\n"
+                        )
+
                 console.print(f"[green]✓ Saved text to: {output}[/green]")
-            
+
             else:
-                console.print(f"[yellow]⚠ Unknown format '{output_format}', using .txt format[/yellow]")
-                with open(output_path, 'w', encoding='utf-8') as f:
+                console.print(
+                    f"[yellow]⚠ Unknown format '{output_format}', using .txt format[/yellow]"
+                )
+                with open(output_path, "w", encoding="utf-8") as f:
                     f.write(f"Speakers: {', '.join(result['speakers'])}\n\n")
-                    for seg in result['segments']:
+                    for seg in result["segments"]:
                         f.write(f"[{seg['start']:.2f}s - {seg['end']:.2f}s] {seg['speaker']}\n")
                 console.print(f"[green]✓ Saved to: {output}[/green]")
-        
+
         else:
             # Console output (default)
             console.print(f"\n[bold]Speaker Timeline:[/bold]")
-            for i, seg in enumerate(result['segments'][:10]):
+            for i, seg in enumerate(result["segments"][:10]):
                 start_time = f"{int(seg['start']//60):02d}:{seg['start']%60:05.2f}"
                 end_time = f"{int(seg['end']//60):02d}:{seg['end']%60:05.2f}"
-                console.print(f"  [{start_time} → {end_time}] {seg['speaker']} ({seg['duration']:.2f}s)")
-            
-            if len(result['segments']) > 10:
+                console.print(
+                    f"  [{start_time} → {end_time}] {seg['speaker']} ({seg['duration']:.2f}s)"
+                )
+
+            if len(result["segments"]) > 10:
                 console.print(f"  ... and {len(result['segments']) - 10} more segments")
-        
+
     except Exception as e:
         console.print(f"[red]Error during diarization: {str(e)}[/red]")
         raise typer.Exit(1)
@@ -256,21 +271,25 @@ def diarize(
 @app.command()
 def transcribe(
     audio_paths: List[str] = typer.Argument(
-        ..., help="One or more audio files to transcribe (treated as ordered chunks of one conversation)"
+        ...,
+        help="One or more audio files to transcribe (treated as ordered chunks of one conversation)",
     ),
     output: Optional[str] = typer.Option(
-        None, "--output", "-o", help="Output file path (format inferred from extension: .txt or .json)"
+        None,
+        "--output",
+        "-o",
+        help="Output file path (format inferred from extension: .txt or .json)",
     ),
     config: Optional[str] = typer.Option(
         None, "--config", help="Path to YAML configuration file (pawnai.yaml)"
     ),
     session: Optional[str] = typer.Option(
-        None, "--session", "-s",
-        help="Session name for grouping transcript segments in the database."
+        None,
+        "--session",
+        "-s",
+        help="Session name for grouping transcript segments in the database.",
     ),
-    db_dsn: Optional[str] = typer.Option(
-        None, help="PostgreSQL DSN for speaker database"
-    ),
+    db_dsn: Optional[str] = typer.Option(None, help="PostgreSQL DSN for speaker database"),
     with_timestamps: bool = typer.Option(
         True, "--timestamps/--no-timestamps", help="Include word-level timestamps"
     ),
@@ -278,11 +297,16 @@ def transcribe(
         "cuda", "--device", "-d", help="Device to use: cuda or cpu (use cpu if out of memory)"
     ),
     chunk_duration: Optional[float] = typer.Option(
-        None, "--chunk-duration", "-c", help="Split each audio file into chunks of N seconds (helps avoid OOM)"
+        None,
+        "--chunk-duration",
+        "-c",
+        help="Split each audio file into chunks of N seconds (helps avoid OOM)",
     ),
     backend: str = typer.Option(
-        "nemo", "--backend", "-b",
-        help="Transcription backend: 'nemo' (Parakeet/NeMo) or 'whisper' (faster-whisper large-v3)"
+        "nemo",
+        "--backend",
+        "-b",
+        help="Transcription backend: 'nemo' (Parakeet/NeMo) or 'whisper' (faster-whisper large-v3)",
     ),
 ) -> None:
     """Transcribe one or more audio files using the Parakeet model.
@@ -292,11 +316,11 @@ def transcribe(
     single continuous timeline.
 
     Outputs to console by default, or saves to file if --output is specified.
-    
+
     For large files that cause out-of-memory errors:
     - Use --device cpu to run on CPU (slower but avoids GPU memory limits)
     - Use --chunk-duration to split audio into chunks (e.g., -c 300 for 5-minute chunks)
-    
+
     Example:
         pawn-diarize transcribe audio.wav
         pawn-diarize transcribe part1.wav part2.wav -o transcript.txt
@@ -333,12 +357,16 @@ def transcribe(
         if len(audio_paths) == 1:
             console.print(f"[cyan]Transcribing: {audio_paths[0]}[/cyan]")
         else:
-            console.print(f"[cyan]Transcribing {len(audio_paths)} files as one conversation:[/cyan]")
+            console.print(
+                f"[cyan]Transcribing {len(audio_paths)} files as one conversation:[/cyan]"
+            )
             for i, p in enumerate(audio_paths, 1):
                 console.print(f"  {i}. {p}")
 
         if chunk_duration:
-            console.print(f"[yellow]Chunk duration set to: {chunk_duration}s (will split long audio)[/yellow]")
+            console.print(
+                f"[yellow]Chunk duration set to: {chunk_duration}s (will split long audio)[/yellow]"
+            )
 
         if len(audio_paths) == 1:
             results = engine_t.transcribe(
@@ -362,48 +390,58 @@ def transcribe(
             if "segment" in seg and "text" not in seg:
                 seg["text"] = seg["segment"]
         saved = save_transcription_segments(segs, session_id=session_id, engine=db_engine)
-        console.print(f"[green]✓ Saved {saved} segment(s) to database [session: {session_id}][/green]")
-        
+        console.print(
+            f"[green]✓ Saved {saved} segment(s) to database [session: {session_id}][/green]"
+        )
+
         # Determine output format
         if output:
             output_path = Path(output)
             output_format = output_path.suffix.lower()
-            
+
             if output_format == ".json":
                 # Save as JSON
-                with open(output_path, 'w', encoding='utf-8') as f:
+                with open(output_path, "w", encoding="utf-8") as f:
                     json.dump(result, f, indent=2, ensure_ascii=False)
                 console.print(f"[green]✓ Saved JSON to: {output}[/green]")
-            
+
             elif output_format == ".txt":
                 # Save as plain text
-                with open(output_path, 'w', encoding='utf-8') as f:
-                    f.write(result.get('text', ''))
-                    
+                with open(output_path, "w", encoding="utf-8") as f:
+                    f.write(result.get("text", ""))
+
                     if with_timestamps and "segment_timestamps" in result:
                         f.write("\n\n--- Segments ---\n")
                         for seg in result["segment_timestamps"]:
-                            start = seg.get('start', 0)
-                            end = seg.get('end', 0)
-                            text = seg.get('segment', seg.get('text', ''))
+                            start = seg.get("start", 0)
+                            end = seg.get("end", 0)
+                            text = seg.get("segment", seg.get("text", ""))
                             f.write(f"\n[{start:.2f}s - {end:.2f}s]\n{text}\n")
                 console.print(f"[green]✓ Saved text to: {output}[/green]")
-            
+
             else:
-                console.print(f"[yellow]⚠ Unknown format '{output_format}', using .txt format[/yellow]")
-                with open(output_path, 'w', encoding='utf-8') as f:
-                    f.write(result.get('text', ''))
+                console.print(
+                    f"[yellow]⚠ Unknown format '{output_format}', using .txt format[/yellow]"
+                )
+                with open(output_path, "w", encoding="utf-8") as f:
+                    f.write(result.get("text", ""))
                 console.print(f"[green]✓ Saved to: {output}[/green]")
-        
+
         else:
             # Console output (default)
             console.print(f"\n[bold]Text:[/bold] {result.get('text', 'N/A')}")
-            
-            if with_timestamps and "word_timestamps" in result and len(result["word_timestamps"]) > 0:
+
+            if (
+                with_timestamps
+                and "word_timestamps" in result
+                and len(result["word_timestamps"]) > 0
+            ):
                 console.print(f"\n[bold]Timestamps (first 5 words):[/bold]")
                 for ts in result["word_timestamps"][:5]:
-                    console.print(f"  {ts.get('start', 0):.2f}s - {ts.get('end', 0):.2f}s: {ts.get('word', '')}")
-    
+                    console.print(
+                        f"  {ts.get('start', 0):.2f}s - {ts.get('end', 0):.2f}s: {ts.get('word', '')}"
+                    )
+
     except Exception as e:
         console.print(f"[red]Error during transcription: {str(e)}[/red]")
         raise typer.Exit(1)
@@ -415,39 +453,43 @@ def transcribe(
 @app.command(name="transcribe-diarize")
 def transcribe_diarize(
     audio_paths: List[str] = typer.Argument(
-        ..., help="One or more audio files to process (treated as ordered chunks of one conversation)"
+        ...,
+        help="One or more audio files to process (treated as ordered chunks of one conversation)",
     ),
     output: Optional[str] = typer.Option(
-        None, "--output", "-o", help="Output file path (format inferred from extension: .txt or .json)"
+        None,
+        "--output",
+        "-o",
+        help="Output file path (format inferred from extension: .txt or .json)",
     ),
     config: Optional[str] = typer.Option(
         None, "--config", help="Path to YAML configuration file (pawnai.yaml)"
     ),
     session: Optional[str] = typer.Option(
-        None, "--session", "-s",
+        None,
+        "--session",
+        "-s",
         help="Session name for continuing a conversation across separate invocations. "
-             "Speaker state and timestamps are loaded from the database and updated "
-             "after processing so new audio is appended to the same conversation."
+        "Speaker state and timestamps are loaded from the database and updated "
+        "after processing so new audio is appended to the same conversation.",
     ),
-    db_dsn: Optional[str] = typer.Option(
-        None, help="PostgreSQL DSN for speaker database"
-    ),
+    db_dsn: Optional[str] = typer.Option(None, help="PostgreSQL DSN for speaker database"),
     threshold: float = typer.Option(
         0.7, "--threshold", "-t", help="Similarity threshold for speaker matching (0-1)"
     ),
     store_new: bool = typer.Option(
         True, "--store-new/--no-store", help="Store embeddings for unknown speakers"
     ),
-    device: str = typer.Option(
-        "cuda", "--device", "-d", help="Device to use: cuda or cpu"
-    ),
+    device: str = typer.Option("cuda", "--device", "-d", help="Device to use: cuda or cpu"),
     chunk_duration: Optional[float] = typer.Option(
         None, "--chunk-duration", "-c", help="Split each audio file into chunks of N seconds"
     ),
     cross_file_threshold: float = typer.Option(
-        0.85, "--cross-threshold", "-x",
+        0.85,
+        "--cross-threshold",
+        "-x",
         help="Cosine-similarity threshold for matching speakers across files (0-1). "
-             "Higher = stricter; only used when multiple files are provided."
+        "Higher = stricter; only used when multiple files are provided.",
     ),
     no_timestamps: bool = typer.Option(
         False, "--no-timestamps", help="Hide timestamps in text output"
@@ -456,13 +498,16 @@ def transcribe_diarize(
         False, "--verbose", "-v", help="Show verbose output from NeMo and other libraries"
     ),
     backend: str = typer.Option(
-        "nemo", "--backend", "-b",
-        help="Transcription backend: 'nemo' (Parakeet/NeMo) or 'whisper' (faster-whisper large-v3)"
+        "nemo",
+        "--backend",
+        "-b",
+        help="Transcription backend: 'nemo' (Parakeet/NeMo) or 'whisper' (faster-whisper large-v3)",
     ),
     overwrite: bool = typer.Option(
-        False, "--overwrite",
+        False,
+        "--overwrite",
         help="Delete all existing data for --session before processing. "
-             "Requires --session. Clears segments, session state, and any analyses."
+        "Requires --session. Clears segments, session state, and any analyses.",
     ),
 ) -> None:
     """Transcribe audio with speaker diarization labels.
@@ -504,9 +549,14 @@ def transcribe_diarize(
     from ..core import transcribe_with_diarization, format_transcript_with_speakers
     from ..core.config import Config, AppConfig
     from ..core.database import (
-        get_engine, init_db,
-        load_session_state, save_session_state, save_transcription_segments,
-        TranscriptionSegment, SessionState, SessionAnalysis,
+        get_engine,
+        init_db,
+        load_session_state,
+        save_session_state,
+        save_transcription_segments,
+        TranscriptionSegment,
+        SessionState,
+        SessionAnalysis,
     )
 
     # Load config; capture instance so S3 config is accessible
@@ -546,19 +596,17 @@ def transcribe_diarize(
         if overwrite and session:
             from sqlalchemy import delete as sql_delete
             from sqlalchemy.orm import Session as OrmSession
+
             with OrmSession(db_engine) as _db:
                 seg_del = _db.execute(
-                    sql_delete(TranscriptionSegment)
-                    .where(TranscriptionSegment.session_id == session_id)
+                    sql_delete(TranscriptionSegment).where(
+                        TranscriptionSegment.session_id == session_id
+                    )
                 )
                 _db.execute(
-                    sql_delete(SessionAnalysis)
-                    .where(SessionAnalysis.session_id == session_id)
+                    sql_delete(SessionAnalysis).where(SessionAnalysis.session_id == session_id)
                 )
-                _db.execute(
-                    sql_delete(SessionState)
-                    .where(SessionState.session_id == session_id)
-                )
+                _db.execute(sql_delete(SessionState).where(SessionState.session_id == session_id))
                 _db.commit()
             console.print(
                 f"[yellow]⚠ Overwrite: deleted {seg_del.rowcount} segment(s) "
@@ -566,13 +614,19 @@ def transcribe_diarize(
             )
 
         if session:
-            prior_speaker_embeddings, prior_time_cursor, prior_processed_files, prior_segment_count = \
-                load_session_state(session_id, db_engine)
+            (
+                prior_speaker_embeddings,
+                prior_time_cursor,
+                prior_processed_files,
+                prior_segment_count,
+            ) = load_session_state(session_id, db_engine)
             if prior_processed_files:
-                console.print(f"[cyan]Resuming session '{session_id}': "
-                              f"{len(prior_processed_files)} file(s) already processed, "
-                              f"t={prior_time_cursor:.1f}s, "
-                              f"{prior_segment_count} segment(s) stored[/cyan]")
+                console.print(
+                    f"[cyan]Resuming session '{session_id}': "
+                    f"{len(prior_processed_files)} file(s) already processed, "
+                    f"t={prior_time_cursor:.1f}s, "
+                    f"{prior_segment_count} segment(s) stored[/cyan]"
+                )
             else:
                 console.print(f"[cyan]Starting new session '{session_id}'[/cyan]")
 
@@ -618,7 +672,9 @@ def transcribe_diarize(
         all_speakers = sorted(set(prior_speakers) | set(result["speakers"]))
         merged_matched = {**prior_matched, **result.get("matched_speakers", {})}
         new_time_cursor = result.get("new_time_cursor", prior_time_cursor)
-        updated_session_embeddings = result.get("session_speaker_embeddings", prior_speaker_embeddings or {})
+        updated_session_embeddings = result.get(
+            "session_speaker_embeddings", prior_speaker_embeddings or {}
+        )
 
         # Build a "full result" view covering all history, used for output
         full_result = {
@@ -640,7 +696,9 @@ def transcribe_diarize(
                 console.print(f"  {original} → {matched}")
 
         if result.get("new_speakers"):
-            console.print(f"\n[bold yellow]New/Unknown speakers:[/bold yellow] {', '.join(result['new_speakers'])}")
+            console.print(
+                f"\n[bold yellow]New/Unknown speakers:[/bold yellow] {', '.join(result['new_speakers'])}"
+            )
             if store_new:
                 console.print(f"  [dim](Embeddings stored for future recognition)[/dim]")
             else:
@@ -660,7 +718,9 @@ def transcribe_diarize(
             engine=db_engine,
             start_index=prior_segment_count,
         )
-        console.print(f"[green]✓ Saved {saved} segment(s) to database [session: {session_id}][/green]")
+        console.print(
+            f"[green]✓ Saved {saved} segment(s) to database [session: {session_id}][/green]"
+        )
 
         if session:
             updated_processed = prior_processed_files + [str(p) for p in audio_paths]
@@ -703,7 +763,9 @@ def transcribe_diarize(
                 with open(output_path, "w", encoding="utf-8") as f:
                     f.write(formatted_text)
                 if output_format != ".txt":
-                    console.print(f"[yellow]⚠ Unknown format '{output_format}', using .txt format[/yellow]")
+                    console.print(
+                        f"[yellow]⚠ Unknown format '{output_format}', using .txt format[/yellow]"
+                    )
                 console.print(f"[green]✓ Saved transcript to: {output}[/green]")
 
         else:
@@ -729,16 +791,21 @@ def transcribe_diarize(
                     console.print(f"  {text}")
 
             if len(result["segments"]) > 5:
-                console.print(f"\n[dim]... and {len(result['segments']) - 5} more segments this call[/dim]")
+                console.print(
+                    f"\n[dim]... and {len(result['segments']) - 5} more segments this call[/dim]"
+                )
             if session:
                 total_segs = prior_segment_count + saved
                 total_files = len(prior_processed_files) + len(audio_paths)
-                console.print(f"[dim]Session '{session_id}': {total_segs} segments across {total_files} file(s) total[/dim]")
+                console.print(
+                    f"[dim]Session '{session_id}': {total_segs} segments across {total_files} file(s) total[/dim]"
+                )
             console.print(f"\n[dim]💡 Tip: Use -o output.txt to save the full transcript[/dim]")
 
     except Exception as e:
         console.print(f"[red]Error during processing: {str(e)}[/red]")
         import traceback
+
         traceback.print_exc()
         raise typer.Exit(1)
     finally:
@@ -749,26 +816,23 @@ def transcribe_diarize(
 @app.command()
 def embed(
     audio_paths: List[str] = typer.Argument(
-        ..., help="One or more audio files (treated as ordered chunks of the same speaker recording)"
+        ...,
+        help="One or more audio files (treated as ordered chunks of the same speaker recording)",
     ),
-    speaker_id: str = typer.Option(
-        ..., "--speaker-id", "-s", help="Unique speaker identifier"
-    ),
+    speaker_id: str = typer.Option(..., "--speaker-id", "-s", help="Unique speaker identifier"),
     config: Optional[str] = typer.Option(
         None, "--config", help="Path to YAML configuration file (pawnai.yaml)"
     ),
-    db_dsn: Optional[str] = typer.Option(
-        None, help="PostgreSQL DSN for speaker database"
-    ),
+    db_dsn: Optional[str] = typer.Option(None, help="PostgreSQL DSN for speaker database"),
 ) -> None:
     """Extract and store speaker embeddings.
-    
+
     When multiple files are provided they are concatenated and treated as one
     continuous recording of the same speaker.
 
     Extracts speaker embeddings from audio and stores them in the database
     for later speaker identification and clustering.
-    
+
     Example:
         pawn-diarize embed audio.wav --speaker-id speaker_001
         pawn-diarize embed part1.wav part2.wav -s alice --db-path ./my_db
@@ -798,14 +862,18 @@ def embed(
             console.print(f"[cyan]Extracting embeddings: {audio_paths[0]}[/cyan]")
             embeddings = diarization_engine.extract_embeddings(audio_paths[0])
         else:
-            console.print(f"[cyan]Extracting embeddings from {len(audio_paths)} files as one speaker recording:[/cyan]")
+            console.print(
+                f"[cyan]Extracting embeddings from {len(audio_paths)} files as one speaker recording:[/cyan]"
+            )
             for i, p in enumerate(audio_paths, 1):
                 console.print(f"  {i}. {p}")
             embeddings = diarization_engine.extract_embeddings(audio_paths)
 
-        embedding_manager.add_embedding(speaker_id, embeddings, _path_map.get(audio_paths[0], audio_paths[0]))
+        embedding_manager.add_embedding(
+            speaker_id, embeddings, _path_map.get(audio_paths[0], audio_paths[0])
+        )
         console.print(f"[green]✓ Embedding stored for speaker: {speaker_id}[/green]")
-        
+
     except Exception as e:
         console.print(f"[red]Error during embedding: {str(e)}[/red]")
         raise typer.Exit(1)
@@ -816,23 +884,17 @@ def embed(
 
 @app.command()
 def search(
-    speaker_id: str = typer.Argument(
-        ..., help="Speaker ID to search similar speakers for"
-    ),
+    speaker_id: str = typer.Argument(..., help="Speaker ID to search similar speakers for"),
     config: Optional[str] = typer.Option(
         None, "--config", help="Path to YAML configuration file (pawnai.yaml)"
     ),
-    db_dsn: Optional[str] = typer.Option(
-        None, help="PostgreSQL DSN for speaker database"
-    ),
-    limit: int = typer.Option(
-        5, help="Maximum number of results to return"
-    ),
+    db_dsn: Optional[str] = typer.Option(None, help="PostgreSQL DSN for speaker database"),
+    limit: int = typer.Option(5, help="Maximum number of results to return"),
 ) -> None:
     """Search for similar speakers in the database.
-    
+
     Finds speakers with similar voice characteristics based on embeddings.
-    
+
     Example:
         pawn-diarize search speaker_001
         pawn-diarize search speaker_001 --limit 10
@@ -840,7 +902,7 @@ def search(
     # Lazy imports to avoid loading models during --help
     from ..core import EmbeddingManager
     from ..core.config import AppConfig
-    
+
     # Load config from specified file if provided
     app_cfg = AppConfig(config_path=config) if config else AppConfig()
     db_dsn = db_dsn or app_cfg.get("db_dsn")
@@ -848,22 +910,22 @@ def search(
     try:
         embedding_manager = EmbeddingManager(db_dsn=db_dsn)
         speaker_names = embedding_manager.get_speaker_names()
-        
+
         # Get first embedding for the speaker
         all_embeddings = embedding_manager.get_all_embeddings()
         speaker_embeddings = [e for e in all_embeddings if e["speaker_id"] == speaker_id]
-        
+
         if not speaker_embeddings:
             console.print(f"[red]Error: No embeddings found for speaker: {speaker_id}[/red]")
             raise typer.Exit(1)
-        
+
         query_embedding = speaker_embeddings[0]["embedding"]
         console.print(f"[cyan]Searching for speakers similar to: {speaker_id}[/cyan]")
-        
+
         # Placeholder: In a real setup, this would search using vector similarity
         console.print(f"[green]✓ Search complete[/green]")
         console.print(f"Query speaker: {speaker_id} ({speaker_names.get(speaker_id, 'Unknown')})")
-        
+
     except Exception as e:
         console.print(f"[red]Error during search: {str(e)}[/red]")
         raise typer.Exit(1)
@@ -887,11 +949,12 @@ def label(
         None, "--config", help="Path to YAML configuration file (pawnai.yaml)"
     ),
     list_all: bool = typer.Option(
-        False, "--list", "-l", help="List speaker mappings (all sessions, or full session view with --session)"
+        False,
+        "--list",
+        "-l",
+        help="List speaker mappings (all sessions, or full session view with --session)",
     ),
-    db_dsn: Optional[str] = typer.Option(
-        None, help="PostgreSQL DSN for speaker database"
-    ),
+    db_dsn: Optional[str] = typer.Option(None, help="PostgreSQL DSN for speaker database"),
 ) -> None:
     """Assign human-readable names to speakers.
 
@@ -970,13 +1033,15 @@ def label(
             console.print(f"\n[bold cyan]Session: {session}[/bold cyan]")
 
             if unmapped_rows:
-                console.print(f"\n[bold yellow]Unmapped speakers ({len(unmapped_rows)}):[/bold yellow]")
+                console.print(
+                    f"\n[bold yellow]Unmapped speakers ({len(unmapped_rows)}):[/bold yellow]"
+                )
                 for seg_audio, seg_label in unmapped_rows:
                     console.print(f"\n  [bold]• {seg_label}[/bold]")
                     console.print(f"    File: {seg_audio}")
                     console.print(
                         f"    [dim]pawn-diarize label --session {session} "
-                        f"--speaker {seg_label} --name \"Name\"[/dim]"
+                        f'--speaker {seg_label} --name "Name"[/dim]'
                     )
             else:
                 console.print(f"[green]All speakers in session '{session}' are labeled.[/green]")
@@ -984,7 +1049,9 @@ def label(
             if mapped_rows:
                 console.print(f"\n[bold green]Already resolved ({len(mapped_rows)}):[/bold green]")
                 for seg_audio, seg_label in mapped_rows:
-                    console.print(f"  • [bold]{seg_label}[/bold]  ({Path(seg_audio).name if seg_audio else ''})")
+                    console.print(
+                        f"  • [bold]{seg_label}[/bold]  ({Path(seg_audio).name if seg_audio else ''})"
+                    )
             return
 
         # ------------------------------------------------------------------
@@ -994,7 +1061,9 @@ def label(
             with get_session(engine) as db_sess:
                 rows = db_sess.execute(select(SpeakerName)).scalars().all()
             if not rows:
-                console.print("[yellow]No speaker labels found. Use 'pawn-diarize label' to add labels.[/yellow]")
+                console.print(
+                    "[yellow]No speaker labels found. Use 'pawn-diarize label' to add labels.[/yellow]"
+                )
                 return
             console.print("\n[bold cyan]Labeled Speakers[/bold cyan]")
             for row in rows:
@@ -1016,14 +1085,18 @@ def label(
         resolved_audio_file: Optional[str] = audio_file
         if not resolved_audio_file and session:
             with get_session(engine) as db_sess:
-                candidates = db_sess.execute(
-                    select(TranscriptionSegment.audio_file)
-                    .where(
-                        TranscriptionSegment.session_id == session,
-                        TranscriptionSegment.original_speaker_label == speaker,
+                candidates = (
+                    db_sess.execute(
+                        select(TranscriptionSegment.audio_file)
+                        .where(
+                            TranscriptionSegment.session_id == session,
+                            TranscriptionSegment.original_speaker_label == speaker,
+                        )
+                        .distinct()
                     )
-                    .distinct()
-                ).scalars().all()
+                    .scalars()
+                    .all()
+                )
 
             if not candidates:
                 console.print(
@@ -1043,7 +1116,9 @@ def label(
             resolved_audio_file = candidates[0]
 
         if not resolved_audio_file:
-            console.print("[red]Error: --file is required (or provide --session to auto-resolve).[/red]")
+            console.print(
+                "[red]Error: --file is required (or provide --session to auto-resolve).[/red]"
+            )
             raise typer.Exit(1)
 
         record_id = f"{Path(resolved_audio_file).name}_{speaker}"
@@ -1059,7 +1134,9 @@ def label(
             if existing:
                 console.print("[yellow]Updated existing label[/yellow]")
             db_sess.merge(record)
-        console.print(f"[green]✓ Labeled {speaker} in {Path(resolved_audio_file).name} as '{name}'[/green]")
+        console.print(
+            f"[green]✓ Labeled {speaker} in {Path(resolved_audio_file).name} as '{name}'[/green]"
+        )
 
     except Exception as e:
         console.print(f"[red]Error during labeling: {str(e)}[/red]")
@@ -1068,11 +1145,12 @@ def label(
 
 @app.command(name="session-relabel")
 def session_relabel(
-    session: str = typer.Option(
-        ..., "--session", "-s", help="Session ID to update."
-    ),
+    session: str = typer.Option(..., "--session", "-s", help="Session ID to update."),
     wrong_speaker: str = typer.Option(
-        ..., "--from", "-F", help="Speaker name / label currently stored in the session (the wrong one)."
+        ...,
+        "--from",
+        "-F",
+        help="Speaker name / label currently stored in the session (the wrong one).",
     ),
     correct_speaker: str = typer.Option(
         ..., "--to", "-T", help="Correct speaker name to apply across the whole session."
@@ -1080,9 +1158,16 @@ def session_relabel(
     yes: bool = typer.Option(
         False, "--yes", "-y", help="Skip the confirmation prompt and apply changes immediately."
     ),
-    db_dsn: Optional[str] = typer.Option(
-        None, help="PostgreSQL DSN for the speaker database."
+    push_siyuan: bool = typer.Option(
+        False,
+        "--push-siyuan",
+        help=(
+            "Force SiYuan Speakers+Transcript create/update. "
+            "Without this flag, an existing diary page is still refreshed "
+            "when a siyuan_session_docs mapping is present."
+        ),
     ),
+    db_dsn: Optional[str] = typer.Option(None, help="PostgreSQL DSN for the speaker database."),
     config: Optional[str] = typer.Option(
         None, "--config", help="Path to YAML configuration file (pawnai.yaml)."
     ),
@@ -1096,90 +1181,48 @@ def session_relabel(
 
     \b
     1. Every [bold]transcription_segments[/bold] row in the session whose
-       [bold]original_speaker_label[/bold] equals --from is updated to --to.
-    2. Every [bold]speaker_names[/bold] row whose [bold]speaker_name[/bold]
-       equals --from and whose audio_file belongs to the session is updated
-       to --to.
+       speaker matches --from (including SPEAKER_XX ↔ display-name aliases)
+       is updated to --to.
+    2. Matching [bold]speaker_names[/bold] rows for the session's audio files
+       are updated (or created from unlabeled embeddings) so future embedding
+       matches resolve to --to.
+    3. [bold]session_state[/bold] prior-speaker embedding keys are renamed.
+    4. Existing SiYuan diary Speakers+Transcript pages are refreshed
+       (Annotations preserved). Pass [bold]--push-siyuan[/bold] to create the
+       page if it does not exist yet.
 
     \b
     Examples:
         # Preview what would change (dry-run – no --yes flag)
-        pawn-diarize session-relabel --session my-session --from "Edo" --to "John"
+        pawn-diarize session-relabel --session my-session --from "SPEAKER_00" --to "Davide"
 
-        # Apply without prompting
-        pawn-diarize session-relabel --session my-session -F "Edo" -T "John" --yes
+        # Apply without prompting and refresh/create SiYuan page
+        pawn-diarize session-relabel --session my-session -F "Edo" -T "John" --yes --push-siyuan
     """
-    import os
-    from datetime import datetime, timezone
-    from sqlalchemy import select, update
-    from sqlalchemy.orm import Session as OrmSession
     from rich.table import Table
-    from ..core.database import (
-        get_engine, init_db, TranscriptionSegment, SpeakerName, Embedding, SessionState,
-    )
     from ..core.config import AppConfig
+    from ..core.session_relabel import preview_session_relabel, relabel_session_speaker
+    from ..core.siyuan import DEFAULT_DAILY_PATH_TEMPLATE, DEFAULT_PATH_TEMPLATE
+    from ..core.siyuan_transcript import refresh_transcript_after_relabel
 
     app_cfg = AppConfig(config_path=config) if config else AppConfig()
     db_dsn = db_dsn or app_cfg.get("db_dsn")
+    sy_cfg = app_cfg.get_siyuan_config() or {}
 
     try:
-        engine = get_engine(db_dsn)
-        init_db(engine)
+        affected_segs, affected_names, missing_sn_pairs, aliases = preview_session_relabel(
+            db_dsn=db_dsn,
+            session_id=session,
+            from_label=wrong_speaker,
+            to_label=correct_speaker,
+        )
 
-        with OrmSession(engine) as db:
-            # ── 1. Segments that will be renamed ─────────────────────────
-            affected_segs = db.execute(
-                select(TranscriptionSegment)
-                .where(
-                    TranscriptionSegment.session_id == session,
-                    TranscriptionSegment.original_speaker_label == wrong_speaker,
-                )
-                .order_by(TranscriptionSegment.start_time)
-            ).scalars().all()
-
-            if not affected_segs:
-                console.print(
-                    f"[yellow]No segments in session '{session}' have "
-                    f"speaker '{wrong_speaker}'. Nothing to do.[/yellow]"
-                )
-                raise typer.Exit(0)
-
-            # ── 2. SpeakerName rows that will be renamed ──────────────────
-            session_files = list({s.audio_file for s in affected_segs if s.audio_file})
-            affected_names = db.execute(
-                select(SpeakerName).where(
-                    SpeakerName.audio_file.in_(session_files),
-                    SpeakerName.speaker_name == wrong_speaker,
-                )
-            ).scalars().all() if session_files else []
-
-            # ── 3. Embedding labels that lack a SpeakerName entry ─────────
-            # When a speaker was first detected (no prior DB match), only
-            # Embedding rows are stored — no SpeakerName row is created.
-            # Collect (audio_file, local_speaker_label) pairs from the
-            # embeddings table that match wrong_speaker but have no
-            # corresponding SpeakerName, so we can create them below.
-            missing_sn_pairs: list = []
-            if session_files:
-                existing_sn_keys = set(
-                    db.execute(
-                        select(SpeakerName.audio_file, SpeakerName.local_speaker_label)
-                        .where(SpeakerName.audio_file.in_(session_files))
-                    ).all()
-                )
-                emb_label_rows = db.execute(
-                    select(Embedding.audio_file, Embedding.local_speaker_label)
-                    .where(
-                        Embedding.audio_file.in_(session_files),
-                        Embedding.local_speaker_label == wrong_speaker,
-                    )
-                    .distinct()
-                ).all()
-                missing_sn_pairs = [
-                    (af, lbl)
-                    for af, lbl in emb_label_rows
-                    if (af, lbl) not in existing_sn_keys
-                ]
+        if not affected_segs and not affected_names and not missing_sn_pairs:
+            console.print(
+                f"[yellow]No segments, speaker_names, or embeddings in session "
+                f"'{session}' match speaker '{wrong_speaker}'. Nothing to do.[/yellow]"
+            )
+            raise typer.Exit(0)
 
         # ── Preview ───────────────────────────────────────────────────────
         console.print()
@@ -1188,6 +1231,8 @@ def session_relabel(
             f"[bold red]  From:[/bold red] {wrong_speaker}\n"
             f"[bold green]    To:[/bold green] {correct_speaker}\n"
         )
+        if len(aliases) > 1:
+            console.print(f"[dim]Aliases resolved:[/dim] {', '.join(sorted(aliases))}")
 
         seg_tbl = Table(
             title=f"Segments to relabel ({len(affected_segs)})",
@@ -1202,7 +1247,6 @@ def session_relabel(
         def _fmt_time(t: float) -> str:
             return f"{int(t // 60):02d}:{t % 60:05.2f}"
 
-        # Show at most 20 rows in the preview to avoid flooding the terminal
         preview_segs = affected_segs[:20]
         for seg in preview_segs:
             time_str = f"{_fmt_time(seg.start_time)} → {_fmt_time(seg.end_time)}"
@@ -1219,15 +1263,21 @@ def session_relabel(
             seg_tbl.add_row("…", "…", "…", f"[dim]({len(affected_segs) - 20} more)[/dim]")
         console.print(seg_tbl)
 
+        session_files = sorted({s.audio_file for s in affected_segs if s.audio_file})
         if affected_names:
             console.print(
                 f"\n[bold]Also updating {len(affected_names)} speaker_names row(s)[/bold] "
-                f"in: {', '.join(Path(f).name for f in session_files)}"
+                f"in: {', '.join(Path(f).name for f in session_files) or '(session files)'}"
             )
         if missing_sn_pairs:
             console.print(
                 f"\n[bold yellow]Creating {len(missing_sn_pairs)} missing speaker_names row(s)[/bold yellow] "
                 f"(speaker was detected but never explicitly labeled)"
+            )
+        if push_siyuan:
+            console.print(
+                "\n[bold cyan]Will force-push Speakers+Transcript to SiYuan[/bold cyan] "
+                "(Annotations preserved)."
             )
 
         # ── Confirm ───────────────────────────────────────────────────────
@@ -1243,63 +1293,36 @@ def session_relabel(
                 console.print("[yellow]Aborted – no changes made.[/yellow]")
                 raise typer.Exit(0)
 
-        # ── Apply ─────────────────────────────────────────────────────────
-        with OrmSession(engine) as db:
-            # Bulk-update transcription segments
-            db.execute(
-                update(TranscriptionSegment)
-                .where(
-                    TranscriptionSegment.session_id == session,
-                    TranscriptionSegment.original_speaker_label == wrong_speaker,
-                )
-                .values(original_speaker_label=correct_speaker)
-            )
-
-            # Bulk-update speaker_names rows (if any)
-            if affected_names and session_files:
-                db.execute(
-                    update(SpeakerName)
-                    .where(
-                        SpeakerName.audio_file.in_(session_files),
-                        SpeakerName.speaker_name == wrong_speaker,
-                    )
-                    .values(speaker_name=correct_speaker)
-                )
-
-            # Create missing SpeakerName entries for speakers that were
-            # detected (embeddings stored) but never explicitly labeled.
-            # Without this, the relabeled name would never be found by
-            # future diarization runs that search speaker_names by
-            # (audio_file, local_speaker_label) from the embeddings table.
-            for emb_af, emb_label in missing_sn_pairs:
-                db.merge(SpeakerName(
-                    id=f"{os.path.basename(emb_af)}_{emb_label}",
-                    audio_file=emb_af,
-                    local_speaker_label=emb_label,
-                    speaker_name=correct_speaker,
-                    labeled_at=datetime.now(timezone.utc),
-                ))
-
-            # Update SessionState.speaker_embeddings keys so the next
-            # incremental run seeds its prior-speaker pool with the new
-            # name rather than the old one.
-            state = db.get(SessionState, session)
-            if state and state.speaker_embeddings and wrong_speaker in state.speaker_embeddings:
-                new_embs = dict(state.speaker_embeddings)
-                new_embs[correct_speaker] = new_embs.pop(wrong_speaker)
-                state.speaker_embeddings = new_embs
-
-            db.commit()
-
-        console.print(
-            f"\n[green]✓ Relabeled {len(affected_segs)} segment(s)"
-            + (f", updated {len(affected_names)} speaker-name record(s)" if affected_names else "")
-            + (f", created {len(missing_sn_pairs)} new speaker-name record(s)" if missing_sn_pairs else "")
-            + f" — '{wrong_speaker}' → '{correct_speaker}' in session '{session}'[/green]"
+        result = relabel_session_speaker(
+            db_dsn=db_dsn,
+            session_id=session,
+            from_label=wrong_speaker,
+            to_label=correct_speaker,
         )
+        console.print(f"\n[green]✓ {result.summary()}[/green]")
+
+        sy_status = refresh_transcript_after_relabel(
+            session,
+            db_dsn=db_dsn,
+            url=sy_cfg.get("url", "http://127.0.0.1:6806"),
+            token=sy_cfg.get("token", ""),
+            notebook=sy_cfg.get("notebook", ""),
+            path_template=sy_cfg.get("path_template", DEFAULT_PATH_TEMPLATE),
+            daily_path_template=sy_cfg.get(
+                "daily_note_path", DEFAULT_DAILY_PATH_TEMPLATE
+            ),
+            force=push_siyuan,
+        )
+        if sy_status:
+            console.print(f"[cyan]SiYuan: {sy_status}[/cyan]")
+        elif push_siyuan:
+            console.print("[yellow]SiYuan: skipped (notebook not configured)[/yellow]")
 
     except typer.Exit:
         raise
+    except ValueError as e:
+        console.print(f"[yellow]{e}[/yellow]")
+        raise typer.Exit(1)
     except Exception as e:
         console.print(f"[red]Error during session relabeling: {str(e)}[/red]")
         raise typer.Exit(1)
@@ -1309,12 +1332,12 @@ def session_relabel(
 def session_info(
     session: str = typer.Argument(..., help="Session ID to inspect."),
     speaker: Optional[str] = typer.Option(
-        None, "--speaker", "-s",
-        help="Print the full transcript for this speaker only (name or SPEAKER_XX label)."
+        None,
+        "--speaker",
+        "-s",
+        help="Print the full transcript for this speaker only (name or SPEAKER_XX label).",
     ),
-    db_dsn: Optional[str] = typer.Option(
-        None, help="PostgreSQL DSN for the speaker database."
-    ),
+    db_dsn: Optional[str] = typer.Option(None, help="PostgreSQL DSN for the speaker database."),
     config: Optional[str] = typer.Option(
         None, "--config", help="Path to YAML configuration file (pawnai.yaml)."
     ),
@@ -1346,7 +1369,12 @@ def session_info(
     from rich.table import Table
     from rich.rule import Rule
     from ..core.database import (
-        get_engine, init_db, TranscriptionSegment, SpeakerName, Embedding, SessionState,
+        get_engine,
+        init_db,
+        TranscriptionSegment,
+        SpeakerName,
+        Embedding,
+        SessionState,
     )
     from ..core.config import AppConfig
     from ..core.s3 import S3Client, is_s3_path
@@ -1398,11 +1426,15 @@ def session_info(
 
         with OrmSession(engine) as db:
             # ── 1. All segments for this session ────────────────────────────
-            segs = db.execute(
-                select(TranscriptionSegment)
-                .where(TranscriptionSegment.session_id == session)
-                .order_by(TranscriptionSegment.start_time)
-            ).scalars().all()
+            segs = (
+                db.execute(
+                    select(TranscriptionSegment)
+                    .where(TranscriptionSegment.session_id == session)
+                    .order_by(TranscriptionSegment.start_time)
+                )
+                .scalars()
+                .all()
+            )
 
             if not segs:
                 console.print(f"[red]No segments found for session '{session}'.[/red]")
@@ -1414,9 +1446,13 @@ def session_info(
 
             # ── 3. All speaker_names rows for files in this session ──────────
             session_files = list({s.audio_file for s in segs if s.audio_file})
-            name_rows = db.execute(
-                select(SpeakerName).where(SpeakerName.audio_file.in_(session_files))
-            ).scalars().all() if session_files else []
+            name_rows = (
+                db.execute(select(SpeakerName).where(SpeakerName.audio_file.in_(session_files)))
+                .scalars()
+                .all()
+                if session_files
+                else []
+            )
 
             # (audio_file, local_speaker_label) → human name
             label_to_name: dict = {
@@ -1434,28 +1470,38 @@ def session_info(
             speaker_stats: dict = {}
             for seg in segs:
                 spk = seg.original_speaker_label or "(none)"
-                stats = speaker_stats.setdefault(spk, {"files": set(), "segments": 0, "duration": 0.0})
+                stats = speaker_stats.setdefault(
+                    spk, {"files": set(), "segments": 0, "duration": 0.0}
+                )
                 stats["segments"] += 1
                 stats["duration"] += max(0.0, (seg.end_time or 0.0) - (seg.start_time or 0.0))
                 if seg.audio_file:
                     stats["files"].add(seg.audio_file)
 
             # ── 5. Embedding records for session files ───────────────────────
-            embed_rows = db.execute(
-                select(
-                    Embedding.audio_file,
-                    Embedding.local_speaker_label,
-                    sqlfunc.count(Embedding.id).label("n"),
-                    sqlfunc.min(Embedding.start_time).label("t_start"),
-                    sqlfunc.max(Embedding.end_time).label("t_end"),
-                )
-                .where(Embedding.audio_file.in_(session_files))
-                .group_by(Embedding.audio_file, Embedding.local_speaker_label)
-            ).all() if session_files else []
+            embed_rows = (
+                db.execute(
+                    select(
+                        Embedding.audio_file,
+                        Embedding.local_speaker_label,
+                        sqlfunc.count(Embedding.id).label("n"),
+                        sqlfunc.min(Embedding.start_time).label("t_start"),
+                        sqlfunc.max(Embedding.end_time).label("t_end"),
+                    )
+                    .where(Embedding.audio_file.in_(session_files))
+                    .group_by(Embedding.audio_file, Embedding.local_speaker_label)
+                ).all()
+                if session_files
+                else []
+            )
 
             # (audio_file, local_speaker_label) → {n, t_start, t_end}
             embed_map: dict = {
-                (r.audio_file, r.local_speaker_label): {"n": r.n, "t_start": r.t_start, "t_end": r.t_end}
+                (r.audio_file, r.local_speaker_label): {
+                    "n": r.n,
+                    "t_start": r.t_start,
+                    "t_end": r.t_end,
+                }
                 for r in embed_rows
             }
 
@@ -1471,24 +1517,18 @@ def session_info(
 
         # ── Speaker transcript mode ───────────────────────────────────────────
         if speaker:
-            speaker_segs = [
-                s for s in segs
-                if s.original_speaker_label == speaker
-            ]
+            speaker_segs = [s for s in segs if s.original_speaker_label == speaker]
             if not speaker_segs:
                 console.print(
                     f"[yellow]No segments found for speaker '{speaker}' in session '{session}'.[/yellow]"
                 )
-                console.print(
-                    f"[dim]Known speakers: {', '.join(sorted(speaker_stats))}[/dim]"
-                )
+                console.print(f"[dim]Known speakers: {', '.join(sorted(speaker_stats))}[/dim]")
                 raise typer.Exit(1)
 
             console.print()
             console.print(Rule(f"[bold cyan]{speaker}[/bold cyan] — session {session}"))
             total_dur = sum(
-                max(0.0, (s.end_time or 0.0) - (s.start_time or 0.0))
-                for s in speaker_segs
+                max(0.0, (s.end_time or 0.0) - (s.start_time or 0.0)) for s in speaker_segs
             )
             console.print(
                 f"  [dim]{len(speaker_segs)} segment(s) · {_fmt_dur(total_dur)} speaking time[/dim]\n"
@@ -1562,7 +1602,9 @@ def session_info(
             files_tbl.add_column("Segs in file", justify="right")
             files_tbl.add_column("Duration in file", justify="right")
             for f in files:
-                f_segs = [s for s in segs if s.audio_file == f and s.original_speaker_label == spk_name]
+                f_segs = [
+                    s for s in segs if s.audio_file == f and s.original_speaker_label == spk_name
+                ]
                 f_dur = sum(max(0.0, (s.end_time or 0.0) - (s.start_time or 0.0)) for s in f_segs)
                 files_tbl.add_row(Path(f).name, str(len(f_segs)), _fmt_dur(f_dur))
             console.print(files_tbl)
@@ -1599,13 +1641,17 @@ def session_info(
                         emb_tbl.add_row(Path(af).name, raw_lbl, str(info["n"]), t_range)
                         any_found = True
                     else:
-                        emb_tbl.add_row(Path(af).name, raw_lbl, "[dim]—[/dim]", "[dim]no embedding stored[/dim]")
+                        emb_tbl.add_row(
+                            Path(af).name, raw_lbl, "[dim]—[/dim]", "[dim]no embedding stored[/dim]"
+                        )
                         any_found = True
 
                 if any_found:
                     console.print(emb_tbl)
             else:
-                console.print("[dim]  No speaker_names mapping found – embeddings can't be cross-referenced.[/dim]")
+                console.print(
+                    "[dim]  No speaker_names mapping found – embeddings can't be cross-referenced.[/dim]"
+                )
 
             console.print()
 
@@ -1619,45 +1665,50 @@ def session_info(
 @app.command(name="sync-siyuan")
 def sync_siyuan(
     session: Optional[str] = typer.Option(
-        None, "--session", "-s",
-        help="Session ID to sync to SiYuan. Must have a completed analysis in the DB."
+        None,
+        "--session",
+        "-s",
+        help="Session ID to sync to SiYuan. Must have a completed analysis in the DB.",
     ),
     all_sessions: bool = typer.Option(
         False, "--all", help="Sync every session that has a completed analysis."
     ),
     notebook: Optional[str] = typer.Option(
-        None, "--notebook", "-n",
-        help="Target SiYuan notebook ID. Falls back to siyuan.notebook in pawnai.yaml."
+        None,
+        "--notebook",
+        "-n",
+        help="Target SiYuan notebook ID. Falls back to siyuan.notebook in pawnai.yaml.",
     ),
     token: Optional[str] = typer.Option(
-        None, "--token", "-t",
-        help="SiYuan API token. Falls back to siyuan.token in pawnai.yaml."
+        None, "--token", "-t", help="SiYuan API token. Falls back to siyuan.token in pawnai.yaml."
     ),
     url: Optional[str] = typer.Option(
-        None, "--url",
-        help="SiYuan instance URL. Falls back to siyuan.url in pawnai.yaml, then http://127.0.0.1:6806."
+        None,
+        "--url",
+        help="SiYuan instance URL. Falls back to siyuan.url in pawnai.yaml, then http://127.0.0.1:6806.",
     ),
     path_template: Optional[str] = typer.Option(
-        None, "--path-template",
+        None,
+        "--path-template",
         help=(
             "Document path template. Placeholders: {session_id}, {title}, {date}, "
             "{year}, {month}, {day}. Defaults to /Conversations/{date}/{session_id}."
         ),
     ),
     daily_note: bool = typer.Option(
-        True, "--daily-note/--no-daily-note",
-        help="Also append a backlink in today's SiYuan daily note."
+        True,
+        "--daily-note/--no-daily-note",
+        help="Also append a backlink in today's SiYuan daily note.",
     ),
     daily_path_template: Optional[str] = typer.Option(
-        None, "--daily-path-template",
+        None,
+        "--daily-path-template",
         help=(
             "Daily note path template. Placeholders: {date}, {year}, {month}, {day}. "
             "Defaults to /daily note/{year}/{month}/{date}."
         ),
     ),
-    db_dsn: Optional[str] = typer.Option(
-        None, help="PostgreSQL DSN for speaker database."
-    ),
+    db_dsn: Optional[str] = typer.Option(None, help="PostgreSQL DSN for speaker database."),
     config: Optional[str] = typer.Option(
         None, "--config", help="Path to YAML configuration file (pawnai.yaml)."
     ),
@@ -1709,7 +1760,9 @@ def sync_siyuan(
     resolved_token = token or sy_cfg.get("token", "")
     resolved_notebook = notebook or sy_cfg.get("notebook", "")
     resolved_path_tpl = path_template or sy_cfg.get("path_template", DEFAULT_PATH_TEMPLATE)
-    resolved_daily_tpl = daily_path_template or sy_cfg.get("daily_note_path", DEFAULT_DAILY_PATH_TEMPLATE)
+    resolved_daily_tpl = daily_path_template or sy_cfg.get(
+        "daily_note_path", DEFAULT_DAILY_PATH_TEMPLATE
+    )
 
     if not resolved_notebook:
         console.print(
@@ -1747,6 +1800,7 @@ def sync_siyuan(
     else:
         # --all: fetch the latest analysis for every distinct session_id
         from sqlalchemy import select, func as sqlfunc
+
         with OrmSession(engine) as db:
             # Subquery: max analyzed_at per session_id
             subq = (
@@ -1766,6 +1820,7 @@ def sync_siyuan(
                 )
             ).all()
             from sqlalchemy.orm import make_transient
+
             for r in rows_to_sync:
                 db.expunge(r)
                 make_transient(r)
@@ -1795,9 +1850,7 @@ def sync_siyuan(
         try:
             # ── Load transcript ────────────────────────────────────────────────
             try:
-                transcript = ae._load_transcript(
-                    "", db_dsn=db_dsn, session_id=row.session_id
-                )
+                transcript = ae._load_transcript("", db_dsn=db_dsn, session_id=row.session_id)
             except Exception:
                 transcript = "_Transcript not available._"
 
@@ -1844,9 +1897,7 @@ def sync_siyuan(
                     attrs=attrs,
                 )
 
-            console.print(
-                f"[green]✓ {sid!r} → {doc_path} (doc_id={doc_id})[/green]"
-            )
+            console.print(f"[green]✓ {sid!r} → {doc_path} (doc_id={doc_id})[/green]")
 
             # ── SiYuan toast notification + inbox message ─────────────────────
             try:
@@ -1876,9 +1927,7 @@ def sync_siyuan(
                         doc_id=doc_id,
                         title=row.title or sid,
                     )
-                    console.print(
-                        f"  [dim]↩ backlink added to daily note: {daily_path}[/dim]"
-                    )
+                    console.print(f"  [dim]↩ backlink added to daily note: {daily_path}[/dim]")
                 except SiyuanError as e:
                     console.print(
                         f"  [yellow]Warning: could not add daily note backlink: {e}[/yellow]"
@@ -1892,9 +1941,7 @@ def sync_siyuan(
             console.print(f"[red]✗ {sid!r}: {e}[/red]")
             errors += 1
 
-    console.print(
-        f"\n[bold]Done:[/bold] {success} synced, {errors} failed."
-    )
+    console.print(f"\n[bold]Done:[/bold] {success} synced, {errors} failed.")
     if errors:
         raise typer.Exit(1)
 
@@ -1902,38 +1949,44 @@ def sync_siyuan(
 @app.command(name="push-siyuan")
 def push_siyuan(
     session: Optional[str] = typer.Option(
-        None, "--session", "-s",
+        None,
+        "--session",
+        "-s",
         help="Diarization session ID to project into SiYuan.",
     ),
     latest: bool = typer.Option(
-        False, "--latest",
+        False,
+        "--latest",
         help="Push the most recently updated session that has segments.",
     ),
     all_sessions: bool = typer.Option(
-        False, "--all",
+        False,
+        "--all",
         help="Push every session that has transcription segments.",
     ),
     since: Optional[str] = typer.Option(
         None,
         "--since",
-        help=(
-            "Push sessions updated on/after this date "
-            "(YYYY-MM-DD or ISO datetime, UTC)."
-        ),
+        help=("Push sessions updated on/after this date " "(YYYY-MM-DD or ISO datetime, UTC)."),
     ),
     dry_run: bool = typer.Option(
-        False, "--dry-run",
+        False,
+        "--dry-run",
         help="Print what would be pushed without calling SiYuan.",
     ),
     daily_note: bool = typer.Option(
-        True, "--daily-note/--no-daily-note",
+        True,
+        "--daily-note/--no-daily-note",
         help="Append a backlink in the SiYuan daily note (once per session).",
     ),
     db_dsn: Optional[str] = typer.Option(
-        None, help="PostgreSQL DSN for the speaker database.",
+        None,
+        help="PostgreSQL DSN for the speaker database.",
     ),
     config: Optional[str] = typer.Option(
-        None, "--config", help="Path to YAML configuration file (pawnai.yaml).",
+        None,
+        "--config",
+        help="Path to YAML configuration file (pawnai.yaml).",
     ),
 ) -> None:
     """Push session transcript(s) to SiYuan as a diary page.
@@ -1970,8 +2023,7 @@ def push_siyuan(
     modes = sum(bool(x) for x in (session, latest, all_sessions, since))
     if modes != 1:
         console.print(
-            "[red]Error: provide exactly one of "
-            "--session, --latest, --all, or --since.[/red]"
+            "[red]Error: provide exactly one of " "--session, --latest, --all, or --since.[/red]"
         )
         raise typer.Exit(1)
 
@@ -2039,21 +2091,27 @@ def push_siyuan(
 @app.command()
 def sessions(
     session: Optional[str] = typer.Option(
-        None, "--session", "-s",
-        help="Session ID to inspect. Shows head/tail of transcript, files, speakers, and timing."
+        None,
+        "--session",
+        "-s",
+        help="Session ID to inspect. Shows head/tail of transcript, files, speakers, and timing.",
     ),
-    db_dsn: Optional[str] = typer.Option(
-        None, help="PostgreSQL DSN for speaker database"
-    ),
+    db_dsn: Optional[str] = typer.Option(None, help="PostgreSQL DSN for speaker database"),
     head: Optional[int] = typer.Option(
-        None, "--head", help="Limit rows: in list view caps sessions shown; in detail view caps first segments"
+        None,
+        "--head",
+        help="Limit rows: in list view caps sessions shown; in detail view caps first segments",
     ),
     tail: Optional[int] = typer.Option(
-        None, "--tail", help="Limit rows: in list view shows oldest sessions; in detail view caps last segments"
+        None,
+        "--tail",
+        help="Limit rows: in list view shows oldest sessions; in detail view caps last segments",
     ),
     output: Optional[Path] = typer.Option(
-        None, "--output", "-o",
-        help="Write the full session transcript to this file (requires --session)."
+        None,
+        "--output",
+        "-o",
+        help="Write the full session transcript to this file (requires --session).",
     ),
     config: Optional[str] = typer.Option(
         None, "--config", help="Path to YAML configuration file (pawnai.yaml)"
@@ -2083,7 +2141,11 @@ def sessions(
     from rich.rule import Rule
     from rich.text import Text
     from ..core.database import (
-        get_engine, init_db, SessionState, TranscriptionSegment, SpeakerName,
+        get_engine,
+        init_db,
+        SessionState,
+        TranscriptionSegment,
+        SpeakerName,
     )
     from ..core.config import AppConfig
 
@@ -2101,11 +2163,15 @@ def sessions(
     # ── Detail view ──────────────────────────────────────────────────────────
     if session:
         with OrmSession(db_engine) as db:
-            segs = db.execute(
-                select(TranscriptionSegment)
-                .where(TranscriptionSegment.session_id == session)
-                .order_by(TranscriptionSegment.start_time)
-            ).scalars().all()
+            segs = (
+                db.execute(
+                    select(TranscriptionSegment)
+                    .where(TranscriptionSegment.session_id == session)
+                    .order_by(TranscriptionSegment.start_time)
+                )
+                .scalars()
+                .all()
+            )
 
             if not segs:
                 console.print(f"[red]No segments found for session '{session}'.[/red]")
@@ -2163,7 +2229,7 @@ def sessions(
 
         # ── Tail (only if non-overlapping) ────────────────────────────────
         if len(segs) > head_n:
-            tail_segs = segs[max(head_n, len(segs) - tail_n):]
+            tail_segs = segs[max(head_n, len(segs) - tail_n) :]
             omitted = len(segs) - head_n - len(tail_segs)
             if omitted > 0:
                 console.print(f"\n[dim]  … {omitted} segment(s) omitted …[/dim]\n")
@@ -2175,15 +2241,19 @@ def sessions(
             with OrmSession(db_engine) as db:
                 audio_files = list({s.audio_file for s in segs if s.audio_file})
                 labels = list({s.original_speaker_label for s in segs if s.original_speaker_label})
-                name_rows = db.execute(
-                    select(SpeakerName).where(
-                        SpeakerName.audio_file.in_(audio_files),
-                        SpeakerName.local_speaker_label.in_(labels),
+                name_rows = (
+                    db.execute(
+                        select(SpeakerName).where(
+                            SpeakerName.audio_file.in_(audio_files),
+                            SpeakerName.local_speaker_label.in_(labels),
+                        )
                     )
-                ).scalars().all() if labels else []
-            name_lookup = {
-                (r.audio_file, r.local_speaker_label): r.speaker_name for r in name_rows
-            }
+                    .scalars()
+                    .all()
+                    if labels
+                    else []
+                )
+            name_lookup = {(r.audio_file, r.local_speaker_label): r.speaker_name for r in name_rows}
 
             lines = []
             for s in segs:
@@ -2214,7 +2284,8 @@ def sessions(
                 sqlfunc.min(TranscriptionSegment.start_time).label("first_start"),
                 sqlfunc.max(TranscriptionSegment.end_time).label("last_end"),
                 sqlfunc.max(TranscriptionSegment.created_at).label("last_updated"),
-            ).group_by(TranscriptionSegment.session_id)
+            )
+            .group_by(TranscriptionSegment.session_id)
             .order_by(sqlfunc.max(TranscriptionSegment.created_at).desc())
         )
         if head:
@@ -2228,13 +2299,14 @@ def sessions(
             return
 
         state_rows = {
-            row.session_id: row
-            for row in db.execute(select(SessionState)).scalars().all()
+            row.session_id: row for row in db.execute(select(SessionState)).scalars().all()
         }
 
         speaker_map: dict = {}
         for sid, label in db.execute(
-            select(TranscriptionSegment.session_id, TranscriptionSegment.original_speaker_label).distinct()
+            select(
+                TranscriptionSegment.session_id, TranscriptionSegment.original_speaker_label
+            ).distinct()
         ).all():
             if label:
                 speaker_map.setdefault(sid, set()).add(label)
@@ -2281,25 +2353,25 @@ def status(
     ),
 ) -> None:
     """Show application status and available models.
-    
+
     Displays system information and model availability.
     """
     # Lazy import to avoid loading torch during --help
     from ..core.config import AppConfig
-    
+
     # Load config from specified file if provided
     if config:
         AppConfig(config_path=config)
-    
+
     import torch
-    
+
     console.print("\n[bold cyan]Pawn Diarize Status[/bold cyan]")
     console.print(f"Device: {torch.device('cuda' if torch.cuda.is_available() else 'cpu')}")
     console.print(f"CUDA Available: {torch.cuda.is_available()}")
-    
+
     if torch.cuda.is_available():
         console.print(f"GPU: {torch.cuda.get_device_name(0)}")
-    
+
     console.print("\n[bold]Available commands:[/bold]")
     console.print("  diarize            - Perform speaker diarization")
     console.print("  transcribe         - Transcribe audio to text")
@@ -2331,9 +2403,7 @@ def s3_ls(
     sort_time: bool = typer.Option(
         False, "--time", "-t", help="Sort by modification time, newest first"
     ),
-    reverse: bool = typer.Option(
-        False, "--reverse", help="Reverse the sort order"
-    ),
+    reverse: bool = typer.Option(False, "--reverse", help="Reverse the sort order"),
     older_than: Optional[int] = typer.Option(
         None, "--older-than", help="Show only objects older than N days"
     ),
@@ -2437,20 +2507,15 @@ def s3_ls(
         size_str = _fmt_size(obj["Size"])
         modified = obj["LastModified"].strftime("%Y-%m-%d %H:%M:%S")
         console.print(
-            f"  [green]{modified}[/green]  "
-            f"[yellow]{size_str:>10}[/yellow]  {obj['Key']}"
+            f"  [green]{modified}[/green]  " f"[yellow]{size_str:>10}[/yellow]  {obj['Key']}"
         )
 
-    console.print(
-        f"\n[dim]Total: {len(objects)} object(s), {_fmt_size(total_bytes)}[/dim]"
-    )
+    console.print(f"\n[dim]Total: {len(objects)} object(s), {_fmt_size(total_bytes)}[/dim]")
 
 
 @s3_app.command(name="rm")
 def s3_rm(
-    path: Optional[str] = typer.Argument(
-        None, help="S3 key or s3:// URI of the object to delete"
-    ),
+    path: Optional[str] = typer.Argument(None, help="S3 key or s3:// URI of the object to delete"),
     config: Optional[str] = typer.Option(
         None, "--config", help="Path to YAML configuration file (pawnai.yaml)"
     ),
@@ -2628,12 +2693,16 @@ def listen(
         None, "--config", help="Path to YAML configuration file (pawnai.yaml)"
     ),
     topic: Optional[str] = typer.Option(
-        None, "--topic", "-T",
-        help="Topic name to subscribe to. Overrides the value in the queue: config section."
+        None,
+        "--topic",
+        "-T",
+        help="Topic name to subscribe to. Overrides the value in the queue: config section.",
     ),
     consumer_name: Optional[str] = typer.Option(
-        None, "--consumer-name", "-n",
-        help="Consumer registration name. Overrides the value in the queue: config section."
+        None,
+        "--consumer-name",
+        "-n",
+        help="Consumer registration name. Overrides the value in the queue: config section.",
     ),
 ) -> None:
     """Listen for commands on a pawn-queue topic and execute them.
@@ -2675,7 +2744,9 @@ def listen(
 
     queue_cfg = app_cfg.get_queue_config()
     effective_topic = topic or (queue_cfg or {}).get("topic", DEFAULT_TOPIC)
-    effective_consumer = consumer_name or (queue_cfg or {}).get("consumer_name", DEFAULT_CONSUMER_NAME)
+    effective_consumer = consumer_name or (queue_cfg or {}).get(
+        "consumer_name", DEFAULT_CONSUMER_NAME
+    )
 
     console.print(
         f"[bold green]Pawn Diarize queue listener starting[/bold green]\n"
@@ -2717,7 +2788,3 @@ def _fmt_size(num_bytes: int) -> str:
 # ──────────────────────────────────────────────────────────────────────────────
 # RAG / vectorization commands
 # ──────────────────────────────────────────────────────────────────────────────
-
-
-
-

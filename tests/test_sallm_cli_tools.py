@@ -8,7 +8,7 @@ import pytest
 
 from pawn_agent.core.sallm_skills import build_pawn_skills
 from pawn_agent.core.sallm_tools import build_pawn_clitools
-from pawn_agent.tools.cli import session_delete, session_transcript, sessions_list
+from pawn_agent.tools.cli import session_delete, session_relabel, session_transcript, sessions_list
 from pawn_agent.tools.delete_session import delete_session_impl
 
 
@@ -19,6 +19,7 @@ def test_build_pawn_clitools_names() -> None:
         "session_transcript",
         "session_analyze",
         "session_delete",
+        "session_relabel",
         "siyuan_save",
         "schedule_propose",
         "queue_push",
@@ -33,6 +34,7 @@ def test_build_pawn_skills_includes_sessions() -> None:
     assert sessions.tools is not None
     assert "sessions_list" in sessions.tools
     assert "session_delete" in sessions.tools
+    assert "session_relabel" in sessions.tools
 
 
 def test_notes_skill_exposes_sessions_list() -> None:
@@ -77,6 +79,52 @@ def test_session_delete_help() -> None:
         session_delete.main(["--help"])
     except SystemExit as exc:
         assert exc.code == 0
+
+
+def test_session_relabel_help() -> None:
+    try:
+        session_relabel.main(["--help"])
+    except SystemExit as exc:
+        assert exc.code == 0
+
+
+def test_session_relabel_requires_flags() -> None:
+    with pytest.raises(SystemExit) as missing:
+        session_relabel.main([])
+    assert missing.value.code != 0
+    with pytest.raises(SystemExit) as missing_to:
+        session_relabel.main(["--session-id", "meeting-1", "--from", "SPEAKER_00"])
+    assert missing_to.value.code != 0
+
+
+def test_session_relabel_calls_impl() -> None:
+    with (
+        patch(
+            "pawn_agent.tools.cli.session_relabel.load_agent_config",
+            return_value=object(),
+        ),
+        patch(
+            "pawn_agent.tools.cli.session_relabel.session_relabel_impl",
+            return_value="Relabeled 'SPEAKER_00' → 'Davide' in session 'xyz'.",
+        ) as mock_impl,
+    ):
+        code = session_relabel.main(
+            [
+                "--session-id",
+                "xyz",
+                "--from",
+                "SPEAKER_00",
+                "--to",
+                "Davide",
+                "--push-siyuan",
+            ]
+        )
+    assert code == 0
+    mock_impl.assert_called_once()
+    assert mock_impl.call_args.kwargs["session_id"] == "xyz"
+    assert mock_impl.call_args.kwargs["from_speaker"] == "SPEAKER_00"
+    assert mock_impl.call_args.kwargs["to_speaker"] == "Davide"
+    assert mock_impl.call_args.kwargs["push_siyuan"] is True
 
 
 def test_sessions_list_calls_impl() -> None:
@@ -137,9 +185,7 @@ def test_session_delete_confirm_mismatch_skips_impl() -> None:
             side_effect=ValueError("confirmation mismatch"),
         ) as mock_impl,
     ):
-        code = session_delete.main(
-            ["--session-id", "meeting-1", "--confirm", "other"]
-        )
+        code = session_delete.main(["--session-id", "meeting-1", "--confirm", "other"])
     assert code != 0
     mock_impl.assert_called_once()
 
@@ -155,9 +201,7 @@ def test_session_delete_matching_flags_call_impl() -> None:
             return_value="Deleted session 'meeting-1': 3 segment(s).",
         ) as mock_impl,
     ):
-        code = session_delete.main(
-            ["--session-id", "meeting-1", "--confirm", "meeting-1"]
-        )
+        code = session_delete.main(["--session-id", "meeting-1", "--confirm", "meeting-1"])
     assert code == 0
     mock_impl.assert_called_once()
     assert mock_impl.call_args.kwargs["session_id"] == "meeting-1"
@@ -199,9 +243,7 @@ def test_delete_session_impl_deletes_and_returns_receipt() -> None:
     ):
         engine = MagicMock()
         mock_engine_fn.return_value = engine
-        receipt = delete_session_impl(
-            cfg, session_id="meeting-1", confirm="meeting-1"
-        )
+        receipt = delete_session_impl(cfg, session_id="meeting-1", confirm="meeting-1")
 
     assert "meeting-1" in receipt
     assert "3 segment(s)" in receipt
@@ -227,9 +269,7 @@ def test_siyuan_save_from_analysis_calls_impl() -> None:
             return_value="Saved to SiYuan: ok",
         ) as mock_impl,
     ):
-        code = siyuan_save.main(
-            ["--session-id", "daniel-20260630", "--from-analysis"]
-        )
+        code = siyuan_save.main(["--session-id", "daniel-20260630", "--from-analysis"])
     assert code == 0
     mock_impl.assert_called_once()
     assert mock_impl.call_args.args[1] == "daniel-20260630"
