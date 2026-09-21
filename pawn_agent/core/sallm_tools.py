@@ -53,8 +53,10 @@ def build_pawn_clitools() -> dict[str, CliTool]:
                 "Run the standard structured session analysis and persist it "
                 "to the database. "
                 "Required: --session-id ID (or bare ID). "
-                "Optional: --save --title TEXT — ONLY when the user asks to "
-                "save to SiYuan. Analyze one session per invocation."
+                "Optional: --save --title TEXT — when the user asks to analyze "
+                "AND save to SiYuan, use this once with --save; do not also "
+                "call siyuan_save or re-run analyze. "
+                "Analyze one session per invocation."
             ),
         ),
         "session_delete": CliTool(
@@ -75,10 +77,15 @@ def build_pawn_clitools() -> dict[str, CliTool]:
             summary=(
                 "Save Markdown to SiYuan Notes. MUST be invoked inside a ```run "
                 "fence, never as plain text. "
-                "Preferred after analysis: "
-                "siyuan_save --session-id ID --from-analysis "
-                "(loads stored DB analysis; do NOT paste the summary). "
-                "Alternatives: --content-file PATH, or short --content TEXT only. "
+                "If the user asked to analyze and save, prefer "
+                "session_analyze --save instead — do not also call this tool. "
+                "After an existing DB analysis: "
+                "siyuan_save --session-id ID --from-analysis. "
+                "Free-form (not session analysis): "
+                "siyuan_save --session-id ID --title TEXT --content-file @note "
+                "plus a ```file note block. "
+                "Do NOT use --content for long/multiline text. "
+                "One SiYuan write per user request. "
                 "Optional: --title TEXT --path PATH."
             ),
         ),

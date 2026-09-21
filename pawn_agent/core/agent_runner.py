@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import copy
 from dataclasses import dataclass
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 from pawn_agent.utils.db import create_agent_run, update_agent_run
 from pawn_agent.utils.model_utils import _apply_model_override
@@ -34,11 +34,15 @@ async def run_agent_turn(
     command: str = "run",
     schedule_id: Optional[str] = None,
     scheduled_fire_id: Optional[str] = None,
+    on_progress: Optional[Callable[[str, dict[str, Any]], None]] = None,
 ) -> AgentRunResult:
     """Persist and execute one sallm agent turn.
 
     ``session_id`` is the conversation key. For queue/scheduler sources it is
     also the diarization session name tools should prefer.
+
+    ``on_progress`` is an optional sync callback ``(kind, attrs)`` invoked from
+    the ask() worker thread (e.g. Matrix status edits).
     """
     effective_cfg = cfg
     if model:
@@ -67,7 +71,13 @@ async def run_agent_turn(
                 "it must be the diarization session name used by agent tools"
             )
 
-        reply = await registry.handle_turn(session_id, prompt, effective_cfg, cfg.db_dsn)
+        reply = await registry.handle_turn(
+            session_id,
+            prompt,
+            effective_cfg,
+            cfg.db_dsn,
+            on_progress=on_progress,
+        )
         update_agent_run(cfg.db_dsn, run_id, "completed", response=reply)
         return AgentRunResult(run_id=run_id, response=reply)
     except Exception as exc:

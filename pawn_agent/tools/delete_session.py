@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-from sqlalchemy import create_engine, delete
+from sqlalchemy import delete
 from sqlalchemy.orm import Session
 
 from pawn_agent.utils.config import AgentConfig
-from pawn_agent.utils.db import GraphTriple, SessionAnalysis, TranscriptionSegment
+from pawn_agent.utils.db import GraphTriple, SessionAnalysis, TranscriptionSegment, get_engine
 from pawn_diarize.core.database import SessionState
 
 
@@ -28,34 +28,27 @@ def delete_session_impl(cfg: AgentConfig, session_id: str, confirm: str) -> str:
             f"({session_id_clean!r}); got {confirm_clean!r}"
         )
 
-    engine = create_engine(cfg.db_dsn)
-    try:
-        with Session(engine) as db:
-            seg_result = db.execute(
-                delete(TranscriptionSegment).where(
-                    TranscriptionSegment.session_id == session_id_clean
-                )
+    with Session(get_engine(cfg.db_dsn)) as db:
+        seg_result = db.execute(
+            delete(TranscriptionSegment).where(
+                TranscriptionSegment.session_id == session_id_clean
             )
-            analysis_result = db.execute(
-                delete(SessionAnalysis).where(
-                    SessionAnalysis.session_id == session_id_clean
-                )
-            )
-            state_result = db.execute(
-                delete(SessionState).where(SessionState.session_id == session_id_clean)
-            )
-            triples_result = db.execute(
-                delete(GraphTriple).where(GraphTriple.session_id == session_id_clean)
-            )
-            db.commit()
+        )
+        analysis_result = db.execute(
+            delete(SessionAnalysis).where(SessionAnalysis.session_id == session_id_clean)
+        )
+        state_result = db.execute(
+            delete(SessionState).where(SessionState.session_id == session_id_clean)
+        )
+        triples_result = db.execute(
+            delete(GraphTriple).where(GraphTriple.session_id == session_id_clean)
+        )
+        db.commit()
 
-            segments = int(seg_result.rowcount or 0)
-            analyses = int(analysis_result.rowcount or 0)
-            states = int(state_result.rowcount or 0)
-            triples = int(triples_result.rowcount or 0)
-    finally:
-        if hasattr(engine, "dispose"):
-            engine.dispose()
+        segments = int(seg_result.rowcount or 0)
+        analyses = int(analysis_result.rowcount or 0)
+        states = int(state_result.rowcount or 0)
+        triples = int(triples_result.rowcount or 0)
 
     total = segments + analyses + states + triples
     if total == 0:

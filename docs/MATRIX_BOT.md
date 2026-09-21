@@ -62,6 +62,27 @@ pawn-server serve --no-matrix
 
 Discover diarization sessions with the `sessions_list` tool, same as CLI/API chat.
 
+## Progress while the agent works
+
+Long ReAct turns can exceed Matrix’s ~30s typing timeout. When enabled (defaults):
+
+1. The bot reacts `⏳` on your message and posts a short **Working…** status.
+2. As control/tool Tracer events fire, that status message is **edited** in place
+   (e.g. `Skill: sessions…`, `Ran sessions_list…`, `Thinking…`).
+3. Typing is refreshed every ~20s until the turn ends.
+4. The status event is edited into the final answer (extra chunks send as new
+   messages if the reply is huge). The reaction becomes `✅` or `❌`.
+
+Config knobs under `matrix_bot:`:
+
+```yaml
+progress_updates: true    # live status message edits
+progress_reactions: true  # ⏳ / ✅ / ❌ on the user event
+```
+
+Set either to `false` to disable that channel. Slash commands (`/reset`, `/stats`)
+skip progress UI and still clear typing afterward.
+
 ## Notes
 
 - Reuse the same `device_id` and `store_path` across restarts; a new device id in

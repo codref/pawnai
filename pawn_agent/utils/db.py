@@ -14,7 +14,6 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
-    create_engine,
 )
 from sqlalchemy.orm import Mapped, Session, mapped_column
 
@@ -25,6 +24,7 @@ from pawn_core.database import (
     SpeakerName,
     TranscriptionSegment,
     _get_session,
+    get_engine,
     make_db_session,
 )
 
@@ -127,8 +127,7 @@ def get_session_analysis(session_id: str, dsn: str) -> Optional[SessionAnalysis]
     """Return the most recent SessionAnalysis row for *session_id*, or None."""
     from sqlalchemy import select
 
-    engine = create_engine(dsn)
-    with Session(engine) as db:
+    with Session(get_engine(dsn)) as db:
         row = db.scalars(
             select(SessionAnalysis)
             .where(SessionAnalysis.session_id == session_id)

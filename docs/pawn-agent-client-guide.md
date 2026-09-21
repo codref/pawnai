@@ -170,7 +170,7 @@ The agent uses sallm CliTools (see [TOOLS.md](TOOLS.md)):
 | `sessions_list` | List diarization sessions |
 | `session_transcript` | Fetch a full transcript |
 | `session_analyze` | Run structured analysis (optional SiYuan save) |
-| `siyuan_save` | Save Markdown / stored analysis to SiYuan (`--from-analysis`) |
+| `siyuan_save` | Save Markdown / stored analysis to SiYuan (`--from-analysis` or `--content-file @note` + ```file`) |
 | `schedule_propose` | Propose schedule changes (approve via `pawn-server schedules`) |
 | `queue_push` | Publish notifications to configured queue producers |
 
@@ -180,6 +180,7 @@ Example prompts:
 - `"Summarise session abc123"` → `session_analyze`
 - `"What did Alice say about the budget in session abc123?"` → `session_transcript`
 - `"Store the daniel-20260630 analysis on SiYuan"` → `siyuan_save --from-analysis`
+- `"Save this write-up to SiYuan"` → `siyuan_save --content-file @note` + ```file note`
 
 ---
 

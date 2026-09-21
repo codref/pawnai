@@ -35,6 +35,16 @@ pawn_agent/tools/
 CLI contract: flags only, human-readable stdout, inherit `pawnai.yaml` / `PAWN_*`
 from the parent process.
 
+### Large / multiline bodies
+
+Do not paste long Markdown into a ```run` line (`--content` rejects newlines and
+long strings). Prefer:
+
+1. `siyuan_save --session-id ID --from-analysis` after `session_analyze`
+2. `session_analyze --session-id ID --save`
+3. Free-form: `siyuan_save ... --content-file @note` plus a ```file note` block
+   (sallm writes a temp file and rewrites `@note` to that path)
+
 ## Available CliTools
 
 | CliTool | Impl module | Description |
@@ -42,7 +52,7 @@ from the parent process.
 | `sessions_list` | `list_sessions` | List diarization sessions |
 | `session_transcript` | `query_conversation` | Fetch one transcript |
 | `session_analyze` | `analyze_summary` | Structured analysis (+ optional SiYuan) |
-| `siyuan_save` | `save_to_siyuan` | Save Markdown / `--from-analysis` to SiYuan |
+| `siyuan_save` | `save_to_siyuan` | Save Markdown / `--from-analysis` / `--content-file` to SiYuan |
 | `schedule_propose` | `propose_schedule` | Create schedule proposals (approve via CLI) |
 | `queue_push` | `push_queue_message` | Publish to a named queue producer |
 

@@ -11,6 +11,24 @@ from pawn_agent.tools.save_to_siyuan import (
     save_to_siyuan_impl,
 )
 
+# Short one-liners only; long / multiline bodies must use --content-file (@note).
+_CONTENT_MAX_CHARS = 240
+_CONTENT_REJECT_MSG = (
+    "Error: --content is limited to short one-line text "
+    f"(max {_CONTENT_MAX_CHARS} chars, no newlines). "
+    "For Markdown use --content-file @note with a ```file note block, "
+    "or --from-analysis after session_analyze."
+)
+
+
+def _reject_unsafe_content(content: str) -> str | None:
+    """Return an error message if *content* is too long or multiline."""
+    if "\n" in content or "\r" in content:
+        return _CONTENT_REJECT_MSG
+    if len(content) > _CONTENT_MAX_CHARS:
+        return _CONTENT_REJECT_MSG
+    return None
+
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
@@ -18,8 +36,8 @@ def main(argv: list[str] | None = None) -> int:
         description=(
             "Save Markdown to SiYuan Notes. "
             "Prefer --from-analysis after session_analyze (loads DB row; no paste). "
-            "Do NOT put long Markdown in --content — use --from-analysis or "
-            "--content-file instead."
+            "For free-form Markdown use --content-file (e.g. @note + ```file note). "
+            "Do NOT put long Markdown in --content."
         ),
     )
     parser.add_argument("--session-id", required=True, help="Parent session id in SiYuan tree")
@@ -31,12 +49,15 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--content",
         default=None,
-        help="Short Markdown only (avoid for summaries — use --from-analysis)",
+        help=(
+            f"Short one-line Markdown only (max {_CONTENT_MAX_CHARS} chars; "
+            "no newlines). Prefer --from-analysis or --content-file."
+        ),
     )
     parser.add_argument(
         "--content-file",
         default=None,
-        help="Path to a UTF-8 Markdown file",
+        help="Path to a UTF-8 Markdown file (use @name with a ```file name block)",
     )
     parser.add_argument("--title", default=None, help="Optional document title")
     parser.add_argument("--path", default=None, help="Optional explicit SiYuan path override")
@@ -68,6 +89,10 @@ def main(argv: list[str] | None = None) -> int:
             content = Path(args.content_file).expanduser().read_text(encoding="utf-8")
         else:
             content = args.content or ""
+            bad = _reject_unsafe_content(content)
+            if bad:
+                return fail(bad)
+
         print_out(
             save_to_siyuan_impl(
                 cfg,

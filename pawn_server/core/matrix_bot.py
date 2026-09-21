@@ -22,6 +22,13 @@ _MAX_CHUNK = 30_000
 _SYNC_TIMEOUT_MS = 30_000
 _SYNC_BACKOFF_START_S = 1.0
 _SYNC_BACKOFF_MAX_S = 60.0
+# room_typing defaults to 30s; refresh before expiry during long ReAct turns.
+_TYPING_KEEPALIVE_S = 20.0
+_PROGRESS_DEBOUNCE_S = 0.75
+_REACT_WORKING = "⏳"
+_REACT_OK = "✅"
+_REACT_FAIL = "❌"
+_MD_EXTENSIONS = ["fenced_code", "nl2br", "sane_lists"]
 
 
 # ── Pure helpers (unit-tested without nio) ────────────────────────────────────
@@ -100,6 +107,67 @@ def verification_allowed(
     if not inviters:
         return True
     return sender in inviters
+
+
+def format_progress_status(
+    kind: str,
+    attrs: Optional[dict[str, Any]] = None,
+    *,
+    tools_ran: bool = False,
+) -> Optional[str]:
+    """Map a sallm Tracer event kind/attrs to a short Matrix status body.
+
+    Returns ``None`` when the event should not change the status message.
+    """
+    attrs = attrs or {}
+    if kind == "turn.start":
+        return "Working…"
+    if kind == "control":
+        skill = str(attrs.get("sallm.control.skill") or "").strip() or "?"
+        return f"Skill: `{skill}`…"
+    if kind == "tool":
+        name = str(attrs.get("gen_ai.tool.name") or "").strip() or "?"
+        return f"Ran `{name}`…"
+    if kind == "llm" and tools_ran:
+        return "Thinking…"
+    return None
+
+
+def build_text_content(body: str) -> dict[str, Any]:
+    """``m.room.message`` content for markdown text (plain + HTML)."""
+    from markdown import markdown
+
+    return {
+        "msgtype": "m.text",
+        "body": body,
+        "format": "org.matrix.custom.html",
+        "formatted_body": markdown(body, extensions=_MD_EXTENSIONS),
+    }
+
+
+def build_edit_content(body: str, replaces_event_id: str) -> dict[str, Any]:
+    """MSC2676 ``m.replace`` edit payload for an existing message event."""
+    new_content = build_text_content(body)
+    return {
+        "msgtype": "m.text",
+        "body": f"* {body}",
+        "m.new_content": new_content,
+        "m.relates_to": {
+            "rel_type": "m.replace",
+            "event_id": replaces_event_id,
+        },
+    }
+
+
+def build_reaction_content(event_id: str, key: str) -> dict[str, Any]:
+    """``m.reaction`` annotation content for *event_id*."""
+    return {
+        "m.relates_to": {
+            "rel_type": "m.annotation",
+            "event_id": event_id,
+            "key": key,
+        }
+    }
 
 
 def _require_nio():
@@ -348,27 +416,270 @@ async def _login(client: Any, mb: Any) -> None:
         raise RuntimeError(f"Matrix login failed: {resp.message}")
 
 
-async def _send_text(client: Any, room_id: str, text: str) -> None:
-    # Clients render formatted_body as HTML; body stays plain markdown fallback.
-    from markdown import markdown
-
+async def _send_text(client: Any, room_id: str, text: str) -> Optional[str]:
+    """Send markdown text; return the first chunk's event_id (if any)."""
     body = matrix_reply_body(text)
+    first_event_id: Optional[str] = None
     for chunk in chunk_text(body):
-        content = {
-            "msgtype": "m.text",
-            "body": chunk,
-            "format": "org.matrix.custom.html",
-            "formatted_body": markdown(
-                chunk,
-                extensions=["fenced_code", "nl2br", "sane_lists"],
-            ),
-        }
-        await client.room_send(
+        content = build_text_content(chunk)
+        resp = await client.room_send(
             room_id,
             "m.room.message",
             content,
             ignore_unverified_devices=True,
         )
+        eid = getattr(resp, "event_id", None)
+        if first_event_id is None and eid:
+            first_event_id = str(eid)
+    return first_event_id
+
+
+async def _edit_text(
+    client: Any,
+    room_id: str,
+    event_id: str,
+    text: str,
+    *,
+    strip_tool_trail: bool = False,
+) -> None:
+    """Replace an existing message via ``m.replace``."""
+    body = matrix_reply_body(text) if strip_tool_trail else (text or "").strip()
+    if not body:
+        body = "(empty)"
+    # Edits are single-event; truncate rather than multi-chunk replace.
+    if len(body) > _MAX_CHUNK:
+        body = body[: _MAX_CHUNK - 1] + "…"
+    content = build_edit_content(body, event_id)
+    await client.room_send(
+        room_id,
+        "m.room.message",
+        content,
+        ignore_unverified_devices=True,
+    )
+
+
+async def _react(
+    client: Any,
+    room_id: str,
+    event_id: str,
+    key: str,
+) -> Optional[str]:
+    """Send an ``m.reaction``; return the reaction event_id when available."""
+    resp = await client.room_send(
+        room_id,
+        "m.reaction",
+        build_reaction_content(event_id, key),
+        ignore_unverified_devices=True,
+    )
+    eid = getattr(resp, "event_id", None)
+    return str(eid) if eid else None
+
+
+class MatrixTurnProgress:
+    """Live status edits + optional reactions + typing keepalive for one turn."""
+
+    def __init__(
+        self,
+        client: Any,
+        room_id: str,
+        user_event_id: Optional[str],
+        *,
+        loop: asyncio.AbstractEventLoop,
+        updates: bool = True,
+        reactions: bool = True,
+        debounce_s: float = _PROGRESS_DEBOUNCE_S,
+        typing_interval_s: float = _TYPING_KEEPALIVE_S,
+    ) -> None:
+        self._client = client
+        self._room_id = room_id
+        self._user_event_id = user_event_id
+        self._loop = loop
+        self._updates = updates
+        self._reactions = reactions
+        self._debounce_s = debounce_s
+        self._typing_interval_s = typing_interval_s
+        self._status_event_id: Optional[str] = None
+        self._reaction_event_id: Optional[str] = None
+        self._tools_ran = False
+        self._latest_status: Optional[str] = None
+        self._lock = asyncio.Lock()
+        self._debounce_task: Optional[asyncio.Task[None]] = None
+        self._typing_task: Optional[asyncio.Task[None]] = None
+        self._closed = False
+
+    async def start(self) -> None:
+        """Post initial status, reaction, and start typing keepalive."""
+        await self._set_typing(True)
+        self._typing_task = asyncio.create_task(self._typing_keepalive())
+        if self._reactions and self._user_event_id:
+            try:
+                self._reaction_event_id = await _react(
+                    self._client,
+                    self._room_id,
+                    self._user_event_id,
+                    _REACT_WORKING,
+                )
+            except Exception:
+                logger.exception("Failed to set working reaction")
+        if self._updates:
+            try:
+                self._status_event_id = await _send_text(
+                    self._client, self._room_id, "Working…"
+                )
+            except Exception:
+                logger.exception("Failed to send progress status message")
+
+    def on_progress(self, kind: str, attrs: dict[str, Any]) -> None:
+        """Sync Tracer bridge — schedule a debounced status edit on the loop."""
+        if self._closed or not self._updates:
+            return
+        if kind == "tool":
+            self._tools_ran = True
+        status = format_progress_status(kind, attrs, tools_ran=self._tools_ran)
+        if status is None:
+            return
+        try:
+            asyncio.run_coroutine_threadsafe(self._queue_status(status), self._loop)
+        except Exception:
+            logger.exception("Failed to schedule progress update")
+
+    async def _queue_status(self, text: str) -> None:
+        self._latest_status = text
+        if self._debounce_task is not None and not self._debounce_task.done():
+            return
+        self._debounce_task = asyncio.create_task(self._flush_status_soon())
+
+    async def _flush_status_soon(self) -> None:
+        try:
+            await asyncio.sleep(self._debounce_s)
+            await self._flush_status_now()
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("Progress status flush failed")
+
+    async def _flush_status_now(self) -> None:
+        async with self._lock:
+            text = self._latest_status
+            event_id = self._status_event_id
+            if not text or not event_id or self._closed:
+                return
+            try:
+                await _edit_text(self._client, self._room_id, event_id, text)
+            except Exception:
+                logger.exception("Failed to edit progress status")
+
+    async def finish(self, answer: str) -> None:
+        """Replace status with the final answer (or send normally)."""
+        await self._cancel_debounce()
+        body = matrix_reply_body(answer) or "(empty reply)"
+        chunks = chunk_text(body)
+        if self._updates and self._status_event_id:
+            async with self._lock:
+                try:
+                    await _edit_text(
+                        self._client,
+                        self._room_id,
+                        self._status_event_id,
+                        chunks[0],
+                        strip_tool_trail=False,
+                    )
+                except Exception:
+                    logger.exception("Failed to edit final answer into status")
+                    await _send_text(self._client, self._room_id, body)
+                    chunks = []
+            for chunk in chunks[1:]:
+                await _send_text(self._client, self._room_id, chunk)
+        else:
+            await _send_text(self._client, self._room_id, body)
+        await self._set_reaction(_REACT_OK)
+
+    async def fail(self, message: str) -> None:
+        """Surface an error on the status message (or as a new send)."""
+        await self._cancel_debounce()
+        text = message or "Sorry — something went wrong."
+        if self._updates and self._status_event_id:
+            async with self._lock:
+                try:
+                    await _edit_text(
+                        self._client, self._room_id, self._status_event_id, text
+                    )
+                except Exception:
+                    logger.exception("Failed to edit error into status")
+                    try:
+                        await _send_text(self._client, self._room_id, text)
+                    except Exception:
+                        logger.exception("Failed to send error reply")
+        else:
+            try:
+                await _send_text(self._client, self._room_id, text)
+            except Exception:
+                logger.exception("Failed to send error reply")
+        await self._set_reaction(_REACT_FAIL)
+
+    async def close(self) -> None:
+        """Stop keepalive / debounce and clear typing."""
+        self._closed = True
+        await self._cancel_debounce()
+        if self._typing_task is not None:
+            self._typing_task.cancel()
+            try:
+                await self._typing_task
+            except asyncio.CancelledError:
+                pass
+            self._typing_task = None
+        await self._set_typing(False)
+
+    async def _cancel_debounce(self) -> None:
+        task = self._debounce_task
+        self._debounce_task = None
+        if task is not None and not task.done():
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+
+    async def _typing_keepalive(self) -> None:
+        try:
+            while not self._closed:
+                await asyncio.sleep(self._typing_interval_s)
+                if self._closed:
+                    return
+                await self._set_typing(True)
+        except asyncio.CancelledError:
+            return
+
+    async def _set_typing(self, state: bool) -> None:
+        try:
+            await self._client.room_typing(
+                self._room_id,
+                typing_state=state,
+                timeout=int(_TYPING_KEEPALIVE_S * 1000) + 10_000,
+            )
+        except Exception:
+            if state:
+                logger.debug("room_typing failed room=%s", self._room_id, exc_info=True)
+
+    async def _set_reaction(self, key: str) -> None:
+        if not self._reactions or not self._user_event_id:
+            return
+        if self._reaction_event_id:
+            try:
+                await self._client.room_redact(
+                    self._room_id,
+                    self._reaction_event_id,
+                    reason="progress",
+                )
+            except Exception:
+                logger.debug("Failed to redact prior reaction", exc_info=True)
+            self._reaction_event_id = None
+        try:
+            self._reaction_event_id = await _react(
+                self._client, self._room_id, self._user_event_id, key
+            )
+        except Exception:
+            logger.exception("Failed to set reaction %s", key)
 
 
 # ── Event handlers ────────────────────────────────────────────────────────────
@@ -550,18 +861,30 @@ def _register_callbacks(client: Any, cfg: Any, registry: Any) -> None:
             return
 
         session_id = conversation_id(room.room_id)
+        progress: Optional[MatrixTurnProgress] = None
         try:
-            await client.room_typing(room.room_id, typing_state=True)
             if prompt.strip() == "/reset":
+                await client.room_typing(room.room_id, typing_state=True)
                 await registry.reset(session_id)
                 await _send_text(client, room.room_id, "Session reset.")
                 return
             if prompt.strip() == "/stats":
+                await client.room_typing(room.room_id, typing_state=True)
                 text = await registry.stats(session_id, cfg)
                 await _send_text(client, room.room_id, text)
                 return
 
             from pawn_agent.core.agent_runner import run_agent_turn
+
+            progress = MatrixTurnProgress(
+                client,
+                room.room_id,
+                getattr(event, "event_id", None),
+                loop=asyncio.get_running_loop(),
+                updates=bool(getattr(mb, "progress_updates", True)),
+                reactions=bool(getattr(mb, "progress_reactions", True)),
+            )
+            await progress.start()
 
             # source="matrix" tags agent_runs; session_id is a chat key, not diarization.
             result = await run_agent_turn(
@@ -570,19 +893,32 @@ def _register_callbacks(client: Any, cfg: Any, registry: Any) -> None:
                 prompt=prompt,
                 session_id=session_id,
                 source="matrix",
+                on_progress=(
+                    progress.on_progress
+                    if getattr(mb, "progress_updates", True)
+                    else None
+                ),
             )
-            await _send_text(client, room.room_id, result.response or "(empty reply)")
+            await progress.finish(result.response or "(empty reply)")
         except Exception:
             logger.exception("Matrix agent turn failed room=%s", room.room_id)
-            try:
-                await _send_text(client, room.room_id, "Sorry — something went wrong.")
-            except Exception:
-                logger.exception("Failed to send error reply")
+            if progress is not None:
+                await progress.fail("Sorry — something went wrong.")
+            else:
+                try:
+                    await _send_text(
+                        client, room.room_id, "Sorry — something went wrong."
+                    )
+                except Exception:
+                    logger.exception("Failed to send error reply")
         finally:
-            try:
-                await client.room_typing(room.room_id, typing_state=False)
-            except Exception:
-                pass
+            if progress is not None:
+                await progress.close()
+            else:
+                try:
+                    await client.room_typing(room.room_id, typing_state=False)
+                except Exception:
+                    pass
 
     async def on_invite(room: Any, event: Any) -> None:
         # InviteMemberEvent fires for every member in rooms.invite; only our invite.

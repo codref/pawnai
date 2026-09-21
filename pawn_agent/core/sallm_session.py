@@ -136,14 +136,60 @@ class SallmChatSession:
     def format_stats(self) -> str:
         return format_session_stats(self.collect_stats())
 
-    async def handle_user_input(self, text: str) -> str:
+    def _ask_sync(
+        self,
+        text: str,
+        on_progress: Optional[Callable[[str, dict[str, Any]], None]] = None,
+    ) -> Any:
+        """Run ``Agent.ask`` on the calling thread; optionally bridge Tracer events."""
+        if on_progress is None:
+            return self._agent.ask(text)
+
+        from sallm.trace import Tracer, multi_sink  # noqa: PLC0415
+
+        def progress_emit(event: dict[str, Any]) -> None:
+            kind = str(event.get("kind") or "")
+            attrs = event.get("attrs") if isinstance(event.get("attrs"), dict) else {}
+            try:
+                on_progress(kind, attrs)
+            except Exception:
+                logger.exception("on_progress callback failed kind=%s", kind)
+
+        old_trace = self._agent.trace
+        if old_trace is not None and callable(getattr(old_trace, "emit", None)):
+            previous_emit = old_trace.emit
+            old_trace.emit = multi_sink(progress_emit, previous_emit)
+            try:
+                return self._agent.ask(text)
+            finally:
+                old_trace.emit = previous_emit
+        else:
+            self._agent.trace = Tracer(
+                progress_emit,
+                session_id=self.conversation_id,
+            )
+            try:
+                return self._agent.ask(text)
+            finally:
+                self._agent.trace = old_trace
+
+    async def handle_user_input(
+        self,
+        text: str,
+        *,
+        on_progress: Optional[Callable[[str, dict[str, Any]], None]] = None,
+    ) -> str:
         """Run one user turn; return the assistant answer string.
 
         When tools ran, prefix a short dim trail so the CLI shows whether a
         `` ```run `` block actually executed (vs the model printing argv as prose).
+
+        ``on_progress(kind, attrs)`` is invoked synchronously from the ask()
+        worker thread when a temporary Tracer sink is installed — keep it fast
+        and thread-safe (schedule Matrix I/O onto the event loop).
         """
         # Offload: ask() blocks on LLM + CliTool subprocesses.
-        result = await asyncio.to_thread(self._agent.ask, text)
+        result = await asyncio.to_thread(self._ask_sync, text, on_progress)
         if not isinstance(result, dict):
             return str(result or "")
 

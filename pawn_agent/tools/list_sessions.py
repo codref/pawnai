@@ -12,10 +12,10 @@ def list_session_candidates_impl(
     limit: int = 10,
 ) -> list[SessionCandidate]:
     """Return structured conversation session candidates from the database."""
-    from sqlalchemy import create_engine, func, select
+    from sqlalchemy import func, select
     from sqlalchemy.orm import Session
 
-    from pawn_agent.utils.db import SessionAnalysis, TranscriptionSegment
+    from pawn_agent.utils.db import SessionAnalysis, TranscriptionSegment, get_engine
 
     name_filter_clean = name_filter.strip()
 
@@ -38,24 +38,19 @@ def list_session_candidates_impl(
 
     stmt = stmt.limit(limit)
 
-    engine = create_engine(cfg.db_dsn)
-    try:
-        with Session(engine) as db:
-            rows = db.execute(stmt).all()
-            session_ids = [str(row.session_id) for row in rows if row.session_id]
-            analyses_by_session: dict[str, SessionAnalysis] = {}
-            if session_ids:
-                analysis_rows = db.scalars(
-                    select(SessionAnalysis)
-                    .where(SessionAnalysis.session_id.in_(session_ids))
-                    .order_by(SessionAnalysis.session_id, SessionAnalysis.analyzed_at.desc())
-                ).all()
-                for analysis in analysis_rows:
-                    if analysis.session_id and analysis.session_id not in analyses_by_session:
-                        analyses_by_session[str(analysis.session_id)] = analysis
-    finally:
-        if hasattr(engine, "dispose"):
-            engine.dispose()
+    with Session(get_engine(cfg.db_dsn)) as db:
+        rows = db.execute(stmt).all()
+        session_ids = [str(row.session_id) for row in rows if row.session_id]
+        analyses_by_session: dict[str, SessionAnalysis] = {}
+        if session_ids:
+            analysis_rows = db.scalars(
+                select(SessionAnalysis)
+                .where(SessionAnalysis.session_id.in_(session_ids))
+                .order_by(SessionAnalysis.session_id, SessionAnalysis.analyzed_at.desc())
+            ).all()
+            for analysis in analysis_rows:
+                if analysis.session_id and analysis.session_id not in analyses_by_session:
+                    analyses_by_session[str(analysis.session_id)] = analysis
 
     candidates: list[SessionCandidate] = []
     for row in rows:

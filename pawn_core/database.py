@@ -19,12 +19,14 @@ graph_triples
 
 from __future__ import annotations
 
+import threading
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from typing import Any, Generator, Optional
 
 from sqlalchemy import DateTime, Float, Integer, String, Text, create_engine
 from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.engine import Engine
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sessionmaker
 
 
@@ -115,18 +117,47 @@ class GraphTriple(Base):
 # ──────────────────────────────────────────────────────────────────────────────
 
 
+_engines: dict[str, Engine] = {}
+_engines_lock = threading.Lock()
+
+
+def get_engine(dsn: str) -> Engine:
+    """Return a process-wide cached :class:`Engine` for *dsn*.
+
+    Creating a new engine on every call leaks connection pools (each orphaned
+    engine keeps idle pooled connections until GC, which may never reclaim them
+    while the process lives). Long-running ``pawn-server`` workers (scheduler,
+    agent runner, queue) must reuse one engine per DSN.
+    """
+    with _engines_lock:
+        engine = _engines.get(dsn)
+        if engine is None:
+            engine = create_engine(dsn, pool_pre_ping=True)
+            _engines[dsn] = engine
+        return engine
+
+
+def dispose_engines() -> None:
+    """Dispose and clear all cached engines (tests / process shutdown)."""
+    with _engines_lock:
+        engines = list(_engines.values())
+        _engines.clear()
+    for engine in engines:
+        engine.dispose()
+
+
 def make_db_session(dsn: str) -> Session:
-    """Return a new :class:`Session` bound to a fresh engine for *dsn*."""
-    engine = create_engine(dsn)
-    SessionLocal = sessionmaker(bind=engine)
-    return SessionLocal()
+    """Return a new :class:`Session` bound to the shared engine for *dsn*.
+
+    Caller must ``close()`` the session (or use it as a context manager).
+    """
+    return sessionmaker(bind=get_engine(dsn))()
 
 
 @contextmanager
 def _get_session(dsn: str) -> Generator[Session, None, None]:
     """Context manager that yields a committed-or-rolled-back :class:`Session`."""
-    engine = create_engine(dsn)
-    with Session(engine) as session:
+    with Session(get_engine(dsn)) as session:
         try:
             yield session
             session.commit()

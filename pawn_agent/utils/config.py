@@ -75,6 +75,8 @@ Config file schema (all keys optional)::
       command_prefix: "!pawn"
       inviters:
         - "@you:example.com"
+      progress_updates: true
+      progress_reactions: true
 """
 
 from __future__ import annotations
@@ -227,6 +229,10 @@ class MatrixBotConfig(BaseModel):
     store_path: str = ".matrix-store"
     command_prefix: str = "!pawn"
     inviters: list[str] = Field(default_factory=list)
+    # Live status message edits while the agent ReAct loop runs.
+    progress_updates: bool = True
+    # Glanceable ⏳ / ✅ / ❌ reactions on the user's prompting message.
+    progress_reactions: bool = True
 
 
 # ── AgentConfig ───────────────────────────────────────────────────────────────

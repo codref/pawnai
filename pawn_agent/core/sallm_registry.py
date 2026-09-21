@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import Any
+from typing import Any, Callable, Optional
 
 from pawn_agent.core.sallm_factory import build_optional_tracer
 from pawn_agent.core.sallm_session import SallmChatSession
@@ -74,16 +74,19 @@ class SallmSessionRegistry:
         text: str,
         cfg: Any,
         db_dsn: str = "",
+        *,
+        on_progress: Optional[Callable[[str, dict[str, Any]], None]] = None,
         **_kwargs: Any,
     ) -> str:
         """Process one user turn under the per-session lock.
 
         Extra kwargs (e.g. legacy ``graph_recorder``) are ignored so callers
-        can be updated gradually.
+        can be updated gradually. ``on_progress`` is forwarded to the session
+        for mid-turn Tracer bridging (Matrix status edits).
         """
         session = await self.get_or_create(session_id, cfg, db_dsn)
         async with self._session_lock(session_id):
-            return await session.handle_user_input(text)
+            return await session.handle_user_input(text, on_progress=on_progress)
 
     async def reset(self, session_id: str, db_dsn: str = "") -> None:
         """Clear durable memory and drop the in-memory session."""

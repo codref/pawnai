@@ -236,6 +236,10 @@ matrix_bot:
   command_prefix: "!pawn"
   inviters:
     - "@you:example.com"
+  # Edit a live "Working…" message as ReAct steps complete; keep typing alive.
+  progress_updates: true
+  # React ⏳ on the user message, then ✅ / ❌ when the turn finishes.
+  progress_reactions: true
 
 queue_producers:
   # Named producer targets used by pawn-agent's push_queue_message tool.

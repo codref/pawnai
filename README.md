@@ -502,7 +502,7 @@ pawn-agent models [--config TEXT]
 | `sessions_list` | List diarization sessions from the database |
 | `session_transcript` | Fetch the full transcript for a session |
 | `session_analyze` | Run structured analysis (title, summary, topics, sentiment, tags); optional `--save` to SiYuan |
-| `siyuan_save` | Save Markdown to SiYuan; prefer `--from-analysis` after analyze |
+| `siyuan_save` | Save Markdown to SiYuan; prefer `--from-analysis` or `--content-file @note` |
 | `queue_push` | Publish progress updates or notifications to configured queue producers |
 | `schedule_propose` | Create schedule-change proposals for application approval |
 

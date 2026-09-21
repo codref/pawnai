@@ -22,7 +22,7 @@ from contextlib import contextmanager
 from datetime import datetime, timezone
 from typing import Any, Dict, Generator, List, Optional, Tuple
 
-from sqlalchemy import DateTime, Float, String, Text, create_engine, text
+from sqlalchemy import DateTime, Float, String, Text, text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, Session, mapped_column
 
@@ -35,6 +35,7 @@ from pawn_core.database import (  # noqa: F401
     SpeakerName,
     TranscriptionSegment,
     _get_session,
+    get_engine,
     make_db_session,
 )
 
@@ -109,21 +110,7 @@ class SessionState(Base):
 # ──────────────────────────────────────────────────────────────────────────────
 # Engine factory
 # ──────────────────────────────────────────────────────────────────────────────
-
-
-def get_engine(dsn: str):
-    """Create a SQLAlchemy engine from a DSN string.
-
-    Uses the ``postgresql+psycopg`` dialect (psycopg v3).
-
-    Args:
-        dsn: PostgreSQL DSN, e.g.
-             ``"postgresql+psycopg://postgres:postgres@localhost:5432/pawn_diarize"``
-
-    Returns:
-        A :class:`sqlalchemy.engine.Engine` instance.
-    """
-    return create_engine(dsn, pool_pre_ping=True)
+# ``get_engine`` is re-exported from ``pawn_core.database`` (process-wide cache).
 
 
 def init_db(engine) -> None:

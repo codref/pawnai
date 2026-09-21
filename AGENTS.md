@@ -62,6 +62,10 @@ Domain logic stays in `pawn_agent/tools/*_impl`. Production path uses **CliTools
 Migrated CliTools: `sessions_list`, `session_transcript`, `session_analyze`,
 `session_delete`, `siyuan_save`, `schedule_propose`, `queue_push`.
 
+`siyuan_save`: prefer `--from-analysis` or `session_analyze --save`. Free-form
+Markdown uses `--content-file @note` plus a ```file note` block (sallm writes a
+temp file). Do not paste long bodies into `--content`.
+
 `session_delete` permanently wipes diarization DB rows (segments, analyses,
 `session_state`, graph triples) for one session name. It always requires
 `--confirm` to exactly match `--session-id`; the agent must ask the user

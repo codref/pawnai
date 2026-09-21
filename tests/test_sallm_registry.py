@@ -30,7 +30,7 @@ def test_registry_handle_turn_offloads_ask(tmp_path) -> None:
     registry = SallmSessionRegistry()
     fake_session = MagicMock()
 
-    async def fake_handle(text: str) -> str:
+    async def fake_handle(text: str, *, on_progress=None) -> str:
         return f"echo:{text}"
 
     fake_session.handle_user_input = fake_handle
