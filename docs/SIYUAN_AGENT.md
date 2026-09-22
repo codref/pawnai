@@ -87,35 +87,34 @@ See [siyuan-plugin/pawn/README.md](../siyuan-plugin/pawn/README.md).
 
 ## Human UX
 
-1. Under any block in an allowlisted notebook, write:
+1. Under any block in an allowlisted notebook, write an instruction (plain
+   text is fine). Press **Send to Pawn** from the floating toolbar, block
+   gutter menu, or ⌥⌘P. With wrap-on-send the paragraph becomes a **TIP**
+   callout (SiYuan 3.5+). Add more child blocks inside it afterward — the
+   **entire callout** is the request.
 
-   ```markdown
-   @pawn Deep-analyze the linked notes. Highlight tasks and decisions.
-   Use ((20260920113000-abc1234 "context")).
-   ```
+   Optional: type a leading `@pawn …` instead. That is only required for the
+   legacy watcher SQL scan (`discover_mentions: true`); the plugin button does
+   not need the mention.
 
-2. Finish the instruction, then **Send to Pawn** (floating toolbar paper-plane,
-   block gutter menu, or ⌥⌘P). With wrap-on-send enabled the paragraph becomes
-   a **TIP** callout (SiYuan 3.5+). Add more child blocks inside it afterward —
-   the **entire callout** is the request.
-
-3. Send posts `{ "block_id": "<callout>" }` to `POST /v1/siyuan/triggers`
+2. Send posts `{ "block_id": "<callout>" }` to `POST /v1/siyuan/triggers`
    (via SiYuan `forwardProxy`).
 
-4. A **Pawn result — ready for review** section is appended under the parent,
+3. A **Pawn result — ready for review** section is appended under the parent,
    including:
 
    - `[ ] Approve for Pawn memory`
    - `[ ] Request changes (reply with @pawn …)`
 
-5. Matrix receives a short alert with a `siyuan://blocks/…` deep link
+4. Matrix receives a short alert with a `siyuan://blocks/…` deep link
    (no full note body).
 
-6. Check **Approve for Pawn memory** in SiYuan. On the next watcher tick the
+5. Check **Approve for Pawn memory** in SiYuan. On the next watcher tick the
    request is marked `done` and `Agent.remember` indexes the approved content.
 
-7. To refine later, edit the callout (new instruction hash) and Send again, or
-   add another `@pawn …` under the same thread.
+6. To refine later, edit the callout (new instruction hash) and Send again, or
+   add another `@pawn …` under the same thread (watcher path) / Send another
+   block.
 
 ## API
 

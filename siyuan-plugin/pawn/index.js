@@ -1,8 +1,9 @@
 /**
  * Pawn — SiYuan plugin
  *
- * Wraps @pawn paragraphs into TIP callouts and sends the callout root to
- * pawn-server POST /v1/siyuan/triggers via /api/network/forwardProxy.
+ * Sends the current block to pawn-server POST /v1/siyuan/triggers via
+ * /api/network/forwardProxy. Optionally wraps as a TIP callout on send.
+ * @pawn is not required for Send (watcher discovery still uses it).
  */
 const { Plugin, Setting, fetchSyncPost, showMessage } = require("siyuan");
 
@@ -54,7 +55,7 @@ function extractTitle(body, mentionToken, maxLen) {
 function buildTipCalloutMarkdown(instruction, opts) {
   const mentionToken = (opts && opts.mentionToken) || "@pawn";
   const icon = (opts && opts.calloutIcon) || "🤖";
-  const body = String(instruction || "").trim() || mentionToken + " (empty)";
+  const body = String(instruction || "").trim() || "Pawn task";
   const title =
     (opts && opts.title) || extractTitle(body, mentionToken, 60);
   const safeTitle = String(title).replace(/\n/g, " ").trim();
@@ -180,7 +181,7 @@ module.exports = class PawnPlugin extends Plugin {
     const blockId = getActiveBlockId(p);
     if (!blockId) {
       showMessage(
-        (this.i18n && this.i18n.noCallout) || "No @pawn callout found",
+        (this.i18n && this.i18n.noCallout) || "No block content to send",
         4000,
         "error"
       );
@@ -265,7 +266,9 @@ module.exports = class PawnPlugin extends Plugin {
     });
     setting.addItem({
       title: i18n.mentionToken || "Mention token",
-      description: i18n.mentionTokenDesc || "",
+      description:
+        i18n.mentionTokenDesc ||
+        "Optional — used only by the server watcher SQL scan (must match siyuan_watcher.mention_token). Plugin Send does not require it.",
       createActionElement: () => {
         elMention = document.createElement("input");
         elMention.className = "b3-text-field fn__flex-center fn__size200";
@@ -277,7 +280,7 @@ module.exports = class PawnPlugin extends Plugin {
       title: i18n.autoWrapCallout || "Wrap as callout on send",
       description:
         i18n.autoWrapCalloutDesc ||
-        "Convert a leading @pawn paragraph into a TIP callout when sending",
+        "Convert the current paragraph into a TIP callout when sending (no @pawn required)",
       createActionElement: () => {
         elAuto = document.createElement("input");
         elAuto.type = "checkbox";
@@ -354,8 +357,9 @@ module.exports = class PawnPlugin extends Plugin {
   }
 
   /**
-   * If *blockId* (or its resolved mention root) is a plain @pawn paragraph,
-   * rewrite it into a TIP callout. Returns the callout/mention block id.
+   * If *blockId* is a plain paragraph (or resolved tip child), rewrite it into
+   * a TIP callout. No @pawn prefix required — Send is explicit intent.
+   * Returns the callout/block id, or null when empty.
    */
   async _ensureWrapped(blockId) {
     const resolved = await this._resolveCalloutRoot(blockId);
@@ -375,9 +379,6 @@ module.exports = class PawnPlugin extends Plugin {
     }
 
     const token = this.config.mentionToken || "@pawn";
-    const re = new RegExp("^\\s*" + escapeRegExp(token) + "\\b", "i");
-    if (!re.test(kramdown)) return null;
-
     this._wrapping.add(id);
     try {
       const md = buildTipCalloutMarkdown(kramdown, {
@@ -429,15 +430,14 @@ module.exports = class PawnPlugin extends Plugin {
     });
   };
 
+  /**
+   * Prefer a TIP callout ancestor; else the starting block if non-empty.
+   * @pawn is optional (watcher-only); plugin Send does not require it.
+   */
   async _resolveCalloutRoot(blockId) {
-    const token = this.config.mentionToken || "@pawn";
-    const mentionRe = new RegExp(
-      "(?:^|[\\s>])" + escapeRegExp(token) + "\\b",
-      "i"
-    );
     let current = blockId;
     const seen = new Set();
-    let plainCandidate = null;
+    let startKd = "";
 
     while (current && !seen.has(current)) {
       seen.add(current);
@@ -454,22 +454,17 @@ module.exports = class PawnPlugin extends Plugin {
         id: current,
       });
       const kd = (kdResp && kdResp.data && kdResp.data.kramdown) || "";
-      if (looksLikeTipCallout(kd) && mentionRe.test(kd)) {
+      if (current === blockId) startKd = kd;
+      if (looksLikeTipCallout(kd)) {
         return current;
-      }
-      const plain = stripIal(kd);
-      if (
-        !plainCandidate &&
-        new RegExp("^\\s*" + escapeRegExp(token) + "\\b", "i").test(plain)
-      ) {
-        plainCandidate = current;
       }
       const parent = row.parent_id;
       const root = row.root_id;
       if (!parent || parent === current || current === root) break;
       current = parent;
     }
-    return plainCandidate;
+    if (stripIal(startKd)) return blockId;
+    return null;
   }
 
   async _sendBlock(blockId) {
@@ -488,7 +483,11 @@ module.exports = class PawnPlugin extends Plugin {
       rootId = await this._resolveCalloutRoot(blockId);
     }
     if (!rootId) {
-      showMessage(i18n.noCallout || "No @pawn callout found", 4000, "error");
+      showMessage(
+        i18n.noCallout || "No block content to send",
+        4000,
+        "error"
+      );
       return;
     }
 

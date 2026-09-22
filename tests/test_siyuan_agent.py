@@ -156,6 +156,58 @@ def test_resolve_pawn_trigger_prefers_callout_ancestor() -> None:
     assert "second line" in resolved.instruction_text
 
 
+def test_resolve_pawn_trigger_plugin_send_no_mention() -> None:
+    """Plugin Send accepts TIP/plain blocks without an @pawn token."""
+    from pawn_agent.core.siyuan_protocol import resolve_pawn_trigger
+
+    tip_kd = "> [!TIP] 🤖 Movies\n> list three similar to V for Vendetta\n"
+    plain_kd = "list three movies like V for Vendetta"
+
+    tip_client = MagicMock()
+    tip_client.query_sql.return_value = [
+        {
+            "id": "tip1",
+            "parent_id": "p1",
+            "root_id": "r1",
+            "box": "nb",
+            "content": "list three",
+            "markdown": tip_kd,
+            "updated": "1",
+        }
+    ]
+    tip_client.get_block_kramdown.return_value = tip_kd
+    tip = resolve_pawn_trigger(
+        tip_client, "tip1", require_mention=False
+    )
+    assert tip is not None
+    assert tip.trigger_block_id == "tip1"
+    assert "V for Vendetta" in tip.instruction_text
+
+    # With require_mention=True the same tip is rejected (no @pawn).
+    assert resolve_pawn_trigger(tip_client, "tip1", require_mention=True) is None
+
+    plain_client = MagicMock()
+    plain_client.query_sql.return_value = [
+        {
+            "id": "p1",
+            "parent_id": "root",
+            "root_id": "root",
+            "box": "nb",
+            "content": plain_kd,
+            "markdown": plain_kd,
+            "updated": "1",
+        }
+    ]
+    plain_client.get_block_kramdown.return_value = plain_kd
+    plain = resolve_pawn_trigger(
+        plain_client, "p1", require_mention=False
+    )
+    assert plain is not None
+    assert plain.trigger_block_id == "p1"
+    assert plain.instruction_text.startswith("list three")
+    assert resolve_pawn_trigger(plain_client, "p1", require_mention=True) is None
+
+
 def test_extract_pawn_callout_title() -> None:
     from pawn_agent.core.siyuan_protocol import (
         build_pawn_tip_callout_markdown,

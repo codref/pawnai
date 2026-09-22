@@ -2,7 +2,7 @@
   "name": "pawn",
   "author": "PawnAI",
   "url": "https://github.com/codref/parakeet",
-  "version": "0.1.5",
+  "version": "0.1.6",
   "minAppVersion": "3.0.0",
   "backends": ["all"],
   "frontends": ["all"],

@@ -87,11 +87,14 @@ def resolve_pawn_trigger(
     block_id: str,
     *,
     mention_token: str = "@pawn",
+    require_mention: bool = True,
 ) -> ResolvedPawnTrigger | None:
-    """Walk from *block_id* up to the nearest pawn TIP callout (or plain mention).
+    """Walk from *block_id* up to the nearest pawn TIP callout (or plain block).
 
-    Prefers a TIP callout whose kramdown contains the mention token. Falls back
-    to a block that starts with the mention. Returns None when neither is found.
+    Prefers a TIP callout ancestor. When *require_mention* is True (watcher /
+    legacy), the callout or plain block must contain/start with the mention
+    token. When False (plugin Send), any TIP callout is accepted, else the
+    starting block itself if it has non-empty content.
     """
     if not (block_id or "").strip():
         return None
@@ -132,11 +135,27 @@ def resolve_pawn_trigger(
         )
 
     for tid, row, kd in chain:
-        if looks_like_tip_callout(kd) and contains_mention_token(kd, mention_token):
-            return _to_resolved(tid, row, kd)
-    for tid, row, kd in chain:
+        if not looks_like_tip_callout(kd):
+            continue
+        if require_mention and not contains_mention_token(kd, mention_token):
+            continue
+        return _to_resolved(tid, row, kd)
+
+    if require_mention:
+        for tid, row, kd in chain:
+            content = str(row.get("content") or "")
+            if is_pawn_mention(kd, mention_token) or is_pawn_mention(
+                content, mention_token
+            ):
+                return _to_resolved(tid, row, kd or content)
+        return None
+
+    # Plugin Send: use the starting block if it has any non-empty text.
+    if chain:
+        tid, row, kd = chain[0]
         content = str(row.get("content") or "")
-        if is_pawn_mention(kd, mention_token) or is_pawn_mention(content, mention_token):
+        text = (kd or content).strip()
+        if text:
             return _to_resolved(tid, row, kd or content)
     return None
 
@@ -344,10 +363,10 @@ def build_pawn_tip_callout_markdown(
 ) -> str:
     """GitHub-alert Markdown that SiYuan 3.5+ spins into a TIP callout.
 
-    Keeps the original ``@pawn …`` line in the body so the request stays
-    readable inside the callout.
+    Keeps the instruction body as-is (``@pawn`` optional — plugin Send does
+    not require it; the watcher still discovers leading mentions).
     """
-    body = (instruction or "").strip() or f"{mention_token} (empty)"
+    body = (instruction or "").strip() or "Pawn task"
     body_lines = body.splitlines() or [body]
     title_text = (title or extract_pawn_callout_title(body, mention_token=mention_token)).strip()
     title_text = title_text.replace("\n", " ")

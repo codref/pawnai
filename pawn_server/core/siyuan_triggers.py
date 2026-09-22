@@ -71,10 +71,17 @@ async def accept_siyuan_trigger(
     """
     mention = cfg.siyuan_watcher.mention_token
     active_client = client or client_from_agent_config(cfg)
-    resolved = resolve_pawn_trigger(active_client, block_id, mention_token=mention)
+    # Plugin Send is explicit intent — do not require an @pawn token in the
+    # block. Watcher discovery still filters on mention_token via SQL.
+    resolved = resolve_pawn_trigger(
+        active_client,
+        block_id,
+        mention_token=mention,
+        require_mention=False,
+    )
     if resolved is None:
         raise SiyuanTriggerError(
-            "No @pawn TIP callout (or mention block) found for this block_id",
+            "No TIP callout or non-empty block found for this block_id",
             status_code=404,
         )
 

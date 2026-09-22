@@ -4,10 +4,10 @@
   "serverUrlDesc": "pawn-server base URL (reachable from the SiYuan kernel)",
   "apiToken": "API token",
   "apiTokenDesc": "Bearer token matching api.token / PAWN_API__TOKEN",
-  "mentionToken": "Mention token",
-  "mentionTokenDesc": "Prefix that activates wrap + Send (must match server)",
+  "mentionToken": "Mention token (watcher)",
+  "mentionTokenDesc": "Only used by the server watcher SQL scan. Plugin Send does not require @pawn.",
   "autoWrapCallout": "Wrap as callout on send",
-  "autoWrapCalloutDesc": "Convert a leading @pawn paragraph into a TIP callout when sending",
+  "autoWrapCalloutDesc": "Convert the current paragraph into a TIP callout when sending",
   "calloutIcon": "Callout icon",
   "sendButtonLabel": "Send button label",
   "requestTimeoutMs": "Request timeout (ms)",
@@ -16,5 +16,5 @@
   "sendFail": "Pawn trigger failed",
   "sendBusy": "Pawn is already working on this callout",
   "notConfigured": "Configure Pawn server URL in plugin settings",
-  "noCallout": "No @pawn callout found for this block"
+  "noCallout": "No block content to send"
 }

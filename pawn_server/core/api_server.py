@@ -497,13 +497,14 @@ async def siyuan_triggers(
     body: SiyuanTriggerRequest,
     cfg: Any = Depends(_get_cfg),
 ) -> SiyuanTriggerResponse:
-    """Accept a SiYuan @pawn callout and start the agent review loop.
+    """Accept a SiYuan block/callout and start the agent review loop.
 
     Body is only ``{ "block_id": "..." }``. The server resolves the nearest
-    TIP callout (or plain mention), loads full callout kramdown as the
+    TIP callout (or the block itself), loads full callout kramdown as the
     instruction, upserts ``siyuan_agent_requests``, and runs
     ``execute_claimed_request`` in the background. Returns 202 before the
-    agent turn finishes.
+    agent turn finishes. Does not require an ``@pawn`` mention — that token
+    is only used by the optional watcher SQL discovery path.
     """
     from pawn_server.core.siyuan_triggers import (  # noqa: PLC0415
         SiyuanTriggerError,
