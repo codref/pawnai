@@ -114,6 +114,16 @@ function formatErrorDetail(value) {
   return String(value);
 }
 
+/** UTF-8 string → base64 for SiYuan forwardProxy payloadEncoding=base64. */
+function utf8ToBase64(text) {
+  const s = String(text || "");
+  if (typeof btoa === "function") {
+    return btoa(unescape(encodeURIComponent(s)));
+  }
+  // Node / uncommon runtimes
+  return Buffer.from(s, "utf8").toString("base64");
+}
+
 module.exports = class PawnPlugin extends Plugin {
   constructor(...args) {
     super(...args);
@@ -496,21 +506,25 @@ module.exports = class PawnPlugin extends Plugin {
       return;
     }
 
-    const headers = [{ "Content-Type": "application/json" }];
+    // Only Authorization here — Content-Type comes from contentType below.
+    // Duplicating Content-Type in headers has been flaky with some kernels.
+    const headers = [];
     if (this.config.apiToken) {
       headers.push({ Authorization: "Bearer " + this.config.apiToken });
     }
 
-    // payloadEncoding must be "json" (SiYuan 3.8+). "text" leaves the body
-    // empty, which makes FastAPI return a 422 detail array → "[object Object]".
+    // SiYuan 3.8 forwardProxy: payloadEncoding "text" sends no body; "json"
+    // with an object is also unreliable across kernel builds. Base64 of the
+    // JSON string always hits request.SetBody(decoded) in the kernel.
+    const bodyJson = JSON.stringify({ block_id: rootId });
     const proxy = await fetchSyncPost("/api/network/forwardProxy", {
       url: serverUrl + "/v1/siyuan/triggers",
       method: "POST",
       timeout: Math.max(1000, Number(this.config.requestTimeoutMs) || 15000),
       contentType: "application/json",
       headers,
-      payload: { block_id: rootId },
-      payloadEncoding: "json",
+      payload: utf8ToBase64(bodyJson),
+      payloadEncoding: "base64",
       responseEncoding: "text",
     });
 
