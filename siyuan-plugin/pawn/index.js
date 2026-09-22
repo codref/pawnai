@@ -15,7 +15,8 @@ const DEFAULTS = {
   serverUrl: "http://127.0.0.1:8000",
   apiToken: "",
   mentionToken: "@pawn",
-  autoWrapCallout: true,
+  // Disabled: auto-wrap was unreliable on SiYuan 3.8 and broke triggers.
+  autoWrapCallout: false,
   calloutIcon: "🤖",
   sendButtonLabel: "Send to Pawn",
   requestTimeoutMs: 15000,
@@ -116,19 +117,6 @@ function formatErrorDetail(value) {
     );
   }
   return String(value);
-}
-
-/** First block id from insertBlock / updateBlock API response. */
-function firstOperationId(resp) {
-  const data = resp && resp.data;
-  if (!Array.isArray(data)) return null;
-  for (const tx of data) {
-    const ops = (tx && tx.doOperations) || [];
-    for (const op of ops) {
-      if (op && op.id) return op.id;
-    }
-  }
-  return null;
 }
 
 /** UTF-8 string → base64 for SiYuan forwardProxy payloadEncoding=base64. */
@@ -296,12 +284,13 @@ module.exports = class PawnPlugin extends Plugin {
       title: i18n.autoWrapCallout || "Wrap as callout on send",
       description:
         i18n.autoWrapCalloutDesc ||
-        "Convert the current paragraph into a TIP callout when sending (no @pawn required)",
+        "Currently disabled in code (SiYuan 3.8 wrap is unreliable). Send works without wrapping.",
       createActionElement: () => {
         elAuto = document.createElement("input");
         elAuto.type = "checkbox";
         elAuto.className = "b3-switch fn__flex-center";
-        elAuto.checked = conf.autoWrapCallout !== false;
+        elAuto.checked = false;
+        elAuto.disabled = true;
         return elAuto;
       },
     });
@@ -373,98 +362,13 @@ module.exports = class PawnPlugin extends Plugin {
   }
 
   /**
-   * True when *blockId* is a real TIP callout container (not a paragraph
-   * whose text merely starts with "> [!TIP]").
-   */
-  async _isTipCalloutBlock(blockId) {
-    const kdResp = await fetchSyncPost("/api/block/getBlockKramdown", {
-      id: blockId,
-    });
-    const kd = stripIal(
-      (kdResp && kdResp.data && kdResp.data.kramdown) || ""
-    );
-    if (!looksLikeTipCallout(kd)) return false;
-    const rowResp = await fetchSyncPost("/api/query/sql", {
-      stmt:
-        "SELECT type FROM blocks WHERE id = '" +
-        blockId.replace(/'/g, "''") +
-        "' LIMIT 1",
-    });
-    const rows = (rowResp && rowResp.data) || [];
-    const typ = rows[0] && String(rows[0].type || "").toLowerCase();
-    // Paragraph that only contains tip markdown text is not a callout.
-    if (typ === "p") return false;
-    return true;
-  }
-
-  /**
-   * Wrap *blockId* into a TIP callout when it is not already one (and not
-   * already inside one).
-   *
-   * SiYuan 3.8 often rejects updateBlock when turning a non-empty paragraph
-   * into a multi-block callout (type/structure change). Insert the callout
-   * before the paragraph, then delete the original.
+   * Callout wrap on send is disabled for now: SiYuan 3.8 rejects in-place
+   * paragraph→TIP updates, and insert+delete changed the block id which
+   * broke triggers against servers that still expect @pawn / the original id.
+   * Send the selected block as-is; optional @pawn remains for the watcher.
    */
   async _ensureWrapped(blockId) {
-    if (!blockId || this._wrapping.has(blockId)) return blockId;
-
-    if (await this._hasTipCalloutAncestor(blockId)) {
-      return (await this._resolveCalloutRoot(blockId)) || blockId;
-    }
-
-    const kdResp = await fetchSyncPost("/api/block/getBlockKramdown", {
-      id: blockId,
-    });
-    const kramdown = stripIal(
-      (kdResp && kdResp.data && kdResp.data.kramdown) || ""
-    );
-    if (!kramdown) return null;
-    if (await this._isTipCalloutBlock(blockId)) return blockId;
-
-    const token = this.config.mentionToken || "@pawn";
-    const md = buildTipCalloutMarkdown(kramdown, {
-      mentionToken: token,
-      calloutIcon: this.config.calloutIcon,
-      title: extractTitle(kramdown, token, 60),
-    });
-
-    this._wrapping.add(blockId);
-    try {
-      // Prefer insert-before + delete: reliable type change on SiYuan 3.8.
-      const ins = await fetchSyncPost("/api/block/insertBlock", {
-        dataType: "markdown",
-        data: md,
-        nextID: blockId,
-      });
-      if (ins && ins.code !== 0) {
-        console.warn("pawn: insertBlock failed", blockId, ins);
-        showMessage(
-          "Could not wrap callout: " + formatErrorDetail(ins.msg || ins),
-          5000,
-          "error"
-        );
-        return blockId;
-      }
-      const newId = firstOperationId(ins);
-      if (!newId) {
-        console.warn("pawn: insertBlock returned no id", ins);
-        showMessage("Could not wrap callout: no new block id", 5000, "error");
-        return blockId;
-      }
-      if (!(await this._isTipCalloutBlock(newId))) {
-        // Insert landed but did not spin into a callout — keep it and still
-        // remove the original so the user sees the tip markdown at least.
-        console.warn("pawn: inserted block is not a tip callout", newId);
-      }
-      await fetchSyncPost("/api/block/deleteBlock", { id: blockId });
-      await fetchSyncPost("/api/attr/setBlockAttrs", {
-        id: newId,
-        attrs: { [ATTR_STATUS]: "draft" },
-      });
-      return newId;
-    } finally {
-      this._wrapping.delete(blockId);
-    }
+    return blockId || null;
   }
 
   _onBlockIcon = (event) => {
