@@ -53,7 +53,10 @@ Notes: pytest defaults to `--cov=pawn_diarize --cov-report=term-missing`; pass `
 - Dual `session_id` semantics: queue/scheduler conversation key **is** the diarization session name. API uses OpenAI `user` (or message hash) as the conversation key; Matrix bot uses `matrix:{room_id}`; SiYuan `@pawn` watcher uses `siyuan:{root_id}`. Tools must discover diarization ids via `sessions_list`.
 - Queue listener (`pawn_server/core/queue_listener.py`) expects `{"command": "run"|"siyuan_run", "prompt": ..., "session_id": ..., "model": ...}`.
 - Matrix bot (`pawn_server/core/matrix_bot.py`) is an optional `serve` worker: in-process `run_agent_turn` with `source="matrix"` (same tools/skills as CLI chat). When `matrix_bot.notify_room_id` is set, it also consumes `queue_producers.matrix` for outbound alerts. See `docs/MATRIX_BOT.md`.
-- SiYuan `@pawn` watcher (`pawn_server/core/siyuan_watcher.py`): pull-only SQL poll for blocks starting with `@pawn`, claim in `siyuan_agent_requests`, run agent, append review draft, Matrix-notify, index on approve. See `docs/SIYUAN_AGENT.md`.
+- SiYuan `@pawn` loop (`docs/SIYUAN_AGENT.md`): plugin wraps mentions in a TIP
+  callout and `POST /v1/siyuan/triggers` starts the agent; watcher polls
+  approvals (optional `discover_mentions` SQL scan). Session key `siyuan:{root_id}`.
+  See `siyuan-plugin/pawn/` and `pawn_server/core/siyuan_triggers.py`.
 - Agent run persistence is centralized in `pawn_agent/core/agent_runner.py`.
 
 ## Agent Tools / Skills

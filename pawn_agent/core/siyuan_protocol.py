@@ -29,6 +29,9 @@ STATUSES_SKIP_REDISCOVER = frozenset(
 _MENTION_RE = re.compile(r"^\s*@pawn\b", re.IGNORECASE)
 _BLOCK_REF_RE = re.compile(r"\(\(([0-9a-z]{14}-[0-9a-z]{7})(?:\s+\"[^\"]*\")?\)\)")
 _APPROVE_CHECKED_RE = re.compile(r"(?im)^\s*[-*]\s*\[[xX]\]\s*Approve\s+for\s+Pawn\s+memory\b")
+_TIP_CALLOUT_RE = re.compile(r"(?im)^\s*>\s*\[!TIP\]")
+# Statuses that mean "do not start another run for this trigger+hash".
+STATUSES_NO_RETRIGGER = frozenset({"queued", "claimed", "running", "review"})
 
 
 @dataclass(frozen=True)
@@ -48,6 +51,96 @@ class DiscoveredPawnBlock:
         return (self.markdown or self.content or "").strip()
 
 
+@dataclass(frozen=True)
+class ResolvedPawnTrigger:
+    """Callout (or plain mention) block resolved for a plugin/API trigger."""
+
+    trigger_block_id: str
+    parent_block_id: str
+    root_id: str
+    notebook_id: str
+    instruction_text: str
+    source_updated: str
+
+
+def fetch_block_row(client: Any, block_id: str) -> dict[str, Any] | None:
+    """Load one blocks-table row by id via SiYuan SQL."""
+    bid = _sql_escape(block_id or "")
+    if not bid:
+        return None
+    stmt = (
+        "SELECT id, parent_id, root_id, box, content, markdown, updated "
+        f"FROM blocks WHERE id = '{bid}' LIMIT 1"
+    )
+    try:
+        rows = client.query_sql(stmt)
+    except Exception:
+        return None
+    if not rows:
+        return None
+    row = rows[0]
+    return row if isinstance(row, dict) else None
+
+
+def resolve_pawn_trigger(
+    client: Any,
+    block_id: str,
+    *,
+    mention_token: str = "@pawn",
+) -> ResolvedPawnTrigger | None:
+    """Walk from *block_id* up to the nearest pawn TIP callout (or plain mention).
+
+    Prefers a TIP callout whose kramdown contains the mention token. Falls back
+    to a block that starts with the mention. Returns None when neither is found.
+    """
+    if not (block_id or "").strip():
+        return None
+    chain: list[tuple[str, dict[str, Any], str]] = []
+    seen: set[str] = set()
+    current = block_id.strip()
+    while current and current not in seen:
+        seen.add(current)
+        row = fetch_block_row(client, current)
+        if row is None:
+            break
+        kramdown = ""
+        try:
+            kramdown = client.get_block_kramdown(current) or ""
+        except Exception:
+            kramdown = ""
+        if not kramdown:
+            kramdown = str(row.get("markdown") or row.get("content") or "")
+        chain.append((current, row, kramdown))
+        parent = str(row.get("parent_id") or "").strip()
+        root = str(row.get("root_id") or "").strip()
+        if not parent or parent == current or current == root:
+            break
+        current = parent
+
+    def _to_resolved(tid: str, row: dict[str, Any], instruction: str) -> ResolvedPawnTrigger:
+        parent = str(row.get("parent_id") or tid).strip() or tid
+        root = str(row.get("root_id") or tid).strip() or tid
+        notebook = str(row.get("box") or "").strip()
+        updated = str(row.get("updated") or "").strip()
+        return ResolvedPawnTrigger(
+            trigger_block_id=tid,
+            parent_block_id=parent,
+            root_id=root,
+            notebook_id=notebook,
+            instruction_text=(instruction or "").strip(),
+            source_updated=updated,
+        )
+
+    for tid, row, kd in chain:
+        if looks_like_tip_callout(kd) and contains_mention_token(kd, mention_token):
+            return _to_resolved(tid, row, kd)
+    for tid, row, kd in chain:
+        content = str(row.get("content") or "")
+        if is_pawn_mention(kd, mention_token) or is_pawn_mention(content, mention_token):
+            return _to_resolved(tid, row, kd or content)
+    return None
+
+
 def is_pawn_mention(text: str, mention_token: str = "@pawn") -> bool:
     """True when *text* starts with the mention token (default ``@pawn``)."""
     token = (mention_token or "@pawn").strip()
@@ -56,6 +149,19 @@ def is_pawn_mention(text: str, mention_token: str = "@pawn") -> bool:
     if token.lower() == "@pawn":
         return bool(_MENTION_RE.match(text or ""))
     return bool(re.match(rf"^\s*{re.escape(token)}\b", text or "", re.IGNORECASE))
+
+
+def contains_mention_token(text: str, mention_token: str = "@pawn") -> bool:
+    """True when *text* contains the mention token as a whole word."""
+    token = (mention_token or "@pawn").strip()
+    if not token:
+        return False
+    return bool(re.search(rf"(?i)(?:^|[\s>]){re.escape(token)}\b", text or ""))
+
+
+def looks_like_tip_callout(kramdown: str) -> bool:
+    """True when *kramdown* looks like a SiYuan 3.5+ TIP callout."""
+    return bool(_TIP_CALLOUT_RE.search(kramdown or ""))
 
 
 def instruction_hash(text: str) -> str:
@@ -178,6 +284,30 @@ def strip_mention_prefix(text: str, mention_token: str = "@pawn") -> str:
     ).strip()
 
 
+def strip_mention_from_instruction(text: str, mention_token: str = "@pawn") -> str:
+    """Remove mention tokens from instruction text (plain or callout lines).
+
+    Strips a leading mention on the first line, and also ``@pawn`` that appears
+    after blockquote markers so multi-block TIP callout kramdown stays readable
+    without the trigger token.
+    """
+    token = (mention_token or "@pawn").strip()
+    if not token:
+        return (text or "").strip()
+    lines: list[str] = []
+    for line in (text or "").splitlines():
+        lines.append(
+            re.sub(
+                rf"^(\s*(?:>\s*)*){re.escape(token)}\b\s*",
+                r"\1",
+                line,
+                count=1,
+                flags=re.IGNORECASE,
+            )
+        )
+    return "\n".join(lines).strip()
+
+
 def extract_pawn_callout_title(
     instruction: str,
     *,
@@ -219,9 +349,7 @@ def build_pawn_tip_callout_markdown(
     """
     body = (instruction or "").strip() or f"{mention_token} (empty)"
     body_lines = body.splitlines() or [body]
-    title_text = (
-        title or extract_pawn_callout_title(body, mention_token=mention_token)
-    ).strip()
+    title_text = (title or extract_pawn_callout_title(body, mention_token=mention_token)).strip()
     title_text = title_text.replace("\n", " ")
     head = f"> [!TIP] {icon} {title_text}".rstrip()
     quoted = "\n".join(f"> {line}" if line else ">" for line in body_lines)

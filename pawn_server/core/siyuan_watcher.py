@@ -25,17 +25,15 @@ from pawn_agent.core.siyuan_protocol import (
     approval_checked,
     build_agent_prompt,
     build_discovery_sql,
-    build_pawn_tip_callout_markdown,
     build_result_markdown,
     client_from_agent_config,
     conversation_id_for_root,
     extract_block_refs,
-    extract_pawn_callout_title,
     instruction_hash,
     new_request_id,
     parse_discovered_rows,
     resolve_notebook_allowlist,
-    strip_mention_prefix,
+    strip_mention_from_instruction,
 )
 from pawn_agent.tools.push_queue_message import push_queue_message_impl
 from pawn_agent.utils.db import (
@@ -65,24 +63,6 @@ def _set_trigger_attrs(client: Any, block_id: str, attrs: dict[str, str]) -> Non
 
 def _settle_seconds(cfg: Any) -> float:
     return float(getattr(cfg.siyuan_watcher, "settle_seconds", 45.0) or 0.0)
-
-
-def transform_trigger_to_tip_callout(
-    client: Any,
-    *,
-    block_id: str,
-    instruction_text: str,
-    mention_token: str = "@pawn",
-) -> str:
-    """Rewrite the @pawn block as a SiYuan TIP callout; return the title used."""
-    title = extract_pawn_callout_title(instruction_text, mention_token=mention_token)
-    markdown = build_pawn_tip_callout_markdown(
-        instruction_text,
-        title=title,
-        mention_token=mention_token,
-    )
-    client.update_block(block_id, markdown)
-    return title
 
 
 def discover_and_enqueue(cfg: Any, client: Any) -> int:
@@ -202,7 +182,7 @@ def discover_and_enqueue(cfg: Any, client: Any) -> int:
 def _gather_context(cfg: Any, client: Any, request: Any) -> str:
     instruction = request.instruction_text or ""
     mention = cfg.siyuan_watcher.mention_token
-    clean = strip_mention_prefix(instruction, mention)
+    clean = strip_mention_from_instruction(instruction, mention)
     parent_excerpt = ""
     try:
         parent_excerpt = client.get_block_kramdown(request.parent_block_id) or ""
@@ -266,26 +246,8 @@ async def execute_claimed_request(
     if request is None:
         return
     update_siyuan_agent_request(cfg.db_dsn, request_id, status="running")
-    mention = cfg.siyuan_watcher.mention_token
-    try:
-        title = await asyncio.to_thread(
-            transform_trigger_to_tip_callout,
-            client,
-            block_id=request.trigger_block_id,
-            instruction_text=request.instruction_text or "",
-            mention_token=mention,
-        )
-        logger.info(
-            "siyuan_watcher callout title=%r block=%s",
-            title,
-            request.trigger_block_id,
-        )
-    except Exception as exc:
-        logger.warning(
-            "siyuan_watcher callout transform failed block=%s: %s",
-            request.trigger_block_id,
-            exc,
-        )
+    # Callout shell is owned by the SiYuan plugin — do not rewrite the trigger
+    # block here (that would flatten multi-block callout children).
     _set_trigger_attrs(
         client,
         request.trigger_block_id,
@@ -417,10 +379,13 @@ async def run_siyuan_watcher_tick(
     *,
     registry: Optional[SallmSessionRegistry] = None,
 ) -> dict[str, int]:
-    """One watcher tick: discover, claim/execute, process approvals."""
+    """One watcher tick: discover (optional), claim/execute, process approvals."""
     active = registry or SallmSessionRegistry()
     client = client_from_agent_config(cfg)
-    discovered = await asyncio.to_thread(discover_and_enqueue, cfg, client)
+    discover = bool(getattr(cfg.siyuan_watcher, "discover_mentions", False))
+    discovered = 0
+    if discover:
+        discovered = await asyncio.to_thread(discover_and_enqueue, cfg, client)
 
     queued = list_siyuan_agent_requests(cfg.db_dsn, status="queued", limit=20)
     claimed = 0
@@ -450,9 +415,10 @@ async def start_siyuan_watcher(
     """Run the SiYuan @pawn watcher loop until cancelled."""
     interval = float(cfg.siyuan_watcher.poll_interval_seconds)
     logger.info(
-        "Starting SiYuan watcher | interval=%ss mention=%s",
+        "Starting SiYuan watcher | interval=%ss mention=%s discover=%s",
         interval,
         cfg.siyuan_watcher.mention_token,
+        bool(getattr(cfg.siyuan_watcher, "discover_mentions", False)),
     )
     active = registry or SallmSessionRegistry()
     try:

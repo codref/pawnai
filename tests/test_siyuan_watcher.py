@@ -19,6 +19,7 @@ def _cfg(**kwargs):
             poll_interval_seconds=10,
             settle_seconds=0.0,  # tests claim immediately unless overridden
             mention_token="@pawn",
+            discover_mentions=True,  # exercise SQL discovery path in unit tests
             notebook_allowlist=[],
             max_ref_depth=1,
             max_context_blocks=40,
@@ -117,12 +118,8 @@ def test_discover_waits_for_settle() -> None:
             "pawn_server.core.siyuan_watcher.get_siyuan_poll_watermark",
             return_value="20260920000000",
         ),
-        patch(
-            "pawn_server.core.siyuan_watcher.set_siyuan_poll_watermark"
-        ) as set_wm,
-        patch(
-            "pawn_server.core.siyuan_watcher.upsert_siyuan_agent_request"
-        ) as upsert,
+        patch("pawn_server.core.siyuan_watcher.set_siyuan_poll_watermark") as set_wm,
+        patch("pawn_server.core.siyuan_watcher.upsert_siyuan_agent_request") as upsert,
     ):
         n1 = discover_and_enqueue(cfg, client)
         n2 = discover_and_enqueue(cfg, client)
@@ -266,3 +263,78 @@ def test_watcher_tick_claims_queued() -> None:
         stats = asyncio.run(run_siyuan_watcher_tick(cfg, registry=registry))
     assert stats["claimed"] == 1
     exec_req.assert_awaited_once()
+
+
+def test_watcher_tick_skips_discovery_when_disabled() -> None:
+    import asyncio
+
+    cfg = _cfg()
+    cfg.siyuan_watcher.discover_mentions = False
+    client = MagicMock()
+    registry = MagicMock()
+    with (
+        patch(
+            "pawn_server.core.siyuan_watcher.client_from_agent_config",
+            return_value=client,
+        ),
+        patch(
+            "pawn_server.core.siyuan_watcher.discover_and_enqueue",
+            return_value=99,
+        ) as discover,
+        patch(
+            "pawn_server.core.siyuan_watcher.list_siyuan_agent_requests",
+            side_effect=[[], []],
+        ),
+        patch(
+            "pawn_server.core.siyuan_watcher.process_approvals",
+            new_callable=AsyncMock,
+            return_value=0,
+        ),
+    ):
+        stats = asyncio.run(run_siyuan_watcher_tick(cfg, registry=registry))
+    assert stats["discovered"] == 0
+    discover.assert_not_called()
+
+
+def test_execute_claimed_request_does_not_rewrite_callout() -> None:
+    import asyncio
+
+    from pawn_server.core.siyuan_watcher import execute_claimed_request
+
+    cfg = _cfg()
+    client = MagicMock()
+    client.get_block_kramdown.return_value = "parent"
+    client.append_block.return_value = "out-1"
+    request = SimpleNamespace(
+        id="req-1",
+        trigger_block_id="callout1",
+        parent_block_id="parent1",
+        root_id="root1",
+        conversation_id="siyuan:root1",
+        instruction_text="> [!TIP] 🤖 T\n> @pawn do it\n",
+        instruction_hash="abc",
+        output_block_id=None,
+    )
+    registry = MagicMock()
+    result = SimpleNamespace(response="done", run_id="run-1")
+
+    with (
+        patch(
+            "pawn_server.core.siyuan_watcher.get_siyuan_agent_request",
+            return_value=request,
+        ),
+        patch("pawn_server.core.siyuan_watcher.update_siyuan_agent_request"),
+        patch(
+            "pawn_server.core.siyuan_watcher.run_agent_turn",
+            new_callable=AsyncMock,
+            return_value=result,
+        ),
+        patch(
+            "pawn_server.core.siyuan_watcher._notify_matrix",
+            new_callable=AsyncMock,
+            return_value=None,
+        ),
+    ):
+        asyncio.run(execute_claimed_request(cfg, "req-1", registry=registry, client=client))
+
+    client.update_block.assert_not_called()

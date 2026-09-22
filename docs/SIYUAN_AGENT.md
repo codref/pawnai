@@ -1,17 +1,25 @@
 # SiYuan @pawn agent loop
 
-Pull-only workflow: Pawn polls SiYuan for `@pawn` instructions, runs the
-agent, appends a reviewable draft under the parent block, alerts Matrix, and
-indexes approved results into sallm memory.
+Plugin-first workflow: type `@pawn` in SiYuan, the **Pawn** plugin wraps the
+block in a TIP callout, you press **Send to Pawn**, and pawn-server runs the
+agent. A reviewable draft is appended under the parent; Matrix can alert; an
+Approve checkbox indexes the result into sallm memory.
 
-SiYuan **cannot** reach pawn-server in the current deployment. There is no
-plugin webhook in this phase — discovery is SQL polling only.
+The SiYuan **document** is the agent session (`siyuan:{root_id}`). The callout
+body (all child blocks) is the instruction for that turn; parent excerpt,
+explicit `((block refs))`, and `siyuan_read` / session tools supply extra
+context — same model as the old SQL watcher path.
 
 ## Enable
 
 In `pawnai.yaml`:
 
 ```yaml
+api:
+  token: "…"          # plugin Bearer token
+  host: "0.0.0.0"
+  port: 8000
+
 siyuan:
   url: http://127.0.0.1:6806
   token: "…"
@@ -19,11 +27,12 @@ siyuan:
 
 siyuan_watcher:
   enabled: true
+  # Plugin/API enqueues; watcher claims leftovers + polls approvals.
+  discover_mentions: false
   poll_interval_seconds: 10
-  settle_seconds: 45
+  settle_seconds: 45          # only used when discover_mentions: true
   mention_token: "@pawn"
-  # empty → only siyuan.notebook
-  notebook_allowlist: []
+  notebook_allowlist: []      # empty → only siyuan.notebook
   max_ref_depth: 1
   max_context_blocks: 40
   matrix_target: matrix
@@ -31,7 +40,7 @@ siyuan_watcher:
 
 matrix_bot:
   enabled: true
-  notify_room_id: "!room:server"   # outbound ready-for-review alerts
+  notify_room_id: "!room:server"
   # … homeserver / token / device as usual …
 
 queue_producers:
@@ -46,31 +55,51 @@ Apply migrations:
 alembic upgrade head
 ```
 
-Run with the watcher (and Matrix for alerts):
+Run with the API + watcher (and Matrix for alerts):
 
 ```bash
 pawn-server serve
 # or
-pawn-server serve --siyuan-watcher-only
+pawn-server serve --siyuan-watcher-only   # approvals only; no HTTP trigger
 ```
 
 Flags: `--no-siyuan-watcher`, `--siyuan-watcher-only`.
 
+Set `discover_mentions: true` only if you want the legacy SQL poll that
+auto-claims `@pawn` after `settle_seconds` (races the plugin button).
+
+## Install the plugin
+
+```bash
+ln -s /path/to/parakeet/siyuan-plugin/pawn \
+  ~/SiYuan/data/plugins/pawn
+```
+
+Enable **Pawn** in SiYuan, then set:
+
+| Setting | Typical value |
+|---------|----------------|
+| Server URL | `http://127.0.0.1:8000` (reachable from the **kernel**) |
+| API token | same as `api.token` |
+| Mention token | `@pawn` (must match `siyuan_watcher.mention_token`) |
+
+See [siyuan-plugin/pawn/README.md](../siyuan-plugin/pawn/README.md).
+
 ## Human UX
 
-1. Under any block in an allowlisted notebook, write a child paragraph:
+1. Under any block in an allowlisted notebook, write:
 
    ```markdown
    @pawn Deep-analyze the linked notes. Highlight tasks and decisions.
    Use ((20260920113000-abc1234 "context")).
    ```
 
-2. Finish typing, then leave the block alone for ``settle_seconds`` (default
-   **45s**). SiYuan autosaves mid-edit; the watcher only claims after the
-   instruction text has stopped changing for that long.
+2. The plugin rewrites the paragraph into a **TIP** callout (SiYuan 3.5+).
+   Add more child blocks inside the callout — the **entire callout** is the
+   request.
 
-3. On claim, the trigger is rewritten as a SiYuan **TIP** callout (needs 3.5+):
-   title from a short excerpt of the prompt, icon 🤖, original `@pawn` body kept.
+3. Block icon menu → **Send to Pawn**. That posts `{ "block_id": "<callout>" }`
+   to `POST /v1/siyuan/triggers` (via SiYuan `forwardProxy`).
 
 4. A **Pawn result — ready for review** section is appended under the parent,
    including:
@@ -81,23 +110,51 @@ Flags: `--no-siyuan-watcher`, `--siyuan-watcher-only`.
 5. Matrix receives a short alert with a `siyuan://blocks/…` deep link
    (no full note body).
 
-6. Check **Approve for Pawn memory** in SiYuan. On the next tick the watcher
-   marks `done` and calls `Agent.remember` on the approved content.
+6. Check **Approve for Pawn memory** in SiYuan. On the next watcher tick the
+   request is marked `done` and `Agent.remember` indexes the approved content.
 
-7. To refine later, add another `@pawn …` under the same thread (new request).
+7. To refine later, edit the callout (new instruction hash) and Send again, or
+   add another `@pawn …` under the same thread.
 
-First watcher start **bootstraps** a poll watermark so historical `@pawn`
-strings are not claimed. Only blocks updated after bootstrap are processed.
+## API
+
+```http
+POST /v1/siyuan/triggers
+Authorization: Bearer <api.token>
+Content-Type: application/json
+
+{ "block_id": "20260922120000-xxxxxxx" }
+```
+
+Response `202`:
+
+```json
+{
+  "request_id": "…",
+  "status": "claimed",
+  "conversation_id": "siyuan:<root_id>",
+  "trigger_block_id": "…",
+  "started": true
+}
+```
+
+The server resolves `block_id` to the nearest TIP callout (or plain mention),
+reads full callout kramdown as `instruction_text`, upserts
+`siyuan_agent_requests`, and runs the agent in the background. Same
+trigger + hash while `queued` / `claimed` / `running` / `review` is idempotent
+(`started: false`).
 
 ## Attributes
 
 | Attr | Purpose |
 |------|---------|
-| `custom-agent-status` | `queued\|claimed\|running\|review\|done\|blocked\|cancelled` |
+| `custom-agent-status` | `draft\|queued\|claimed\|running\|review\|done\|blocked\|cancelled` |
 | `custom-agent-request-id` | UUID |
 | `custom-agent-output-id` | Result block id |
 | `custom-agent-source-hash` | Instruction hash (idempotency) |
 | `custom-agent-run-id` | `agent_runs.id` |
+
+Attrs live on the **callout root**.
 
 ## Agent tools / skill
 
@@ -107,6 +164,5 @@ delete-recreate for this path.
 
 ## Later stages
 
-- SiYuan plugin + `POST /v1/siyuan/triggers` when SiYuan can reach Pawn
 - Autonomous proposals on `session.completed` / cron scans
 - Email and other imported docs as allowlisted context

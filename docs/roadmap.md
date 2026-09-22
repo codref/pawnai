@@ -71,10 +71,9 @@ Implementation direction:
 
 ## Phase 2: Autonomous Background Analysis Loop
 
-**Related (shipped MVP):** pull-only SiYuan `@pawn` watcher — human-triggered
-instructions in SiYuan, review in SiYuan, Matrix alert, auto-index on approve.
-See `docs/SIYUAN_AGENT.md`. Plugin/webhook and proactive `session.completed`
-proposals remain later stages (SiYuan cannot reach Pawn today).
+**Related (shipped):** SiYuan `@pawn` plugin trigger (`POST /v1/siyuan/triggers`)
+plus watcher for approvals — see `docs/SIYUAN_AGENT.md`. Proactive
+`session.completed` proposals remain later stages.
 
 The next step is a bounded autonomous loop for background analysis. This should
 not be an unrestricted agent that continuously acts. It should be an event-driven

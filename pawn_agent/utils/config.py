@@ -238,7 +238,7 @@ class MatrixBotConfig(BaseModel):
 
 
 class SiyuanWatcherConfig(BaseModel):
-    """``siyuan_watcher:`` — pull-only @pawn discovery and review polling."""
+    """``siyuan_watcher:`` — SiYuan @pawn review polling (+ optional discovery)."""
 
     enabled: bool = False
     poll_interval_seconds: float = 10.0
@@ -246,13 +246,15 @@ class SiyuanWatcherConfig(BaseModel):
     # SiYuan autosaves while typing; without this the agent runs mid-edit.
     settle_seconds: float = 45.0
     mention_token: str = "@pawn"
+    # When false (default), only the plugin/API enqueues new requests; the
+    # watcher still claims leftover queued rows and polls approvals.
+    discover_mentions: bool = False
     # Empty → use configured ``siyuan.notebook`` only.
     notebook_allowlist: list[str] = Field(default_factory=list)
     max_ref_depth: int = 1
     max_context_blocks: int = 40
     matrix_target: str = "matrix"
     max_claims_per_tick: int = 3
-
 
 
 # ── AgentConfig ───────────────────────────────────────────────────────────────

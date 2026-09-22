@@ -17,6 +17,10 @@ POST /v1/chat/completions
 DELETE /sessions/{session_id}
     Clear all stored turns for a session (start fresh).
 
+POST /v1/siyuan/triggers
+    Accept a SiYuan @pawn callout ``block_id`` and start the review loop
+    (202). Instruction is the full callout kramdown read from SiYuan.
+
 POST /knowledge
     Index content into the RAG vector store (inline text, session transcript,
     or SiYuan page).
@@ -109,6 +113,17 @@ _security = HTTPBearer(auto_error=False)
 _RESET_SENTINEL = "/reset"
 
 
+def get_sallm_registry() -> SallmSessionRegistry:
+    """Return the process-wide sallm registry (shared with SiYuan watcher)."""
+    return _sallm_registry
+
+
+def set_sallm_registry(registry: SallmSessionRegistry) -> None:
+    """Replace the process-wide registry (tests / serve wiring)."""
+    global _sallm_registry
+    _sallm_registry = registry
+
+
 # ──────────────────────────────────────────────────────────────────────────────
 # Pydantic schemas — OpenAI-compatible chat completions
 # ──────────────────────────────────────────────────────────────────────────────
@@ -171,6 +186,24 @@ class SpeechRequest(BaseModel):
     response_format: str = "wav"  # wav | mp3 | opus | aac | flac | pcm
     speed: float = 1.0  # 0.25 – 4.0
     language: Optional[str] = None  # BCP-47 code, e.g. "en", "it", "fr"; falls back to config
+
+
+class SiyuanTriggerRequest(BaseModel):
+    """Body for POST /v1/siyuan/triggers."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    block_id: str
+
+
+class SiyuanTriggerResponse(BaseModel):
+    """Accepted SiYuan @pawn trigger."""
+
+    request_id: str
+    status: str
+    conversation_id: str
+    trigger_block_id: str
+    started: bool
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -452,6 +485,47 @@ async def delete_session(
     """
     await _sallm_registry.reset(session_id, cfg.db_dsn)
     return Response(status_code=204)
+
+
+@app.post(
+    "/v1/siyuan/triggers",
+    response_model=SiyuanTriggerResponse,
+    status_code=202,
+    dependencies=[Depends(_require_token)],
+)
+async def siyuan_triggers(
+    body: SiyuanTriggerRequest,
+    cfg: Any = Depends(_get_cfg),
+) -> SiyuanTriggerResponse:
+    """Accept a SiYuan @pawn callout and start the agent review loop.
+
+    Body is only ``{ "block_id": "..." }``. The server resolves the nearest
+    TIP callout (or plain mention), loads full callout kramdown as the
+    instruction, upserts ``siyuan_agent_requests``, and runs
+    ``execute_claimed_request`` in the background. Returns 202 before the
+    agent turn finishes.
+    """
+    from pawn_server.core.siyuan_triggers import (  # noqa: PLC0415
+        SiyuanTriggerError,
+        accept_siyuan_trigger,
+    )
+
+    block_id = (body.block_id or "").strip()
+    if not block_id:
+        raise HTTPException(status_code=422, detail="block_id is required")
+
+    try:
+        result = await accept_siyuan_trigger(cfg, block_id, registry=_sallm_registry)
+    except SiyuanTriggerError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
+
+    return SiyuanTriggerResponse(
+        request_id=result.request_id,
+        status=result.status,
+        conversation_id=result.conversation_id,
+        trigger_block_id=result.trigger_block_id,
+        started=result.started,
+    )
 
 
 @app.post(

@@ -87,6 +87,75 @@ def test_strip_mention_prefix() -> None:
     assert strip_mention_prefix("@pawn Do stuff") == "Do stuff"
 
 
+def test_strip_mention_from_callout_instruction() -> None:
+    from pawn_agent.core.siyuan_protocol import strip_mention_from_instruction
+
+    md = "> [!TIP] 🤖 Task\n> @pawn do the thing\n> more lines\n"
+    out = strip_mention_from_instruction(md)
+    assert "@pawn" not in out.lower()
+    assert "do the thing" in out
+    assert "more lines" in out
+
+
+def test_looks_like_tip_callout_and_contains_mention() -> None:
+    from pawn_agent.core.siyuan_protocol import (
+        contains_mention_token,
+        looks_like_tip_callout,
+    )
+
+    md = "> [!TIP] 🤖 Hello\n> @pawn body\n"
+    assert looks_like_tip_callout(md)
+    assert contains_mention_token(md, "@pawn")
+    assert not looks_like_tip_callout("@pawn plain")
+
+
+def test_resolve_pawn_trigger_prefers_callout_ancestor() -> None:
+    from pawn_agent.core.siyuan_protocol import resolve_pawn_trigger
+
+    callout_kd = "> [!TIP] 🤖 Title\n> @pawn full body\n> second line\n"
+    child_kd = "second line"
+
+    def query_sql(stmt: str):
+        if "child1" in stmt:
+            return [
+                {
+                    "id": "child1",
+                    "parent_id": "callout1",
+                    "root_id": "root1",
+                    "box": "nb1",
+                    "content": "second line",
+                    "markdown": "second line",
+                    "updated": "2",
+                }
+            ]
+        if "callout1" in stmt:
+            return [
+                {
+                    "id": "callout1",
+                    "parent_id": "parent1",
+                    "root_id": "root1",
+                    "box": "nb1",
+                    "content": "@pawn",
+                    "markdown": callout_kd,
+                    "updated": "1",
+                }
+            ]
+        return []
+
+    client = MagicMock()
+    client.query_sql.side_effect = query_sql
+    client.get_block_kramdown.side_effect = lambda bid: (
+        child_kd if bid == "child1" else callout_kd
+    )
+
+    resolved = resolve_pawn_trigger(client, "child1")
+    assert resolved is not None
+    assert resolved.trigger_block_id == "callout1"
+    assert resolved.parent_block_id == "parent1"
+    assert "full body" in resolved.instruction_text
+    assert "second line" in resolved.instruction_text
+
+
 def test_extract_pawn_callout_title() -> None:
     from pawn_agent.core.siyuan_protocol import (
         build_pawn_tip_callout_markdown,

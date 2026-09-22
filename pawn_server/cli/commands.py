@@ -188,9 +188,7 @@ def queue_empty(
         "-T",
         help="Select by topic name (e.g. audio-chunks, pawn-agent-jobs).",
     ),
-    all_targets: bool = typer.Option(
-        False, "--all", help="Empty every configured queue."
-    ),
+    all_targets: bool = typer.Option(False, "--all", help="Empty every configured queue."),
     include_dead_letter: bool = typer.Option(
         False,
         "--include-dead-letter",
@@ -217,9 +215,7 @@ def queue_empty(
 
     cfg = load_config(config)
     try:
-        targets = resolve_queue_targets(
-            cfg, name=name, topic=topic, all_targets=all_targets
-        )
+        targets = resolve_queue_targets(cfg, name=name, topic=topic, all_targets=all_targets)
     except RuntimeError as exc:
         console.print(f"[red]{exc}[/red]")
         raise typer.Exit(1)
@@ -228,8 +224,7 @@ def queue_empty(
         labels = ", ".join(f"{t.name}={t.topic}" for t in targets)
         extras = " (including dead-letter)" if include_dead_letter else ""
         console.print(
-            f"[yellow]About to empty pending messages and leases for "
-            f"{labels}{extras}.[/yellow]"
+            f"[yellow]About to empty pending messages and leases for " f"{labels}{extras}.[/yellow]"
         )
         if not typer.confirm("Proceed?", default=False):
             console.print("[dim]Aborted.[/dim]")
@@ -355,9 +350,7 @@ def queue_pause(
         "-T",
         help="Select by topic name (e.g. audio-chunks, pawn-agent-jobs).",
     ),
-    all_targets: bool = typer.Option(
-        False, "--all", help="Pause every configured queue."
-    ),
+    all_targets: bool = typer.Option(False, "--all", help="Pause every configured queue."),
 ) -> None:
     """Pause processing: listeners stop claiming new messages for the topic(s)."""
     import asyncio  # noqa: PLC0415
@@ -368,9 +361,7 @@ def queue_pause(
     cfg = load_config(config)
     try:
         results = asyncio.run(
-            set_queue_paused(
-                cfg, paused=True, name=name, topic=topic, all_targets=all_targets
-            )
+            set_queue_paused(cfg, paused=True, name=name, topic=topic, all_targets=all_targets)
         )
     except (RuntimeError, ImportError, ValueError) as exc:
         console.print(f"[red]{exc}[/red]")
@@ -381,13 +372,9 @@ def queue_pause(
 
     for result in results:
         if result.changed:
-            console.print(
-                f"[yellow]Paused {result.name} topic={result.topic!r}.[/yellow]"
-            )
+            console.print(f"[yellow]Paused {result.name} topic={result.topic!r}.[/yellow]")
         else:
-            console.print(
-                f"[dim]{result.name} topic={result.topic!r} was already paused.[/dim]"
-            )
+            console.print(f"[dim]{result.name} topic={result.topic!r} was already paused.[/dim]")
 
 
 @queue_app.command("resume")
@@ -407,9 +394,7 @@ def queue_resume(
         "-T",
         help="Select by topic name (e.g. audio-chunks, pawn-agent-jobs).",
     ),
-    all_targets: bool = typer.Option(
-        False, "--all", help="Resume every configured queue."
-    ),
+    all_targets: bool = typer.Option(False, "--all", help="Resume every configured queue."),
 ) -> None:
     """Resume processing after ``queue pause``."""
     import asyncio  # noqa: PLC0415
@@ -420,9 +405,7 @@ def queue_resume(
     cfg = load_config(config)
     try:
         results = asyncio.run(
-            set_queue_paused(
-                cfg, paused=False, name=name, topic=topic, all_targets=all_targets
-            )
+            set_queue_paused(cfg, paused=False, name=name, topic=topic, all_targets=all_targets)
         )
     except (RuntimeError, ImportError, ValueError) as exc:
         console.print(f"[red]{exc}[/red]")
@@ -433,13 +416,9 @@ def queue_resume(
 
     for result in results:
         if result.changed:
-            console.print(
-                f"[green]Resumed {result.name} topic={result.topic!r}.[/green]"
-            )
+            console.print(f"[green]Resumed {result.name} topic={result.topic!r}.[/green]")
         else:
-            console.print(
-                f"[dim]{result.name} topic={result.topic!r} was not paused.[/dim]"
-            )
+            console.print(f"[dim]{result.name} topic={result.topic!r} was not paused.[/dim]")
 
 
 @app.command()
@@ -578,9 +557,7 @@ def serve(
     with_scheduler = bool(cfg.agent_scheduler.enabled) and not disable_scheduler
     with_matrix = bool(cfg.matrix_bot.enabled) and not no_matrix
     with_siyuan = bool(cfg.siyuan_watcher.enabled) and not no_siyuan_watcher
-    with_matrix_notifier = (
-        with_matrix and matrix_notifier_enabled(cfg) and not no_matrix
-    )
+    with_matrix_notifier = with_matrix and matrix_notifier_enabled(cfg) and not no_matrix
     effective_topic = topic or queue_cfg.get("topic", DEFAULT_TOPIC)
     effective_consumer = consumer_name or queue_cfg.get("consumer_name", DEFAULT_CONSUMER_NAME)
     only_mode = scheduler_only or matrix_only or siyuan_watcher_only
@@ -615,24 +592,20 @@ def serve(
 
         if siyuan_watcher_only:
             if not with_siyuan:
-                raise RuntimeError(
-                    "SiYuan watcher is disabled by config or --no-siyuan-watcher"
-                )
+                raise RuntimeError("SiYuan watcher is disabled by config or --no-siyuan-watcher")
             await start_siyuan_watcher(cfg)
             return
 
         fastapi_app = create_app(cfg)
+        from pawn_server.core.api_server import get_sallm_registry  # noqa: PLC0415
+
+        shared_registry = get_sallm_registry()
         uv_config = uvicorn.Config(
             fastapi_app, host=effective_host, port=effective_port, log_level="info"
         )
         server = uvicorn.Server(uv_config)
 
-        if (
-            not with_queue
-            and not with_scheduler
-            and not with_matrix
-            and not with_siyuan
-        ):
+        if not with_queue and not with_scheduler and not with_matrix and not with_siyuan:
             await server.serve()
             return
 
@@ -648,7 +621,7 @@ def serve(
         if with_matrix:
             tasks.append(asyncio.create_task(start_matrix_bot(cfg)))
         if with_siyuan:
-            tasks.append(asyncio.create_task(start_siyuan_watcher(cfg)))
+            tasks.append(asyncio.create_task(start_siyuan_watcher(cfg, registry=shared_registry)))
 
         # Stop all when any exits (Ctrl-C, error, or natural completion)
         done, pending = await asyncio.wait(
