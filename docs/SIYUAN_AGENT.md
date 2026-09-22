@@ -94,12 +94,13 @@ See [siyuan-plugin/pawn/README.md](../siyuan-plugin/pawn/README.md).
    Use ((20260920113000-abc1234 "context")).
    ```
 
-2. The plugin rewrites the paragraph into a **TIP** callout (SiYuan 3.5+).
-   Add more child blocks inside the callout — the **entire callout** is the
-   request.
+2. Finish the instruction, then **Send to Pawn** (floating toolbar paper-plane,
+   block gutter menu, or ⌥⌘P). With wrap-on-send enabled the paragraph becomes
+   a **TIP** callout (SiYuan 3.5+). Add more child blocks inside it afterward —
+   the **entire callout** is the request.
 
-3. Block icon menu → **Send to Pawn**. That posts `{ "block_id": "<callout>" }`
-   to `POST /v1/siyuan/triggers` (via SiYuan `forwardProxy`).
+3. Send posts `{ "block_id": "<callout>" }` to `POST /v1/siyuan/triggers`
+   (via SiYuan `forwardProxy`).
 
 4. A **Pawn result — ready for review** section is appended under the parent,
    including:

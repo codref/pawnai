@@ -15,7 +15,6 @@ const DEFAULTS = {
   apiToken: "",
   mentionToken: "@pawn",
   autoWrapCallout: true,
-  wrapDebounceMs: 400,
   calloutIcon: "🤖",
   sendButtonLabel: "Send to Pawn",
   requestTimeoutMs: 15000,
@@ -83,26 +82,12 @@ function getActiveBlockId(protyle) {
   }
 }
 
-function placeCaretAtEnd(el) {
-  if (!el) return;
-  el.focus();
-  const range = document.createRange();
-  range.selectNodeContents(el);
-  range.collapse(false);
-  const sel = window.getSelection();
-  if (!sel) return;
-  sel.removeAllRanges();
-  sel.addRange(range);
-}
-
 module.exports = class PawnPlugin extends Plugin {
   async onload() {
     this.config = Object.assign({}, DEFAULTS);
     await this.loadConfig();
-    this._wrapTimers = new Map();
     this._wrapping = new Set();
 
-    this.eventBus.on("ws-main", this._onWsMain);
     this.eventBus.on("click-blockicon", this._onBlockIcon);
 
     // Command palette / optional hotkey (Settings → keymap → Pawn).
@@ -110,32 +95,57 @@ module.exports = class PawnPlugin extends Plugin {
       langKey: "sendToPawn",
       hotkey: "⌥⌘P",
       editorCallback: (protyle) => {
-        const blockId = getActiveBlockId(protyle);
-        if (!blockId) {
-          showMessage(
-            (this.i18n && this.i18n.noCallout) || "No @pawn callout found",
-            4000,
-            "error"
-          );
-          return;
-        }
-        this._sendBlock(blockId).catch((e) => {
-          console.error("pawn: send failed", e);
-          showMessage(
-            (this.i18n && this.i18n.sendFail) || "Pawn trigger failed",
-            5000,
-            "error"
-          );
-        });
+        this._sendFromProtyle(protyle);
       },
     });
   }
 
   onunload() {
-    this.eventBus.off("ws-main", this._onWsMain);
     this.eventBus.off("click-blockicon", this._onBlockIcon);
-    for (const t of this._wrapTimers.values()) clearTimeout(t);
-    this._wrapTimers.clear();
+  }
+
+  /**
+   * Adds "Send to Pawn" to the floating selection toolbar (the bar that
+   * appears above selected text).
+   */
+  updateProtyleToolbar(toolbar) {
+    const tip =
+      this.config.sendButtonLabel ||
+      (this.i18n && this.i18n.sendToPawn) ||
+      "Send to Pawn";
+    toolbar.push("|");
+    toolbar.push({
+      name: "sendToPawn",
+      icon: "iconSend",
+      tipPosition: "n",
+      tip,
+      hotkey: "⌥⌘P",
+      click: (protyle) => {
+        this._sendFromProtyle(protyle);
+      },
+    });
+    return toolbar;
+  }
+
+  _sendFromProtyle(protyle) {
+    const p = (protyle && protyle.protyle) || protyle;
+    const blockId = getActiveBlockId(p);
+    if (!blockId) {
+      showMessage(
+        (this.i18n && this.i18n.noCallout) || "No @pawn callout found",
+        4000,
+        "error"
+      );
+      return;
+    }
+    this._sendBlock(blockId).catch((e) => {
+      console.error("pawn: send failed", e);
+      showMessage(
+        (this.i18n && this.i18n.sendFail) || "Pawn trigger failed",
+        5000,
+        "error"
+      );
+    });
   }
 
   async loadConfig() {
@@ -160,7 +170,6 @@ module.exports = class PawnPlugin extends Plugin {
     let elToken;
     let elMention;
     let elAuto;
-    let elDebounce;
     let elIcon;
     let elLabel;
     let elTimeout;
@@ -171,10 +180,6 @@ module.exports = class PawnPlugin extends Plugin {
         conf.apiToken = elToken.value || "";
         conf.mentionToken = (elMention.value || "@pawn").trim() || "@pawn";
         conf.autoWrapCallout = !!elAuto.checked;
-        conf.wrapDebounceMs = Math.max(
-          0,
-          parseInt(elDebounce.value, 10) || DEFAULTS.wrapDebounceMs
-        );
         conf.calloutIcon = (elIcon.value || DEFAULTS.calloutIcon).trim();
         conf.sendButtonLabel =
           (elLabel.value || DEFAULTS.sendButtonLabel).trim() ||
@@ -221,27 +226,16 @@ module.exports = class PawnPlugin extends Plugin {
       },
     });
     setting.addItem({
-      title: i18n.autoWrapCallout || "Auto-wrap callout",
-      description: i18n.autoWrapCalloutDesc || "",
+      title: i18n.autoWrapCallout || "Wrap as callout on send",
+      description:
+        i18n.autoWrapCalloutDesc ||
+        "Convert a leading @pawn paragraph into a TIP callout when sending",
       createActionElement: () => {
         elAuto = document.createElement("input");
         elAuto.type = "checkbox";
         elAuto.className = "b3-switch fn__flex-center";
         elAuto.checked = conf.autoWrapCallout !== false;
         return elAuto;
-      },
-    });
-    setting.addItem({
-      title: i18n.wrapDebounceMs || "Wrap debounce (ms)",
-      createActionElement: () => {
-        elDebounce = document.createElement("input");
-        elDebounce.className = "b3-text-field fn__flex-center fn__size200";
-        elDebounce.type = "number";
-        elDebounce.min = "0";
-        elDebounce.value = String(
-          conf.wrapDebounceMs ?? DEFAULTS.wrapDebounceMs
-        );
-        return elDebounce;
       },
     });
     setting.addItem({
@@ -281,40 +275,8 @@ module.exports = class PawnPlugin extends Plugin {
     this.setting.open(this.displayName || this.name || "Pawn");
   }
 
-  _onWsMain = (event) => {
-    if (!this.config.autoWrapCallout) return;
-    const detail = event.detail || {};
-    if (detail.cmd !== "transactions") return;
-    const data = detail.data;
-    if (!Array.isArray(data)) return;
-    for (const tx of data) {
-      const ops = (tx && tx.doOperations) || [];
-      for (const op of ops) {
-        if (!op || !op.id) continue;
-        if (op.action !== "update" && op.action !== "insert") continue;
-        this._scheduleMaybeWrap(op.id);
-      }
-    }
-  };
-
-  _scheduleMaybeWrap(blockId) {
-    if (this._wrapping.has(blockId)) return;
-    const prev = this._wrapTimers.get(blockId);
-    if (prev) clearTimeout(prev);
-    const ms = Math.max(0, Number(this.config.wrapDebounceMs) || 0);
-    const timer = setTimeout(() => {
-      this._wrapTimers.delete(blockId);
-      this._maybeWrapBlock(blockId).catch((e) =>
-        console.warn("pawn: wrap failed", blockId, e)
-      );
-    }, ms);
-    this._wrapTimers.set(blockId, timer);
-  }
-
   /**
    * True when blockId sits under a TIP callout (or an in-flight wrap).
-   * Child paragraphs keep the @pawn body, so without this guard each
-   * keystroke re-wraps and nests another callout.
    */
   async _hasTipCalloutAncestor(blockId) {
     let current = blockId;
@@ -343,85 +305,51 @@ module.exports = class PawnPlugin extends Plugin {
     return false;
   }
 
-  async _maybeWrapBlock(blockId) {
-    if (this._wrapping.has(blockId)) return;
+  /**
+   * If *blockId* (or its resolved mention root) is a plain @pawn paragraph,
+   * rewrite it into a TIP callout. Returns the callout/mention block id.
+   */
+  async _ensureWrapped(blockId) {
+    const resolved = await this._resolveCalloutRoot(blockId);
+    const id = resolved || blockId;
+    if (!id || this._wrapping.has(id)) return id;
+
     const kdResp = await fetchSyncPost("/api/block/getBlockKramdown", {
-      id: blockId,
+      id,
     });
     const kramdown = stripIal(
       (kdResp && kdResp.data && kdResp.data.kramdown) || ""
     );
-    if (!kramdown || looksLikeTipCallout(kramdown)) return;
-    if (await this._hasTipCalloutAncestor(blockId)) return;
+    if (!kramdown) return null;
+    if (looksLikeTipCallout(kramdown)) return id;
+    if (await this._hasTipCalloutAncestor(id)) {
+      return (await this._resolveCalloutRoot(id)) || id;
+    }
 
     const token = this.config.mentionToken || "@pawn";
-    // Need mention + whitespace + at least one char so we don't wrap on
-    // a bare "@pawn " while the user is still starting the sentence.
-    const re = new RegExp(
-      "^\\s*" + escapeRegExp(token) + "\\s+\\S",
-      "i"
-    );
-    if (!re.test(kramdown)) return;
+    const re = new RegExp("^\\s*" + escapeRegExp(token) + "\\b", "i");
+    if (!re.test(kramdown)) return null;
 
-    this._wrapping.add(blockId);
+    this._wrapping.add(id);
     try {
-      // Stable title while typing — extractTitle freezes mid-word ("Some").
       const md = buildTipCalloutMarkdown(kramdown, {
         mentionToken: token,
         calloutIcon: this.config.calloutIcon,
-        title: "Pawn",
+        title: extractTitle(kramdown, token, 60),
       });
       await fetchSyncPost("/api/block/updateBlock", {
         dataType: "markdown",
         data: md,
-        id: blockId,
+        id,
       });
       await fetchSyncPost("/api/attr/setBlockAttrs", {
-        id: blockId,
+        id,
         attrs: { [ATTR_STATUS]: "draft" },
       });
-      // updateBlock rebuilds the DOM and drops the caret into the title /
-      // start of the body; put it back at the end of the instruction.
-      this._focusCalloutBodyEnd(blockId);
+      return id;
     } finally {
-      this._wrapping.delete(blockId);
+      this._wrapping.delete(id);
     }
-  }
-
-  _focusCalloutBodyEnd(calloutId) {
-    const run = () => {
-      const nodes = document.querySelectorAll(
-        `[data-node-id="${calloutId}"]`
-      );
-      let callout = null;
-      for (const el of nodes) {
-        if (!el.closest || !el.closest(".protyle-wysiwyg")) continue;
-        if (el.closest(".protyle-wysiwyg__embed")) continue;
-        callout = el;
-        break;
-      }
-      if (!callout) return;
-
-      const paras = callout.querySelectorAll(
-        '[data-type="NodeParagraph"] [contenteditable="true"]'
-      );
-      if (paras.length) {
-        placeCaretAtEnd(paras[paras.length - 1]);
-        return;
-      }
-      const editables = callout.querySelectorAll(
-        '[contenteditable="true"]'
-      );
-      if (editables.length > 1) {
-        // First editable is usually the callout title.
-        placeCaretAtEnd(editables[editables.length - 1]);
-        return;
-      }
-      if (editables.length === 1) placeCaretAtEnd(editables[0]);
-    };
-    // Kernel push → editor paint is async.
-    setTimeout(run, 0);
-    setTimeout(run, 80);
   }
 
   _onBlockIcon = (event) => {
@@ -504,7 +432,13 @@ module.exports = class PawnPlugin extends Plugin {
       return;
     }
 
-    const rootId = await this._resolveCalloutRoot(blockId);
+    let rootId = null;
+    if (this.config.autoWrapCallout !== false) {
+      rootId = await this._ensureWrapped(blockId);
+    }
+    if (!rootId) {
+      rootId = await this._resolveCalloutRoot(blockId);
+    }
     if (!rootId) {
       showMessage(i18n.noCallout || "No @pawn callout found", 4000, "error");
       return;

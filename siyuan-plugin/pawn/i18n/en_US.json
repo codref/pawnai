@@ -6,9 +6,8 @@
   "apiTokenDesc": "Bearer token matching api.token / PAWN_API__TOKEN",
   "mentionToken": "Mention token",
   "mentionTokenDesc": "Prefix that activates wrap + Send (must match server)",
-  "autoWrapCallout": "Auto-wrap callout",
-  "autoWrapCalloutDesc": "Rewrite a leading mention into a TIP callout",
-  "wrapDebounceMs": "Wrap debounce (ms)",
+  "autoWrapCallout": "Wrap as callout on send",
+  "autoWrapCalloutDesc": "Convert a leading @pawn paragraph into a TIP callout when sending",
   "calloutIcon": "Callout icon",
   "sendButtonLabel": "Send button label",
   "requestTimeoutMs": "Request timeout (ms)",
@@ -17,6 +16,5 @@
   "sendFail": "Pawn trigger failed",
   "sendBusy": "Pawn is already working on this callout",
   "notConfigured": "Configure Pawn server URL in plugin settings",
-  "noCallout": "No @pawn callout found for this block",
-  "sendHint": "Send via block icon menu or ⌥⌘P"
+  "noCallout": "No @pawn callout found for this block"
 }
