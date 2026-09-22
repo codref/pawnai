@@ -83,10 +83,15 @@ function getActiveBlockId(protyle) {
 }
 
 module.exports = class PawnPlugin extends Plugin {
-  async onload() {
+  constructor(...args) {
+    super(...args);
+    // SiYuan may call updateProtyleToolbar during construction, before onload.
     this.config = Object.assign({}, DEFAULTS);
-    await this.loadConfig();
     this._wrapping = new Set();
+  }
+
+  async onload() {
+    await this.loadConfig();
 
     this.eventBus.on("click-blockicon", this._onBlockIcon);
 
@@ -109,8 +114,9 @@ module.exports = class PawnPlugin extends Plugin {
    * appears above selected text).
    */
   updateProtyleToolbar(toolbar) {
+    const conf = this.config || DEFAULTS;
     const tip =
-      this.config.sendButtonLabel ||
+      conf.sendButtonLabel ||
       (this.i18n && this.i18n.sendToPawn) ||
       "Send to Pawn";
     toolbar.push("|");
