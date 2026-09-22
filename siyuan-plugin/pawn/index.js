@@ -224,6 +224,8 @@ module.exports = class PawnPlugin extends Plugin {
     });
 
     this.setting = setting;
+    // Base Plugin.openSetting() calls setting.open(); we overrode it, so open here.
+    this.setting.open(this.displayName || this.name || "Pawn");
   }
 
   _onWsMain = (event) => {

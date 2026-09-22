@@ -5,14 +5,24 @@ to pawn-server via `POST /v1/siyuan/triggers`.
 
 ## Install
 
-Copy or symlink this folder into your SiYuan workspace:
+**From the UI:** zip this folder and use Marketplace → Install Bazaar package:
+
+```bash
+cd /path/to/parakeet/siyuan-plugin/pawn
+zip -r ../pawn-0.1.0.zip plugin.json index.js README.md i18n
+```
+
+Then enable **Pawn** under Marketplace → Downloaded.
+
+**Dev symlink:**
 
 ```bash
 ln -s /path/to/parakeet/siyuan-plugin/pawn \
   ~/SiYuan/data/plugins/pawn
 ```
 
-Then enable **Pawn** under Settings → Marketplace → Downloaded.
+After updating plugin files, disable/enable the plugin (or restart SiYuan) so
+the kernel reloads `index.js`.
 
 ## Settings
 
