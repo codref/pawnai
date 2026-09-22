@@ -26,7 +26,10 @@ function escapeRegExp(s) {
 }
 
 function looksLikeTipCallout(text) {
-  return /^\s*>\s*\[!TIP\]/im.test(text || "");
+  // Match only at the start of THIS block's kramdown. Do not use /m — parent /
+  // document kramdown includes children, and a tip elsewhere would false-positive
+  // and skip wrapping the selected paragraph.
+  return /^\s*>\s*\[!TIP\]/i.test(text || "");
 }
 
 function stripIal(text) {
@@ -357,47 +360,55 @@ module.exports = class PawnPlugin extends Plugin {
   }
 
   /**
-   * If *blockId* is a plain paragraph (or resolved tip child), rewrite it into
-   * a TIP callout. No @pawn prefix required — Send is explicit intent.
-   * Returns the callout/block id, or null when empty.
+   * Wrap *blockId* into a TIP callout when it is not already one (and not
+   * already inside one). Always targets the user's block — never a document
+   * ancestor that merely contains some other tip.
    */
   async _ensureWrapped(blockId) {
-    const resolved = await this._resolveCalloutRoot(blockId);
-    const id = resolved || blockId;
-    if (!id || this._wrapping.has(id)) return id;
+    if (!blockId || this._wrapping.has(blockId)) return blockId;
+
+    if (await this._hasTipCalloutAncestor(blockId)) {
+      return (await this._resolveCalloutRoot(blockId)) || blockId;
+    }
 
     const kdResp = await fetchSyncPost("/api/block/getBlockKramdown", {
-      id,
+      id: blockId,
     });
     const kramdown = stripIal(
       (kdResp && kdResp.data && kdResp.data.kramdown) || ""
     );
     if (!kramdown) return null;
-    if (looksLikeTipCallout(kramdown)) return id;
-    if (await this._hasTipCalloutAncestor(id)) {
-      return (await this._resolveCalloutRoot(id)) || id;
-    }
+    if (looksLikeTipCallout(kramdown)) return blockId;
 
     const token = this.config.mentionToken || "@pawn";
-    this._wrapping.add(id);
+    this._wrapping.add(blockId);
     try {
       const md = buildTipCalloutMarkdown(kramdown, {
         mentionToken: token,
         calloutIcon: this.config.calloutIcon,
         title: extractTitle(kramdown, token, 60),
       });
-      await fetchSyncPost("/api/block/updateBlock", {
+      const upd = await fetchSyncPost("/api/block/updateBlock", {
         dataType: "markdown",
         data: md,
-        id,
+        id: blockId,
       });
+      if (upd && upd.code !== 0) {
+        console.warn("pawn: updateBlock failed", blockId, upd);
+        showMessage(
+          "Could not wrap callout: " + formatErrorDetail(upd.msg || upd),
+          5000,
+          "error"
+        );
+        return blockId;
+      }
       await fetchSyncPost("/api/attr/setBlockAttrs", {
-        id,
+        id: blockId,
         attrs: { [ATTR_STATUS]: "draft" },
       });
-      return id;
+      return blockId;
     } finally {
-      this._wrapping.delete(id);
+      this._wrapping.delete(blockId);
     }
   }
 

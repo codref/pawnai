@@ -29,7 +29,7 @@ STATUSES_SKIP_REDISCOVER = frozenset(
 _MENTION_RE = re.compile(r"^\s*@pawn\b", re.IGNORECASE)
 _BLOCK_REF_RE = re.compile(r"\(\(([0-9a-z]{14}-[0-9a-z]{7})(?:\s+\"[^\"]*\")?\)\)")
 _APPROVE_CHECKED_RE = re.compile(r"(?im)^\s*[-*]\s*\[[xX]\]\s*Approve\s+for\s+Pawn\s+memory\b")
-_TIP_CALLOUT_RE = re.compile(r"(?im)^\s*>\s*\[!TIP\]")
+_TIP_CALLOUT_RE = re.compile(r"(?i)^\s*>\s*\[!TIP\]")
 # Statuses that mean "do not start another run for this trigger+hash".
 STATUSES_NO_RETRIGGER = frozenset({"queued", "claimed", "running", "review"})
 
