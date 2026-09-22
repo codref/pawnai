@@ -249,11 +249,15 @@ matrix_bot:
   # notify_room_id: "!yourRoom:matrix.example.com"
 
 siyuan_watcher:
-  # Pull-only @pawn discovery (Pawn → SiYuan). No SiYuan→Pawn webhook required.
+  # Approvals + leftover queued rows. Prefer the SiYuan Pawn plugin +
+  # POST /v1/siyuan/triggers for new @pawn tasks (see docs/SIYUAN_AGENT.md).
   enabled: false
   poll_interval_seconds: 10
-  # Wait after the @pawn text stops changing before claiming (SiYuan autosaves
-  # while typing). Increase if you write slowly; decrease for snappier runs.
+  # When true, SQL-scan for @pawn and auto-claim after settle_seconds.
+  # Default false — plugin Send button owns discovery.
+  discover_mentions: false
+  # Wait after the @pawn text stops changing before claiming (only used when
+  # discover_mentions is true; SiYuan autosaves while typing).
   settle_seconds: 45
   mention_token: "@pawn"
   # Empty list → only the configured siyuan.notebook.

@@ -258,6 +258,38 @@ module.exports = class PawnPlugin extends Plugin {
     this._wrapTimers.set(blockId, timer);
   }
 
+  /**
+   * True when blockId sits under a TIP callout (or an in-flight wrap).
+   * Child paragraphs keep the @pawn body, so without this guard each
+   * keystroke re-wraps and nests another callout.
+   */
+  async _hasTipCalloutAncestor(blockId) {
+    let current = blockId;
+    const seen = new Set();
+    while (current && !seen.has(current)) {
+      seen.add(current);
+      const rowResp = await fetchSyncPost("/api/query/sql", {
+        stmt:
+          "SELECT id, parent_id, root_id FROM blocks WHERE id = '" +
+          current.replace(/'/g, "''") +
+          "' LIMIT 1",
+      });
+      const rows = (rowResp && rowResp.data) || [];
+      if (!rows.length) break;
+      const row = rows[0];
+      const parent = row.parent_id;
+      if (!parent || parent === current || current === row.root_id) break;
+      if (this._wrapping.has(parent)) return true;
+      const kdResp = await fetchSyncPost("/api/block/getBlockKramdown", {
+        id: parent,
+      });
+      const kd = (kdResp && kdResp.data && kdResp.data.kramdown) || "";
+      if (looksLikeTipCallout(kd)) return true;
+      current = parent;
+    }
+    return false;
+  }
+
   async _maybeWrapBlock(blockId) {
     if (this._wrapping.has(blockId)) return;
     const kdResp = await fetchSyncPost("/api/block/getBlockKramdown", {
@@ -267,6 +299,7 @@ module.exports = class PawnPlugin extends Plugin {
       (kdResp && kdResp.data && kdResp.data.kramdown) || ""
     );
     if (!kramdown || looksLikeTipCallout(kramdown)) return;
+    if (await this._hasTipCalloutAncestor(blockId)) return;
 
     const token = this.config.mentionToken || "@pawn";
     // Require mention at start plus following whitespace (committed prefix).
