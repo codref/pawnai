@@ -7,7 +7,7 @@
   "mentionToken": "Mention token (watcher)",
   "mentionTokenDesc": "Only used by the server watcher SQL scan. Plugin Send does not require @pawn.",
   "autoWrapCallout": "Wrap as callout on send",
-  "autoWrapCalloutDesc": "Convert the current paragraph into a TIP callout when sending",
+  "autoWrapCalloutDesc": "Convert the current paragraph into a TIP callout when sending (no @pawn required)",
   "calloutIcon": "Callout icon",
   "sendButtonLabel": "Send button label",
   "requestTimeoutMs": "Request timeout (ms)",

@@ -2,7 +2,7 @@
   "name": "pawn",
   "author": "PawnAI",
   "url": "https://github.com/codref/parakeet",
-  "version": "0.1.10",
+  "version": "0.1.11",
   "minAppVersion": "3.0.0",
   "backends": ["all"],
   "frontends": ["all"],
@@ -12,9 +12,9 @@
     "zh_CN": "Pawn"
   },
   "description": {
-    "default": "Send the current block to pawn-server (optional TIP wrap).",
-    "en_US": "Send the current block to pawn-server (optional TIP wrap).",
-    "zh_CN": "将当前块发送到 pawn-server（可选 TIP 标注）。"
+    "default": "Send the current block to pawn-server as a TIP callout.",
+    "en_US": "Send the current block to pawn-server as a TIP callout.",
+    "zh_CN": "将当前块以 TIP 标注发送到 pawn-server。"
   },
   "readme": {
     "default": "README.md",
