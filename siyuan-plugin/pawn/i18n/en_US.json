@@ -17,5 +17,6 @@
   "sendFail": "Pawn trigger failed",
   "sendBusy": "Pawn is already working on this callout",
   "notConfigured": "Configure Pawn server URL in plugin settings",
-  "noCallout": "No @pawn callout found for this block"
+  "noCallout": "No @pawn callout found for this block",
+  "sendHint": "Send via block icon menu or ⌥⌘P"
 }

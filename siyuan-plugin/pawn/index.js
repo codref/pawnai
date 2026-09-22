@@ -67,6 +67,34 @@ function buildTipCalloutMarkdown(instruction, opts) {
   return head + "\n" + quoted + "\n";
 }
 
+function getActiveBlockId(protyle) {
+  try {
+    const range = protyle && protyle.toolbar && protyle.toolbar.range;
+    let node = range && range.startContainer;
+    if (!node) {
+      const sel = window.getSelection();
+      node = sel && sel.anchorNode;
+    }
+    const el = node && (node.nodeType === 3 ? node.parentElement : node);
+    const block = el && el.closest && el.closest("[data-node-id]");
+    return block ? block.getAttribute("data-node-id") : null;
+  } catch (_e) {
+    return null;
+  }
+}
+
+function placeCaretAtEnd(el) {
+  if (!el) return;
+  el.focus();
+  const range = document.createRange();
+  range.selectNodeContents(el);
+  range.collapse(false);
+  const sel = window.getSelection();
+  if (!sel) return;
+  sel.removeAllRanges();
+  sel.addRange(range);
+}
+
 module.exports = class PawnPlugin extends Plugin {
   async onload() {
     this.config = Object.assign({}, DEFAULTS);
@@ -76,6 +104,31 @@ module.exports = class PawnPlugin extends Plugin {
 
     this.eventBus.on("ws-main", this._onWsMain);
     this.eventBus.on("click-blockicon", this._onBlockIcon);
+
+    // Command palette / optional hotkey (Settings → keymap → Pawn).
+    this.addCommand({
+      langKey: "sendToPawn",
+      hotkey: "⌥⌘P",
+      editorCallback: (protyle) => {
+        const blockId = getActiveBlockId(protyle);
+        if (!blockId) {
+          showMessage(
+            (this.i18n && this.i18n.noCallout) || "No @pawn callout found",
+            4000,
+            "error"
+          );
+          return;
+        }
+        this._sendBlock(blockId).catch((e) => {
+          console.error("pawn: send failed", e);
+          showMessage(
+            (this.i18n && this.i18n.sendFail) || "Pawn trigger failed",
+            5000,
+            "error"
+          );
+        });
+      },
+    });
   }
 
   onunload() {
@@ -302,15 +355,21 @@ module.exports = class PawnPlugin extends Plugin {
     if (await this._hasTipCalloutAncestor(blockId)) return;
 
     const token = this.config.mentionToken || "@pawn";
-    // Require mention at start plus following whitespace (committed prefix).
-    const re = new RegExp("^\\s*" + escapeRegExp(token) + "\\s+", "i");
+    // Need mention + whitespace + at least one char so we don't wrap on
+    // a bare "@pawn " while the user is still starting the sentence.
+    const re = new RegExp(
+      "^\\s*" + escapeRegExp(token) + "\\s+\\S",
+      "i"
+    );
     if (!re.test(kramdown)) return;
 
     this._wrapping.add(blockId);
     try {
+      // Stable title while typing — extractTitle freezes mid-word ("Some").
       const md = buildTipCalloutMarkdown(kramdown, {
         mentionToken: token,
         calloutIcon: this.config.calloutIcon,
+        title: "Pawn",
       });
       await fetchSyncPost("/api/block/updateBlock", {
         dataType: "markdown",
@@ -321,9 +380,48 @@ module.exports = class PawnPlugin extends Plugin {
         id: blockId,
         attrs: { [ATTR_STATUS]: "draft" },
       });
+      // updateBlock rebuilds the DOM and drops the caret into the title /
+      // start of the body; put it back at the end of the instruction.
+      this._focusCalloutBodyEnd(blockId);
     } finally {
       this._wrapping.delete(blockId);
     }
+  }
+
+  _focusCalloutBodyEnd(calloutId) {
+    const run = () => {
+      const nodes = document.querySelectorAll(
+        `[data-node-id="${calloutId}"]`
+      );
+      let callout = null;
+      for (const el of nodes) {
+        if (!el.closest || !el.closest(".protyle-wysiwyg")) continue;
+        if (el.closest(".protyle-wysiwyg__embed")) continue;
+        callout = el;
+        break;
+      }
+      if (!callout) return;
+
+      const paras = callout.querySelectorAll(
+        '[data-type="NodeParagraph"] [contenteditable="true"]'
+      );
+      if (paras.length) {
+        placeCaretAtEnd(paras[paras.length - 1]);
+        return;
+      }
+      const editables = callout.querySelectorAll(
+        '[contenteditable="true"]'
+      );
+      if (editables.length > 1) {
+        // First editable is usually the callout title.
+        placeCaretAtEnd(editables[editables.length - 1]);
+        return;
+      }
+      if (editables.length === 1) placeCaretAtEnd(editables[0]);
+    };
+    // Kernel push → editor paint is async.
+    setTimeout(run, 0);
+    setTimeout(run, 80);
   }
 
   _onBlockIcon = (event) => {

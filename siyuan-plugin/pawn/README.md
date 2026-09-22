@@ -39,10 +39,12 @@ the kernel reloads `index.js`.
 
 ## Usage
 
-1. Type `@pawn ` at the start of a paragraph (then your instruction).
-2. The block becomes a TIP callout; add more child blocks inside it.
-3. Open the block icon menu → **Send to Pawn** (or the same on a child —
-   the plugin resolves upward to the callout root).
+1. Type `@pawn ` at the start of a paragraph, then your instruction.
+2. After a short pause the block becomes a TIP callout titled **Pawn**; keep
+   editing the body (the caret should stay at the end of the instruction).
+3. **Send** when ready — there is no in-callout button. Use either:
+   - Block gutter icon (left of the block) → **Send to Pawn**
+   - Command palette / hotkey **⌥⌘P** (Configurable under Settings → Keymap → Pawn)
 4. pawn-server runs the agent; a review draft appears under the callout parent.
 5. Check **Approve for Pawn memory** when ready (watcher indexes it).
 
