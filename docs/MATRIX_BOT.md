@@ -32,8 +32,14 @@ matrix_bot:
 
 Env vars use `PAWN_MATRIX_BOT__*` (e.g. `PAWN_MATRIX_BOT__ENABLED=true`).
 
-`queue_producers.matrix` is a separate outbound notification path for `queue_push`.
-It is not used by this inbound worker.
+`queue_producers.matrix` is the outbound notification path for `queue_push`.
+When `matrix_bot.notify_room_id` is set, the inbound bot also starts a shared
+consumer that posts those alerts into that room (no second Matrix login).
+
+```yaml
+matrix_bot:
+  notify_room_id: "!room:matrix.example.com"
+```
 
 ## Run
 

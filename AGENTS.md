@@ -50,9 +50,10 @@ Notes: pytest defaults to `--cov=pawn_diarize --cov-report=term-missing`; pass `
 - `pawn-server` always routes chat completions through the embedded **sallm** agent. The OpenAI `model` field is accepted for compatibility but ignored by the API server. Queue/scheduler runs can still pass model overrides through `run_agent_turn`.
 - Harness modules: `sallm_factory.py` (build Agent), `sallm_session.py` (async façade), `sallm_registry.py` (session pool), `sallm_skills.py`, `sallm_tools.py`.
 - Durable chat memory lives in SQLite + Lance under `agent.sallm.state_dir` (default `.sallm/`). PostgreSQL still holds transcripts, analyses, `agent_runs`, and schedules. `langgraph_session_state` is unused leftover schema (not dropped in v1).
-- Dual `session_id` semantics: queue/scheduler conversation key **is** the diarization session name. API uses OpenAI `user` (or message hash) as the conversation key; Matrix bot uses `matrix:{room_id}`. Tools must discover diarization ids via `sessions_list`.
-- Queue listener (`pawn_server/core/queue_listener.py`) expects `{"command": "run", "prompt": ..., "session_id": ..., "model": ...}`.
-- Matrix bot (`pawn_server/core/matrix_bot.py`) is an optional `serve` worker: in-process `run_agent_turn` with `source="matrix"` (same tools/skills as CLI chat). See `docs/MATRIX_BOT.md`.
+- Dual `session_id` semantics: queue/scheduler conversation key **is** the diarization session name. API uses OpenAI `user` (or message hash) as the conversation key; Matrix bot uses `matrix:{room_id}`; SiYuan `@pawn` watcher uses `siyuan:{root_id}`. Tools must discover diarization ids via `sessions_list`.
+- Queue listener (`pawn_server/core/queue_listener.py`) expects `{"command": "run"|"siyuan_run", "prompt": ..., "session_id": ..., "model": ...}`.
+- Matrix bot (`pawn_server/core/matrix_bot.py`) is an optional `serve` worker: in-process `run_agent_turn` with `source="matrix"` (same tools/skills as CLI chat). When `matrix_bot.notify_room_id` is set, it also consumes `queue_producers.matrix` for outbound alerts. See `docs/MATRIX_BOT.md`.
+- SiYuan `@pawn` watcher (`pawn_server/core/siyuan_watcher.py`): pull-only SQL poll for blocks starting with `@pawn`, claim in `siyuan_agent_requests`, run agent, append review draft, Matrix-notify, index on approve. See `docs/SIYUAN_AGENT.md`.
 - Agent run persistence is centralized in `pawn_agent/core/agent_runner.py`.
 
 ## Agent Tools / Skills
@@ -60,14 +61,18 @@ Notes: pytest defaults to `--cov=pawn_diarize --cov-report=term-missing`; pass `
 Domain logic stays in `pawn_agent/tools/*_impl`. Production path uses **CliTools** under `pawn_agent/tools/cli/` registered in `sallm_tools.py`.
 
 Migrated CliTools: `sessions_list`, `session_transcript`, `session_analyze`,
-`session_delete`, `session_relabel`, `siyuan_save`, `schedule_propose`,
-`queue_push`.
+`session_delete`, `session_relabel`, `siyuan_save`, `siyuan_read`,
+`siyuan_append`, `siyuan_set_status`, `schedule_propose`, `queue_push`.
 
 `siyuan_save`: prefer `--from-analysis` or `session_analyze --save`. Free-form
 Markdown uses `--content-file @note` plus a ```file note` block (sallm writes a
 temp file). Do not paste long bodies into `--content`. Notes skill includes
 `sessions_list` so analyze+save can resolve a diarization id; never dump tool
 errors / fallback journaling into SiYuan.
+
+`siyuan_read` / `siyuan_append` / `siyuan_set_status`: append-only block tools
+for the `@pawn` loop (skill `siyuan_tasks`). Do not use `siyuan_save`
+delete-recreate for iterative task drafts.
 
 `session_delete` permanently wipes diarization DB rows (segments, analyses,
 `session_state`, graph triples) for one session name. It always requires
@@ -87,7 +92,8 @@ Annotations preserved). Opt-in auto-push after each `transcribe-diarize`
 chunk via `siyuan.auto_push_transcript`. Mapping table: `siyuan_session_docs`.
 Legacy analysis upsert remains `pawn-diarize sync-siyuan`.
 
-Skills (modes): `converse`, `sessions`, `notes`, `scheduling`, `ops` — see `sallm_skills.py`.
+Skills (modes): `converse`, `sessions`, `notes`, `scheduling`, `ops`,
+`siyuan_tasks` — see `sallm_skills.py`.
 
 Session memory is owned by sallm (SQLite + Lance + `Agent.remember`). Old memorize/recall/vectorize tools were removed.
 
@@ -127,6 +133,8 @@ Precedence is CLI/explicit overrides, YAML, env vars, defaults. Env vars use `PA
 - `PAWN_AGENT__OPENAI__API_KEY`, `PAWN_AGENT__OPENAI__FAST_MODEL`, etc.
 - `PAWN_AGENT__SALLM__STATE_DIR`, `PAWN_AGENT__SALLM__MAX_STEPS`, `PAWN_AGENT__SALLM__PROFILE`, `PAWN_AGENT__SALLM__OTLP_ENDPOINT`
 - `PAWN_MATRIX_BOT__ENABLED`, `PAWN_MATRIX_BOT__HOMESERVER_URL`, `PAWN_MATRIX_BOT__USER_TOKEN`, etc.
+- `PAWN_SIYUAN_WATCHER__ENABLED`, `PAWN_SIYUAN_WATCHER__POLL_INTERVAL_SECONDS`, etc.
+- `PAWN_MATRIX_BOT__NOTIFY_ROOM_ID` for outbound ready-for-review alerts
 
 Chat model comes from `agent.openai` (etc.) and is mapped to LiteLLM via `cfg.litellm_model` (`openai:gpt-4o` → `openai/gpt-4o`). Optional Tempo: `agent.sallm.otlp_endpoint` / `metrics_port` (off by default for the server).
 `agent.sallm.profile` is a sallm CompiledProfile YAML/JSON path (default `large.yaml` in `pawn_agent/profiles/`, 10× token budgets). Empty string uses stock sallm limits.

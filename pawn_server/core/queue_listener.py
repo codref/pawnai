@@ -41,6 +41,12 @@ _registry = SallmSessionRegistry()
 
 COMMAND_DEFAULTS: Dict[str, Dict[str, Any]] = {
     "run": {"prompt": None, "session_id": None, "model": None},
+    "siyuan_run": {
+        "prompt": None,
+        "session_id": None,
+        "model": None,
+        "request_id": None,
+    },
 }
 
 
@@ -60,8 +66,11 @@ async def _run_sallm(
     params: Dict[str, Any],
     cfg: Any,
     message_id: Optional[str] = None,
+    *,
+    command: str = "run",
+    source: str = "queue",
 ) -> None:
-    """Execute a ``run`` command via the sallm session registry.
+    """Execute a ``run`` / ``siyuan_run`` command via the sallm session registry.
 
     Creates an ``agent_runs`` row immediately (so every attempt is tracked),
     then validates required fields.  On any failure the row is marked *failed*
@@ -75,8 +84,8 @@ async def _run_sallm(
         cfg=cfg,
         registry=_registry,
         message_id=message_id,
-        source="queue",
-        command="run",
+        source=source,
+        command=command,
         prompt=prompt,
         session_id=session_id,
         model=model,
@@ -103,7 +112,10 @@ async def dispatch(
         raise ValueError(f"Unsupported command: {command!r}")
 
     if command == "run":
-        await _run_sallm(params, cfg, message_id)
+        await _run_sallm(params, cfg, message_id, command="run", source="queue")
+        return
+    if command == "siyuan_run":
+        await _run_sallm(params, cfg, message_id, command="siyuan_run", source="siyuan")
         return
 
     raise NotImplementedError(f"Command {command!r} has no handler registered")

@@ -42,9 +42,7 @@ def test_format_speakers_section_talk_time_and_turns():
         ("a.wav", "SPEAKER_00"): "Alice",
         ("a.wav", "SPEAKER_01"): "Bob",
     }
-    md = format_speakers_section(
-        _segs(), name_lookup, file_count=2, time_cursor=35.0
-    )
+    md = format_speakers_section(_segs(), name_lookup, file_count=2, time_cursor=35.0)
     assert "| Alice |" in md
     assert "| Bob |" in md
     assert "2" in md  # Alice turns
@@ -85,7 +83,7 @@ hello
 
 def test_extract_annotations_strips_siyuan_ial_noise():
     kramdown = (
-        '## Speakers\n'
+        "## Speakers\n"
         "table\n"
         '## Annotations {: id="20260101000000-abcdefg"}\n'
         "\n"

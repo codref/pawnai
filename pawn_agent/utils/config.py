@@ -233,6 +233,26 @@ class MatrixBotConfig(BaseModel):
     progress_updates: bool = True
     # Glanceable ⏳ / ✅ / ❌ reactions on the user's prompting message.
     progress_reactions: bool = True
+    # Room for outbound ready-for-review alerts (Matrix notifier worker).
+    notify_room_id: Optional[str] = None
+
+
+class SiyuanWatcherConfig(BaseModel):
+    """``siyuan_watcher:`` — pull-only @pawn discovery and review polling."""
+
+    enabled: bool = False
+    poll_interval_seconds: float = 10.0
+    # Wait this long after the instruction text stops changing before claiming.
+    # SiYuan autosaves while typing; without this the agent runs mid-edit.
+    settle_seconds: float = 45.0
+    mention_token: str = "@pawn"
+    # Empty → use configured ``siyuan.notebook`` only.
+    notebook_allowlist: list[str] = Field(default_factory=list)
+    max_ref_depth: int = 1
+    max_context_blocks: int = 40
+    matrix_target: str = "matrix"
+    max_claims_per_tick: int = 3
+
 
 
 # ── AgentConfig ───────────────────────────────────────────────────────────────
@@ -286,6 +306,7 @@ class AgentConfig(PawnConfig):
     diarize_queue: Optional[AgentQueueConfig] = None
     queue_producers: Optional[dict[str, QueueProducerConfig]] = None
     matrix_bot: MatrixBotConfig = Field(default_factory=MatrixBotConfig)
+    siyuan_watcher: SiyuanWatcherConfig = Field(default_factory=SiyuanWatcherConfig)
 
     # ── Flat property aliases (old flat-field names used throughout pawn_agent) ─
 

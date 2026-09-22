@@ -202,7 +202,52 @@ OPS = Skill(
     tools=("queue_push",),
 )
 
+SIYUAN_TASKS = Skill(
+    name="siyuan_tasks",
+    description=(
+        "SiYuan @pawn task: read linked notes, optionally deep-analyze "
+        "diarization sessions, append a reviewable draft under a parent "
+        "block, and set custom-agent status to review."
+    ),
+    prompt=(
+        "Active skill: siyuan_tasks.\n"
+        "You are fulfilling a SiYuan @pawn instruction delivered by the "
+        "watcher. Tools MUST be called inside ```run fences.\n"
+        "1) siyuan_read --block-id <id> [--include-children] [--resolve-refs] "
+        "to load context; follow explicit ((block refs)) only.\n"
+        "2) If the note names a diarization session, resolve via "
+        "sessions_list then session_transcript / session_analyze — never "
+        "invent session ids.\n"
+        "3) Append the draft under parent_block_id:\n"
+        "```run\n"
+        "siyuan_append --parent-id <parent> --as-result --request-id <uuid> "
+        "--content-file @note\n"
+        "```\n"
+        "```file note\n"
+        "…structured highlights: tasks, decisions, risks…\n"
+        "```\n"
+        "4) Mark the trigger block review:\n"
+        "```run\n"
+        "siyuan_set_status --block-id <trigger> --status review "
+        "--request-id <uuid> --output-id <new_block_id>\n"
+        "```\n"
+        "Hard rules: append-only; never delete/overwrite human blocks; never "
+        "dump tool errors into SiYuan; include the Approve for Pawn memory "
+        "checklist (via --as-result)."
+    ),
+    tools=(
+        "siyuan_read",
+        "siyuan_append",
+        "siyuan_set_status",
+        "sessions_list",
+        "session_transcript",
+        "session_analyze",
+    ),
+)
+
 
 def build_pawn_skills() -> SkillRegistry:
     """Return the pawn skill registry (converse is registered explicitly)."""
-    return SkillRegistry([CONVERSE, SESSIONS, NOTES, SCHEDULING, OPS])
+    return SkillRegistry(
+        [CONVERSE, SESSIONS, NOTES, SCHEDULING, OPS, SIYUAN_TASKS]
+    )

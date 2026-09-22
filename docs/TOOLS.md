@@ -25,6 +25,9 @@ pawn_agent/tools/
     session_delete.py
     session_relabel.py
     siyuan_save.py
+    siyuan_read.py
+    siyuan_append.py
+    siyuan_set_status.py
     schedule_propose.py
     queue_push.py
 ```
@@ -59,8 +62,13 @@ long strings). Prefer:
 | `session_delete` | `delete_session` | Permanently delete one session (requires `--confirm`) |
 | `session_relabel` | `session_relabel` | Rename a speaker across a session (segments + embeddings) |
 | `siyuan_save` | `save_to_siyuan` | Save Markdown / `--from-analysis` / `--content-file` to SiYuan |
+| `siyuan_read` | `siyuan_blocks` | Read block kramdown / children / attrs / refs |
+| `siyuan_append` | `siyuan_blocks` | Append Markdown under a parent block (append-only) |
+| `siyuan_set_status` | `siyuan_blocks` | Set `custom-agent-*` attrs on a block |
 | `schedule_propose` | `propose_schedule` | Create schedule proposals (approve via CLI) |
 | `queue_push` | `push_queue_message` | Publish to a named queue producer |
+
+See also `docs/SIYUAN_AGENT.md` for the pull-only `@pawn` watcher loop.
 
 ## Shared helpers
 

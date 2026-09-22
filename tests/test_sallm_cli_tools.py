@@ -21,6 +21,9 @@ def test_build_pawn_clitools_names() -> None:
         "session_delete",
         "session_relabel",
         "siyuan_save",
+        "siyuan_read",
+        "siyuan_append",
+        "siyuan_set_status",
         "schedule_propose",
         "queue_push",
     }

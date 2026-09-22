@@ -27,6 +27,11 @@ loop.
 
 ## Phase 1: Matrix Push Notifications
 
+**Status:** outbound notify path implemented for SiYuan `@pawn` ready-for-review
+alerts (`queue_push` → Matrix notifier inside `matrix_bot` when
+`notify_room_id` is set). Broader session-completed notifications remain future
+work.
+
 The first feature should be Matrix push notifications. Pawn is already usable
 through chat, so Matrix is the natural place for the agent to surface useful
 insights without requiring the user to poll.
@@ -65,6 +70,11 @@ Implementation direction:
   replies or commands.
 
 ## Phase 2: Autonomous Background Analysis Loop
+
+**Related (shipped MVP):** pull-only SiYuan `@pawn` watcher — human-triggered
+instructions in SiYuan, review in SiYuan, Matrix alert, auto-index on approve.
+See `docs/SIYUAN_AGENT.md`. Plugin/webhook and proactive `session.completed`
+proposals remain later stages (SiYuan cannot reach Pawn today).
 
 The next step is a bounded autonomous loop for background analysis. This should
 not be an unrestricted agent that continuously acts. It should be an event-driven

@@ -245,6 +245,23 @@ matrix_bot:
   progress_updates: true
   # React ⏳ on the user message, then ✅ / ❌ when the turn finishes.
   progress_reactions: true
+  # Room for outbound ready-for-review alerts (SiYuan watcher / queue_push).
+  # notify_room_id: "!yourRoom:matrix.example.com"
+
+siyuan_watcher:
+  # Pull-only @pawn discovery (Pawn → SiYuan). No SiYuan→Pawn webhook required.
+  enabled: false
+  poll_interval_seconds: 10
+  # Wait after the @pawn text stops changing before claiming (SiYuan autosaves
+  # while typing). Increase if you write slowly; decrease for snappier runs.
+  settle_seconds: 45
+  mention_token: "@pawn"
+  # Empty list → only the configured siyuan.notebook.
+  notebook_allowlist: []
+  max_ref_depth: 1
+  max_context_blocks: 40
+  matrix_target: matrix
+  max_claims_per_tick: 3
 
 queue_producers:
   # Named producer targets used by pawn-agent's push_queue_message tool.

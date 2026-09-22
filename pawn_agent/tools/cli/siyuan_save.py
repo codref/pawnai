@@ -64,9 +64,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--config", default=None, help="Optional path to pawnai.yaml")
     args = parser.parse_args(argv)
 
-    sources = sum(
-        bool(x) for x in (args.from_analysis, args.content, args.content_file)
-    )
+    sources = sum(bool(x) for x in (args.from_analysis, args.content, args.content_file))
     if sources == 0:
         return fail("provide --from-analysis, --content, or --content-file")
     if sources > 1:

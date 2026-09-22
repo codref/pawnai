@@ -387,6 +387,27 @@ class SiyuanClient:
             {"id": block_id, "attrs": attrs},
         )
 
+    def get_block_attrs(self, block_id: str) -> Dict[str, str]:
+        """Return attribute name → value for *block_id* (empty dict on error)."""
+        try:
+            data = self._post("/api/attr/getBlockAttrs", {"id": block_id})
+            if not isinstance(data, dict):
+                return {}
+            return {str(k): str(v) for k, v in data.items()}
+        except SiyuanError:
+            return {}
+
+    def query_sql(self, stmt: str) -> List[Dict[str, Any]]:
+        """Run a read-only SQL query against SiYuan's block index.
+
+        Prefer fixed application-owned SELECT templates — never pass
+        model-generated SQL.
+        """
+        data = self._post("/api/query/sql", {"stmt": stmt})
+        if isinstance(data, list):
+            return [row for row in data if isinstance(row, dict)]
+        return []
+
     # ── high-level helpers ────────────────────────────────────────────────────
 
     def upsert_session_doc(

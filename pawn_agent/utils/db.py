@@ -123,6 +123,47 @@ class AgentScheduleFire(_Base):
     created_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
 
 
+class SiyuanAgentRequest(_Base):
+    """Durable lifecycle for one ``@pawn`` instruction discovered in SiYuan."""
+
+    __tablename__ = "siyuan_agent_requests"
+    __table_args__ = (
+        UniqueConstraint(
+            "trigger_block_id",
+            "instruction_hash",
+            name="uq_siyuan_agent_request_trigger_hash",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    trigger_block_id: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    parent_block_id: Mapped[str] = mapped_column(String, nullable=False)
+    root_id: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    notebook_id: Mapped[str] = mapped_column(String, nullable=False)
+    instruction_hash: Mapped[str] = mapped_column(String, nullable=False)
+    source_updated: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    status: Mapped[str] = mapped_column(String, nullable=False, default="queued", index=True)
+    conversation_id: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    output_block_id: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    agent_run_id: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    matrix_notify_id: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    instruction_text: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    error_code: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    indexed_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    updated_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+
+
+class SiyuanWatcherState(_Base):
+    """Single-row poll cursor for the SiYuan @pawn watcher."""
+
+    __tablename__ = "siyuan_watcher_state"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    poll_watermark: Mapped[str] = mapped_column(String, nullable=False, default="")
+    updated_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+
+
 def get_session_analysis(session_id: str, dsn: str) -> Optional[SessionAnalysis]:
     """Return the most recent SessionAnalysis row for *session_id*, or None."""
     from sqlalchemy import select
@@ -268,3 +309,192 @@ def update_agent_run(
             row.response = response
         if error is not None:
             row.error = error
+
+
+# ---------------------------------------------------------------------------
+# SiYuan agent request helpers
+# ---------------------------------------------------------------------------
+
+_WATCHER_STATE_ID = "default"
+
+
+def upsert_siyuan_agent_request(
+    dsn: str,
+    *,
+    request_id: str,
+    trigger_block_id: str,
+    parent_block_id: str,
+    root_id: str,
+    notebook_id: str,
+    instruction_hash: str,
+    conversation_id: str,
+    instruction_text: Optional[str] = None,
+    source_updated: Optional[str] = None,
+    status: str = "queued",
+) -> str:
+    """Insert or refresh a request for *trigger_block_id* + *instruction_hash*.
+
+    - Same trigger+hash → return existing id (idempotent).
+    - Same trigger still ``queued`` with a different hash (user kept typing) →
+      rewrite the row in place so we do not collide on the reused SiYuan
+      ``custom-agent-request-id``.
+    - Otherwise insert; if *request_id* is already taken, allocate a new UUID.
+    """
+    now = datetime.now(timezone.utc)
+    with _get_session(dsn) as db:
+        by_hash = (
+            db.query(SiyuanAgentRequest)
+            .filter_by(
+                trigger_block_id=trigger_block_id,
+                instruction_hash=instruction_hash,
+            )
+            .one_or_none()
+        )
+        if by_hash is not None:
+            return by_hash.id
+
+        # Absorb mid-edit revisions while still queued (typing / autosave race).
+        open_queued = (
+            db.query(SiyuanAgentRequest)
+            .filter_by(trigger_block_id=trigger_block_id, status="queued")
+            .order_by(SiyuanAgentRequest.created_at.desc())
+            .first()
+        )
+        if open_queued is not None:
+            open_queued.instruction_hash = instruction_hash
+            open_queued.instruction_text = instruction_text
+            open_queued.source_updated = source_updated
+            open_queued.parent_block_id = parent_block_id
+            open_queued.root_id = root_id
+            open_queued.notebook_id = notebook_id
+            open_queued.conversation_id = conversation_id
+            open_queued.updated_at = now
+            return open_queued.id
+
+        effective_id = request_id
+        if db.get(SiyuanAgentRequest, effective_id) is not None:
+            effective_id = str(uuid.uuid4())
+
+        row = SiyuanAgentRequest(
+            id=effective_id,
+            trigger_block_id=trigger_block_id,
+            parent_block_id=parent_block_id,
+            root_id=root_id,
+            notebook_id=notebook_id,
+            instruction_hash=instruction_hash,
+            source_updated=source_updated,
+            status=status,
+            conversation_id=conversation_id,
+            instruction_text=instruction_text,
+            created_at=now,
+            updated_at=now,
+        )
+        db.add(row)
+    return effective_id
+
+
+def get_siyuan_agent_request(dsn: str, request_id: str) -> Optional[SiyuanAgentRequest]:
+    """Return a detached request row or None."""
+    with Session(get_engine(dsn)) as db:
+        row = db.get(SiyuanAgentRequest, request_id)
+        if row is None:
+            return None
+        db.expunge(row)
+        from sqlalchemy.orm import make_transient
+
+        make_transient(row)
+        return row
+
+
+def list_siyuan_agent_requests(
+    dsn: str,
+    *,
+    status: Optional[str] = None,
+    statuses: Optional[List[str]] = None,
+    limit: int = 50,
+) -> List[SiyuanAgentRequest]:
+    """List request rows, optionally filtered by status."""
+    with Session(get_engine(dsn)) as db:
+        q = db.query(SiyuanAgentRequest)
+        if status:
+            q = q.filter(SiyuanAgentRequest.status == status)
+        if statuses:
+            q = q.filter(SiyuanAgentRequest.status.in_(statuses))
+        rows = q.order_by(SiyuanAgentRequest.created_at.asc()).limit(limit).all()
+        out: List[SiyuanAgentRequest] = []
+        from sqlalchemy.orm import make_transient
+
+        for row in rows:
+            db.expunge(row)
+            make_transient(row)
+            out.append(row)
+        return out
+
+
+def update_siyuan_agent_request(
+    dsn: str,
+    request_id: str,
+    *,
+    status: Optional[str] = None,
+    output_block_id: Optional[str] = None,
+    agent_run_id: Optional[str] = None,
+    matrix_notify_id: Optional[str] = None,
+    error_code: Optional[str] = None,
+    indexed_at: Optional[datetime] = None,
+) -> None:
+    """Patch mutable fields on a SiYuan agent request."""
+    now = datetime.now(timezone.utc)
+    with _get_session(dsn) as db:
+        row = db.get(SiyuanAgentRequest, request_id)
+        if row is None:
+            return
+        if status is not None:
+            row.status = status
+        if output_block_id is not None:
+            row.output_block_id = output_block_id
+        if agent_run_id is not None:
+            row.agent_run_id = agent_run_id
+        if matrix_notify_id is not None:
+            row.matrix_notify_id = matrix_notify_id
+        if error_code is not None:
+            row.error_code = error_code
+        if indexed_at is not None:
+            row.indexed_at = indexed_at
+        row.updated_at = now
+
+
+def claim_siyuan_agent_request(dsn: str, request_id: str) -> bool:
+    """Atomically move ``queued`` → ``claimed``. Returns False if not claimable."""
+    now = datetime.now(timezone.utc)
+    with _get_session(dsn) as db:
+        row = db.get(SiyuanAgentRequest, request_id)
+        if row is None or row.status != "queued":
+            return False
+        row.status = "claimed"
+        row.updated_at = now
+        return True
+
+
+def get_siyuan_poll_watermark(dsn: str) -> str:
+    """Return the watcher poll watermark (empty string if unset)."""
+    with Session(get_engine(dsn)) as db:
+        row = db.get(SiyuanWatcherState, _WATCHER_STATE_ID)
+        return row.poll_watermark if row else ""
+
+
+def set_siyuan_poll_watermark(dsn: str, watermark: str) -> None:
+    """Persist the watcher poll watermark."""
+    now = datetime.now(timezone.utc)
+    with _get_session(dsn) as db:
+        row = db.get(SiyuanWatcherState, _WATCHER_STATE_ID)
+        if row is None:
+            db.add(
+                SiyuanWatcherState(
+                    id=_WATCHER_STATE_ID,
+                    poll_watermark=watermark,
+                    updated_at=now,
+                )
+            )
+        else:
+            row.poll_watermark = watermark
+            row.updated_at = now

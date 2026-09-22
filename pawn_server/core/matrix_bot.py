@@ -1027,7 +1027,11 @@ async def run_sync_with_reconnect(
 
 
 async def start_matrix_bot(cfg: Any) -> None:
-    """Login, sync forever, and route eligible messages to the sallm agent."""
+    """Login, sync forever, and route eligible messages to the sallm agent.
+
+    When ``matrix_bot.notify_room_id`` and ``queue_producers`` are configured,
+    also starts an outbound notify consumer sharing the same Matrix client.
+    """
     _require_nio()
     _patch_nio_sas_for_element()
     mb = cfg.matrix_bot
@@ -1037,10 +1041,33 @@ async def start_matrix_bot(cfg: Any) -> None:
 
     registry = SallmSessionRegistry()
     client = _build_client(mb)
+    notify_task: Optional[asyncio.Task] = None
     try:
         await _login(client, mb)
         _register_callbacks(client, cfg, registry)
         logger.info("Matrix bot logged in as %s", mb.user_id)
+
+        from pawn_server.core.matrix_notifier import (  # noqa: PLC0415
+            matrix_notifier_enabled,
+            run_matrix_notifier_loop,
+        )
+
+        if matrix_notifier_enabled(cfg):
+            notify_task = asyncio.create_task(
+                run_matrix_notifier_loop(cfg, client),
+                name="matrix-notifier",
+            )
+            logger.info(
+                "Matrix outbound notifier armed → room %s",
+                mb.notify_room_id,
+            )
+
         await run_sync_with_reconnect(client)
     finally:
+        if notify_task is not None:
+            notify_task.cancel()
+            try:
+                await notify_task
+            except (asyncio.CancelledError, Exception):
+                pass
         await client.close()

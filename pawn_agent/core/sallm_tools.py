@@ -106,6 +106,37 @@ def build_pawn_clitools() -> dict[str, CliTool]:
                 "Optional: --title TEXT --path PATH."
             ),
         ),
+        "siyuan_read": CliTool(
+            name="siyuan_read",
+            argv=_cli_argv("siyuan_read.py"),
+            summary=(
+                "Read a SiYuan block. Required: --block-id ID. "
+                "Optional: --include-children --include-attrs --resolve-refs "
+                "--max-ref-depth N --max-blocks N. "
+                "Use to load @pawn context and follow ((block refs))."
+            ),
+        ),
+        "siyuan_append": CliTool(
+            name="siyuan_append",
+            argv=_cli_argv("siyuan_append.py"),
+            summary=(
+                "Append Markdown under a SiYuan parent block (append-only). "
+                "Required: --parent-id ID. Body: --content-file @note "
+                "(preferred) or short --content. "
+                "Optional: --as-result --request-id UUID wraps the standard "
+                "review checklist. Never delete or overwrite human blocks."
+            ),
+        ),
+        "siyuan_set_status": CliTool(
+            name="siyuan_set_status",
+            argv=_cli_argv("siyuan_set_status.py"),
+            summary=(
+                "Set custom-agent-* attrs on a SiYuan instruction block. "
+                "Required: --block-id ID. "
+                "Optional: --status queued|claimed|running|review|done|blocked|cancelled "
+                "--request-id --output-id --source-hash --run-id."
+            ),
+        ),
         "schedule_propose": CliTool(
             name="schedule_propose",
             argv=_cli_argv("schedule_propose.py"),
