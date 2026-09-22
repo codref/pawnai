@@ -10,7 +10,7 @@ token is only for the optional server watcher SQL scan.
 
 ```bash
 cd /path/to/parakeet/siyuan-plugin/pawn
-zip -r ../pawn-0.1.11.zip plugin.json index.js README.md i18n
+zip -r ../pawn-0.1.12.zip plugin.json index.js README.md i18n
 ```
 
 Then enable **Pawn** under Marketplace → Downloaded.

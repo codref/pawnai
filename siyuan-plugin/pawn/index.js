@@ -121,15 +121,62 @@ function formatErrorDetail(value) {
 /** Collect block ids from insertBlock / updateBlock API responses (order preserved). */
 function operationIds(resp) {
   const data = resp && resp.data;
+  const txs = Array.isArray(data)
+    ? data
+    : data && Array.isArray(data.transactions)
+      ? data.transactions
+      : [];
   const ids = [];
-  if (!Array.isArray(data)) return ids;
-  for (const tx of data) {
+  const seen = new Set();
+  const push = (id) => {
+    if (!id || seen.has(id)) return;
+    seen.add(id);
+    ids.push(id);
+  };
+  for (const tx of txs) {
     const ops = (tx && tx.doOperations) || [];
     for (const op of ops) {
-      if (op && op.id) ids.push(op.id);
+      if (!op) continue;
+      push(op.id);
+      // Nested ids in generated DOM (callout container + children).
+      const html = typeof op.data === "string" ? op.data : "";
+      const re = /data-node-id="([^"]+)"/g;
+      let m;
+      while ((m = re.exec(html))) push(m[1]);
     }
   }
   return ids;
+}
+
+/** Prefer a blockquote/callout container id from insert op DOM. */
+function blockquoteIdFromInsert(resp) {
+  const data = resp && resp.data;
+  const txs = Array.isArray(data)
+    ? data
+    : data && Array.isArray(data.transactions)
+      ? data.transactions
+      : [];
+  for (const tx of txs) {
+    for (const op of (tx && tx.doOperations) || []) {
+      const html = op && typeof op.data === "string" ? op.data : "";
+      if (!html) continue;
+      let m = html.match(
+        /data-node-id="([^"]+)"[^>]*\bdata-type="NodeBlockquote"/
+      );
+      if (m) return m[1];
+      m = html.match(
+        /\bdata-type="NodeBlockquote"[^>]*data-node-id="([^"]+)"/
+      );
+      if (m) return m[1];
+      m = html.match(/data-node-id="([^"]+)"[^>]*\bclass="[^"]*\bbq\b/);
+      if (m) return m[1];
+    }
+  }
+  return null;
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 /** UTF-8 string → base64 for SiYuan forwardProxy payloadEncoding=base64. */
@@ -410,6 +457,10 @@ module.exports = class PawnPlugin extends Plugin {
    * callout container; falls back to walking parents of inserted ids.
    */
   async _pickInsertedCalloutId(ins) {
+    const fromDom = blockquoteIdFromInsert(ins);
+    if (fromDom && (await this._isTipCalloutBlock(fromDom))) return fromDom;
+    if (fromDom) return fromDom;
+
     const ids = operationIds(ins);
     for (const id of ids) {
       if (await this._isTipCalloutBlock(id)) return id;
@@ -423,14 +474,33 @@ module.exports = class PawnPlugin extends Plugin {
     return ids[0] || null;
   }
 
+  /** Poll until SiYuan SQL can see *blockId* (avoids trigger 404 on fresh inserts). */
+  async _waitForBlock(blockId, attempts, delayMs) {
+    const n = Math.max(1, attempts || 25);
+    const ms = Math.max(20, delayMs || 80);
+    for (let i = 0; i < n; i++) {
+      const rowResp = await fetchSyncPost("/api/query/sql", {
+        stmt:
+          "SELECT id FROM blocks WHERE id = '" +
+          String(blockId).replace(/'/g, "''") +
+          "' LIMIT 1",
+      });
+      const rows = (rowResp && rowResp.data) || [];
+      if (rows.length) return true;
+      await sleep(ms);
+    }
+    return false;
+  }
+
   /**
    * Wrap *blockId* into a TIP callout when it is not already one (and not
    * already inside one).
    *
-   * SiYuan 3.8 often rejects updateBlock when turning a non-empty paragraph
-   * into a multi-block callout (type/structure change). Insert the callout
-   * before the paragraph, then delete the original. Trigger uses the new id
-   * (server accepts TIP / plain blocks without requiring @pawn).
+   * SiYuan 3.8 rejects updateBlock for paragraph→TIP type changes, and
+   * insert+delete left a brand-new id that pawn-server often 404'd on
+   * (not indexed yet). Instead: insert an empty TIP shell, move the
+   * original block into it, trigger the *original* id (server walks up
+   * to the TIP).
    */
   async _ensureWrapped(blockId) {
     if (!blockId || this._wrapping.has(blockId)) return blockId;
@@ -449,15 +519,13 @@ module.exports = class PawnPlugin extends Plugin {
     if (await this._isTipCalloutBlock(blockId)) return blockId;
 
     const token = this.config.mentionToken || "@pawn";
-    const md = buildTipCalloutMarkdown(kramdown, {
-      mentionToken: token,
-      calloutIcon: this.config.calloutIcon,
-      title: extractTitle(kramdown, token, 60),
-    });
+    const icon = this.config.calloutIcon || "🤖";
+    const title = extractTitle(kramdown, token, 60).replace(/\n/g, " ").trim();
+    // Empty body placeholder — original paragraph is moved in next.
+    const md = "> [!TIP] " + icon + " " + title + "\n> \n";
 
     this._wrapping.add(blockId);
     try {
-      // Prefer insert-before + delete: reliable type change on SiYuan 3.8.
       const ins = await fetchSyncPost("/api/block/insertBlock", {
         dataType: "markdown",
         data: md,
@@ -472,23 +540,70 @@ module.exports = class PawnPlugin extends Plugin {
         );
         return blockId;
       }
-      const newId = await this._pickInsertedCalloutId(ins);
-      if (!newId) {
+      const calloutId = await this._pickInsertedCalloutId(ins);
+      if (!calloutId) {
         console.warn("pawn: insertBlock returned no id", ins);
         showMessage("Could not wrap callout: no new block id", 5000, "error");
         return blockId;
       }
-      if (!(await this._isTipCalloutBlock(newId))) {
-        // Insert landed but did not spin into a callout — keep it and still
-        // remove the original so the user sees the tip markdown at least.
-        console.warn("pawn: inserted block is not a tip callout", newId);
+
+      const ready = await this._waitForBlock(calloutId, 25, 80);
+      if (!ready) {
+        console.warn("pawn: callout not indexed yet", calloutId);
       }
-      await fetchSyncPost("/api/block/deleteBlock", { id: blockId });
+
+      const moved = await fetchSyncPost("/api/block/moveBlock", {
+        id: blockId,
+        parentID: calloutId,
+      });
+      if (moved && moved.code !== 0) {
+        console.warn("pawn: moveBlock failed", blockId, calloutId, moved);
+        // Fall back: keep shell + leave original sibling; still try original id.
+        showMessage(
+          "Could not move into callout: " +
+            formatErrorDetail(moved.msg || moved),
+          5000,
+          "error"
+        );
+        return blockId;
+      }
+
+      // Wait until the original block is parented under the tip in SQL.
+      for (let i = 0; i < 20; i++) {
+        if (await this._hasTipCalloutAncestor(blockId)) break;
+        await sleep(80);
+      }
+
+      // Drop empty placeholder children left by the tip shell.
+      try {
+        const kids = await fetchSyncPost("/api/block/getChildBlocks", {
+          id: calloutId,
+        });
+        const list = (kids && kids.data) || [];
+        for (const child of list) {
+          const cid = child && child.id;
+          if (!cid || cid === blockId) continue;
+          const cKd = await fetchSyncPost("/api/block/getBlockKramdown", {
+            id: cid,
+          });
+          const text = stripIal(
+            (cKd && cKd.data && cKd.data.kramdown) || ""
+          );
+          if (!text) {
+            await fetchSyncPost("/api/block/deleteBlock", { id: cid });
+          }
+        }
+      } catch (e) {
+        console.warn("pawn: cleanup placeholder children failed", e);
+      }
+
       await fetchSyncPost("/api/attr/setBlockAttrs", {
-        id: newId,
+        id: calloutId,
         attrs: { [ATTR_STATUS]: "draft" },
       });
-      return newId;
+      // Return the original id — it still exists as a tip child; the server
+      // walks up to the TIP. Avoids 404 on a brand-new callout id.
+      return blockId;
     } finally {
       this._wrapping.delete(blockId);
     }
@@ -576,6 +691,9 @@ module.exports = class PawnPlugin extends Plugin {
     }
     if (!rootId) {
       rootId = await this._resolveCalloutRoot(blockId);
+    } else {
+      // After wrap-in-place, prefer the TIP parent for attrs + trigger.
+      rootId = (await this._resolveCalloutRoot(rootId)) || rootId;
     }
     if (!rootId) {
       showMessage(
@@ -585,6 +703,8 @@ module.exports = class PawnPlugin extends Plugin {
       );
       return;
     }
+
+    await this._waitForBlock(rootId, 15, 80);
 
     const attrsResp = await fetchSyncPost("/api/attr/getBlockAttrs", {
       id: rootId,
@@ -611,40 +731,52 @@ module.exports = class PawnPlugin extends Plugin {
     // with an object is also unreliable across kernel builds. Base64 of the
     // JSON string always hits request.SetBody(decoded) in the kernel.
     const bodyJson = JSON.stringify({ block_id: rootId });
-    const proxy = await fetchSyncPost("/api/network/forwardProxy", {
-      url: serverUrl + "/v1/siyuan/triggers",
-      method: "POST",
-      timeout: Math.max(1000, Number(this.config.requestTimeoutMs) || 15000),
-      contentType: "application/json",
-      headers,
-      payload: utf8ToBase64(bodyJson),
-      payloadEncoding: "base64",
-      responseEncoding: "text",
-    });
-
-    if (proxy && proxy.code !== 0) {
-      showMessage(
-        (i18n.sendFail || "Pawn trigger failed") +
-          ": " +
-          formatErrorDetail(proxy.msg || proxy) +
-          " (proxy)",
-        6000,
-        "error"
-      );
-      return;
-    }
-
-    const data = proxy && proxy.data;
-    const statusCode = data && data.status;
-    let bodyText = (data && data.body) || "";
-    if (bodyText && typeof bodyText !== "string") {
-      bodyText = JSON.stringify(bodyText);
-    }
+    let proxy = null;
+    let statusCode = null;
+    let bodyText = "";
     let parsed = null;
-    try {
-      parsed = bodyText ? JSON.parse(bodyText) : null;
-    } catch (_e) {
+
+    // Fresh callouts can 404 once if the kernel index lags; retry briefly.
+    for (let attempt = 0; attempt < 4; attempt++) {
+      if (attempt > 0) await sleep(150 * attempt);
+      proxy = await fetchSyncPost("/api/network/forwardProxy", {
+        url: serverUrl + "/v1/siyuan/triggers",
+        method: "POST",
+        timeout: Math.max(1000, Number(this.config.requestTimeoutMs) || 15000),
+        contentType: "application/json",
+        headers,
+        payload: utf8ToBase64(bodyJson),
+        payloadEncoding: "base64",
+        responseEncoding: "text",
+      });
+
+      if (proxy && proxy.code !== 0) {
+        showMessage(
+          (i18n.sendFail || "Pawn trigger failed") +
+            ": " +
+            formatErrorDetail(proxy.msg || proxy) +
+            " (proxy)",
+          6000,
+          "error"
+        );
+        return;
+      }
+
+      const data = proxy && proxy.data;
+      statusCode = data && data.status;
+      bodyText = (data && data.body) || "";
+      if (bodyText && typeof bodyText !== "string") {
+        bodyText = JSON.stringify(bodyText);
+      }
       parsed = null;
+      try {
+        parsed = bodyText ? JSON.parse(bodyText) : null;
+      } catch (_e) {
+        parsed = null;
+      }
+
+      if (statusCode === 202 || statusCode === 200) break;
+      if (statusCode !== 404) break;
     }
 
     if (statusCode === 202 || statusCode === 200) {
