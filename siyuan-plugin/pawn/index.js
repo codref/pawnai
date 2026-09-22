@@ -82,6 +82,38 @@ function getActiveBlockId(protyle) {
   }
 }
 
+function formatErrorDetail(value) {
+  if (value == null || value === "") return "";
+  if (typeof value === "string") return value;
+  if (Array.isArray(value)) {
+    return value
+      .map((item) => {
+        if (item == null) return "";
+        if (typeof item === "string") return item;
+        if (typeof item === "object") {
+          return (
+            item.msg ||
+            item.message ||
+            item.detail ||
+            JSON.stringify(item)
+          );
+        }
+        return String(item);
+      })
+      .filter(Boolean)
+      .join("; ");
+  }
+  if (typeof value === "object") {
+    return (
+      value.msg ||
+      value.message ||
+      value.detail ||
+      JSON.stringify(value)
+    );
+  }
+  return String(value);
+}
+
 module.exports = class PawnPlugin extends Plugin {
   constructor(...args) {
     super(...args);
@@ -469,6 +501,8 @@ module.exports = class PawnPlugin extends Plugin {
       headers.push({ Authorization: "Bearer " + this.config.apiToken });
     }
 
+    // payloadEncoding must be "json" (SiYuan 3.8+). "text" leaves the body
+    // empty, which makes FastAPI return a 422 detail array → "[object Object]".
     const proxy = await fetchSyncPost("/api/network/forwardProxy", {
       url: serverUrl + "/v1/siyuan/triggers",
       method: "POST",
@@ -476,13 +510,28 @@ module.exports = class PawnPlugin extends Plugin {
       contentType: "application/json",
       headers,
       payload: { block_id: rootId },
-      payloadEncoding: "text",
+      payloadEncoding: "json",
       responseEncoding: "text",
     });
 
+    if (proxy && proxy.code !== 0) {
+      showMessage(
+        (i18n.sendFail || "Pawn trigger failed") +
+          ": " +
+          formatErrorDetail(proxy.msg || proxy) +
+          " (proxy)",
+        6000,
+        "error"
+      );
+      return;
+    }
+
     const data = proxy && proxy.data;
     const statusCode = data && data.status;
-    const bodyText = (data && data.body) || "";
+    let bodyText = (data && data.body) || "";
+    if (bodyText && typeof bodyText !== "string") {
+      bodyText = JSON.stringify(bodyText);
+    }
     let parsed = null;
     try {
       parsed = bodyText ? JSON.parse(bodyText) : null;
@@ -501,9 +550,9 @@ module.exports = class PawnPlugin extends Plugin {
     }
 
     const detail =
-      (parsed && (parsed.detail || parsed.message)) ||
+      formatErrorDetail(parsed && (parsed.detail || parsed.message)) ||
       bodyText ||
-      "HTTP " + String(statusCode);
+      "HTTP " + String(statusCode == null ? "?" : statusCode);
     showMessage(
       (i18n.sendFail || "Pawn trigger failed") + ": " + detail,
       6000,
