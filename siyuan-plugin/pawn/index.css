@@ -1,7 +1,8 @@
 /* Left bar only — same geometry as a callout, no title or icon. */
 .protyle-wysiwyg [data-type="NodeCustomBlock"][data-info="pawn/prompt"] {
   position: relative;
-  padding-left: calc(0.25em + 6px);
+  min-height: 3em;
+  padding: 4px 8px 4px calc(0.25em + 10px);
   color: var(--b3-theme-on-surface);
   background-color: var(--b3-bq-background);
 }
@@ -18,17 +19,25 @@
 }
 
 .protyle-wysiwyg [data-type="NodeCustomBlock"][data-info="pawn/prompt"] > .custom-block__content {
-  min-height: 1.5em;
+  min-height: 3em;
 }
 
-.pawn-prompt__editor {
-  min-height: 1.5em;
+textarea.pawn-prompt__editor {
+  display: block;
+  width: 100%;
+  box-sizing: border-box;
+  min-height: 3em;
+  margin: 0;
+  padding: 2px 0;
+  border: 0;
+  resize: vertical;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  line-height: 1.5;
   outline: none;
-  white-space: pre-wrap;
-  word-break: break-word;
 }
 
-.pawn-prompt__editor:empty::before {
-  content: attr(data-placeholder);
+textarea.pawn-prompt__editor::placeholder {
   color: var(--b3-theme-on-surface-light);
 }

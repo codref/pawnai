@@ -15,7 +15,7 @@ Requires SiYuan **3.8.3** or newer (custom blocks).
 
 ```bash
 cd /path/to/parakeet/siyuan-plugin/pawn
-zip -r ../pawn-0.2.0.zip plugin.json index.js index.css README.md i18n
+zip -r ../pawn-0.2.1.zip plugin.json index.js index.css README.md i18n
 ```
 
 Then enable **Pawn** under Marketplace → Downloaded.
@@ -42,8 +42,8 @@ floating-toolbar **Send** button appears.
 
 ## Usage
 
-1. Type `/prompt` (or `/pawn`) and choose **Pawn prompt**. An empty prompt
-   block appears. Nothing is sent.
+1. Type `/prompt` (or `/pawn`) and choose **Pawn prompt**. That paragraph
+   becomes a prompt. Text written before the slash is kept. Nothing is sent.
 2. Write the instruction in the block. It is one text region (markdown text,
    not nested blocks).
 3. **Send** when ready (any of these):

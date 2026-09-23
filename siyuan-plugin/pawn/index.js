@@ -49,8 +49,26 @@ function extractPromptInner(kramdown) {
 }
 
 function readEditorText(editor) {
-  const raw = editor && typeof editor.innerText === "string" ? editor.innerText : "";
+  const raw = editor
+    ? typeof editor.value === "string"
+      ? editor.value
+      : typeof editor.innerText === "string"
+        ? editor.innerText
+        : ""
+    : "";
   return escapeFenceLines(raw.replace(/\u00a0/g, " ")).replace(/\n$/, "");
+}
+
+/** Paragraph text before the `/prompt` token. The slash menu does not delete it. */
+function textBeforeSlash(nodeElement) {
+  const editable = nodeElement && nodeElement.querySelector('[contenteditable="true"]');
+  let raw = editable ? editable.innerText || "" : "";
+  raw = raw.replace(/\u200b/g, "").replace(/\u00a0/g, " ");
+  const slash = raw.lastIndexOf("/");
+  if (slash >= 0 && raw.slice(slash).indexOf("\n") === -1) {
+    raw = raw.slice(0, slash);
+  }
+  return raw.replace(/\s+$/, "");
 }
 
 function isPawnPrompt(el) {
@@ -198,33 +216,76 @@ module.exports = class PawnPlugin extends Plugin {
     return toolbar;
   }
 
-  _renderPrompt({ element, content, setContent }) {
-    const editor = document.createElement("div");
+  _renderPrompt({ element, content }) {
+    // A contenteditable inside NodeCustomBlock is not editable: Protyle treats
+    // the block as atomic, and plaintext-only can throw and fall back to <pre>.
+    const editor = document.createElement("textarea");
     editor.className = "pawn-prompt__editor";
-    editor.contentEditable = "plaintext-only";
     editor.spellcheck = true;
-    editor.setAttribute(
-      "data-placeholder",
-      (this.i18n && this.i18n.promptPlaceholder) || "Pawn prompt"
-    );
-    if (content) editor.textContent = content;
+    editor.placeholder =
+      (this.i18n && this.i18n.promptPlaceholder) || "Pawn prompt";
+    editor.value = String(content || "").replace(/\n$/, "");
     element.append(editor);
 
-    const persist = () => {
+    const fit = () => {
+      editor.style.height = "auto";
+      editor.style.height = Math.max(editor.scrollHeight, 48) + "px";
+    };
+    editor.addEventListener("input", fit);
+    fit();
+
+    const block = element.closest && element.closest('[data-type="NodeCustomBlock"]');
+    if (block && !block._pawnPromptMouse) {
+      block._pawnPromptMouse = true;
+      block.addEventListener("mousedown", (event) => {
+        const current = block.querySelector("textarea.pawn-prompt__editor");
+        if (!current) return;
+        if (event.target === current) {
+          event.stopPropagation();
+          return;
+        }
+        event.preventDefault();
+        event.stopPropagation();
+        current.focus();
+      });
+    }
+
+    editor.addEventListener("keydown", (event) => {
+      event.stopPropagation();
+    });
+    editor.addEventListener("blur", () => {
       const text = readEditorText(editor);
       const stored = String(content || "").replace(/\n$/, "");
       if (text === stored) return;
-      if (setContent(text)) return;
-      const block = element.closest && element.closest("[data-node-id]");
-      const id = block && block.getAttribute("data-node-id");
+      const host = element.closest && element.closest("[data-node-id]");
+      const id = host && host.getAttribute("data-node-id");
       if (!id) return;
       fetchSyncPost("/api/block/updateBlock", {
         id,
         dataType: "markdown",
         data: buildPromptMarkdown(text),
       }).catch((e) => console.warn("pawn: persist prompt failed", e));
+    });
+  }
+
+  _focusPrompt(id) {
+    const tryFocus = (left) => {
+      const editor = document.querySelector(
+        '[data-node-id="' + id + '"] textarea.pawn-prompt__editor'
+      );
+      if (editor) {
+        editor.focus();
+        const len = editor.value.length;
+        try {
+          editor.setSelectionRange(len, len);
+        } catch (_e) {
+          /* ignore */
+        }
+        return;
+      }
+      if (left > 0) setTimeout(() => tryFocus(left - 1), 50);
     };
-    editor.addEventListener("blur", persist);
+    setTimeout(() => tryFocus(12), 40);
   }
 
   _sendFromProtyle(protyle) {
@@ -366,7 +427,9 @@ module.exports = class PawnPlugin extends Plugin {
       );
       return;
     }
-    await this._updateMarkdown(id, buildPromptMarkdown(""));
+    const kept = textBeforeSlash(nodeElement);
+    await this._updateMarkdown(id, buildPromptMarkdown(kept));
+    this._focusPrompt(id);
   }
 
   async _updateMarkdown(id, markdown) {
