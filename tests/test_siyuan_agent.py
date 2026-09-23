@@ -12,6 +12,7 @@ from pawn_agent.core.siyuan_protocol import (
     build_result_markdown,
     extract_block_refs,
     find_nearby_request_id,
+    match_request_by_output_position,
     instruction_hash,
     is_pawn_mention,
     parse_discovered_rows,
@@ -75,6 +76,14 @@ def test_approval_checked() -> None:
     assert approval_checked("- [x] Approve for Pawn memory\n")
     assert approval_checked("* [X] Approve for Pawn memory")
     assert not approval_checked("- [ ] Approve for Pawn memory\n")
+    siyuan = (
+        '- {: id="20260923221647-w74zyit" updated="20260924001659"}[X] '
+        "Approve for Pawn memory\n"
+        '  {: id="20260923221647-ij2dphi" updated="20260923221647"}'
+    )
+    assert approval_checked(siyuan)
+    unchecked = '- {: id="abc" updated="1"}[ ] Approve for Pawn memory\n'
+    assert not approval_checked(unchecked)
 
 
 def test_find_nearby_request_id_walks_to_sibling_paragraph() -> None:
@@ -114,6 +123,18 @@ def test_find_nearby_request_id_walks_to_sibling_paragraph() -> None:
     client.query_sql.side_effect = query_sql
     client.get_block_kramdown.return_value = "* [x] Approve for Pawn memory\n"
     assert find_nearby_request_id(client, "li1") == request_id
+
+
+def test_match_request_by_output_position_picks_nearest_preceding() -> None:
+    ordered = ["out-old", "prompt", "out-new", "heading", "approve-list", "out-later"]
+    requests = [
+        ("old-req", "out-old"),
+        ("new-req", "out-new"),
+        ("later-req", "out-later"),
+    ]
+    assert match_request_by_output_position(ordered, "approve-list", requests) == "new-req"
+    assert match_request_by_output_position(ordered, "prompt", requests) == "old-req"
+    assert match_request_by_output_position(ordered, "missing", requests) is None
 
 
 def test_build_result_markdown_includes_checklist() -> None:

@@ -411,16 +411,25 @@ def list_siyuan_agent_requests(
     *,
     status: Optional[str] = None,
     statuses: Optional[List[str]] = None,
+    root_id: Optional[str] = None,
+    newest_first: bool = False,
     limit: int = 50,
 ) -> List[SiyuanAgentRequest]:
-    """List request rows, optionally filtered by status."""
+    """List request rows, optionally filtered by status and document root."""
     with Session(get_engine(dsn)) as db:
         q = db.query(SiyuanAgentRequest)
         if status:
             q = q.filter(SiyuanAgentRequest.status == status)
         if statuses:
             q = q.filter(SiyuanAgentRequest.status.in_(statuses))
-        rows = q.order_by(SiyuanAgentRequest.created_at.asc()).limit(limit).all()
+        if root_id:
+            q = q.filter(SiyuanAgentRequest.root_id == root_id)
+        order = (
+            SiyuanAgentRequest.created_at.desc()
+            if newest_first
+            else SiyuanAgentRequest.created_at.asc()
+        )
+        rows = q.order_by(order).limit(limit).all()
         out: List[SiyuanAgentRequest] = []
         from sqlalchemy.orm import make_transient
 

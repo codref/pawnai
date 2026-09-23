@@ -19,6 +19,7 @@ from pawn_agent.core.siyuan_protocol import (
     conversation_id_for_root,
     fetch_block_row,
     find_nearby_request_id,
+    match_request_by_output_position,
     instruction_hash,
     new_request_id,
     resolve_notebook_allowlist,
@@ -27,6 +28,7 @@ from pawn_agent.core.siyuan_protocol import (
 from pawn_agent.utils.db import (
     claim_siyuan_agent_request,
     get_siyuan_agent_request,
+    list_siyuan_agent_requests,
     update_siyuan_agent_request,
     upsert_siyuan_agent_request,
 )
@@ -208,6 +210,60 @@ async def _run_claimed(
         )
 
 
+def _child_ids(client: Any, root_id: str) -> list[str]:
+    getter = getattr(client, "get_child_blocks", None)
+    if not root_id or getter is None:
+        return []
+    try:
+        rows = getter(root_id) or []
+    except Exception:
+        return []
+    if not isinstance(rows, list):
+        return []
+    return [str(row.get("id")) for row in rows if isinstance(row, dict) and row.get("id")]
+
+
+def _anchor_in_order(client: Any, block_id: str, ordered: list[str]) -> str | None:
+    """First id in *ordered* walking from *block_id* through SQL parents."""
+    wanted = set(ordered)
+    current = block_id
+    seen: set[str] = set()
+    for _ in range(12):
+        if not current or current in seen:
+            return None
+        if current in wanted:
+            return current
+        seen.add(current)
+        row = fetch_block_row(client, current) or {}
+        current = str(row.get("parent_id") or "")
+    return None
+
+
+def _request_id_for_checked_block(
+    cfg: Any, client: Any, block_id: str, row: dict[str, Any]
+) -> str | None:
+    """Match the checkbox to the nearest preceding result on the same document."""
+    root_id = str(row.get("root_id") or "")
+    ordered = _child_ids(client, root_id)
+    if not ordered:
+        return None
+    anchor = _anchor_in_order(client, block_id, ordered)
+    if not anchor:
+        return None
+    candidates = list_siyuan_agent_requests(
+        cfg.db_dsn,
+        statuses=["review", "done"],
+        root_id=root_id,
+        newest_first=True,
+        limit=200,
+    )
+    return match_request_by_output_position(
+        ordered,
+        anchor,
+        [(item.id, item.output_block_id) for item in candidates],
+    )
+
+
 async def accept_siyuan_approval(
     cfg: Any,
     block_id: str,
@@ -243,9 +299,17 @@ async def accept_siyuan_approval(
         ) from exc
     markdown = str(row.get("markdown") or "")
     if not (approval_checked(kramdown or "") or approval_checked(markdown)):
+        logger.warning(
+            "Approve checkbox not checked on %s kramdown=%r markdown=%r",
+            block_id,
+            (kramdown or "")[:240],
+            markdown[:240],
+        )
         raise SiyuanTriggerError("Approve checkbox is not checked", status_code=409)
 
-    request_id = find_nearby_request_id(active, block_id)
+    request_id = _request_id_for_checked_block(cfg, active, block_id, row)
+    if not request_id:
+        request_id = find_nearby_request_id(active, block_id)
     if not request_id:
         raise SiyuanTriggerError(
             "No Pawn result request id near this checkbox",

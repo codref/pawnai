@@ -361,6 +361,20 @@ class SiyuanClient:
             {"dataType": "markdown", "data": markdown, "id": block_id},
         )
 
+    def get_child_blocks(self, block_id: str) -> List[Dict[str, Any]]:
+        """Direct children of *block_id* in document order.
+
+        For a document this is the top-level block sequence. Heading children
+        are included when SiYuan stores them as following siblings.
+        """
+        try:
+            data = self._post("/api/block/getChildBlocks", {"id": block_id})
+        except SiyuanError:
+            return []
+        if isinstance(data, list):
+            return [row for row in data if isinstance(row, dict)]
+        return []
+
     def get_block_kramdown(self, block_id: str) -> str:
         """Return the kramdown source for *block_id* (empty string on failure)."""
         try:

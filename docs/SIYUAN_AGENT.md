@@ -169,8 +169,9 @@ Response `200`:
 { "request_id": "…", "status": "done", "indexed": true }
 ```
 
-`block_id` is the checked task list item. The server reads the nearby
-`_request:` line (the checkbox is often a later sibling of `output_block_id`),
+`block_id` is the checked task list item. The server matches it to the
+nearest preceding result on that document (`output_block_id` in document
+order; a heading in the append can sit outside the checkbox's SQL parent),
 remembers the result, and sets `custom-agent-status: done` on the prompt.
 `indexed` is false when that request was already stored. A checkbox that is
 not checked returns `409`.

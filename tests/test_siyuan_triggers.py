@@ -292,6 +292,57 @@ def test_accept_approval_indexes_checked_box() -> None:
     assert update.call_args.kwargs["indexed_at"] is not None
 
 
+def test_accept_approval_matches_preceding_output_block() -> None:
+    cfg = _cfg()
+    request = _approval_request(output_block_id="out-new")
+    client = MagicMock()
+    client.get_block_kramdown.return_value = "* [x] Approve for Pawn memory\n"
+    client.get_child_blocks.return_value = [
+        {"id": "out-old"},
+        {"id": "out-new"},
+        {"id": "approve-list"},
+    ]
+    rows = {
+        "li1": {
+            "id": "li1",
+            "box": "nb1",
+            "root_id": "doc1",
+            "parent_id": "approve-list",
+            "markdown": "",
+        },
+        "approve-list": {"id": "approve-list", "parent_id": "doc1", "root_id": "doc1"},
+    }
+    agent = MagicMock()
+    session = SimpleNamespace(_agent=agent)
+    registry = MagicMock()
+    registry.get_or_create = AsyncMock(return_value=session)
+    with (
+        patch(
+            "pawn_server.core.siyuan_triggers.fetch_block_row",
+            side_effect=lambda _client, bid: rows.get(bid),
+        ),
+        patch(
+            "pawn_server.core.siyuan_triggers.list_siyuan_agent_requests",
+            return_value=[
+                SimpleNamespace(id="old-req", output_block_id="out-old"),
+                request,
+            ],
+        ),
+        patch(
+            "pawn_server.core.siyuan_triggers.get_siyuan_agent_request",
+            return_value=request,
+        ),
+        patch("pawn_server.core.siyuan_triggers.update_siyuan_agent_request"),
+        patch("pawn_server.core.siyuan_triggers._set_trigger_attrs"),
+    ):
+        from pawn_server.core.siyuan_triggers import accept_siyuan_approval
+
+        result = asyncio.run(accept_siyuan_approval(cfg, "li1", registry=registry, client=client))
+    assert result.request_id == request.id
+    assert result.indexed is True
+    agent.remember.assert_called_once()
+
+
 def test_accept_approval_rejects_unchecked_box() -> None:
     cfg = _cfg()
     client = MagicMock()

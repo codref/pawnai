@@ -29,6 +29,7 @@ STATUSES_SKIP_REDISCOVER = frozenset(
 _MENTION_RE = re.compile(r"^\s*@pawn\b", re.IGNORECASE)
 _BLOCK_REF_RE = re.compile(r"\(\(([0-9a-z]{14}-[0-9a-z]{7})(?:\s+\"[^\"]*\")?\)\)")
 _APPROVE_CHECKED_RE = re.compile(r"(?im)^\s*[-*]\s*\[[xX]\]\s*Approve\s+for\s+Pawn\s+memory\b")
+_INLINE_IAL_RE = re.compile(r"\{:[^}]*\}")
 _TIP_CALLOUT_RE = re.compile(r"(?im)^\s*>\s*\[!TIP\]")
 # Trailing kramdown IAL only. Inline "{: ...}" inside the prompt body stays.
 _TRAILING_IAL_RE = re.compile(r"(?:\s*\{:[^}]*\})+\s*$")
@@ -293,24 +294,60 @@ def build_result_markdown(body: str, *, request_id: str) -> str:
 
 
 def approval_checked(kramdown_or_markdown: str) -> bool:
-    """True when the Approve-for-Pawn-memory checkbox is checked."""
-    return bool(_APPROVE_CHECKED_RE.search(kramdown_or_markdown or ""))
+    """True when the Approve-for-Pawn-memory checkbox is checked.
+
+    SiYuan kramdown puts the list-item IAL between the bullet and the marker,
+    for example ``- {: id="…" updated="…"}[X] Approve for Pawn memory``.
+    """
+    text = _INLINE_IAL_RE.sub("", kramdown_or_markdown or "")
+    return bool(_APPROVE_CHECKED_RE.search(text))
 
 
 INDEXED_CONFIRMATION = "Indexed into Pawn memory"
 
 _REQUEST_LINE_RE = re.compile(
-    r"_request:\s*`([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-"
-    r"[0-9a-fA-F]{4}-[0-9a-fA-F]{12})`"
+    r"request:[^\n]{0,80}?"
+    r"([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-"
+    r"[0-9a-fA-F]{4}-[0-9a-fA-F]{12})",
+    re.IGNORECASE,
 )
 
 
 def _first_request_id(*chunks: str) -> str | None:
     for chunk in chunks:
-        match = _REQUEST_LINE_RE.search(chunk or "")
+        text = (chunk or "").replace("\u200b", "").replace("\ufeff", "")
+        match = _REQUEST_LINE_RE.search(text)
         if match:
             return match.group(1)
     return None
+
+
+def match_request_by_output_position(
+    ordered_ids: Sequence[str],
+    anchor_id: str,
+    requests: Sequence[tuple[str, str | None]],
+) -> str | None:
+    """Request whose output block is the nearest one at or before *anchor_id*.
+
+    *ordered_ids* is document order (``getChildBlocks`` on the root). SiYuan
+    may hoist a heading out of the append parent, so the checkbox is not a
+    SQL child of ``output_block_id``. Position in this list is the link.
+    """
+    index = {bid: i for i, bid in enumerate(ordered_ids) if bid}
+    anchor = index.get(anchor_id)
+    if anchor is None:
+        return None
+    best_at = -1
+    best_id: str | None = None
+    for request_id, output_id in requests:
+        if not request_id or not output_id:
+            continue
+        pos = index.get(output_id)
+        if pos is None or pos > anchor or pos < best_at:
+            continue
+        best_at = pos
+        best_id = request_id
+    return best_id
 
 
 def find_nearby_request_id(client: Any, block_id: str) -> str | None:
