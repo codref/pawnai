@@ -246,8 +246,8 @@ async def execute_claimed_request(
     if request is None:
         return
     update_siyuan_agent_request(cfg.db_dsn, request_id, status="running")
-    # Callout shell is owned by the SiYuan plugin — do not rewrite the trigger
-    # block here (that would flatten multi-block callout children).
+    # The prompt (or legacy callout) is owned by the SiYuan plugin — do not
+    # rewrite the trigger block here.
     _set_trigger_attrs(
         client,
         request.trigger_block_id,

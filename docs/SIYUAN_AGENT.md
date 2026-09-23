@@ -1,12 +1,12 @@
 # SiYuan @pawn agent loop
 
-Plugin-first workflow: type `@pawn` in SiYuan, the **Pawn** plugin wraps the
-block in a TIP callout, you press **Send to Pawn**, and pawn-server runs the
-agent. A reviewable draft is appended under the parent; Matrix can alert; an
-Approve checkbox indexes the result into sallm memory.
+Plugin-first workflow: insert a **Pawn prompt** block in SiYuan, press **Send
+to Pawn**, and pawn-server runs the agent. A reviewable draft is appended under
+the parent; Matrix can alert; an Approve checkbox indexes the result into sallm
+memory.
 
-The SiYuan **document** is the agent session (`siyuan:{root_id}`). The callout
-body (all child blocks) is the instruction for that turn; parent excerpt,
+The SiYuan **document** is the agent session (`siyuan:{root_id}`). The prompt
+body is the instruction for that turn; parent excerpt,
 explicit `((block refs))`, and `siyuan_read` / session tools supply extra
 context — same model as the old SQL watcher path.
 
@@ -81,26 +81,32 @@ Enable **Pawn** in SiYuan, then set:
 |---------|----------------|
 | Server URL | `http://127.0.0.1:8000` (reachable from the **kernel**) |
 | API token | same as `api.token` |
-| Mention token | `@pawn` (must match `siyuan_watcher.mention_token`) |
+
+`siyuan_watcher.mention_token` still applies to the optional SQL discovery
+path (`discover_mentions`). The plugin does not require `@pawn` inside a
+prompt block.
 
 See [siyuan-plugin/pawn/README.md](../siyuan-plugin/pawn/README.md).
 
 ## Human UX
 
-1. Under any block in an allowlisted notebook, write:
+1. In an allowlisted notebook, type `/prompt` (or `/pawn`) and choose **Pawn
+   prompt**. That inserts an empty `;;;pawn/prompt` block and does not send.
+   Write the instruction in the block:
 
    ```markdown
-   @pawn Deep-analyze the linked notes. Highlight tasks and decisions.
+   Deep-analyze the linked notes. Highlight tasks and decisions.
    Use ((20260920113000-abc1234 "context")).
    ```
 
-2. Finish the instruction, then **Send to Pawn** (floating toolbar paper-plane,
-   block gutter menu, or ⌥⌘P). With wrap-on-send enabled the paragraph becomes
-   a **TIP** callout (SiYuan 3.5+). Add more child blocks inside it afterward —
-   the **entire callout** is the request.
+2. **Send to Pawn** (floating toolbar paper-plane, block gutter menu, or ⌥⌘P).
+   If the selection is already a Pawn prompt, that block is posted. Otherwise
+   Send replaces the selected blocks with one prompt containing their text,
+   then posts it. The prompt is one text region (a left border, no title or
+   icon), not a container of child blocks.
 
-3. Send posts `{ "block_id": "<callout>" }` to `POST /v1/siyuan/triggers`
-   (via SiYuan `forwardProxy`).
+3. Send posts `{ "block_id": "<prompt>" }` as JSON to `POST /v1/siyuan/triggers`
+   (via SiYuan `forwardProxy`, `payloadEncoding: "json"`).
 
 4. A **Pawn result — ready for review** section is appended under the parent,
    including:
@@ -114,8 +120,11 @@ See [siyuan-plugin/pawn/README.md](../siyuan-plugin/pawn/README.md).
 6. Check **Approve for Pawn memory** in SiYuan. On the next watcher tick the
    request is marked `done` and `Agent.remember` indexes the approved content.
 
-7. To refine later, edit the callout (new instruction hash) and Send again, or
-   add another `@pawn …` under the same thread.
+7. To refine later, edit the prompt (new instruction hash) and Send again, or
+   insert another prompt under the same document.
+
+Existing TIP callouts that contain `@pawn`, and paragraphs that start with
+`@pawn`, still resolve. The plugin no longer creates TIP callouts.
 
 ## API
 
@@ -139,9 +148,10 @@ Response `202`:
 }
 ```
 
-The server resolves `block_id` to the nearest TIP callout (or plain mention),
-reads full callout kramdown as `instruction_text`, upserts
-`siyuan_agent_requests`, and runs the agent in the background. Same
+The server resolves `block_id` to the nearest `;;;pawn/prompt` block and uses
+the fence body as `instruction_text`. If none is found it falls back to a TIP
+callout that contains `@pawn`, then to a block that starts with `@pawn`. It
+upserts `siyuan_agent_requests` and runs the agent in the background. Same
 trigger + hash while `queued` / `claimed` / `running` / `review` is idempotent
 (`started: false`).
 
@@ -155,7 +165,7 @@ trigger + hash while `queued` / `claimed` / `running` / `review` is idempotent
 | `custom-agent-source-hash` | Instruction hash (idempotency) |
 | `custom-agent-run-id` | `agent_runs.id` |
 
-Attrs live on the **callout root**.
+Attrs live on the **prompt block** (or the legacy callout / mention block).
 
 ## Agent tools / skill
 

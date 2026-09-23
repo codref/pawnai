@@ -1,7 +1,13 @@
 # Pawn (SiYuan plugin)
 
-Wraps `@pawn` paragraphs into a TIP callout (on send) and posts the **full
-callout** to pawn-server via `POST /v1/siyuan/triggers`.
+Inserts a **Pawn prompt** custom block and posts that block id to pawn-server
+via `POST /v1/siyuan/triggers`.
+
+The block is a SiYuan custom block (`;;;pawn/prompt`). It is a single text
+region with a left border — no title and no icon. `/prompt` only inserts it.
+**Send** turns the selection into that block and sends it.
+
+Requires SiYuan **3.8.3** or newer (custom blocks).
 
 ## Install
 
@@ -9,7 +15,7 @@ callout** to pawn-server via `POST /v1/siyuan/triggers`.
 
 ```bash
 cd /path/to/parakeet/siyuan-plugin/pawn
-zip -r ../pawn-0.1.2.zip plugin.json index.js README.md i18n
+zip -r ../pawn-0.2.0.zip plugin.json index.js index.css README.md i18n
 ```
 
 Then enable **Pawn** under Marketplace → Downloaded.
@@ -31,23 +37,26 @@ floating-toolbar **Send** button appears.
 |-----|---------|-------|
 | Server URL | `http://127.0.0.1:8000` | Must be reachable from the SiYuan **kernel** |
 | API token | _(empty)_ | Same as `api.token` in `pawnai.yaml` |
-| Mention token | `@pawn` | Must match `siyuan_watcher.mention_token` |
-| Wrap as callout on send | on | TIP callout created when you send (not while typing) |
-| Callout icon | 🤖 | Embedded in TIP title |
 | Send button label | `Send to Pawn` | Toolbar / menu / command label |
 | Request timeout (ms) | `15000` | `forwardProxy` timeout (202 returns quickly) |
 
 ## Usage
 
-1. Type `@pawn ` at the start of a paragraph, then your instruction. Keep
-   editing normally — nothing rewrites the block while you type.
-2. **Send** when ready (any of these):
-   - Select text in the block → floating toolbar → **Send to Pawn** (paper-plane icon)
-   - Block gutter icon (left of the block) → **Send to Pawn**
+1. Type `/prompt` (or `/pawn`) and choose **Pawn prompt**. An empty prompt
+   block appears. Nothing is sent.
+2. Write the instruction in the block. It is one text region (markdown text,
+   not nested blocks).
+3. **Send** when ready (any of these):
+   - Floating toolbar → **Send to Pawn** (paper-plane icon)
+   - Block gutter icon → **Send to Pawn**
    - Hotkey **⌥⌘P** (Alt+Ctrl+P on Linux; remap under Settings → Keymap → Pawn)
-3. With wrap-on-send enabled, the paragraph becomes a TIP callout and
-   pawn-server runs the agent; a review draft appears under the callout parent.
-4. Check **Approve for Pawn memory** when ready (watcher indexes it).
+4. If the selection is already a Pawn prompt, Send posts that block. Otherwise
+   Send replaces the selected blocks with one prompt containing their text,
+   then posts `{ "block_id" }` as JSON through `forwardProxy`.
+5. A review draft appears under the prompt's parent. Check **Approve for Pawn
+   memory** when ready (watcher indexes it).
 
-The document root is the agent session (`siyuan:{root_id}`) — same as the
-previous SQL watcher path.
+The document root is the agent session (`siyuan:{root_id}`).
+
+Existing TIP callouts that still contain `@pawn` can be sent; the plugin no
+longer creates them.

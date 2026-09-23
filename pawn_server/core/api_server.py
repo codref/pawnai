@@ -18,8 +18,8 @@ DELETE /sessions/{session_id}
     Clear all stored turns for a session (start fresh).
 
 POST /v1/siyuan/triggers
-    Accept a SiYuan @pawn callout ``block_id`` and start the review loop
-    (202). Instruction is the full callout kramdown read from SiYuan.
+    Accept a SiYuan Pawn prompt ``block_id`` and start the review loop
+    (202). Instruction is the prompt body (legacy TIP / ``@pawn`` still resolve).
 
 POST /knowledge
     Index content into the RAG vector store (inline text, session transcript,
@@ -497,13 +497,13 @@ async def siyuan_triggers(
     body: SiyuanTriggerRequest,
     cfg: Any = Depends(_get_cfg),
 ) -> SiyuanTriggerResponse:
-    """Accept a SiYuan @pawn callout and start the agent review loop.
+    """Accept a SiYuan Pawn prompt and start the agent review loop.
 
     Body is only ``{ "block_id": "..." }``. The server resolves the nearest
-    TIP callout (or plain mention), loads full callout kramdown as the
-    instruction, upserts ``siyuan_agent_requests``, and runs
-    ``execute_claimed_request`` in the background. Returns 202 before the
-    agent turn finishes.
+    ``pawn/prompt`` custom block (or a legacy TIP callout / plain ``@pawn``
+    mention), loads that text as the instruction, upserts
+    ``siyuan_agent_requests``, and runs ``execute_claimed_request`` in the
+    background. Returns 202 before the agent turn finishes.
     """
     from pawn_server.core.siyuan_triggers import (  # noqa: PLC0415
         SiyuanTriggerError,

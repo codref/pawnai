@@ -2,8 +2,8 @@
   "name": "pawn",
   "author": "PawnAI",
   "url": "https://github.com/codref/parakeet",
-  "version": "0.1.5",
-  "minAppVersion": "3.0.0",
+  "version": "0.2.0",
+  "minAppVersion": "3.8.3",
   "backends": ["all"],
   "frontends": ["all"],
   "displayName": {
@@ -12,9 +12,9 @@
     "zh_CN": "Pawn"
   },
   "description": {
-    "default": "Wrap @pawn mentions in a TIP callout and send them to pawn-server.",
-    "en_US": "Wrap @pawn mentions in a TIP callout and send them to pawn-server.",
-    "zh_CN": "将 @pawn 提及包装为 TIP 标注块并发送到 pawn-server。"
+    "default": "Insert a Pawn prompt block and send it to pawn-server.",
+    "en_US": "Insert a Pawn prompt block and send it to pawn-server.",
+    "zh_CN": "插入 Pawn 提示块并发送到 pawn-server。"
   },
   "readme": {
     "default": "README.md",

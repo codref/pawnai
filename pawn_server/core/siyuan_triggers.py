@@ -63,7 +63,7 @@ async def accept_siyuan_trigger(
     registry: SallmSessionRegistry,
     client: Any | None = None,
 ) -> SiyuanTriggerResult:
-    """Resolve *block_id* to a pawn callout, upsert, and start execution if needed.
+    """Resolve *block_id* to a Pawn prompt (or legacy mention), upsert, and start.
 
     Returns immediately after scheduling ``execute_claimed_request`` when a new
     run is started. Idempotent for the same trigger + instruction hash while the
@@ -74,7 +74,7 @@ async def accept_siyuan_trigger(
     resolved = resolve_pawn_trigger(active_client, block_id, mention_token=mention)
     if resolved is None:
         raise SiyuanTriggerError(
-            "No @pawn TIP callout (or mention block) found for this block_id",
+            "No Pawn prompt (or legacy @pawn block) found for this block_id",
             status_code=404,
         )
 
@@ -87,7 +87,7 @@ async def accept_siyuan_trigger(
 
     text = resolved.instruction_text
     if not text:
-        raise SiyuanTriggerError("Callout instruction is empty", status_code=400)
+        raise SiyuanTriggerError("Instruction is empty", status_code=400)
 
     ih = instruction_hash(text)
     conv = conversation_id_for_root(resolved.root_id)

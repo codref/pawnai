@@ -30,6 +30,15 @@ _MENTION_RE = re.compile(r"^\s*@pawn\b", re.IGNORECASE)
 _BLOCK_REF_RE = re.compile(r"\(\(([0-9a-z]{14}-[0-9a-z]{7})(?:\s+\"[^\"]*\")?\)\)")
 _APPROVE_CHECKED_RE = re.compile(r"(?im)^\s*[-*]\s*\[[xX]\]\s*Approve\s+for\s+Pawn\s+memory\b")
 _TIP_CALLOUT_RE = re.compile(r"(?im)^\s*>\s*\[!TIP\]")
+# Trailing kramdown IAL only. Inline "{: ...}" inside the prompt body stays.
+_TRAILING_IAL_RE = re.compile(r"(?:\s*\{:[^}]*\})+\s*$")
+PROMPT_BLOCK_INFO = "pawn/prompt"
+# SiYuan custom block: ;;;pawn/prompt\n...\n;;;
+_PROMPT_FENCE_RE = re.compile(
+    rf"^;;;{re.escape(PROMPT_BLOCK_INFO)}[ \t]*\n(.*)\n;;;[ \t]*\Z",
+    re.DOTALL,
+)
+_PROMPT_EMPTY_RE = re.compile(rf"^;;;{re.escape(PROMPT_BLOCK_INFO)}[ \t]*\n;;;[ \t]*\Z")
 # Statuses that mean "do not start another run for this trigger+hash".
 STATUSES_NO_RETRIGGER = frozenset({"queued", "claimed", "running", "review"})
 
@@ -53,7 +62,7 @@ class DiscoveredPawnBlock:
 
 @dataclass(frozen=True)
 class ResolvedPawnTrigger:
-    """Callout (or plain mention) block resolved for a plugin/API trigger."""
+    """Prompt block (or legacy callout / mention) resolved for a plugin/API trigger."""
 
     trigger_block_id: str
     parent_block_id: str
@@ -82,16 +91,34 @@ def fetch_block_row(client: Any, block_id: str) -> dict[str, Any] | None:
     return row if isinstance(row, dict) else None
 
 
+def extract_pawn_prompt_instruction(kramdown: str) -> str | None:
+    """Inner text of a ``;;;pawn/prompt`` fence, or None when *kramdown* is not one.
+
+    IAL tails (``{: ...}``) are ignored. An empty fence returns ``""``.
+    """
+    text = _TRAILING_IAL_RE.sub("", kramdown or "").strip()
+    if not text:
+        return None
+    if _PROMPT_EMPTY_RE.match(text):
+        return ""
+    match = _PROMPT_FENCE_RE.match(text)
+    if match is None:
+        return None
+    return match.group(1).strip("\n")
+
+
 def resolve_pawn_trigger(
     client: Any,
     block_id: str,
     *,
     mention_token: str = "@pawn",
 ) -> ResolvedPawnTrigger | None:
-    """Walk from *block_id* up to the nearest pawn TIP callout (or plain mention).
+    """Walk from *block_id* up to the nearest Pawn prompt, else a legacy mention.
 
-    Prefers a TIP callout whose kramdown contains the mention token. Falls back
-    to a block that starts with the mention. Returns None when neither is found.
+    Prefers a ``;;;pawn/prompt`` custom block and uses the fence body as the
+    instruction. Falls back to a TIP callout whose kramdown contains the mention
+    token, then to a block that starts with the mention. Returns None when none
+    of those match.
     """
     if not (block_id or "").strip():
         return None
@@ -131,6 +158,10 @@ def resolve_pawn_trigger(
             source_updated=updated,
         )
 
+    for tid, row, kd in chain:
+        inner = extract_pawn_prompt_instruction(kd)
+        if inner is not None:
+            return _to_resolved(tid, row, inner)
     for tid, row, kd in chain:
         if looks_like_tip_callout(kd) and contains_mention_token(kd, mention_token):
             return _to_resolved(tid, row, kd)
