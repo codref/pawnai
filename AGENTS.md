@@ -55,7 +55,8 @@ Notes: pytest defaults to `--cov=pawn_diarize --cov-report=term-missing`; pass `
 - Matrix bot (`pawn_server/core/matrix_bot.py`) is an optional `serve` worker: in-process `run_agent_turn` with `source="matrix"` (same tools/skills as CLI chat). When `matrix_bot.notify_room_id` is set, it also consumes `queue_producers.matrix` for outbound alerts. See `docs/MATRIX_BOT.md`.
 - SiYuan `@pawn` loop (`docs/SIYUAN_AGENT.md`): the plugin inserts a `pawn/prompt`
   custom block (`/prompt` inserts only; Send converts the selection and posts
-  `block_id`). Watcher polls approvals (optional `discover_mentions` SQL scan).
+  `block_id`). Checking Approve posts `POST /v1/siyuan/approvals` (the watcher
+  does not poll review rows; optional `discover_mentions` SQL scan).
   Session key `siyuan:{root_id}`. See `siyuan-plugin/pawn/` and
   `pawn_server/core/siyuan_triggers.py`.
 - Agent run persistence is centralized in `pawn_agent/core/agent_runner.py`.

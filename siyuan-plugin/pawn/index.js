@@ -3,7 +3,8 @@
  *
  * Inserts a pawn/prompt custom block (slash inserts only; Send converts the
  * selection and posts its block id) to pawn-server POST /v1/siyuan/triggers
- * via /api/network/forwardProxy.
+ * via /api/network/forwardProxy. Checking "Approve for Pawn memory" posts
+ * that list item to POST /v1/siyuan/approvals.
  */
 const { Plugin, Setting, fetchSyncPost, showMessage } = require("siyuan");
 
@@ -11,6 +12,8 @@ const CONFIG_KEY = "config.json";
 const ATTR_STATUS = "custom-agent-status";
 const PROMPT_INFO = "pawn/prompt";
 const BUSY_STATUSES = new Set(["queued", "claimed", "running"]);
+const APPROVE_TEXT = "Approve for Pawn memory";
+const INDEXED_TEXT = "Indexed into Pawn memory";
 
 const DEFAULTS = {
   serverUrl: "http://127.0.0.1:8000",
@@ -182,6 +185,10 @@ module.exports = class PawnPlugin extends Plugin {
     };
 
     this.eventBus.on("click-blockicon", this._onBlockIcon);
+    this._boundEditorClick = (evt) => this._onEditorClick(evt);
+    this.eventBus.on("click-editorcontent", this._boundEditorClick);
+    this._approving = new Set();
+    this._approveFailed = new Set();
 
     this.addCommand({
       langKey: "sendToPawn",
@@ -194,6 +201,9 @@ module.exports = class PawnPlugin extends Plugin {
 
   onunload() {
     this.eventBus.off("click-blockicon", this._onBlockIcon);
+    if (this._boundEditorClick) {
+      this.eventBus.off("click-editorcontent", this._boundEditorClick);
+    }
   }
 
   updateProtyleToolbar(toolbar) {
@@ -537,47 +547,23 @@ module.exports = class PawnPlugin extends Plugin {
       return;
     }
 
-    const headers = [];
-    if (this.config.apiToken) {
-      headers.push({ Authorization: "Bearer " + this.config.apiToken });
-    }
-
-    // Kernel default payloadEncoding is "json": the object is the request body.
-    const proxy = await fetchSyncPost("/api/network/forwardProxy", {
-      url: serverUrl + "/v1/siyuan/triggers",
-      method: "POST",
-      timeout: Math.max(1000, Number(this.config.requestTimeoutMs) || 15000),
-      contentType: "application/json",
-      headers,
-      payload: { block_id: blockId },
-      payloadEncoding: "json",
-      responseEncoding: "text",
-    });
-
-    if (proxy && proxy.code !== 0) {
+    const result = await this._forwardProxy(
+      "/v1/siyuan/triggers",
+      { block_id: blockId },
+      this.config.requestTimeoutMs
+    );
+    if (result.kind === "proxy") {
       showMessage(
-        (i18n.sendFail || "Pawn trigger failed") +
-          ": " +
-          formatErrorDetail(proxy.msg || proxy) +
-          " (proxy)",
+        (i18n.sendFail || "Pawn trigger failed") + ": " + result.message + " (proxy)",
         6000,
         "error"
       );
       return;
     }
 
-    const data = proxy && proxy.data;
-    const statusCode = data && data.status;
-    let bodyText = (data && data.body) || "";
-    if (bodyText && typeof bodyText !== "string") {
-      bodyText = JSON.stringify(bodyText);
-    }
-    let parsed = null;
-    try {
-      parsed = bodyText ? JSON.parse(bodyText) : null;
-    } catch (_e) {
-      parsed = null;
-    }
+    const statusCode = result.statusCode;
+    const parsed = result.parsed;
+    const bodyText = result.bodyText;
 
     if (statusCode === 202 || statusCode === 200) {
       showMessage(
@@ -598,5 +584,201 @@ module.exports = class PawnPlugin extends Plugin {
       6000,
       "error"
     );
+  }
+
+  /**
+   * Kernel default payloadEncoding is "json": the object is the request body.
+   * Returns {kind:"config"|"proxy"|"http", ...}.
+   */
+  async _forwardProxy(path, payload, timeoutMs) {
+    const serverUrl = (this.config.serverUrl || "").replace(/\/+$/, "");
+    if (!serverUrl) return { kind: "config" };
+    const headers = [];
+    if (this.config.apiToken) {
+      headers.push({ Authorization: "Bearer " + this.config.apiToken });
+    }
+    const proxy = await fetchSyncPost("/api/network/forwardProxy", {
+      url: serverUrl + path,
+      method: "POST",
+      timeout: Math.max(1000, Number(timeoutMs) || 15000),
+      contentType: "application/json",
+      headers,
+      payload,
+      payloadEncoding: "json",
+      responseEncoding: "text",
+    });
+    if (proxy && proxy.code !== 0) {
+      return { kind: "proxy", message: formatErrorDetail(proxy.msg || proxy) };
+    }
+    const data = proxy && proxy.data;
+    const statusCode = data && data.status;
+    let bodyText = (data && data.body) || "";
+    if (bodyText && typeof bodyText !== "string") {
+      bodyText = JSON.stringify(bodyText);
+    }
+    let parsed = null;
+    try {
+      parsed = bodyText ? JSON.parse(bodyText) : null;
+    } catch (_e) {
+      parsed = null;
+    }
+    return { kind: "http", statusCode, parsed, bodyText };
+  }
+
+  _onEditorClick(evt) {
+    const detail = (evt && evt.detail) || {};
+    const event = detail.event;
+    const target = event && event.target;
+    if (!target || !target.closest) return;
+    const action = target.closest(".protyle-action--task");
+    if (!action) return;
+    const item = action.closest('[data-type="NodeListItem"]');
+    if (!item) return;
+    const text = (item.innerText || "").replace(/\s+/g, " ");
+    if (!text.includes(APPROVE_TEXT)) return;
+    const blockId = item.getAttribute("data-node-id");
+    if (!blockId || (this._approving && this._approving.has(blockId))) return;
+    const wasChecked = (item.getAttribute("data-task") || " ") !== " ";
+    // A failed attempt leaves the box checked. The next click unchecks it in
+    // SiYuan, so retry immediately while the saved markdown is still checked.
+    if (wasChecked && this._approveFailed.has(blockId)) {
+      this._approving.add(blockId);
+      this._postApproval(item, blockId)
+        .catch((e) => {
+          console.error("pawn: approve failed", e);
+        })
+        .finally(() => {
+          this._approving.delete(blockId);
+        });
+      return;
+    }
+    // click-editorcontent runs before the task toggle. The marker is updated
+    // synchronously later in the same click, so wait one turn.
+    setTimeout(() => {
+      this._approveIfChecked(item, blockId).catch((e) => {
+        console.error("pawn: approve failed", e);
+      });
+    }, 0);
+  }
+
+  async _approveIfChecked(item, blockId) {
+    if (!item.isConnected) return;
+    if ((item.getAttribute("data-task") || " ") === " ") return;
+    if (this._approving.has(blockId)) return;
+    this._approving.add(blockId);
+    const i18n = this.i18n || {};
+    try {
+      const ready = await this._kramdownChecked(blockId, item);
+      if (!item.isConnected) return;
+      if ((item.getAttribute("data-task") || " ") === " ") return;
+      if (!ready) {
+        this._approveFailed.add(blockId);
+        showMessage(
+          (i18n.indexFail || "Could not index into Pawn memory") +
+            ": SiYuan did not save the checkbox",
+          6000,
+          "error"
+        );
+        return;
+      }
+      await this._postApproval(item, blockId);
+    } finally {
+      this._approving.delete(blockId);
+    }
+  }
+
+  async _kramdownChecked(blockId, item) {
+    for (let i = 0; i < 8; i++) {
+      if (!item.isConnected) return false;
+      if ((item.getAttribute("data-task") || " ") === " ") return false;
+      try {
+        const kd = await this._blockMarkdown(blockId);
+        if (/\[x\]/i.test(kd) && kd.includes(APPROVE_TEXT)) return true;
+      } catch (_e) {
+        /* transaction may still be in flight */
+      }
+      await new Promise((resolve) => setTimeout(resolve, 150));
+    }
+    return false;
+  }
+
+  async _postApproval(item, blockId) {
+    const i18n = this.i18n || {};
+    const serverUrl = (this.config.serverUrl || "").replace(/\/+$/, "");
+    if (!serverUrl) {
+      this._approveFailed.add(blockId);
+      showMessage(i18n.notConfigured || "Configure Pawn server URL", 4000, "error");
+      return;
+    }
+    showMessage(i18n.indexPending || "Indexing into Pawn memory…", 10000, "info");
+    const timeout = Math.max(60000, Number(this.config.requestTimeoutMs) || 15000);
+    const result = await this._forwardProxy(
+      "/v1/siyuan/approvals",
+      { block_id: blockId },
+      timeout
+    );
+    if (result.kind === "proxy") {
+      this._approveFailed.add(blockId);
+      showMessage(
+        (i18n.indexFail || "Could not index into Pawn memory") +
+          ": " +
+          result.message +
+          " (proxy)",
+        6000,
+        "error"
+      );
+      return;
+    }
+    const statusCode = result.statusCode;
+    if (statusCode === 200) {
+      this._approveFailed.delete(blockId);
+      try {
+        await this._replaceApproveLine(item);
+        showMessage(i18n.indexOk || INDEXED_TEXT, 4000, "info");
+      } catch (err) {
+        this._approveFailed.add(blockId);
+        showMessage(
+          (i18n.indexRewriteFail ||
+            "Indexed into Pawn memory, but the checkbox line could not be updated") +
+            ": " +
+            (err && err.message ? err.message : String(err)),
+          6000,
+          "error"
+        );
+      }
+      return;
+    }
+    this._approveFailed.add(blockId);
+    const detail =
+      formatErrorDetail(result.parsed && (result.parsed.detail || result.parsed.message)) ||
+      result.bodyText ||
+      "HTTP " + String(statusCode == null ? "?" : statusCode);
+    showMessage(
+      (i18n.indexFail || "Could not index into Pawn memory") + ": " + detail,
+      6000,
+      "error"
+    );
+  }
+
+  async _replaceApproveLine(item) {
+    const blockId = item.getAttribute("data-node-id");
+    const list = item.closest('[data-type="NodeList"]');
+    const listId = list && list.getAttribute("data-node-id");
+    const anchor = listId || blockId;
+    const items = list
+      ? list.querySelectorAll(':scope > [data-type="NodeListItem"]')
+      : [];
+    const onlyItem = items.length <= 1;
+    const inserted = await fetchSyncPost("/api/block/insertBlock", {
+      dataType: "markdown",
+      data: INDEXED_TEXT + "\n",
+      previousID: anchor,
+    });
+    if (!inserted || inserted.code !== 0) {
+      throw new Error(
+        formatErrorDetail(inserted && (inserted.msg || inserted)) || "insertBlock failed"
+      );
+    }
+    await this._deleteBlock(onlyItem && listId ? listId : blockId);
   }
 };

@@ -15,7 +15,7 @@ Requires SiYuan **3.8.3** or newer (custom blocks).
 
 ```bash
 cd /path/to/parakeet/siyuan-plugin/pawn
-zip -r ../pawn-0.2.1.zip plugin.json index.js index.css README.md i18n
+zip -r ../pawn-0.2.2.zip plugin.json index.js index.css README.md i18n
 ```
 
 Then enable **Pawn** under Marketplace → Downloaded.
@@ -54,7 +54,9 @@ floating-toolbar **Send** button appears.
    Send replaces the selected blocks with one prompt containing their text,
    then posts `{ "block_id" }` as JSON through `forwardProxy`.
 5. A review draft appears under the prompt's parent. Check **Approve for Pawn
-   memory** when ready (watcher indexes it).
+   memory**. The plugin posts that checkbox once. A toast says it is indexing;
+   on success the line becomes **Indexed into Pawn memory**. On failure the
+   toast shows the error and the box stays checked so you can try again.
 
 The document root is the agent session (`siyuan:{root_id}`).
 

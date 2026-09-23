@@ -244,7 +244,7 @@ def test_watcher_tick_claims_queued() -> None:
         ),
         patch(
             "pawn_server.core.siyuan_watcher.list_siyuan_agent_requests",
-            side_effect=[[req], []],
+            return_value=[req],
         ),
         patch(
             "pawn_server.core.siyuan_watcher.claim_siyuan_agent_request",
@@ -254,11 +254,6 @@ def test_watcher_tick_claims_queued() -> None:
             "pawn_server.core.siyuan_watcher.execute_claimed_request",
             new_callable=AsyncMock,
         ) as exec_req,
-        patch(
-            "pawn_server.core.siyuan_watcher.process_approvals",
-            new_callable=AsyncMock,
-            return_value=0,
-        ),
     ):
         stats = asyncio.run(run_siyuan_watcher_tick(cfg, registry=registry))
     assert stats["claimed"] == 1
@@ -283,12 +278,7 @@ def test_watcher_tick_skips_discovery_when_disabled() -> None:
         ) as discover,
         patch(
             "pawn_server.core.siyuan_watcher.list_siyuan_agent_requests",
-            side_effect=[[], []],
-        ),
-        patch(
-            "pawn_server.core.siyuan_watcher.process_approvals",
-            new_callable=AsyncMock,
-            return_value=0,
+            return_value=[],
         ),
     ):
         stats = asyncio.run(run_siyuan_watcher_tick(cfg, registry=registry))

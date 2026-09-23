@@ -1,8 +1,8 @@
 """Pull-only SiYuan @pawn watcher for pawn-server.
 
 Discovers ``@pawn`` blocks via SQL, claims durable Postgres rows, runs the
-agent (in-process), appends review drafts, Matrix-notifies, and indexes
-approvals into sallm memory.
+agent (in-process), appends review drafts, and Matrix-notifies. Approve
+clicks are indexed by ``POST /v1/siyuan/approvals``, not by this loop.
 """
 
 from __future__ import annotations
@@ -10,7 +10,6 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
-from datetime import datetime, timezone
 from typing import Any, Optional
 
 from pawn_agent.core.agent_runner import run_agent_turn
@@ -22,7 +21,6 @@ from pawn_agent.core.siyuan_protocol import (
     ATTR_STATUS,
     STATUSES_SKIP_REDISCOVER,
     InstructionSettleTracker,
-    approval_checked,
     build_agent_prompt,
     build_discovery_sql,
     build_result_markdown,
@@ -318,68 +316,12 @@ async def execute_claimed_request(
     )
 
 
-async def process_approvals(
-    cfg: Any,
-    *,
-    registry: SallmSessionRegistry,
-    client: Any,
-) -> int:
-    """Poll review requests for Approve checkbox; mark done + remember."""
-    rows = list_siyuan_agent_requests(cfg.db_dsn, status="review", limit=30)
-    done_count = 0
-    for request in rows:
-        output_id = request.output_block_id
-        if not output_id:
-            continue
-        try:
-            kramdown = await asyncio.to_thread(client.get_block_kramdown, output_id)
-        except Exception as exc:
-            logger.warning("Failed reading output %s: %s", output_id, exc)
-            continue
-        attrs = await asyncio.to_thread(client.get_block_attrs, request.trigger_block_id)
-        status_attr = (attrs.get(ATTR_STATUS) or "").strip().lower()
-        approved = approval_checked(kramdown) or status_attr == "done"
-        if not approved:
-            continue
-        if request.indexed_at is not None:
-            if status_attr != "done":
-                _set_trigger_attrs(client, request.trigger_block_id, {ATTR_STATUS: "done"})
-            continue
-
-        summary = (
-            f"Approved SiYuan @pawn result.\n"
-            f"request_id={request.id}\n"
-            f"trigger={request.trigger_block_id}\n"
-            f"output={output_id}\n\n"
-            f"Instruction:\n{(request.instruction_text or '')[:1500]}\n\n"
-            f"Result:\n{(kramdown or '')[:6000]}"
-        )
-        try:
-            session = await registry.get_or_create(request.conversation_id, cfg, cfg.db_dsn)
-            await asyncio.to_thread(
-                session._agent.remember,  # noqa: SLF001 — intentional index path
-                summary,
-                source=f"siyuan:{request.id}",
-                index_raw=False,
-            )
-        except Exception as exc:
-            logger.error("remember() failed for %s: %s", request.id, exc, exc_info=True)
-            update_siyuan_agent_request(cfg.db_dsn, request.id, error_code="index_failed")
-            continue
-
-        now = datetime.now(timezone.utc)
-        update_siyuan_agent_request(cfg.db_dsn, request.id, status="done", indexed_at=now)
-        _set_trigger_attrs(client, request.trigger_block_id, {ATTR_STATUS: "done"})
-        done_count += 1
-    return done_count
-
-
 async def run_siyuan_watcher_tick(
     cfg: Any,
     *,
     registry: Optional[SallmSessionRegistry] = None,
 ) -> dict[str, int]:
-    """One watcher tick: discover (optional), claim/execute, process approvals."""
+    """One watcher tick: discover (optional), then claim and execute."""
     active = registry or SallmSessionRegistry()
     client = client_from_agent_config(cfg)
     discover = bool(getattr(cfg.siyuan_watcher, "discover_mentions", False))
@@ -403,8 +345,7 @@ async def run_siyuan_watcher_tick(
         await execute_claimed_request(cfg, request.id, registry=active, client=client)
         claimed += 1
 
-    approved = await process_approvals(cfg, registry=active, client=client)
-    return {"discovered": discovered, "claimed": claimed, "approved": approved}
+    return {"discovered": discovered, "claimed": claimed}
 
 
 async def start_siyuan_watcher(

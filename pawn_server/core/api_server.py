@@ -206,6 +206,22 @@ class SiyuanTriggerResponse(BaseModel):
     started: bool
 
 
+class SiyuanApprovalRequest(BaseModel):
+    """Body for POST /v1/siyuan/approvals."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    block_id: str
+
+
+class SiyuanApprovalResponse(BaseModel):
+    """Indexed (or already indexed) Approve click."""
+
+    request_id: str
+    status: str
+    indexed: bool
+
+
 # ──────────────────────────────────────────────────────────────────────────────
 # Dependencies
 # ──────────────────────────────────────────────────────────────────────────────
@@ -525,6 +541,43 @@ async def siyuan_triggers(
         conversation_id=result.conversation_id,
         trigger_block_id=result.trigger_block_id,
         started=result.started,
+    )
+
+
+@app.post(
+    "/v1/siyuan/approvals",
+    response_model=SiyuanApprovalResponse,
+    dependencies=[Depends(_require_token)],
+)
+async def siyuan_approvals(
+    body: SiyuanApprovalRequest,
+    cfg: Any = Depends(_get_cfg),
+) -> SiyuanApprovalResponse:
+    """Index one checked Approve checkbox into sallm memory.
+
+    Body is ``{ "block_id": "..." }`` for the clicked task list item. The
+    server finds the nearby ``_request:`` id, calls ``Agent.remember``, and
+    marks the request ``done``. A second call for an already indexed request
+    returns ``indexed: false``.
+    """
+    from pawn_server.core.siyuan_triggers import (  # noqa: PLC0415
+        SiyuanTriggerError,
+        accept_siyuan_approval,
+    )
+
+    block_id = (body.block_id or "").strip()
+    if not block_id:
+        raise HTTPException(status_code=422, detail="block_id is required")
+
+    try:
+        result = await accept_siyuan_approval(cfg, block_id, registry=_sallm_registry)
+    except SiyuanTriggerError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
+
+    return SiyuanApprovalResponse(
+        request_id=result.request_id,
+        status=result.status,
+        indexed=result.indexed,
     )
 
 

@@ -11,6 +11,7 @@ from pawn_agent.core.siyuan_protocol import (
     build_discovery_sql,
     build_result_markdown,
     extract_block_refs,
+    find_nearby_request_id,
     instruction_hash,
     is_pawn_mention,
     parse_discovered_rows,
@@ -76,11 +77,52 @@ def test_approval_checked() -> None:
     assert not approval_checked("- [ ] Approve for Pawn memory\n")
 
 
+def test_find_nearby_request_id_walks_to_sibling_paragraph() -> None:
+    request_id = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+    rows = {
+        "li1": {
+            "id": "li1",
+            "parent_id": "list1",
+            "markdown": "* [x] Approve for Pawn memory",
+            "content": "Approve for Pawn memory",
+        },
+        "list1": {
+            "id": "list1",
+            "parent_id": "doc1",
+            "markdown": "* [x] Approve for Pawn memory",
+            "content": "Approve for Pawn memory",
+        },
+    }
+
+    def query_sql(stmt: str):
+        if "WHERE id = 'li1'" in stmt:
+            return [rows["li1"]]
+        if "WHERE id = 'list1'" in stmt:
+            return [rows["list1"]]
+        if "parent_id = 'list1'" in stmt:
+            return [{"markdown": "* [x] Approve for Pawn memory", "content": "Approve"}]
+        if "parent_id = 'doc1'" in stmt:
+            return [
+                {
+                    "markdown": f"_request: `{request_id}`_\n",
+                    "content": "request",
+                }
+            ]
+        return []
+
+    client = MagicMock()
+    client.query_sql.side_effect = query_sql
+    client.get_block_kramdown.return_value = "* [x] Approve for Pawn memory\n"
+    assert find_nearby_request_id(client, "li1") == request_id
+
+
 def test_build_result_markdown_includes_checklist() -> None:
     md = build_result_markdown("Hello", request_id="req-1")
     assert "Approve for Pawn memory" in md
     assert "req-1" in md
     assert "Hello" in md
+    assert "ready for review" not in md
+    assert "Request changes" not in md
 
 
 def test_strip_mention_prefix() -> None:

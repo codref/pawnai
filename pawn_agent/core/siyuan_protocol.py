@@ -289,18 +289,92 @@ def parse_discovered_rows(
 def build_result_markdown(body: str, *, request_id: str) -> str:
     """Append-ready Markdown for a reviewable Pawn result."""
     text = (body or "").strip() or "_No content produced._"
-    return (
-        f"### Pawn result — ready for review\n\n"
-        f"_request: `{request_id}`_\n\n"
-        f"{text}\n\n"
-        f"- [ ] Approve for Pawn memory\n"
-        f"- [ ] Request changes (reply with @pawn …)\n"
-    )
+    return f"_request: `{request_id}`_\n\n" f"{text}\n\n" f"- [ ] Approve for Pawn memory\n"
 
 
 def approval_checked(kramdown_or_markdown: str) -> bool:
     """True when the Approve-for-Pawn-memory checkbox is checked."""
     return bool(_APPROVE_CHECKED_RE.search(kramdown_or_markdown or ""))
+
+
+INDEXED_CONFIRMATION = "Indexed into Pawn memory"
+
+_REQUEST_LINE_RE = re.compile(
+    r"_request:\s*`([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-"
+    r"[0-9a-fA-F]{4}-[0-9a-fA-F]{12})`"
+)
+
+
+def _first_request_id(*chunks: str) -> str | None:
+    for chunk in chunks:
+        match = _REQUEST_LINE_RE.search(chunk or "")
+        if match:
+            return match.group(1)
+    return None
+
+
+def find_nearby_request_id(client: Any, block_id: str) -> str | None:
+    """UUID from ``build_result_markdown``, on *block_id* or a nearby sibling.
+
+    An appended result is several blocks. The checkbox is often a later sibling
+    of the ``_request: `<uuid>`_`` paragraph, so the clicked list-item id is not
+    ``output_block_id``.
+    """
+    current = (block_id or "").strip()
+    seen: set[str] = set()
+    for _ in range(8):
+        if not current or current in seen:
+            break
+        seen.add(current)
+        row = fetch_block_row(client, current) or {}
+        kramdown = ""
+        try:
+            kramdown = client.get_block_kramdown(current) or ""
+        except Exception:
+            kramdown = ""
+        found = _first_request_id(
+            kramdown,
+            str(row.get("markdown") or ""),
+            str(row.get("content") or ""),
+        )
+        if found:
+            return found
+        parent = str(row.get("parent_id") or "").strip()
+        if parent:
+            # Nearest preceding sibling. Appended results put ``_request:``
+            # before the checkbox, and older results sit further up the page.
+            found = _request_id_among_children(client, parent, before_id=current)
+            if found:
+                return found
+        current = parent
+    return None
+
+
+def _request_id_among_children(client: Any, parent_id: str, *, before_id: str) -> str | None:
+    parent = _sql_escape(parent_id)
+    before = _sql_escape(before_id)
+    if not parent or not before:
+        return None
+    stmt = (
+        "SELECT markdown, content FROM blocks WHERE parent_id = '" + parent + "' "
+        "AND id < '" + before + "' "
+        "AND (markdown LIKE '%request:%' OR content LIKE '%request:%') "
+        "ORDER BY id DESC LIMIT 40"
+    )
+    try:
+        rows = client.query_sql(stmt) or []
+    except Exception:
+        return None
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        found = _first_request_id(
+            str(row.get("markdown") or ""),
+            str(row.get("content") or ""),
+        )
+        if found:
+            return found
+    return None
 
 
 def strip_mention_prefix(text: str, mention_token: str = "@pawn") -> str:

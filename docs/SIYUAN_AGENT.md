@@ -2,8 +2,8 @@
 
 Plugin-first workflow: insert a **Pawn prompt** block in SiYuan, press **Send
 to Pawn**, and pawn-server runs the agent. A reviewable draft is appended under
-the parent; Matrix can alert; an Approve checkbox indexes the result into sallm
-memory.
+the parent; Matrix can alert. Checking **Approve for Pawn memory** posts that
+block once and indexes the result into sallm memory.
 
 The SiYuan **document** is the agent session (`siyuan:{root_id}`). The prompt
 body is the instruction for that turn; parent excerpt,
@@ -108,17 +108,17 @@ See [siyuan-plugin/pawn/README.md](../siyuan-plugin/pawn/README.md).
 3. Send posts `{ "block_id": "<prompt>" }` as JSON to `POST /v1/siyuan/triggers`
    (via SiYuan `forwardProxy`, `payloadEncoding: "json"`).
 
-4. A **Pawn result — ready for review** section is appended under the parent,
-   including:
-
-   - `[ ] Approve for Pawn memory`
-   - `[ ] Request changes (reply with @pawn …)`
+4. The draft is appended under the parent, ending with
+   `[ ] Approve for Pawn memory`.
 
 5. Matrix receives a short alert with a `siyuan://blocks/…` deep link
    (no full note body).
 
-6. Check **Approve for Pawn memory** in SiYuan. On the next watcher tick the
-   request is marked `done` and `Agent.remember` indexes the approved content.
+6. Check **Approve for Pawn memory**. The plugin posts
+   `{ "block_id": "<list item>" }` to `POST /v1/siyuan/approvals`. The server
+   calls `Agent.remember`, marks the request `done`, and the plugin replaces
+   the checkbox with **Indexed into Pawn memory**. A failed index leaves the
+   box checked. The watcher does not poll review rows.
 
 7. To refine later, edit the prompt (new instruction hash) and Send again, or
    insert another prompt under the same document.
@@ -154,6 +154,26 @@ callout that contains `@pawn`, then to a block that starts with `@pawn`. It
 upserts `siyuan_agent_requests` and runs the agent in the background. Same
 trigger + hash while `queued` / `claimed` / `running` / `review` is idempotent
 (`started: false`).
+
+```http
+POST /v1/siyuan/approvals
+Authorization: Bearer <api.token>
+Content-Type: application/json
+
+{ "block_id": "20260922120000-xxxxxxx" }
+```
+
+Response `200`:
+
+```json
+{ "request_id": "…", "status": "done", "indexed": true }
+```
+
+`block_id` is the checked task list item. The server reads the nearby
+`_request:` line (the checkbox is often a later sibling of `output_block_id`),
+remembers the result, and sets `custom-agent-status: done` on the prompt.
+`indexed` is false when that request was already stored. A checkbox that is
+not checked returns `409`.
 
 ## Attributes
 

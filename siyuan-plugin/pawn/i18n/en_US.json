@@ -14,5 +14,9 @@
   "sendBusy": "Pawn is already working on this prompt",
   "insertFail": "Could not insert Pawn prompt",
   "notConfigured": "Configure Pawn server URL in plugin settings",
-  "noBlock": "No block to turn into a Pawn prompt"
+  "noBlock": "No block to turn into a Pawn prompt",
+  "indexPending": "Indexing into Pawn memory…",
+  "indexOk": "Indexed into Pawn memory",
+  "indexFail": "Could not index into Pawn memory",
+  "indexRewriteFail": "Indexed into Pawn memory, but the checkbox line could not be updated"
 }

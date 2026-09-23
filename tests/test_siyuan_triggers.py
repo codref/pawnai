@@ -235,3 +235,140 @@ def test_api_siyuan_triggers_202() -> None:
     assert body["request_id"] == "req-9"
     assert body["started"] is True
     assert body["conversation_id"] == "siyuan:root1"
+
+
+def _approval_request(**kwargs):
+    base = dict(
+        id="aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+        status="review",
+        indexed_at=None,
+        conversation_id="siyuan:root1",
+        trigger_block_id="prompt1",
+        output_block_id="out1",
+        instruction_text="do the thing",
+    )
+    base.update(kwargs)
+    return SimpleNamespace(**base)
+
+
+def test_accept_approval_indexes_checked_box() -> None:
+    cfg = _cfg()
+    request = _approval_request()
+    client = MagicMock()
+    client.get_block_kramdown.side_effect = lambda bid: {
+        "li1": "* [x] Approve for Pawn memory\n",
+        "out1": "the draft\n",
+    }.get(bid, "")
+    agent = MagicMock()
+    session = SimpleNamespace(_agent=agent)
+    registry = MagicMock()
+    registry.get_or_create = AsyncMock(return_value=session)
+
+    with (
+        patch(
+            "pawn_server.core.siyuan_triggers.fetch_block_row",
+            return_value={"id": "li1", "box": "nb1", "markdown": ""},
+        ),
+        patch(
+            "pawn_server.core.siyuan_triggers.find_nearby_request_id",
+            return_value=request.id,
+        ),
+        patch(
+            "pawn_server.core.siyuan_triggers.get_siyuan_agent_request",
+            return_value=request,
+        ),
+        patch("pawn_server.core.siyuan_triggers.update_siyuan_agent_request") as update,
+        patch("pawn_server.core.siyuan_triggers._set_trigger_attrs"),
+    ):
+        from pawn_server.core.siyuan_triggers import accept_siyuan_approval
+
+        result = asyncio.run(accept_siyuan_approval(cfg, "li1", registry=registry, client=client))
+    agent.remember.assert_called_once()
+    assert result.indexed is True
+    assert result.status == "done"
+    assert result.request_id == request.id
+    update.assert_called_once()
+    assert update.call_args.kwargs["status"] == "done"
+    assert update.call_args.kwargs["indexed_at"] is not None
+
+
+def test_accept_approval_rejects_unchecked_box() -> None:
+    cfg = _cfg()
+    client = MagicMock()
+    client.get_block_kramdown.return_value = "* [ ] Approve for Pawn memory\n"
+    with (
+        patch(
+            "pawn_server.core.siyuan_triggers.fetch_block_row",
+            return_value={"id": "li1", "box": "nb1", "markdown": "* [ ] Approve"},
+        ),
+        pytest.raises(SiyuanTriggerError) as excinfo,
+    ):
+        from pawn_server.core.siyuan_triggers import accept_siyuan_approval
+
+        asyncio.run(
+            accept_siyuan_approval(cfg, "li1", registry=SallmSessionRegistry(), client=client)
+        )
+    assert excinfo.value.status_code == 409
+
+
+def test_accept_approval_skips_remember_when_already_indexed() -> None:
+    from datetime import datetime, timezone
+
+    cfg = _cfg()
+    request = _approval_request(
+        status="done",
+        indexed_at=datetime.now(timezone.utc),
+    )
+    client = MagicMock()
+    client.get_block_kramdown.return_value = "* [x] Approve for Pawn memory\n"
+    agent = MagicMock()
+    registry = MagicMock()
+    with (
+        patch(
+            "pawn_server.core.siyuan_triggers.fetch_block_row",
+            return_value={"id": "li1", "box": "nb1", "markdown": ""},
+        ),
+        patch(
+            "pawn_server.core.siyuan_triggers.find_nearby_request_id",
+            return_value=request.id,
+        ),
+        patch(
+            "pawn_server.core.siyuan_triggers.get_siyuan_agent_request",
+            return_value=request,
+        ),
+        patch("pawn_server.core.siyuan_triggers._set_trigger_attrs"),
+    ):
+        from pawn_server.core.siyuan_triggers import accept_siyuan_approval
+
+        result = asyncio.run(accept_siyuan_approval(cfg, "li1", registry=registry, client=client))
+    agent.remember.assert_not_called()
+    registry.get_or_create.assert_not_called()
+    assert result.indexed is False
+    assert result.status == "done"
+
+
+def test_api_siyuan_approvals_200() -> None:
+    from pawn_server.core import api_server
+    from pawn_server.core.siyuan_triggers import SiyuanApprovalResult
+
+    cfg = _cfg()
+    api_server._cfg = cfg  # noqa: SLF001
+
+    async def _fake_accept(*_a, **_k):
+        return SiyuanApprovalResult(request_id="req-1", status="done", indexed=True)
+
+    with patch(
+        "pawn_server.core.siyuan_triggers.accept_siyuan_approval",
+        new=_fake_accept,
+    ):
+        client = TestClient(api_server.app)
+        resp = client.post(
+            "/v1/siyuan/approvals",
+            json={"block_id": "li1"},
+            headers={"Authorization": "Bearer secret"},
+        )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["request_id"] == "req-1"
+    assert body["indexed"] is True
+    assert body["status"] == "done"
