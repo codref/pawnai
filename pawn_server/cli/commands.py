@@ -470,22 +470,21 @@ def serve(
         "--matrix-only",
         help="Run only the Matrix bot (no HTTP API, queue, or scheduler).",
     ),
-    no_siyuan_watcher: bool = typer.Option(
+    no_vault_watcher: bool = typer.Option(
         False,
-        "--no-siyuan-watcher",
-        help="Disable the SiYuan @pawn watcher even if siyuan_watcher.enabled.",
+        "--no-vault-watcher",
+        help="Disable the vault task watcher even if vault_watcher.enabled is true.",
     ),
-    siyuan_watcher_only: bool = typer.Option(
+    vault_watcher_only: bool = typer.Option(
         False,
-        "--siyuan-watcher-only",
-        help="Run only the SiYuan @pawn watcher (no HTTP API / queue / scheduler / Matrix).",
+        "--vault-watcher-only",
+        help="Run only the vault task watcher (no HTTP API, queue, or scheduler).",
     ),
 ) -> None:
-    """Start the HTTP API and optional workers (queue, scheduler, Matrix, SiYuan).
+    """Start the HTTP API and optional workers (queue, scheduler, Matrix).
 
     Workers are armed from config and can be forced off with ``--no-*`` flags.
-    Use ``--matrix-only``, ``--scheduler-only``, or ``--siyuan-watcher-only``
-    for a single-worker process.
+    Use ``--matrix-only`` or ``--scheduler-only`` for a single-worker process.
 
     \b
     API Endpoints
@@ -502,7 +501,7 @@ def serve(
     --------------------
     {
       "command": "run",
-      "prompt":  "Summarise session abc123 and push to SiYuan",
+      "prompt":  "Summarise session abc123",
       "session_id": "abc123",
       "model":   "openai:gpt-4o"
     }
@@ -523,8 +522,6 @@ def serve(
         DEFAULT_TOPIC,
         start_listener,
     )
-    from pawn_server.core.siyuan_watcher import start_siyuan_watcher  # noqa: PLC0415
-
     cfg = load_config(config)
 
     # Configure logging from pawnai.yaml before uvicorn starts.
@@ -541,11 +538,10 @@ def serve(
     if model:
         _apply_model_override(cfg, model)
 
-    only_flags = sum(bool(x) for x in (scheduler_only, matrix_only, siyuan_watcher_only))
+    only_flags = sum(bool(x) for x in (scheduler_only, matrix_only, vault_watcher_only))
     if only_flags > 1:
         console.print(
-            "[red]Use only one of --scheduler-only / --matrix-only / "
-            "--siyuan-watcher-only.[/red]"
+            "[red]Use only one of --scheduler-only / --matrix-only / --vault-watcher-only.[/red]"
         )
         raise typer.Exit(1)
 
@@ -556,11 +552,11 @@ def serve(
     with_queue = not no_queue and bool(queue_cfg)
     with_scheduler = bool(cfg.agent_scheduler.enabled) and not disable_scheduler
     with_matrix = bool(cfg.matrix_bot.enabled) and not no_matrix
-    with_siyuan = bool(cfg.siyuan_watcher.enabled) and not no_siyuan_watcher
     with_matrix_notifier = with_matrix and matrix_notifier_enabled(cfg) and not no_matrix
+    with_vault_watcher = bool(cfg.vault_watcher.enabled) and not no_vault_watcher
     effective_topic = topic or queue_cfg.get("topic", DEFAULT_TOPIC)
     effective_consumer = consumer_name or queue_cfg.get("consumer_name", DEFAULT_CONSUMER_NAME)
-    only_mode = scheduler_only or matrix_only or siyuan_watcher_only
+    only_mode = scheduler_only or matrix_only or vault_watcher_only
 
     console.print(
         f"[bold green]pawn-server serve starting[/bold green]\n"
@@ -570,10 +566,10 @@ def serve(
         f"  idle     : [dim]{cfg.api_model_idle_timeout_minutes} min[/dim]\n"
         f"  auth     : [dim]{'token set' if cfg.api_token else 'NO TOKEN — open access'}[/dim]\n"
         f"  queue    : [dim]{'topic=' + effective_topic + ' consumer=' + effective_consumer if with_queue and not only_mode else 'disabled'}[/dim]\n"
-        f"  scheduler: [dim]{'enabled' if with_scheduler and not matrix_only and not siyuan_watcher_only else 'disabled'}[/dim]\n"
-        f"  matrix   : [dim]{'enabled' if with_matrix and not scheduler_only and not siyuan_watcher_only else 'disabled'}[/dim]\n"
-        f"  siyuan   : [dim]{'enabled' if with_siyuan and not scheduler_only and not matrix_only else 'disabled'}[/dim]\n"
-        f"  notify   : [dim]{'via matrix bot' if with_matrix_notifier and with_matrix and not scheduler_only and not siyuan_watcher_only else 'disabled'}[/dim]"
+        f"  scheduler: [dim]{'enabled' if with_scheduler and not matrix_only else 'disabled'}[/dim]\n"
+        f"  matrix   : [dim]{'enabled' if with_matrix and not scheduler_only else 'disabled'}[/dim]\n"
+        f"  notify   : [dim]{'via matrix bot' if with_matrix_notifier and with_matrix and not scheduler_only else 'disabled'}[/dim]\n"
+        f"  vault    : [dim]{'enabled' if with_vault_watcher and not scheduler_only and not matrix_only else 'disabled'}[/dim]"
     )
     console.print("[dim]Press Ctrl-C to stop.[/dim]\n")
 
@@ -590,10 +586,12 @@ def serve(
             await start_matrix_bot(cfg)
             return
 
-        if siyuan_watcher_only:
-            if not with_siyuan:
-                raise RuntimeError("SiYuan watcher is disabled by config or --no-siyuan-watcher")
-            await start_siyuan_watcher(cfg)
+        if vault_watcher_only:
+            if not with_vault_watcher:
+                raise RuntimeError("Vault watcher is disabled by config or --no-vault-watcher")
+            from pawn_server.core.vault_watcher import start_vault_watcher  # noqa: PLC0415
+
+            await start_vault_watcher(cfg)
             return
 
         fastapi_app = create_app(cfg)
@@ -605,7 +603,7 @@ def serve(
         )
         server = uvicorn.Server(uv_config)
 
-        if not with_queue and not with_scheduler and not with_matrix and not with_siyuan:
+        if not with_queue and not with_scheduler and not with_matrix and not with_vault_watcher:
             await server.serve()
             return
 
@@ -620,8 +618,10 @@ def serve(
             tasks.append(asyncio.create_task(start_scheduler(cfg)))
         if with_matrix:
             tasks.append(asyncio.create_task(start_matrix_bot(cfg)))
-        if with_siyuan:
-            tasks.append(asyncio.create_task(start_siyuan_watcher(cfg, registry=shared_registry)))
+        if with_vault_watcher:
+            from pawn_server.core.vault_watcher import start_vault_watcher  # noqa: PLC0415
+
+            tasks.append(asyncio.create_task(start_vault_watcher(cfg, registry=shared_registry)))
 
         # Stop all when any exits (Ctrl-C, error, or natural completion)
         done, pending = await asyncio.wait(

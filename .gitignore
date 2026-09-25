@@ -248,3 +248,7 @@ temp
 
 # Matrix nio E2EE device store
 .matrix-store/
+
+# Obsidian plugin build
+obsidian-plugin/**/node_modules/
+obsidian-plugin/**/main.js.map

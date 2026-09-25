@@ -91,7 +91,7 @@ class TestMakeMessageHandlerRun:
             {
                 "command": "run",
                 "session_id": "meeting-2026-04-23",
-                "prompt": "Analyse this session and save to SiYuan.",
+                "prompt": "Analyse this session.",
             },
             msg_id="msg-chain-001",
         )
@@ -105,7 +105,7 @@ class TestMakeMessageHandlerRun:
         msg.nack.assert_not_awaited()
         mock_run.assert_awaited_once()
         assert mock_run.await_args.kwargs["session_id"] == "meeting-2026-04-23"
-        assert mock_run.await_args.kwargs["prompt"] == "Analyse this session and save to SiYuan."
+        assert mock_run.await_args.kwargs["prompt"] == "Analyse this session."
         assert mock_run.await_args.kwargs["source"] == "queue"
 
     def test_completed_status_and_response_stored(self):
@@ -229,25 +229,4 @@ class TestDispatch:
 
         mock_run.assert_awaited_once_with(
             params, cfg, "m1", command="run", source="queue"
-        )
-
-    def test_dispatch_siyuan_run_calls_run_sallm(self):
-        """dispatch('siyuan_run') delegates with source=siyuan."""
-        from pawn_server.core.queue_listener import dispatch
-
-        cfg = _make_cfg()
-        params = {
-            "prompt": "Do it",
-            "session_id": "siyuan:root",
-            "model": None,
-            "request_id": "r1",
-        }
-
-        with patch(
-            "pawn_server.core.queue_listener._run_sallm", new_callable=AsyncMock
-        ) as mock_run:
-            asyncio.run(dispatch("siyuan_run", params, cfg, message_id="m2"))
-
-        mock_run.assert_awaited_once_with(
-            params, cfg, "m2", command="siyuan_run", source="siyuan"
         )

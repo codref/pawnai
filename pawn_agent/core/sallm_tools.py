@@ -54,8 +54,8 @@ def build_pawn_clitools() -> dict[str, CliTool]:
                 "to the database. "
                 "Required: --session-id ID (or bare ID). "
                 "Optional: --save --title TEXT — when the user asks to analyze "
-                "AND save to SiYuan, use this once with --save; do not also "
-                "call siyuan_save or re-run analyze. "
+                "AND save to the vault, use this once with --save; do not also "
+                "call note_write for the same analysis. "
                 "Analyze one session per invocation."
             ),
         ),
@@ -68,7 +68,7 @@ def build_pawn_clitools() -> dict[str, CliTool]:
                 "Required: --session-id ID --confirm ID where both values "
                 "match exactly. ALWAYS ask the user to confirm the exact "
                 "session name in chat before calling. Never invent ids. "
-                "Does not clear sallm chat memory or SiYuan notes."
+                "Does not clear sallm chat memory or vault notes."
             ),
         ),
         "session_relabel": CliTool(
@@ -80,61 +80,56 @@ def build_pawn_clitools() -> dict[str, CliTool]:
                 "Required: --session-id ID --from LABEL --to NAME. "
                 "--from may be SPEAKER_XX or a current display name "
                 "(e.g. --from SPEAKER_00 --to Davide). "
-                "Existing SiYuan diary Speakers+Transcript pages refresh "
-                "automatically; pass --push-siyuan to create/update even "
-                "without a prior mapping. "
+                "Existing vault transcript notes refresh automatically; pass "
+                "--push-vault to create/update even without a prior mapping. "
                 "Use when the user asks to change / correct / rename a speaker "
                 "on a session. Never invent session ids — sessions_list first."
             ),
         ),
-        "siyuan_save": CliTool(
-            name="siyuan_save",
-            argv=_cli_argv("siyuan_save.py"),
+        "note_read": CliTool(
+            name="note_read",
+            argv=_cli_argv("note_read.py"),
             summary=(
-                "Save Markdown to SiYuan Notes. MUST be invoked inside a ```run "
-                "fence, never as plain text. "
-                "If the user asked to analyze and save, prefer "
-                "session_analyze --save instead — do not also call this tool. "
-                "After an existing DB analysis: "
-                "siyuan_save --session-id ID --from-analysis. "
-                "Free-form (not session analysis): "
-                "siyuan_save --session-id ID --title TEXT --content-file @note "
-                "plus a ```file note block — content must be the discussion "
-                "substance, never tool errors / --help / fallback journaling. "
-                "Do NOT use --content for long/multiline text. "
-                "One SiYuan write per user request. "
-                "Optional: --title TEXT --path PATH."
+                "Read a Markdown note from the vault. Required: --path KEY. "
+                "Optional: --follow-links N to also include [[wiki-linked]] "
+                "notes up to depth N."
             ),
         ),
-        "siyuan_read": CliTool(
-            name="siyuan_read",
-            argv=_cli_argv("siyuan_read.py"),
+        "note_search": CliTool(
+            name="note_search",
+            argv=_cli_argv("note_search.py"),
             summary=(
-                "Read a SiYuan block. Required: --block-id ID. "
-                "Optional: --include-children --include-attrs --resolve-refs "
-                "--max-ref-depth N --max-blocks N. "
-                "Use to load @pawn context and follow ((block refs))."
+                "List vault notes. Optional: --folder PREFIX --tag TAG "
+                "--limit N. Defaults to listing under the agent root (Pawn/)."
             ),
         ),
-        "siyuan_append": CliTool(
-            name="siyuan_append",
-            argv=_cli_argv("siyuan_append.py"),
+        "note_write": CliTool(
+            name="note_write",
+            argv=_cli_argv("note_write.py"),
             summary=(
-                "Append Markdown under a SiYuan parent block (append-only). "
-                "Required: --parent-id ID. Body: --content-file @note "
-                "(preferred) or short --content. "
-                "Optional: --as-result --request-id UUID wraps the standard "
-                "review checklist. Never delete or overwrite human blocks."
+                "Create or overwrite a vault Markdown note. Required: --path. "
+                "Body: --content-file @note (preferred) or short --content. "
+                "Writes only under Pawn/ unless the note has pawn: editable. "
+                "Never touch .obsidian/."
             ),
         ),
-        "siyuan_set_status": CliTool(
-            name="siyuan_set_status",
-            argv=_cli_argv("siyuan_set_status.py"),
+        "note_append": CliTool(
+            name="note_append",
+            argv=_cli_argv("note_append.py"),
             summary=(
-                "Set custom-agent-* attrs on a SiYuan instruction block. "
-                "Required: --block-id ID. "
-                "Optional: --status queued|claimed|running|review|done|blocked|cancelled "
-                "--request-id --output-id --source-hash --run-id."
+                "Append Markdown to a vault note. Required: --path. "
+                "Body: --content-file @note (preferred) or short --content. "
+                "Same write guards as note_write."
+            ),
+        ),
+        "task_update": CliTool(
+            name="task_update",
+            argv=_cli_argv("task_update.py"),
+            summary=(
+                "Update a vault task note. Required: --task-id. "
+                "Optional: --status todo|running|review|done|blocked "
+                "--result-file @note / --result TEXT. "
+                "Use --status review with a result when finishing a vault task."
             ),
         ),
         "schedule_propose": CliTool(

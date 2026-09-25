@@ -79,25 +79,37 @@ s3:
   # Usually true for MinIO and many S3-compatible providers.
   path_style: true
 
-siyuan:
-  # SiYuan Notes API settings.
-  url: http://127.0.0.1:6806
-  token: ""
-  notebook: ""
-
-  # Template used when saving conversation / transcript pages.
-  # Prefer {session_id} (stable) over {title} for chunked diary sync.
-  path_template: /Conversations/{year}/{month}/{date}/{session_id}
-
-  # Template used for daily note paths (align with SiYuan notebook dailyNoteSavePath).
-  daily_note_path: /daily note/{year}/{month}/{date}
-
-  # When true, each successful transcribe-diarize chunk pushes/updates the
-  # session transcript page in SiYuan (best-effort). Also: pawn-diarize push-siyuan.
+# Markdown notes vault (Obsidian Sync Engine / similar). May use a different
+# bucket or prefix than the queue S3 section above.
+vault:
+  bucket: my-vault-bucket
+  endpoint_url: https://fsn1.your-objectstorage.com
+  access_key: ""
+  secret_key: ""
+  region: fsn1
+  prefix: vault/
+  path_style: true
+  verify_ssl: true
+  agent_root: Pawn
+  transcript_path_template: "{agent_root}/Transcripts/{date} {session_id}.md"
+  analysis_path_template: "{agent_root}/Analyses/{session_id}.md"
+  task_path_template: "{agent_root}/Tasks/{id}.md"
+  notes_path_template: "{agent_root}/Notes/{title}.md"
+  # Optional daily note path template; leave null so Pawn never edits dailies.
+  daily_note_path: null
   auto_push_transcript: false
+  # Used only to build obsidian://open links in Matrix notifications.
+  obsidian_vault_name: ""
+
+vault_watcher:
+  # Polls Pawn/Tasks/ for todo / approved-review notes.
+  enabled: true
+  poll_interval_seconds: 15
+  max_claims_per_tick: 3
+  matrix_target: matrix
 
 rag:
-  # Embedding model and vector dimensionality for transcript/SiYuan RAG.
+  # Embedding model and vector dimensionality for transcript RAG.
   embed_model: Qwen/Qwen3-Embedding-0.6B
   embed_dim: 1024
   embed_device: cpu
@@ -205,7 +217,7 @@ diarize_queue:
     # "run" message so the transcript can be analyzed automatically.
     enabled: false
     topic: pawn-agent-jobs
-    prompt: Analyze this conversation and save the analysis to SiYuan.
+    prompt: Analyze this conversation.
 
 agent_queue:
   # Queue consumed by `pawn-agent listen` / pawn-server queue listener.
@@ -245,27 +257,8 @@ matrix_bot:
   progress_updates: true
   # React ⏳ on the user message, then ✅ / ❌ when the turn finishes.
   progress_reactions: true
-  # Room for outbound ready-for-review alerts (SiYuan watcher / queue_push).
+  # Room for outbound ready-for-review alerts (queue_push / notifier).
   # notify_room_id: "!yourRoom:matrix.example.com"
-
-siyuan_watcher:
-  # Approvals + leftover queued rows. Prefer the SiYuan Pawn plugin +
-  # POST /v1/siyuan/triggers for new @pawn tasks (see docs/SIYUAN_AGENT.md).
-  enabled: false
-  poll_interval_seconds: 10
-  # When true, SQL-scan for @pawn and auto-claim after settle_seconds.
-  # Default false — plugin Send button owns discovery.
-  discover_mentions: false
-  # Wait after the @pawn text stops changing before claiming (only used when
-  # discover_mentions is true; SiYuan autosaves while typing).
-  settle_seconds: 45
-  mention_token: "@pawn"
-  # Empty list → only the configured siyuan.notebook.
-  notebook_allowlist: []
-  max_ref_depth: 1
-  max_context_blocks: 40
-  matrix_target: matrix
-  max_claims_per_tick: 3
 
 queue_producers:
   # Named producer targets used by pawn-agent's push_queue_message tool.

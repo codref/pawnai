@@ -1,7 +1,7 @@
 """Shared configuration base for pawn_diarize and pawn_agent.
 
 Both apps subclass :class:`PawnConfig` and add their own fields.
-All common sections (models, device, s3, siyuan, rag) are defined here so the
+All common sections (models, device, s3, rag) are defined here so the
 same ``pawnai.yaml`` drives both without duplicated parsing code.
 
 Source priority (highest → lowest):
@@ -97,17 +97,25 @@ class S3Config(BaseModel):
     path_style: bool = True
 
 
-class SiYuanConfig(BaseModel):
-    """SiYuan Notes API settings."""
+class VaultConfig(BaseModel):
+    """S3 for the notes vault (may differ from queue S3)."""
 
-    url: str = "http://127.0.0.1:6806"
-    token: str = ""
-    notebook: str = ""
-    path_template: str = "/Conversations/{date}/{session_id}/{title}"
-    daily_note_path: str = "/daily note/{year}/{month}/{date}"
-    # When true, each successful transcribe-diarize chunk projects the
-    # session transcript into SiYuan (best-effort; never fails diarization).
+    bucket: str = ""
+    endpoint_url: Optional[str] = None
+    access_key: Optional[str] = None
+    secret_key: Optional[str] = None
+    region: Optional[str] = None
+    prefix: str = ""
+    path_style: bool = True
+    verify_ssl: bool = True
+    agent_root: str = "Pawn"
+    transcript_path_template: str = "{agent_root}/Transcripts/{date} {session_id}.md"
+    analysis_path_template: str = "{agent_root}/Analyses/{session_id}.md"
+    task_path_template: str = "{agent_root}/Tasks/{id}.md"
+    notes_path_template: str = "{agent_root}/Notes/{title}.md"
+    daily_note_path: Optional[str] = None
     auto_push_transcript: bool = False
+    obsidian_vault_name: str = ""
 
 
 class RagConfig(BaseModel):
@@ -162,7 +170,7 @@ class PawnConfig(BaseSettings):
     models: ModelsConfig = Field(default_factory=ModelsConfig)
     device: DeviceConfig = Field(default_factory=DeviceConfig)
     s3: Optional[S3Config] = None
-    siyuan: SiYuanConfig = Field(default_factory=SiYuanConfig)
+    vault: VaultConfig = Field(default_factory=VaultConfig)
     rag: RagConfig = Field(default_factory=RagConfig)
     logging: LoggingConfig = Field(default_factory=LoggingConfig)
 

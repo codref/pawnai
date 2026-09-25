@@ -113,7 +113,7 @@ Explicit-mode messages have whatever `command` the user or agent specified:
 {
   "command": "run",
   "session_id": "abc123",
-  "prompt": "Summarise and save to SiYuan"
+  "prompt": "Summarise and save analysis"
 }
 ```
 

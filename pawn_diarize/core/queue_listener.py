@@ -148,15 +148,12 @@ COMMAND_DEFAULTS: Dict[str, Dict[str, Any]] = {
         "speaker_id": None,         # required for embed
         "db_dsn": None,
     },
-    "sync-siyuan": {
-        "session": None,           # required unless all_sessions=True
+    "push-vault": {
+        "session": None,
         "all_sessions": False,
-        "notebook": None,          # falls back to siyuan.notebook in config
-        "token": None,             # falls back to siyuan.token in config
-        "url": None,               # falls back to siyuan.url in config
-        "path_template": None,
-        "daily_note": True,
-        "daily_path_template": None,
+        "since": None,
+        "latest": False,
+        "dry_run": False,
         "db_dsn": None,
     },
 }
@@ -224,8 +221,8 @@ async def dispatch(
         await loop.run_in_executor(None, _run_diarize, params, cfg, model_cache)
     elif command == "embed":
         await loop.run_in_executor(None, _run_embed, params, cfg)
-    elif command == "sync-siyuan":
-        await loop.run_in_executor(None, _run_sync_siyuan, params, cfg)
+    elif command == "push-vault":
+        await loop.run_in_executor(None, _run_push_vault, params, cfg)
     else:
         raise ValueError(f"Unsupported command: {command!r}")
 
@@ -367,14 +364,6 @@ def _run_transcribe_diarize(
             if result.get("segments"):
                 save_transcription_segments(result["segments"], session, engine, start_index=prior_segment_count)
 
-            # Best-effort SiYuan diary projection (never fails this job).
-            try:
-                from .siyuan_transcript import maybe_push_transcript_to_siyuan
-
-                maybe_push_transcript_to_siyuan(session, cfg, db_dsn=db_dsn)
-            except Exception as exc:
-                logger.warning("siyuan transcript auto-push failed: %s", exc)
-
         # Format and write output
         text = format_transcript_with_speakers(
             result, include_timestamps=not no_timestamps
@@ -390,8 +379,64 @@ def _run_transcribe_diarize(
         else:
             logger.info("Transcript:\n%s", text)
 
+        if session:
+            from .vault_transcript import maybe_push_transcript_to_vault
+
+            maybe_push_transcript_to_vault(session, cfg, db_dsn=db_dsn)
+
     finally:
         _cleanup(temps)
+
+
+def _run_push_vault(params: Dict[str, Any], cfg: Any) -> None:
+    from .database import get_engine, init_db
+    from .vault_transcript import (
+        list_session_ids_with_segments,
+        parse_since,
+        push_session_transcript,
+    )
+
+    db_dsn = _resolve_db_dsn(params, cfg)
+    session = params.get("session")
+    all_sessions = bool(params.get("all_sessions", False))
+    latest = bool(params.get("latest", False))
+    since_raw = params.get("since")
+    dry_run = bool(params.get("dry_run", False))
+
+    modes = sum(bool(x) for x in (session, latest, all_sessions, since_raw))
+    if modes != 1:
+        raise ValueError(
+            "push-vault: provide exactly one of session, latest, all_sessions, or since"
+        )
+
+    since_dt = None
+    if since_raw:
+        since_dt = parse_since(str(since_raw))
+
+    engine = get_engine(db_dsn)
+    init_db(engine)
+
+    if session:
+        session_ids = [session]
+    elif latest:
+        session_ids = list_session_ids_with_segments(engine, latest=True)
+    elif since_dt is not None:
+        session_ids = list_session_ids_with_segments(engine, since=since_dt)
+    else:
+        session_ids = list_session_ids_with_segments(engine, latest=False)
+
+    if not session_ids:
+        logger.info("push-vault: no sessions with segments found")
+        return
+
+    for sid in session_ids:
+        status = push_session_transcript(
+            sid,
+            db_dsn=db_dsn,
+            cfg=cfg,
+            dry_run=dry_run,
+        )
+        logger.info("push-vault: %s", status)
 
 
 def _run_transcribe(
@@ -496,118 +541,6 @@ def _run_embed(params: Dict[str, Any], cfg: Any) -> None:
         _cleanup(temps)
 
 
-def _run_sync_siyuan(params: Dict[str, Any], cfg: Any) -> None:
-    from .siyuan import (
-        SiyuanClient,
-        SiyuanError,
-        format_session_markdown,
-        resolve_path_template,
-        DEFAULT_PATH_TEMPLATE,
-        DEFAULT_DAILY_PATH_TEMPLATE,
-    )
-    from .database import get_engine, init_db, get_session_analysis
-    from .config import DEFAULT_DB_DSN
-
-    session: Optional[str] = params.get("session")
-    all_sessions: bool = bool(params.get("all_sessions", False))
-    if not session and not all_sessions:
-        raise ValueError("sync-siyuan: 'session' or 'all_sessions': true is required")
-
-    sy_cfg = cfg.get_siyuan_config() or {}
-    resolved_url = params.get("url") or sy_cfg.get("url", "http://127.0.0.1:6806")
-    resolved_token = params.get("token") or sy_cfg.get("token", "")
-    resolved_notebook = params.get("notebook") or sy_cfg.get("notebook", "")
-    resolved_path_tpl = params.get("path_template") or sy_cfg.get("path_template", DEFAULT_PATH_TEMPLATE)
-    resolved_daily_tpl = params.get("daily_path_template") or sy_cfg.get("daily_note_path", DEFAULT_DAILY_PATH_TEMPLATE)
-    daily_note: bool = bool(params.get("daily_note", True))
-
-    if not resolved_notebook:
-        raise ValueError("sync-siyuan: 'notebook' is required (or set siyuan.notebook in .pawn-diarize.yml)")
-
-    db_dsn = _resolve_db_dsn(params, cfg)
-    engine = get_engine(db_dsn)
-    init_db(engine)
-
-    client = SiyuanClient(url=resolved_url, token=resolved_token, notebook_id=resolved_notebook)
-
-    from sqlalchemy.orm import Session as OrmSession
-    from .database import SessionAnalysis
-    from sqlalchemy import select
-
-    with OrmSession(engine) as orm_session:
-        if all_sessions:
-            rows = orm_session.execute(select(SessionAnalysis)).scalars().all()
-            session_ids = list({r.session_id for r in rows})
-        else:
-            session_ids = [session]
-
-    for sid in session_ids:
-        analysis = get_session_analysis(sid, engine)
-        if analysis is None:
-            logger.warning("sync-siyuan: no analysis found for session %r — skipping", sid)
-            continue
-
-        # Load transcript text (same approach as CLI sync_siyuan command)
-        try:
-            from .analysis import AnalysisEngine as _AE
-            transcript = _AE()._load_transcript("", db_dsn=db_dsn, session_id=sid)
-        except Exception:
-            transcript = "_Transcript not available._"
-
-        md = format_session_markdown(
-            title=analysis.title,
-            summary=analysis.summary,
-            key_topics=analysis.key_topics,
-            speaker_highlights=analysis.speaker_highlights,
-            sentiment=analysis.sentiment,
-            sentiment_tags=analysis.sentiment_tags,
-            tags=analysis.tags,
-            session_id=analysis.session_id,
-            source=analysis.source,
-            analyzed_at=analysis.analyzed_at,
-            transcript=transcript,
-            model=getattr(analysis, "model", ""),
-        )
-        doc_path = resolve_path_template(
-            resolved_path_tpl,
-            session_id=sid,
-            title=analysis.title,
-        )
-        attrs: Dict[str, str] = {"custom-pawn-diarize-session": sid}
-        all_tags = list(analysis.tags or []) + list(analysis.sentiment_tags or [])
-        if all_tags:
-            attrs["tags"] = ",".join(all_tags)
-        if getattr(analysis, "model", None):
-            attrs["custom-model"] = analysis.model
-
-        doc_id = client.upsert_session_doc(
-            notebook=resolved_notebook,
-            path=doc_path,
-            markdown=md,
-            attrs=attrs,
-        )
-        logger.info("sync-siyuan: synced session %r → %s (doc_id=%s)", sid, doc_path, doc_id)
-
-        if daily_note and resolved_daily_tpl:
-            try:
-                from datetime import datetime, timezone
-                daily_path = resolve_path_template(
-                    resolved_daily_tpl,
-                    session_id=sid,
-                    title=None,
-                    now=datetime.now(timezone.utc),
-                )
-                client.append_daily_note_link(
-                    notebook=resolved_notebook,
-                    daily_path=daily_path,
-                    doc_id=doc_id,
-                    title=analysis.title or sid,
-                )
-                logger.info("sync-siyuan: backlink added to daily note %s", daily_path)
-            except Exception as exc:
-                logger.warning("sync-siyuan: could not write daily note backlink: %s", exc)
-
-
 # ──────────────────────────────────────────────────────────────────────────────
 # Message handler
 # ──────────────────────────────────────────────────────────────────────────────
@@ -636,7 +569,7 @@ def _resolve_chain_cfg(
     prompt = (
         msg_override
         if isinstance(msg_override, str)
-        else config_chain.get("prompt", "Analyze this session and save the analysis to SiYuan.")
+        else config_chain.get("prompt", "Analyze this session.")
     )
     return {"prompt": prompt}
 

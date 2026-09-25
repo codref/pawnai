@@ -1,0 +1,88 @@
+/* Pawn Obsidian plugin */
+
+.pawn-panel {
+  padding: 0.75rem;
+  overflow-y: auto;
+}
+
+.pawn-tabs {
+  display: flex;
+  gap: 0.5rem;
+  margin-bottom: 0.75rem;
+}
+
+.pawn-tabs button {
+  flex: 1;
+}
+
+.pawn-tabs button.is-active {
+  font-weight: 600;
+}
+
+.pawn-muted {
+  opacity: 0.7;
+  font-size: 0.85em;
+}
+
+.pawn-task-card {
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 6px;
+  padding: 0.6rem;
+  margin-bottom: 0.6rem;
+}
+
+.pawn-task-title {
+  font-weight: 600;
+  margin-bottom: 0.35rem;
+}
+
+.pawn-task-result {
+  white-space: pre-wrap;
+  font-size: 0.85em;
+  max-height: 12em;
+  overflow: auto;
+  background: var(--background-secondary);
+  padding: 0.4rem;
+  border-radius: 4px;
+}
+
+.pawn-task-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  margin-top: 0.5rem;
+}
+
+.pawn-chat-log {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  margin-bottom: 0.75rem;
+  max-height: 50vh;
+  overflow-y: auto;
+}
+
+.pawn-chat-msg {
+  padding: 0.5rem;
+  border-radius: 6px;
+  white-space: pre-wrap;
+}
+
+.pawn-chat-user {
+  background: var(--background-secondary);
+}
+
+.pawn-chat-assistant {
+  border: 1px solid var(--background-modifier-border);
+}
+
+.pawn-chat-form textarea {
+  width: 100%;
+  margin-bottom: 0.5rem;
+}
+
+/* Callout styling for > [!pawn] */
+.callout[data-callout="pawn"] {
+  --callout-color: 70, 130, 180;
+  --callout-icon: lucide-bot;
+}

@@ -40,8 +40,7 @@ async def run_agent_turn(
 
     ``session_id`` is the conversation key. For queue/scheduler sources it is
     typically also the diarization session name tools should prefer. For
-    ``source=siyuan`` / ``command=siyuan_run`` it is ``siyuan:<root_id>`` —
-    tools must resolve diarization ids via ``sessions_list`` when needed.
+    ``source=vault`` / ``command=vault_run`` it is ``note:<vault-path>``.
 
     ``on_progress`` is an optional sync callback ``(kind, attrs)`` invoked from
     the ask() worker thread (e.g. Matrix status edits).
@@ -68,10 +67,10 @@ async def run_agent_turn(
         if not prompt:
             raise ValueError(f"'prompt' is required for the '{command}' command")
         if not session_id:
-            if source == "siyuan" or command == "siyuan_run":
+            if source == "vault" or command == "vault_run":
                 raise ValueError(
-                    "'session_id' is required for siyuan_run — "
-                    "use conversation key siyuan:<root_document_id>"
+                    "'session_id' is required for vault_run — "
+                    "use conversation key note:<vault-path>"
                 )
             raise ValueError(
                 "'session_id' is required for the 'run' command - "

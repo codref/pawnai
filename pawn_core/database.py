@@ -15,8 +15,8 @@ session_analysis
     Structured analysis results (title, summary, topics, sentiment, tags).
 graph_triples
     Knowledge-graph triples extracted from session transcripts.
-siyuan_session_docs
-    Mapping from diarization session_id to a stable SiYuan document id.
+vault_notes
+    Mapping from diarization session_id to vault object key + content hash.
 """
 
 from __future__ import annotations
@@ -26,7 +26,7 @@ from contextlib import contextmanager
 from datetime import datetime, timezone
 from typing import Any, Generator, Optional
 
-from sqlalchemy import Boolean, DateTime, Float, Integer, String, Text, create_engine
+from sqlalchemy import DateTime, Float, Integer, String, Text, create_engine
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sessionmaker
@@ -113,21 +113,14 @@ class GraphTriple(Base):
     )
 
 
-class SiyuanSessionDoc(Base):
-    """Stable SiYuan document mapping for a diarization session transcript.
+class VaultNote(Base):
+    """Stable vault object mapping for a diarization session transcript."""
 
-    Invariant: never delete+recreate the SiYuan doc for an existing row —
-    chunked diarize updates and daily-note block-refs depend on a fixed
-    ``doc_id``.
-    """
-
-    __tablename__ = "siyuan_session_docs"
+    __tablename__ = "vault_notes"
 
     session_id: Mapped[str] = mapped_column(String, primary_key=True)
-    doc_id: Mapped[str] = mapped_column(String, nullable=False)
-    path: Mapped[str] = mapped_column(String, nullable=False)
+    key: Mapped[str] = mapped_column(String, nullable=False)
     content_hash: Mapped[str] = mapped_column(String, nullable=False, default="")
-    daily_linked: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     updated_at: Mapped[Optional[datetime]] = mapped_column(
         DateTime, nullable=True, default=lambda: datetime.now(timezone.utc)
     )

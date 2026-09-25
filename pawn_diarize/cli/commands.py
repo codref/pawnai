@@ -733,14 +733,6 @@ def transcribe_diarize(
             )
             console.print(f"[green]✓ Session state updated: '{session_id}'[/green]")
 
-        # Best-effort SiYuan diary projection (opt-in via siyuan.auto_push_transcript).
-        try:
-            from ..core.siyuan_transcript import maybe_push_transcript_to_siyuan
-
-            maybe_push_transcript_to_siyuan(session_id, app_cfg, db_dsn=db_dsn)
-        except Exception as exc:
-            console.print(f"[yellow]SiYuan transcript push skipped: {exc}[/yellow]")
-
         # ------------------------------------------------------------------
         # Write --output file (full accumulated transcript)
         # ------------------------------------------------------------------
@@ -801,6 +793,11 @@ def transcribe_diarize(
                     f"[dim]Session '{session_id}': {total_segs} segments across {total_files} file(s) total[/dim]"
                 )
             console.print(f"\n[dim]💡 Tip: Use -o output.txt to save the full transcript[/dim]")
+
+        if session_id:
+            from ..core.vault_transcript import maybe_push_transcript_to_vault
+
+            maybe_push_transcript_to_vault(session_id, app_cfg, db_dsn=db_dsn)
 
     except Exception as e:
         console.print(f"[red]Error during processing: {str(e)}[/red]")
@@ -1158,13 +1155,13 @@ def session_relabel(
     yes: bool = typer.Option(
         False, "--yes", "-y", help="Skip the confirmation prompt and apply changes immediately."
     ),
-    push_siyuan: bool = typer.Option(
+    push_vault: bool = typer.Option(
         False,
-        "--push-siyuan",
+        "--push-vault",
         help=(
-            "Force SiYuan Speakers+Transcript create/update. "
-            "Without this flag, an existing diary page is still refreshed "
-            "when a siyuan_session_docs mapping is present."
+            "Force vault Speakers+Transcript create/update. "
+            "Without this flag, an existing vault note is still refreshed "
+            "when a vault_notes mapping is present."
         ),
     ),
     db_dsn: Optional[str] = typer.Option(None, help="PostgreSQL DSN for the speaker database."),
@@ -1187,27 +1184,22 @@ def session_relabel(
        are updated (or created from unlabeled embeddings) so future embedding
        matches resolve to --to.
     3. [bold]session_state[/bold] prior-speaker embedding keys are renamed.
-    4. Existing SiYuan diary Speakers+Transcript pages are refreshed
-       (Annotations preserved). Pass [bold]--push-siyuan[/bold] to create the
-       page if it does not exist yet.
 
     \b
     Examples:
         # Preview what would change (dry-run – no --yes flag)
         pawn-diarize session-relabel --session my-session --from "SPEAKER_00" --to "Davide"
 
-        # Apply without prompting and refresh/create SiYuan page
-        pawn-diarize session-relabel --session my-session -F "Edo" -T "John" --yes --push-siyuan
+        # Apply without prompting
+        pawn-diarize session-relabel --session my-session -F "Edo" -T "John" --yes
     """
     from rich.table import Table
     from ..core.config import AppConfig
     from ..core.session_relabel import preview_session_relabel, relabel_session_speaker
-    from ..core.siyuan import DEFAULT_DAILY_PATH_TEMPLATE, DEFAULT_PATH_TEMPLATE
-    from ..core.siyuan_transcript import refresh_transcript_after_relabel
+    from ..core.vault_transcript import refresh_transcript_after_relabel
 
     app_cfg = AppConfig(config_path=config) if config else AppConfig()
     db_dsn = db_dsn or app_cfg.get("db_dsn")
-    sy_cfg = app_cfg.get_siyuan_config() or {}
 
     try:
         affected_segs, affected_names, missing_sn_pairs, aliases = preview_session_relabel(
@@ -1274,12 +1266,11 @@ def session_relabel(
                 f"\n[bold yellow]Creating {len(missing_sn_pairs)} missing speaker_names row(s)[/bold yellow] "
                 f"(speaker was detected but never explicitly labeled)"
             )
-        if push_siyuan:
+        if push_vault:
             console.print(
-                "\n[bold cyan]Will force-push Speakers+Transcript to SiYuan[/bold cyan] "
+                "\n[bold cyan]Will force-push Speakers+Transcript to the vault[/bold cyan] "
                 "(Annotations preserved)."
             )
-
         # ── Confirm ───────────────────────────────────────────────────────
         if not yes:
             confirm = typer.confirm(
@@ -1301,22 +1292,16 @@ def session_relabel(
         )
         console.print(f"\n[green]✓ {result.summary()}[/green]")
 
-        sy_status = refresh_transcript_after_relabel(
+        vault_status = refresh_transcript_after_relabel(
             session,
             db_dsn=db_dsn,
-            url=sy_cfg.get("url", "http://127.0.0.1:6806"),
-            token=sy_cfg.get("token", ""),
-            notebook=sy_cfg.get("notebook", ""),
-            path_template=sy_cfg.get("path_template", DEFAULT_PATH_TEMPLATE),
-            daily_path_template=sy_cfg.get(
-                "daily_note_path", DEFAULT_DAILY_PATH_TEMPLATE
-            ),
-            force=push_siyuan,
+            cfg=app_cfg,
+            force=push_vault,
         )
-        if sy_status:
-            console.print(f"[cyan]SiYuan: {sy_status}[/cyan]")
-        elif push_siyuan:
-            console.print("[yellow]SiYuan: skipped (notebook not configured)[/yellow]")
+        if vault_status:
+            console.print(f"[cyan]Vault: {vault_status}[/cyan]")
+        elif push_vault:
+            console.print("[yellow]Vault: skipped (vault.bucket not configured)[/yellow]")
 
     except typer.Exit:
         raise
@@ -1662,432 +1647,6 @@ def session_info(
         raise typer.Exit(1)
 
 
-@app.command(name="sync-siyuan")
-def sync_siyuan(
-    session: Optional[str] = typer.Option(
-        None,
-        "--session",
-        "-s",
-        help="Session ID to sync to SiYuan. Must have a completed analysis in the DB.",
-    ),
-    all_sessions: bool = typer.Option(
-        False, "--all", help="Sync every session that has a completed analysis."
-    ),
-    notebook: Optional[str] = typer.Option(
-        None,
-        "--notebook",
-        "-n",
-        help="Target SiYuan notebook ID. Falls back to siyuan.notebook in pawnai.yaml.",
-    ),
-    token: Optional[str] = typer.Option(
-        None, "--token", "-t", help="SiYuan API token. Falls back to siyuan.token in pawnai.yaml."
-    ),
-    url: Optional[str] = typer.Option(
-        None,
-        "--url",
-        help="SiYuan instance URL. Falls back to siyuan.url in pawnai.yaml, then http://127.0.0.1:6806.",
-    ),
-    path_template: Optional[str] = typer.Option(
-        None,
-        "--path-template",
-        help=(
-            "Document path template. Placeholders: {session_id}, {title}, {date}, "
-            "{year}, {month}, {day}. Defaults to /Conversations/{date}/{session_id}."
-        ),
-    ),
-    daily_note: bool = typer.Option(
-        True,
-        "--daily-note/--no-daily-note",
-        help="Also append a backlink in today's SiYuan daily note.",
-    ),
-    daily_path_template: Optional[str] = typer.Option(
-        None,
-        "--daily-path-template",
-        help=(
-            "Daily note path template. Placeholders: {date}, {year}, {month}, {day}. "
-            "Defaults to /daily note/{year}/{month}/{date}."
-        ),
-    ),
-    db_dsn: Optional[str] = typer.Option(None, help="PostgreSQL DSN for speaker database."),
-    config: Optional[str] = typer.Option(
-        None, "--config", help="Path to YAML configuration file (pawnai.yaml)."
-    ),
-) -> None:
-    """Push conversation analysis to a running SiYuan Note instance.
-
-    Reads the most recent stored analysis for one or all sessions from the
-    database (produced by a previous [bold]analyze[/bold] run) and creates
-    a rich SiYuan document containing the structured analysis and full
-    transcript.  Existing documents at the same path are overwritten.
-
-    Configuration can be provided via [bold]pawnai.yaml[/bold]:
-
-    \\b
-        siyuan:
-          url: http://127.0.0.1:6806
-          token: your_token
-          notebook: 20210817205410-2kvfpfn
-          path_template: "/Conversations/{date}/{session_id}"
-          daily_note_path: "/daily note/{year}/{month}/{date}"
-
-    Example:
-        pawn-diarize sync-siyuan --session myconv
-        pawn-diarize sync-siyuan --session myconv --notebook 20210817... --token xxx
-        pawn-diarize sync-siyuan --all
-    """
-    from datetime import datetime, timezone
-
-    from ..core.config import AppConfig
-    from ..core.database import get_engine, get_session_analysis, SessionAnalysis
-    from ..core.siyuan import (
-        SiyuanClient,
-        SiyuanError,
-        format_session_markdown,
-        resolve_path_template,
-        DEFAULT_PATH_TEMPLATE,
-        DEFAULT_DAILY_PATH_TEMPLATE,
-    )
-    from ..core.analysis import AnalysisEngine
-    from sqlalchemy import select
-    from sqlalchemy.orm import Session as OrmSession
-
-    # ── Load YAML config ───────────────────────────────────────────────────────
-    app_cfg = AppConfig(config_path=config)
-    db_dsn = db_dsn or app_cfg.get("db_dsn")
-    sy_cfg = app_cfg.get_siyuan_config() or {}
-
-    resolved_url = url or sy_cfg.get("url", "http://127.0.0.1:6806")
-    resolved_token = token or sy_cfg.get("token", "")
-    resolved_notebook = notebook or sy_cfg.get("notebook", "")
-    resolved_path_tpl = path_template or sy_cfg.get("path_template", DEFAULT_PATH_TEMPLATE)
-    resolved_daily_tpl = daily_path_template or sy_cfg.get(
-        "daily_note_path", DEFAULT_DAILY_PATH_TEMPLATE
-    )
-
-    if not resolved_notebook:
-        console.print(
-            "[red]Error: No SiYuan notebook ID provided. Use --notebook or set "
-            "siyuan.notebook in pawnai.yaml.[/red]"
-        )
-        raise typer.Exit(1)
-
-    if not resolved_token:
-        console.print(
-            "[yellow]Warning: No SiYuan API token provided. Requests may be "
-            "rejected. Use --token or set siyuan.token in pawnai.yaml.[/yellow]"
-        )
-
-    if not session and not all_sessions:
-        console.print("[red]Error: provide --session or --all.[/red]")
-        raise typer.Exit(1)
-
-    if session and all_sessions:
-        console.print("[red]Error: provide either --session or --all, not both.[/red]")
-        raise typer.Exit(1)
-
-    # ── Collect analysis rows to sync ──────────────────────────────────────────
-    engine = get_engine(db_dsn)
-
-    if session:
-        row = get_session_analysis(session, engine)
-        if row is None:
-            console.print(
-                f"[red]Error: No analysis found for session {session!r}. "
-                "Run 'pawn-diarize analyze --session {session}' first.[/red]"
-            )
-            raise typer.Exit(1)
-        rows_to_sync = [row]
-    else:
-        # --all: fetch the latest analysis for every distinct session_id
-        from sqlalchemy import select, func as sqlfunc
-
-        with OrmSession(engine) as db:
-            # Subquery: max analyzed_at per session_id
-            subq = (
-                select(
-                    SessionAnalysis.session_id,
-                    sqlfunc.max(SessionAnalysis.analyzed_at).label("max_at"),
-                )
-                .where(SessionAnalysis.session_id.is_not(None))
-                .group_by(SessionAnalysis.session_id)
-                .subquery()
-            )
-            rows_to_sync = db.scalars(
-                select(SessionAnalysis).join(
-                    subq,
-                    (SessionAnalysis.session_id == subq.c.session_id)
-                    & (SessionAnalysis.analyzed_at == subq.c.max_at),
-                )
-            ).all()
-            from sqlalchemy.orm import make_transient
-
-            for r in rows_to_sync:
-                db.expunge(r)
-                make_transient(r)
-
-    if not rows_to_sync:
-        console.print("[yellow]No sessions with completed analyses found.[/yellow]")
-        raise typer.Exit(0)
-
-    console.print(
-        f"[cyan]Syncing {len(rows_to_sync)} session(s) → SiYuan "
-        f"{resolved_url} notebook={resolved_notebook}[/cyan]"
-    )
-
-    client = SiyuanClient(
-        url=resolved_url,
-        token=resolved_token,
-        notebook_id=resolved_notebook,
-    )
-
-    ae = AnalysisEngine()
-    now = datetime.now(timezone.utc)
-    success = 0
-    errors = 0
-
-    for row in rows_to_sync:
-        sid = row.session_id or row.source
-        try:
-            # ── Load transcript ────────────────────────────────────────────────
-            try:
-                transcript = ae._load_transcript("", db_dsn=db_dsn, session_id=row.session_id)
-            except Exception:
-                transcript = "_Transcript not available._"
-
-            # ── Build Markdown ─────────────────────────────────────────────────
-            md = format_session_markdown(
-                title=row.title,
-                summary=row.summary,
-                key_topics=row.key_topics,
-                speaker_highlights=row.speaker_highlights,
-                sentiment=row.sentiment,
-                sentiment_tags=row.sentiment_tags,
-                tags=row.tags,
-                session_id=row.session_id,
-                source=row.source,
-                analyzed_at=row.analyzed_at,
-                transcript=transcript,
-                model=row.model,
-            )
-
-            # ── Resolve document path ──────────────────────────────────────────
-            doc_path = resolve_path_template(
-                resolved_path_tpl,
-                session_id=sid,
-                title=row.title,
-                now=row.analyzed_at or now,
-            )
-
-            # ── Build block attributes ─────────────────────────────────────────
-            # 'tags' is SiYuan's native attribute read by the Tags panel.
-            # Values must be comma-separated with no leading #.
-            attrs: dict[str, str] = {"custom-pawn-diarize-session": sid}
-            all_tags: list[str] = list(row.tags or []) + list(row.sentiment_tags or [])
-            if all_tags:
-                attrs["tags"] = ",".join(all_tags)
-            if row.model:
-                attrs["custom-model"] = row.model
-
-            # ── Upsert document ────────────────────────────────────────────────
-            with console.status(f"[bold green]Syncing {sid!r}…"):
-                doc_id = client.upsert_session_doc(
-                    notebook=resolved_notebook,
-                    path=doc_path,
-                    markdown=md,
-                    attrs=attrs,
-                )
-
-            console.print(f"[green]✓ {sid!r} → {doc_path} (doc_id={doc_id})[/green]")
-
-            # ── SiYuan toast notification + inbox message ─────────────────────
-            try:
-                client.push_msg(f"Pawn Diarize: synced '{sid}'\n{doc_path}")
-            except Exception:
-                pass  # notification is best-effort
-            try:
-                client.create_shorthand(
-                    f"**Pawn Diarize sync** — [{row.title or sid}](siyuan://blocks/{doc_id})\n"
-                    f"Session: `{sid}`  ·  Path: `{doc_path}`"
-                )
-            except Exception:
-                pass  # inbox write is best-effort
-
-            # ── Daily note backlink ────────────────────────────────────────────
-            if daily_note and doc_id:
-                daily_path = resolve_path_template(
-                    resolved_daily_tpl,
-                    session_id=sid,
-                    title=None,
-                    now=now,
-                )
-                try:
-                    client.append_daily_note_link(
-                        notebook=resolved_notebook,
-                        daily_path=daily_path,
-                        doc_id=doc_id,
-                        title=row.title or sid,
-                    )
-                    console.print(f"  [dim]↩ backlink added to daily note: {daily_path}[/dim]")
-                except SiyuanError as e:
-                    console.print(
-                        f"  [yellow]Warning: could not add daily note backlink: {e}[/yellow]"
-                    )
-            success += 1
-
-        except SiyuanError as e:
-            console.print(f"[red]✗ {sid!r}: SiYuan API error — {e}[/red]")
-            errors += 1
-        except Exception as e:
-            console.print(f"[red]✗ {sid!r}: {e}[/red]")
-            errors += 1
-
-    console.print(f"\n[bold]Done:[/bold] {success} synced, {errors} failed.")
-    if errors:
-        raise typer.Exit(1)
-
-
-@app.command(name="push-siyuan")
-def push_siyuan(
-    session: Optional[str] = typer.Option(
-        None,
-        "--session",
-        "-s",
-        help="Diarization session ID to project into SiYuan.",
-    ),
-    latest: bool = typer.Option(
-        False,
-        "--latest",
-        help="Push the most recently updated session that has segments.",
-    ),
-    all_sessions: bool = typer.Option(
-        False,
-        "--all",
-        help="Push every session that has transcription segments.",
-    ),
-    since: Optional[str] = typer.Option(
-        None,
-        "--since",
-        help=("Push sessions updated on/after this date " "(YYYY-MM-DD or ISO datetime, UTC)."),
-    ),
-    dry_run: bool = typer.Option(
-        False,
-        "--dry-run",
-        help="Print what would be pushed without calling SiYuan.",
-    ),
-    daily_note: bool = typer.Option(
-        True,
-        "--daily-note/--no-daily-note",
-        help="Append a backlink in the SiYuan daily note (once per session).",
-    ),
-    db_dsn: Optional[str] = typer.Option(
-        None,
-        help="PostgreSQL DSN for the speaker database.",
-    ),
-    config: Optional[str] = typer.Option(
-        None,
-        "--config",
-        help="Path to YAML configuration file (pawnai.yaml).",
-    ),
-) -> None:
-    """Push session transcript(s) to SiYuan as a diary page.
-
-    Unlike [bold]sync-siyuan[/bold] (analysis + transcript, destructive upsert),
-    this command creates a stable session document with Speakers + Transcript
-    (managed) and Annotations (preserved across chunk updates).
-
-    Example:
-        pawn-diarize push-siyuan --latest
-        pawn-diarize push-siyuan --session myconv
-        pawn-diarize push-siyuan --since 2026-09-01
-        pawn-diarize push-siyuan --all --dry-run
-    """
-    from ..core.config import AppConfig
-    from ..core.database import get_engine, init_db
-    from ..core.siyuan import DEFAULT_DAILY_PATH_TEMPLATE, DEFAULT_PATH_TEMPLATE
-    from ..core.siyuan_transcript import (
-        list_session_ids_with_segments,
-        parse_since,
-        push_session_transcript,
-    )
-
-    app_cfg = AppConfig(config_path=config)
-    db_dsn = db_dsn or app_cfg.get("db_dsn")
-    sy_cfg = app_cfg.get_siyuan_config() or {}
-
-    resolved_url = sy_cfg.get("url", "http://127.0.0.1:6806")
-    resolved_token = sy_cfg.get("token", "")
-    resolved_notebook = sy_cfg.get("notebook", "")
-    resolved_path_tpl = sy_cfg.get("path_template", DEFAULT_PATH_TEMPLATE)
-    resolved_daily_tpl = sy_cfg.get("daily_note_path", DEFAULT_DAILY_PATH_TEMPLATE)
-
-    modes = sum(bool(x) for x in (session, latest, all_sessions, since))
-    if modes != 1:
-        console.print(
-            "[red]Error: provide exactly one of " "--session, --latest, --all, or --since.[/red]"
-        )
-        raise typer.Exit(1)
-
-    since_dt = None
-    if since:
-        try:
-            since_dt = parse_since(since)
-        except ValueError as exc:
-            console.print(f"[red]Error: invalid --since value: {exc}[/red]")
-            raise typer.Exit(1)
-
-    if not dry_run and not resolved_notebook:
-        console.print(
-            "[red]Error: No SiYuan notebook ID. Set siyuan.notebook in pawnai.yaml.[/red]"
-        )
-        raise typer.Exit(1)
-
-    engine = get_engine(db_dsn)
-    init_db(engine)
-
-    if session:
-        session_ids = [session]
-    elif latest:
-        session_ids = list_session_ids_with_segments(engine, latest=True)
-    elif since_dt is not None:
-        session_ids = list_session_ids_with_segments(engine, since=since_dt)
-    else:
-        session_ids = list_session_ids_with_segments(engine, latest=False)
-
-    if not session_ids:
-        console.print("[yellow]No sessions with segments found.[/yellow]")
-        raise typer.Exit(0)
-
-    console.print(
-        f"[cyan]Pushing {len(session_ids)} session(s) → SiYuan "
-        f"{resolved_url} notebook={resolved_notebook or '(dry-run)'}[/cyan]"
-    )
-
-    success = 0
-    errors = 0
-    for sid in session_ids:
-        try:
-            status = push_session_transcript(
-                sid,
-                db_dsn=str(db_dsn),
-                url=resolved_url,
-                token=resolved_token,
-                notebook=resolved_notebook or "dry-run",
-                path_template=resolved_path_tpl,
-                daily_path_template=resolved_daily_tpl,
-                daily_note=daily_note,
-                dry_run=dry_run,
-            )
-            console.print(f"[green]✓ {status}[/green]")
-            success += 1
-        except Exception as exc:
-            console.print(f"[red]✗ {sid!r}: {exc}[/red]")
-            errors += 1
-
-    console.print(f"\n[bold]Done:[/bold] {success} ok, {errors} failed.")
-    if errors:
-        raise typer.Exit(1)
-
-
 @app.command()
 def sessions(
     session: Optional[str] = typer.Option(
@@ -2346,6 +1905,129 @@ def sessions(
     console.print()
 
 
+@app.command(name="push-vault")
+def push_vault(
+    session: Optional[str] = typer.Option(
+        None,
+        "--session",
+        "-s",
+        help="Diarization session ID to project into the vault.",
+    ),
+    latest: bool = typer.Option(
+        False,
+        "--latest",
+        help="Push the most recently updated session that has segments.",
+    ),
+    all_sessions: bool = typer.Option(
+        False,
+        "--all",
+        help="Push every session that has transcription segments.",
+    ),
+    since: Optional[str] = typer.Option(
+        None,
+        "--since",
+        help=("Push sessions updated on/after this date (YYYY-MM-DD or ISO datetime, UTC)."),
+    ),
+    dry_run: bool = typer.Option(
+        False,
+        "--dry-run",
+        help="Print what would be pushed without writing to the vault.",
+    ),
+    db_dsn: Optional[str] = typer.Option(
+        None,
+        help="PostgreSQL DSN for the speaker database.",
+    ),
+    config: Optional[str] = typer.Option(
+        None,
+        "--config",
+        help="Path to YAML configuration file (pawnai.yaml).",
+    ),
+) -> None:
+    """Push session transcript(s) to the S3 Obsidian vault.
+
+    Creates or updates a stable session note with Speakers + Transcript
+    (managed) and Annotations (preserved across chunk updates).
+
+    Example:
+        pawn-diarize push-vault --latest
+        pawn-diarize push-vault --session myconv
+        pawn-diarize push-vault --since 2026-09-01
+        pawn-diarize push-vault --all --dry-run
+    """
+    from ..core.config import AppConfig
+    from ..core.database import get_engine, init_db
+    from ..core.vault_transcript import (
+        list_session_ids_with_segments,
+        parse_since,
+        push_session_transcript,
+    )
+
+    app_cfg = AppConfig(config_path=config) if config else AppConfig()
+    db_dsn = db_dsn or app_cfg.get("db_dsn")
+    vault_bucket = app_cfg.vault.bucket
+
+    modes = sum(bool(x) for x in (session, latest, all_sessions, since))
+    if modes != 1:
+        console.print(
+            "[red]Error: provide exactly one of --session, --latest, --all, or --since.[/red]"
+        )
+        raise typer.Exit(1)
+
+    since_dt = None
+    if since:
+        try:
+            since_dt = parse_since(since)
+        except ValueError as exc:
+            console.print(f"[red]Error: invalid --since value: {exc}[/red]")
+            raise typer.Exit(1)
+
+    if not dry_run and not vault_bucket:
+        console.print(
+            "[red]Error: No vault bucket. Set vault.bucket in pawnai.yaml.[/red]"
+        )
+        raise typer.Exit(1)
+
+    engine = get_engine(db_dsn)
+    init_db(engine)
+
+    if session:
+        session_ids = [session]
+    elif latest:
+        session_ids = list_session_ids_with_segments(engine, latest=True)
+    elif since_dt is not None:
+        session_ids = list_session_ids_with_segments(engine, since=since_dt)
+    else:
+        session_ids = list_session_ids_with_segments(engine, latest=False)
+
+    if not session_ids:
+        console.print("[yellow]No sessions with segments found.[/yellow]")
+        raise typer.Exit(0)
+
+    console.print(
+        f"[cyan]Pushing {len(session_ids)} session(s) → vault bucket={vault_bucket or '(dry-run)'}[/cyan]"
+    )
+
+    success = 0
+    errors = 0
+    for sid in session_ids:
+        try:
+            status = push_session_transcript(
+                sid,
+                db_dsn=str(db_dsn),
+                cfg=app_cfg,
+                dry_run=dry_run,
+            )
+            console.print(f"[green]✓ {status}[/green]")
+            success += 1
+        except Exception as exc:
+            console.print(f"[red]✗ {sid!r}: {exc}[/red]")
+            errors += 1
+
+    console.print(f"\n[bold]Done:[/bold] {success} ok, {errors} failed.")
+    if errors:
+        raise typer.Exit(1)
+
+
 @app.command()
 def status(
     config: Optional[str] = typer.Option(
@@ -2383,8 +2065,7 @@ def status(
     console.print("  session-relabel    - Bulk-rename a speaker across an entire session")
     console.print("  session-info       - Show speakers & embedding sources for a session")
     console.print("  sessions           - List or inspect transcription sessions")
-    console.print("  sync-siyuan        - Push analysis+transcript to SiYuan (legacy upsert)")
-    console.print("  push-siyuan        - Push/update diary transcript pages in SiYuan")
+    console.print("  push-vault         - Push/update transcript notes in the S3 vault")
     console.print("  s3-ls              - List objects in the configured S3 bucket")
     console.print("  status             - Show this status message")
 
@@ -2721,7 +2402,7 @@ def listen(
         "device": "cpu"
       }
 
-    Supported commands: transcribe-diarize, transcribe, diarize, embed, analyze, sync-siyuan.
+    Supported commands: transcribe-diarize, transcribe, diarize, embed, analyze.
 
     On success the message is acked; on failure it is sent to the dead-letter
     queue so it can be inspected and replayed later.

@@ -14,7 +14,7 @@ def main(argv: list[str] | None = None) -> int:
         prog="session_analyze",
         description=(
             "Run the standard structured analysis (Title / Summary / Topics / …) "
-            "and persist it. Optional --save also writes to SiYuan."
+            "and persist it. Optional --save also writes analysis Markdown to the vault."
         ),
     )
     # Positional is accepted because models often omit the flag name.
@@ -32,12 +32,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--save",
         action="store_true",
-        help="Also save the analysis report to SiYuan Notes",
+        help="Also save analysis Markdown to the vault (DB save always)",
     )
     parser.add_argument(
         "--title",
         default=None,
-        help="Optional SiYuan document title when --save is set",
+        help="Optional title hint when --save is set",
     )
     parser.add_argument("--config", default=None, help="Optional path to pawnai.yaml")
     args = parser.parse_args(argv)

@@ -121,7 +121,7 @@ Every message sent to the queue must be a JSON object with a `command` key.  All
 | `diarize` | `audio_paths` | `threshold`, `store_new`, `output`, `db_dsn` |
 | `embed` | `audio_paths`, `speaker_id` | `db_dsn` |
 | `analyze` | `session` or `input_path` | `mode` (`summary`\|`graph`), `model`, `output`, `db_dsn` |
-| `sync-siyuan` | `session` or `all_sessions: true` | `notebook`, `token`, `url`, `path_template`, `daily_note`, `daily_path_template`, `db_dsn` |
+| `analyze` | `session` or `all_sessions: true` | `notebook`, `token`, `url`, `path_template`, `daily_note`, `daily_path_template`, `db_dsn` |
 
 ---
 
@@ -192,20 +192,20 @@ Every message sent to the queue must be a JSON object with a `command` key.  All
 }
 ```
 
-### sync-siyuan — push analysis to SiYuan Note
+### analyze — push analysis to Obsidian vault Note
 
 ```json
 {
-  "command": "sync-siyuan",
+  "command": "analyze",
   "session": "tom-20260305"
 }
 ```
 
-Override SiYuan connection details when needed (otherwise the `siyuan:` section in `.pawn-diarize.yml` is used):
+Override Obsidian vault connection details when needed (otherwise the `# vault:` section in `.pawn-diarize.yml` is used):
 
 ```json
 {
-  "command": "sync-siyuan",
+  "command": "analyze",
   "session": "tom-20260305",
   "notebook": "20210817205410-2kvfpfn",
   "token": "your_api_token",
@@ -217,7 +217,7 @@ Sync every session that has a completed analysis:
 
 ```json
 {
-  "command": "sync-siyuan",
+  "command": "analyze",
   "all_sessions": true
 }
 ```

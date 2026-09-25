@@ -17,13 +17,8 @@ POST /v1/chat/completions
 DELETE /sessions/{session_id}
     Clear all stored turns for a session (start fresh).
 
-POST /v1/siyuan/triggers
-    Accept a SiYuan Pawn prompt ``block_id`` and start the review loop
-    (202). Instruction is the prompt body (legacy TIP / ``@pawn`` still resolve).
-
 POST /knowledge
-    Index content into the RAG vector store (inline text, session transcript,
-    or SiYuan page).
+    Index content into the RAG vector store (inline text or session transcript).
 
 POST /v1/audio/transcriptions
     OpenAI-compatible audio transcription.  Accepts WAV, FLAC, and any format
@@ -83,7 +78,7 @@ from pathlib import Path
 from typing import Any, AsyncIterator, List, Optional, Union
 
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Response, UploadFile
-from fastapi.responses import PlainTextResponse, StreamingResponse
+from fastapi.responses import JSONResponse, PlainTextResponse, StreamingResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, ConfigDict
 
@@ -114,7 +109,7 @@ _RESET_SENTINEL = "/reset"
 
 
 def get_sallm_registry() -> SallmSessionRegistry:
-    """Return the process-wide sallm registry (shared with SiYuan watcher)."""
+    """Return the process-wide sallm registry."""
     return _sallm_registry
 
 
@@ -188,38 +183,33 @@ class SpeechRequest(BaseModel):
     language: Optional[str] = None  # BCP-47 code, e.g. "en", "it", "fr"; falls back to config
 
 
-class SiyuanTriggerRequest(BaseModel):
-    """Body for POST /v1/siyuan/triggers."""
+class VaultTaskCreateRequest(BaseModel):
+    """POST /v1/vault/tasks — submit a task from the Obsidian plugin."""
 
     model_config = ConfigDict(extra="ignore")
 
-    block_id: str
+    id: Optional[str] = None
+    instruction: str
+    note_path: Optional[str] = None
+    context: Optional[str] = None
+    conversation: Optional[str] = None
+    timeout_seconds: Optional[float] = 60.0
 
 
-class SiyuanTriggerResponse(BaseModel):
-    """Accepted SiYuan @pawn trigger."""
-
-    request_id: str
-    status: str
-    conversation_id: str
-    trigger_block_id: str
-    started: bool
-
-
-class SiyuanApprovalRequest(BaseModel):
-    """Body for POST /v1/siyuan/approvals."""
+class VaultTaskApproveRequest(BaseModel):
+    """POST /v1/vault/tasks/{task_id}/approve — index an approved result."""
 
     model_config = ConfigDict(extra="ignore")
 
-    block_id: str
+    result: Optional[str] = None
 
 
-class SiyuanApprovalResponse(BaseModel):
-    """Indexed (or already indexed) Approve click."""
-
-    request_id: str
+class VaultTaskStatusResponse(BaseModel):
+    task_id: str
     status: str
-    indexed: bool
+    result: Optional[str] = None
+    agent_run_id: Optional[str] = None
+    error_code: Optional[str] = None
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -504,84 +494,6 @@ async def delete_session(
 
 
 @app.post(
-    "/v1/siyuan/triggers",
-    response_model=SiyuanTriggerResponse,
-    status_code=202,
-    dependencies=[Depends(_require_token)],
-)
-async def siyuan_triggers(
-    body: SiyuanTriggerRequest,
-    cfg: Any = Depends(_get_cfg),
-) -> SiyuanTriggerResponse:
-    """Accept a SiYuan Pawn prompt and start the agent review loop.
-
-    Body is only ``{ "block_id": "..." }``. The server resolves the nearest
-    ``pawn/prompt`` custom block (or a legacy TIP callout / plain ``@pawn``
-    mention), loads that text as the instruction, upserts
-    ``siyuan_agent_requests``, and runs ``execute_claimed_request`` in the
-    background. Returns 202 before the agent turn finishes.
-    """
-    from pawn_server.core.siyuan_triggers import (  # noqa: PLC0415
-        SiyuanTriggerError,
-        accept_siyuan_trigger,
-    )
-
-    block_id = (body.block_id or "").strip()
-    if not block_id:
-        raise HTTPException(status_code=422, detail="block_id is required")
-
-    try:
-        result = await accept_siyuan_trigger(cfg, block_id, registry=_sallm_registry)
-    except SiyuanTriggerError as exc:
-        raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
-
-    return SiyuanTriggerResponse(
-        request_id=result.request_id,
-        status=result.status,
-        conversation_id=result.conversation_id,
-        trigger_block_id=result.trigger_block_id,
-        started=result.started,
-    )
-
-
-@app.post(
-    "/v1/siyuan/approvals",
-    response_model=SiyuanApprovalResponse,
-    dependencies=[Depends(_require_token)],
-)
-async def siyuan_approvals(
-    body: SiyuanApprovalRequest,
-    cfg: Any = Depends(_get_cfg),
-) -> SiyuanApprovalResponse:
-    """Index one checked Approve checkbox into sallm memory.
-
-    Body is ``{ "block_id": "..." }`` for the clicked task list item. The
-    server finds the nearby ``_request:`` id, calls ``Agent.remember``, and
-    marks the request ``done``. A second call for an already indexed request
-    returns ``indexed: false``.
-    """
-    from pawn_server.core.siyuan_triggers import (  # noqa: PLC0415
-        SiyuanTriggerError,
-        accept_siyuan_approval,
-    )
-
-    block_id = (body.block_id or "").strip()
-    if not block_id:
-        raise HTTPException(status_code=422, detail="block_id is required")
-
-    try:
-        result = await accept_siyuan_approval(cfg, block_id, registry=_sallm_registry)
-    except SiyuanTriggerError as exc:
-        raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
-
-    return SiyuanApprovalResponse(
-        request_id=result.request_id,
-        status=result.status,
-        indexed=result.indexed,
-    )
-
-
-@app.post(
     "/v1/audio/transcriptions",
     response_model=None,
     dependencies=[Depends(_require_token)],
@@ -769,6 +681,126 @@ async def audio_speech(
         raise HTTPException(status_code=500, detail=f"Audio conversion failed: {stderr}") from exc
 
     return Response(content=proc.stdout, media_type=media_type)
+
+
+def _vault_task_status_payload(cfg: Any, task_id: str) -> VaultTaskStatusResponse:
+    from pawn_agent.utils.db import AgentRun, get_vault_task  # noqa: PLC0415
+    from sqlalchemy.orm import Session  # noqa: PLC0415
+    from pawn_core.database import get_engine  # noqa: PLC0415
+
+    row = get_vault_task(cfg.db_dsn, task_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="Task not found")
+    result_text: Optional[str] = None
+    if row.agent_run_id:
+        with Session(get_engine(cfg.db_dsn)) as db:
+            run = db.get(AgentRun, row.agent_run_id)
+            if run and run.response:
+                result_text = run.response
+    return VaultTaskStatusResponse(
+        task_id=row.id,
+        status=row.status,
+        result=result_text,
+        agent_run_id=row.agent_run_id,
+        error_code=row.error_code,
+    )
+
+
+@app.post(
+    "/v1/vault/tasks",
+    response_model=None,
+    dependencies=[Depends(_require_token)],
+)
+async def vault_task_create(
+    body: VaultTaskCreateRequest,
+    cfg: Any = Depends(_get_cfg),
+) -> JSONResponse:
+    """Run a vault task synchronously up to *timeout_seconds*, else 202 Accepted."""
+    from pawn_server.core.vault_tasks import (  # noqa: PLC0415
+        new_task_id,
+        run_http_vault_task_with_optional_vault_write,
+        track_background_task,
+    )
+
+    task_id = (body.id or "").strip() or new_task_id()
+    timeout = float(body.timeout_seconds if body.timeout_seconds is not None else 60.0)
+    write_event = asyncio.Event()
+    runner = asyncio.create_task(
+        run_http_vault_task_with_optional_vault_write(
+            cfg,
+            task_id=task_id,
+            instruction=body.instruction,
+            note_path=body.note_path,
+            context=body.context,
+            conversation_id=body.conversation,
+            registry=_sallm_registry,
+            write_result_to_vault=write_event,
+        ),
+        name=f"vault-http-{task_id}",
+    )
+    track_background_task(task_id, runner)
+    try:
+        outcome = await asyncio.wait_for(asyncio.shield(runner), timeout=timeout)
+    except asyncio.TimeoutError:
+        write_event.set()
+        payload = {"task_id": task_id, "status": "accepted", "message": "still running"}
+        return JSONResponse(status_code=202, content=payload)
+    payload = outcome.__dict__
+    status_code = 200 if outcome.status == "review" else 500 if outcome.error_code else 200
+    return JSONResponse(status_code=status_code, content=payload)
+
+
+@app.get(
+    "/v1/vault/tasks/{task_id}",
+    response_model=VaultTaskStatusResponse,
+    dependencies=[Depends(_require_token)],
+)
+async def vault_task_get(
+    task_id: str,
+    cfg: Any = Depends(_get_cfg),
+) -> VaultTaskStatusResponse:
+    """Poll vault task status and agent result."""
+    return _vault_task_status_payload(cfg, task_id)
+
+
+@app.post(
+    "/v1/vault/tasks/{task_id}/approve",
+    response_model=VaultTaskStatusResponse,
+    dependencies=[Depends(_require_token)],
+)
+async def vault_task_approve(
+    task_id: str,
+    body: VaultTaskApproveRequest,
+    cfg: Any = Depends(_get_cfg),
+) -> VaultTaskStatusResponse:
+    """Index an approved vault task into durable agent memory."""
+    from pawn_core.vault_config import vault_store_from_config  # noqa: PLC0415
+    from pawn_server.core.vault_tasks import approve_vault_task  # noqa: PLC0415
+
+    try:
+        store = vault_store_from_config(cfg)
+    except ValueError:
+        store = None
+    outcome = await approve_vault_task(
+        cfg,
+        task_id,
+        registry=_sallm_registry,
+        store=store,
+        result_text=body.result,
+    )
+    if outcome.error_code == "not_found":
+        raise HTTPException(status_code=404, detail="Task not found")
+    if outcome.error_code == "not_ready":
+        raise HTTPException(status_code=409, detail=f"Task is {outcome.status}, not ready")
+    if outcome.error_code == "index_failed":
+        raise HTTPException(status_code=500, detail="Could not index into agent memory")
+    return VaultTaskStatusResponse(
+        task_id=outcome.task_id,
+        status=outcome.status,
+        result=outcome.result or None,
+        agent_run_id=outcome.agent_run_id,
+        error_code=outcome.error_code,
+    )
 
 
 # ──────────────────────────────────────────────────────────────────────────────

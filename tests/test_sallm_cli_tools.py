@@ -20,10 +20,11 @@ def test_build_pawn_clitools_names() -> None:
         "session_analyze",
         "session_delete",
         "session_relabel",
-        "siyuan_save",
-        "siyuan_read",
-        "siyuan_append",
-        "siyuan_set_status",
+        "note_read",
+        "note_search",
+        "note_write",
+        "note_append",
+        "task_update",
         "schedule_propose",
         "queue_push",
     }
@@ -33,6 +34,7 @@ def test_build_pawn_skills_includes_sessions() -> None:
     registry = build_pawn_skills()
     assert "converse" in registry.names()
     assert "sessions" in registry.names()
+    assert "vault_tasks" in registry.names()
     sessions = registry.get("sessions")
     assert sessions.tools is not None
     assert "sessions_list" in sessions.tools
@@ -50,7 +52,7 @@ def test_notes_skill_exposes_sessions_list() -> None:
     visible = registry.resolve_tools("notes", available)
     assert "sessions_list" in visible
     assert "session_analyze" in visible
-    assert "siyuan_save" in visible
+    assert "note_write" in visible
 
 
 def test_converse_exposes_all_tools_including_sessions_list() -> None:
@@ -119,7 +121,6 @@ def test_session_relabel_calls_impl() -> None:
                 "SPEAKER_00",
                 "--to",
                 "Davide",
-                "--push-siyuan",
             ]
         )
     assert code == 0
@@ -127,7 +128,6 @@ def test_session_relabel_calls_impl() -> None:
     assert mock_impl.call_args.kwargs["session_id"] == "xyz"
     assert mock_impl.call_args.kwargs["from_speaker"] == "SPEAKER_00"
     assert mock_impl.call_args.kwargs["to_speaker"] == "Davide"
-    assert mock_impl.call_args.kwargs["push_siyuan"] is True
 
 
 def test_sessions_list_calls_impl() -> None:
@@ -258,138 +258,3 @@ def test_delete_session_impl_deletes_and_returns_receipt() -> None:
     mock_engine_fn.assert_called_once_with(cfg.db_dsn)
     engine.dispose.assert_not_called()
 
-
-def test_siyuan_save_from_analysis_calls_impl() -> None:
-    from pawn_agent.tools.cli import siyuan_save
-
-    with (
-        patch(
-            "pawn_agent.tools.cli.siyuan_save.load_agent_config",
-            return_value=object(),
-        ),
-        patch(
-            "pawn_agent.tools.cli.siyuan_save.save_analysis_to_siyuan_impl",
-            return_value="Saved to SiYuan: ok",
-        ) as mock_impl,
-    ):
-        code = siyuan_save.main(["--session-id", "daniel-20260630", "--from-analysis"])
-    assert code == 0
-    mock_impl.assert_called_once()
-    assert mock_impl.call_args.args[1] == "daniel-20260630"
-
-
-def test_siyuan_save_content_file_calls_impl(tmp_path) -> None:
-    from pawn_agent.tools.cli import siyuan_save
-
-    note = tmp_path / "note.md"
-    note.write_text("# Tom's notes\n\nLine two.\n", encoding="utf-8")
-
-    with (
-        patch(
-            "pawn_agent.tools.cli.siyuan_save.load_agent_config",
-            return_value=object(),
-        ),
-        patch(
-            "pawn_agent.tools.cli.siyuan_save.save_to_siyuan_impl",
-            return_value="siyuan://blocks/abc",
-        ) as mock_impl,
-    ):
-        code = siyuan_save.main(
-            [
-                "--session-id",
-                "daniel-20260630",
-                "--content-file",
-                str(note),
-                "--title",
-                "Notes",
-            ]
-        )
-    assert code == 0
-    mock_impl.assert_called_once()
-    kwargs = mock_impl.call_args.kwargs
-    assert kwargs["session_id"] == "daniel-20260630"
-    assert "Tom's notes" in kwargs["content"]
-    assert kwargs["title"] == "Notes"
-
-
-def test_siyuan_save_rejects_multiline_content() -> None:
-    from pawn_agent.tools.cli import siyuan_save
-
-    with patch(
-        "pawn_agent.tools.cli.siyuan_save.load_agent_config",
-        return_value=object(),
-    ):
-        code = siyuan_save.main(
-            [
-                "--session-id",
-                "s1",
-                "--content",
-                "line1\nline2",
-            ]
-        )
-    assert code != 0
-
-
-def test_siyuan_save_rejects_long_content() -> None:
-    from pawn_agent.tools.cli import siyuan_save
-
-    with patch(
-        "pawn_agent.tools.cli.siyuan_save.load_agent_config",
-        return_value=object(),
-    ):
-        code = siyuan_save.main(
-            [
-                "--session-id",
-                "s1",
-                "--content",
-                "x" * 241,
-            ]
-        )
-    assert code != 0
-
-
-def test_prepare_commands_file_ref_for_siyuan_style() -> None:
-    """sallm materializes @note so pawn can pass --content-file safely."""
-    from pathlib import Path
-
-    from sallm.tools import prepare_commands
-
-    text = """```run
-siyuan_save --session-id s1 --content-file @note
-```
-```file note
-# Deep analysis
-
-Tom's summary with "quotes"
-```"""
-    prepared = prepare_commands(text)
-    try:
-        assert prepared.error is None
-        assert prepared.commands[0][0] == "siyuan_save"
-        path = prepared.commands[0][-1]
-        body = Path(path).read_text(encoding="utf-8")
-        assert "Tom's summary" in body
-        assert 'with "quotes"' in body
-    finally:
-        prepared.cleanup()
-
-
-def test_format_analysis_markdown() -> None:
-    from types import SimpleNamespace
-
-    from pawn_agent.tools.save_to_siyuan import format_analysis_markdown
-
-    md = format_analysis_markdown(
-        SimpleNamespace(
-            title="Exit Interview",
-            summary="Left for Open Loop.",
-            key_topics="security",
-            speaker_highlights=None,
-            sentiment="mixed",
-            sentiment_tags=["concern"],
-            tags=["exit"],
-        )
-    )
-    assert "# Exit Interview" in md
-    assert "## Summary" in md
-    assert "Open Loop" in md

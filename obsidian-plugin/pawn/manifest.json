@@ -1,0 +1,9 @@
+{
+  "id": "pawn",
+  "name": "Pawn",
+  "version": "0.1.0",
+  "minAppVersion": "1.5.0",
+  "description": "Co-author with Pawn AI via vault tasks and chat",
+  "author": "PawnAI",
+  "isDesktopOnly": false
+}

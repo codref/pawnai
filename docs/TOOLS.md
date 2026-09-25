@@ -13,9 +13,10 @@ pawn_agent/tools/
   list_sessions.py       # list_sessions_impl / list_session_candidates_impl
   query_conversation.py  # query_conversation_impl
   analyze_summary.py     # analyze_summary_impl
-  save_to_siyuan.py      # save_to_siyuan_impl / save_analysis_to_siyuan_impl
   delete_session.py      # delete_session_impl
   session_relabel.py     # session_relabel_impl (wraps pawn_diarize session_relabel)
+  notes_impl.py          # note_read/search/write/append + task_update
+  save_to_vault.py       # analysis Markdown → Pawn/Analyses/
   propose_schedule.py    # propose_schedule_change_impl
   push_queue_message.py  # push_queue_message_impl
   cli/
@@ -24,10 +25,11 @@ pawn_agent/tools/
     session_analyze.py
     session_delete.py
     session_relabel.py
-    siyuan_save.py
-    siyuan_read.py
-    siyuan_append.py
-    siyuan_set_status.py
+    note_read.py
+    note_search.py
+    note_write.py
+    note_append.py
+    task_update.py
     schedule_propose.py
     queue_push.py
 ```
@@ -42,15 +44,11 @@ pawn_agent/tools/
 CLI contract: flags only, human-readable stdout, inherit `pawnai.yaml` / `PAWN_*`
 from the parent process.
 
-### Large / multiline bodies
+### Session analysis + vault notes
 
-Do not paste long Markdown into a ```run` line (`--content` rejects newlines and
-long strings). Prefer:
-
-1. `siyuan_save --session-id ID --from-analysis` after `session_analyze`
-2. `session_analyze --session-id ID --save`
-3. Free-form: `siyuan_save ... --content-file @note` plus a ```file note` block
-   (sallm writes a temp file and rewrites `@note` to that path)
+`session_analyze --save` persists analysis to PostgreSQL and writes Markdown
+to `Pawn/Analyses/{session_id}.md` via `save_to_vault`. Free-form notes use
+`note_write --content-file @note`. See `docs/OBSIDIAN_AGENT.md`.
 
 ## Available CliTools
 
@@ -58,23 +56,21 @@ long strings). Prefer:
 |---|---|---|
 | `sessions_list` | `list_sessions` | List diarization sessions |
 | `session_transcript` | `query_conversation` | Fetch one transcript |
-| `session_analyze` | `analyze_summary` | Structured analysis (+ optional SiYuan) |
+| `session_analyze` | `analyze_summary` | Structured analysis (optional `--save` to vault) |
 | `session_delete` | `delete_session` | Permanently delete one session (requires `--confirm`) |
 | `session_relabel` | `session_relabel` | Rename a speaker across a session (segments + embeddings) |
-| `siyuan_save` | `save_to_siyuan` | Save Markdown / `--from-analysis` / `--content-file` to SiYuan |
-| `siyuan_read` | `siyuan_blocks` | Read block kramdown / children / attrs / refs |
-| `siyuan_append` | `siyuan_blocks` | Append Markdown under a parent block (append-only) |
-| `siyuan_set_status` | `siyuan_blocks` | Set `custom-agent-*` attrs on a block |
+| `note_read` | `notes_impl` | Read a vault Markdown note |
+| `note_search` | `notes_impl` | List/filter vault notes |
+| `note_write` | `notes_impl` | Create/overwrite a vault note (write guards) |
+| `note_append` | `notes_impl` | Append to a vault note |
+| `task_update` | `notes_impl` | Update task note status / Result |
 | `schedule_propose` | `propose_schedule` | Create schedule proposals (approve via CLI) |
 | `queue_push` | `push_queue_message` | Publish to a named queue producer |
-
-See also `docs/SIYUAN_AGENT.md` for the pull-only `@pawn` watcher loop.
 
 ## Shared helpers
 
 | Module | Contents |
 |---|---|
-| `utils/db.py` | ORM + `get_session_analysis` / schedule helpers |
-| `utils/transcript.py` | `fetch_transcript` |
-| `utils/siyuan.py` | `do_save_to_siyuan` |
-| `utils/analysis.py` | `run_analysis` (uses `llm_sub`) |
+| `pawn_core/vault.py` | `VaultStore`, frontmatter helpers, write guards |
+| `pawn_core/vault_config.py` | `vault_store_from_config` |
+| `pawn_core/vault_db.py` | `vault_notes` ORM helpers |

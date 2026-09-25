@@ -19,7 +19,7 @@ litellm proxy  :4000
 pawn-agent server  :8000
     │
     ├── PostgreSQL (session history, RAG, analysis)
-    └── SiYuan notes
+    └── Obsidian vault notes
 ```
 
 The litellm proxy translates the standard OpenAI request envelope into pawn-agent's `/chat` endpoint.
@@ -75,7 +75,7 @@ Authorization: Bearer <key>
 {
   "model": "pawn-agent",
   "messages": [
-    { "role": "user", "content": "Summarise session abc123 and save to SiYuan" }
+    { "role": "user", "content": "Summarise session abc123 and save analysis" }
   ],
   "user": "my-session-id"
 }
@@ -169,8 +169,8 @@ The agent uses sallm CliTools (see [TOOLS.md](TOOLS.md)):
 |---|---|
 | `sessions_list` | List diarization sessions |
 | `session_transcript` | Fetch a full transcript |
-| `session_analyze` | Run structured analysis (optional SiYuan save) |
-| `siyuan_save` | Save Markdown / stored analysis to SiYuan (`--from-analysis` or `--content-file @note` + ```file`) |
+| `session_analyze` | Run structured analysis (optional Obsidian vault save) |
+| `session_analyze --save` | Save Markdown / stored analysis to Obsidian vault (`--from-analysis` or `--content-file @note` + ```file`) |
 | `schedule_propose` | Propose schedule changes (approve via `pawn-server schedules`) |
 | `queue_push` | Publish notifications to configured queue producers |
 
@@ -179,8 +179,8 @@ Prompt the agent in natural language. It selects tools via ReAct `` ```run `` bl
 Example prompts:
 - `"Summarise session abc123"` → `session_analyze`
 - `"What did Alice say about the budget in session abc123?"` → `session_transcript`
-- `"Store the daniel-20260630 analysis on SiYuan"` → `siyuan_save --from-analysis`
-- `"Save this write-up to SiYuan"` → `siyuan_save --content-file @note` + ```file note`
+- `"Store the daniel-20260630 analysis on Obsidian vault"` → `session_analyze --save --from-analysis`
+- `"Save this write-up to Obsidian vault"` → `session_analyze --save --content-file @note` + ```file note`
 
 ---
 
@@ -209,7 +209,7 @@ def chat(prompt: str) -> str:
 print(chat("Summarise session abc123"))
 
 # Multi-turn: each call shares SESSION_ID, the agent remembers context
-print(chat("Now save that summary to SiYuan under 'Meetings/2026-03'"))
+print(chat("Now save that summary to Obsidian vault under 'Meetings/2026-03'"))
 ```
 
 ---
@@ -250,7 +250,7 @@ curl -X DELETE http://localhost:8000/sessions/test-session-1 \
 ## Running the stack
 
 ```bash
-# Start postgres + siyuan + litellm proxy
+# Start postgres + litellm proxy
 docker compose -f docker/docker-compose.yml up -d
 
 # Start pawn-agent HTTP server (in a separate terminal, with venv active)

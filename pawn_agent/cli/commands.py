@@ -46,7 +46,7 @@ def chat(
     """Start an interactive multi-turn [bold]CHAT[/bold] session (sallm).
 
     Uses the durable sallm ReAct agent with skills and CliTools for
-    sessions, SiYuan, schedules, and queue publish.
+    sessions, schedules, and queue publish.
 
     Type [bold]/exit[/bold] or [bold]/quit[/bold] to end, or press Ctrl-D / Ctrl-C.
     Type [bold]/stats[/bold] for session metrics, [bold]/reset[/bold] to clear

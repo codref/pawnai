@@ -12,9 +12,9 @@ A Python monolith for speaker diarization, audio transcription, and LLM-powered 
 - **Speaker Embeddings**: Extract and store 512-dim speaker vectors in PostgreSQL with pgvector
 - **Conversation Analysis**: Generate titles, summaries, key topics, sentiment, and per-speaker highlights
 - **Knowledge Graph Extraction**: Extract semantic triples (subject, relation, object) from transcripts
-- **RAG Index**: Embed transcripts and SiYuan notes for semantic similarity search
+- **RAG Index**: Embed transcripts and Obsidian vault notes for semantic similarity search
 - **S3 Storage Management**: List, filter, and delete objects in S3-compatible storage
-- **SiYuan Notes Integration**: Push analysis documents and diary transcript pages to SiYuan
+- **Obsidian vault**: S3 Markdown vault (Sync Engine) for transcripts, analyses, and agent tasks — see `docs/OBSIDIAN_AGENT.md`
 - **Background Queue Worker**: S3-backed job queue with lease-based concurrency
 - **Durable Agent Scheduler**: Store scheduled agent prompts in PostgreSQL and run them from pawn-server
 - **GPU Support**: Accelerated processing on CUDA-enabled devices
@@ -80,12 +80,6 @@ queue_producers:
   downstream:
     topic: downstream-jobs
     bucket_name: my-audio-bucket
-
-siyuan:
-  url: http://localhost:6806
-  token: your-siyuan-token
-  notebook: Meetings
-  path_template: "/conversations/{date}/{session_id}/{title}"  # child page per analysis
 
 agent:
   name: Bob
@@ -279,21 +273,36 @@ Bulk-rename a mis-identified speaker across an entire session. Accepts a raw
 pawn-diarize session-relabel --session SESSION_ID --from OLD_NAME --to NEW_NAME [OPTIONS]
 
 Options:
-  --yes, -y    Skip confirmation prompt
+  --yes, -y         Skip confirmation prompt
+  --push-vault      Force create/update the vault Speakers+Transcript note
   --db-dsn TEXT
   --config TEXT
 ```
 
 ```bash
 pawn-diarize session-relabel --session my-session --from SPEAKER_00 --to Davide --yes
-pawn-diarize session-relabel --session my-session -F SPEAKER_00 -T Davide --yes --push-siyuan
+pawn-diarize session-relabel --session my-session -F SPEAKER_00 -T Davide --yes --push-vault
 ```
 
-Existing SiYuan diary Speakers+Transcript pages refresh automatically after
-relabel (Annotations preserved). `--push-siyuan` forces create/update even
-when no `siyuan_session_docs` mapping exists yet.
-
 The agent exposes the same operation as the `session_relabel` CliTool.
+Existing vault Speakers+Transcript notes refresh automatically; `--push-vault`
+creates the note when no `vault_notes` mapping exists yet.
+
+#### `push-vault`
+
+Project a session transcript into the S3 Obsidian vault as a stable Markdown
+note (`Pawn/Transcripts/…`). Speakers and Transcript are overwritten on each
+push; Annotations are preserved. Opt-in auto-push after each
+`transcribe-diarize` chunk with `vault.auto_push_transcript: true`.
+
+```bash
+pawn-diarize push-vault --latest
+pawn-diarize push-vault --session myconv
+pawn-diarize push-vault --since 2026-09-01
+pawn-diarize push-vault --all --dry-run
+```
+
+See `docs/OBSIDIAN_AGENT.md`.
 
 #### `session-info`
 
@@ -316,49 +325,6 @@ Options:
   --tail INT        Show last N segments
   --output TEXT     Save output to file
   --config TEXT     Path to pawnai.yaml
-```
-
-#### `sync-siyuan`
-
-Push a session's analysis to a SiYuan Notes instance as a new document.
-
-```bash
-pawn-diarize sync-siyuan [OPTIONS]
-
-Options:
-  --session TEXT          Session ID to sync
-  --all                   Sync all sessions with stored analysis
-  --notebook TEXT         Target SiYuan notebook
-  --token TEXT            SiYuan API token
-  --url TEXT              SiYuan instance URL
-  --path-template TEXT    Document path template
-  --daily-note            Insert into today's daily note
-  --db-dsn TEXT
-  --config TEXT
-```
-
-#### `push-siyuan`
-
-Project diarization transcripts into SiYuan as diary pages (Speakers + Transcript,
-user Annotations preserved). Postgres stays source of truth; chunked
-`transcribe-diarize` updates the same stable document. Enable automatic pushes
-with `siyuan.auto_push_transcript: true` in `pawnai.yaml`.
-
-```bash
-pawn-diarize push-siyuan --latest
-pawn-diarize push-siyuan --session myconv
-pawn-diarize push-siyuan --since 2026-09-01
-pawn-diarize push-siyuan --all --dry-run
-
-Options:
-  --session TEXT          Session ID to push
-  --latest                Most recently updated session with segments
-  --all                   Every session with segments
-  --since TEXT            Sessions updated on/after YYYY-MM-DD (or ISO datetime, UTC)
-  --dry-run               Print actions without calling SiYuan
-  --daily-note/--no-daily-note
-  --db-dsn TEXT
-  --config TEXT
 ```
 
 #### `s3 ls`
@@ -417,7 +383,7 @@ pawn-diarize s3 rm --older-than 90 --prefix recordings/ --yes
 
 #### `listen`
 
-Background worker that polls a pawn-queue topic and executes jobs (transcribe-diarize, transcribe, diarize, embed, analyze, sync-siyuan).
+Background worker that polls a pawn-queue topic and executes jobs (transcribe-diarize, transcribe, diarize, embed, analyze).
 
 ```bash
 pawn-diarize listen [OPTIONS]
@@ -514,7 +480,7 @@ Options:
 ```
 
 ```bash
-pawn-agent run "Summarize session abc123 and save to SiYuan"
+pawn-agent run "Summarize session abc123 and save analysis"
 ```
 
 #### `tools`
@@ -539,20 +505,25 @@ pawn-agent models [--config TEXT]
 |------|-------------|
 | `sessions_list` | List diarization sessions from the database |
 | `session_transcript` | Fetch the full transcript for a session |
-| `session_analyze` | Run structured analysis (title, summary, topics, sentiment, tags); optional `--save` to SiYuan |
+| `session_analyze` | Run structured analysis (title, summary, topics, sentiment, tags); `--save` writes to `Pawn/Analyses/` |
 | `session_delete` | Permanently delete one diarization session (requires matching `--confirm`) |
 | `session_relabel` | Rename a speaker across a session (`--from SPEAKER_00 --to Davide`) |
-| `siyuan_save` | Save Markdown to SiYuan; prefer `--from-analysis` or `--content-file @note` |
+| `note_read` | Read a vault Markdown note (`--path`, optional `--follow-links`) |
+| `note_search` | List/filter vault notes (`--folder`, `--tag`) |
+| `note_write` | Create/overwrite a vault note (write guards under `Pawn/`) |
+| `note_append` | Append Markdown to a vault note |
+| `task_update` | Update a vault task note status / Result |
 | `queue_push` | Publish progress updates or notifications to configured queue producers |
 | `schedule_propose` | Create schedule-change proposals for application approval |
 
 Tools are sallm CliTools (`pawn_agent/tools/cli/`). See [docs/TOOLS.md](docs/TOOLS.md).
+Vault task loop: [docs/OBSIDIAN_AGENT.md](docs/OBSIDIAN_AGENT.md).
 
 ---
 
 ## pawn-server
 
-HTTP API server, queue listener, scheduler, and optional Matrix bot for `pawn-agent`.
+HTTP API server, queue listener, scheduler, vault watcher, and optional Matrix bot for `pawn-agent`.
 
 ### Serve
 
@@ -574,25 +545,32 @@ Options:
 --scheduler-only           Run only the durable scheduler
 --no-matrix                Disable the Matrix bot
 --matrix-only              Run only the Matrix bot
+--no-vault-watcher         Disable the vault task watcher
+--vault-watcher-only       Run only the vault task watcher
 ```
 
 `pawn-server serve` starts the OpenAI-compatible HTTP API and, when configured,
-the queue listener, scheduler, and Matrix bot. Agent turns use the in-process
-sallm registry and are recorded in `agent_runs`. Matrix chat needs
-`uv sync --extra matrix` and `matrix_bot.enabled` — see [docs/MATRIX_BOT.md](docs/MATRIX_BOT.md).
+the queue listener, scheduler, Matrix bot, and vault watcher. Agent turns use
+the in-process sallm registry and are recorded in `agent_runs`. Matrix chat
+needs `uv sync --extra matrix` and `matrix_bot.enabled` — see
+[docs/MATRIX_BOT.md](docs/MATRIX_BOT.md). Vault tasks:
+[docs/OBSIDIAN_AGENT.md](docs/OBSIDIAN_AGENT.md).
 
 ```bash
-# API + queue listener + scheduler (+ Matrix if enabled)
+# API + queue listener + scheduler (+ Matrix / vault watcher if enabled)
 pawn-server serve
 
 # API only
-pawn-server serve --no-queue --disable-scheduler --no-matrix
+pawn-server serve --no-queue --disable-scheduler --no-matrix --no-vault-watcher
 
 # Scheduler worker only
 pawn-server serve --scheduler-only
 
 # Matrix bot only
 pawn-server serve --matrix-only
+
+# Vault watcher only
+pawn-server serve --vault-watcher-only
 ```
 
 ### Schedule Management
@@ -659,8 +637,6 @@ parakeet/
 │   │   ├── database.py       # SQLAlchemy ORM (embeddings, segments, analysis, RAG, graph)
 │   │   ├── analysis.py       # Session analysis via Copilot
 │   │   ├── s3.py             # S3/MinIO client and transparent download helpers
-│   │   ├── siyuan.py         # SiYuan Notes API client
-│   │   ├── siyuan_transcript.py  # Diary transcript push (chunk-safe)
 │   │   └── queue_listener.py # Background job worker
 │   └── utils/
 ├── pawn_agent/
@@ -676,7 +652,6 @@ parakeet/
 │       ├── config.py         # AgentConfig loader (incl. agent.sallm)
 │       ├── db.py             # Agent/schedule ORM helpers
 │       ├── transcript.py     # Fetch/format session transcripts
-│       ├── siyuan.py         # SiYuan helpers
 │       └── analysis.py       # Analysis runner
 ├── pawn_server/
 │   ├── __main__.py           # Entry point → pawn-server
@@ -703,7 +678,7 @@ parakeet/
 | S3 storage | boto3 / aioboto3 |
 | Job queue | pawn-queue (S3-backed) |
 | Scheduler | PostgreSQL + croniter |
-| Notes integration | SiYuan Notes API |
+| Notes integration | Obsidian vault (S3 + Sync Engine + plugin) |
 | CLI | Typer + Rich |
 
 ## Development

@@ -1,6 +1,6 @@
 """Outbound Matrix notifier — consumes ``queue_producers.matrix`` notify messages.
 
-Complements the inbound Matrix bot. SiYuan (and other producers) publish via
+Complements the inbound Matrix bot. Queue producers publish via
 ``queue_push``; this worker delivers short alerts to ``matrix_bot.notify_room_id``.
 
 Prefer :func:`run_matrix_notifier_loop` with a shared client from
@@ -38,7 +38,7 @@ async def _deliver_notify(cfg: Any, client: Any, payload: dict[str, Any]) -> Non
 async def run_matrix_notifier_loop(cfg: Any, client: Any) -> None:
     """Consume outbound notification queue using an already-logged-in client."""
     producers = cfg.queue_producers or {}
-    target_name = getattr(cfg.siyuan_watcher, "matrix_target", None) or "matrix"
+    target_name = "matrix"
     producer_cfg = producers.get(target_name)
     if producer_cfg is None:
         if not producers:

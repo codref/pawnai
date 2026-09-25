@@ -16,9 +16,7 @@ def main(argv: list[str] | None = None) -> int:
             "transcript segments, speaker_names mappings (so future "
             "embedding matches use the new name), and session_state "
             "prior-speaker keys. --from may be SPEAKER_XX or a current "
-            "display name. Existing SiYuan diary pages are refreshed "
-            "automatically; pass --push-siyuan to create/update even "
-            "without a prior mapping. Never invent session ids."
+            "display name. Never invent session ids."
         ),
     )
     parser.add_argument(
@@ -39,12 +37,9 @@ def main(argv: list[str] | None = None) -> int:
         help="Correct human-readable name to apply (e.g. Davide)",
     )
     parser.add_argument(
-        "--push-siyuan",
+        "--push-vault",
         action="store_true",
-        help=(
-            "Force SiYuan Speakers+Transcript create/update even if no "
-            "siyuan_session_docs mapping exists yet"
-        ),
+        help="Force vault Speakers+Transcript create/update (Annotations preserved)",
     )
     parser.add_argument(
         "--config",
@@ -61,7 +56,7 @@ def main(argv: list[str] | None = None) -> int:
                 session_id=args.session_id,
                 from_speaker=args.from_speaker,
                 to_speaker=args.to_speaker,
-                push_siyuan=args.push_siyuan,
+                push_vault=bool(args.push_vault),
             )
         )
         return 0

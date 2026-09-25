@@ -3,7 +3,7 @@
 This document captures the near-term direction for evolving `pawn-agent` from a
 user-driven transcript query assistant into a proactive personal knowledge
 agent. The guiding idea is simple: Pawn should keep the current diarize, query,
-and SiYuan workflow, while gaining enough autonomy to notice useful patterns,
+and Obsidian vault workflow, while gaining enough autonomy to notice useful patterns,
 suggest actions, and eventually run bounded background analysis without waiting
 for a direct chat prompt.
 
@@ -13,7 +13,7 @@ Pawn already has several foundations needed for autonomy:
 
 - `pawn-diarize` can create diarized, transcribed sessions.
 - `pawn-agent` can query conversations, analyze sessions, search indexed
-  knowledge, remember explicit facts, and save generated content to SiYuan.
+  knowledge, remember explicit facts, and save generated content to Obsidian vault.
 - `pawn-server` exposes the agent through an OpenAI-compatible API and a
   queue listener.
 - The queue listener can run prompts for a specific diarization session and
@@ -27,7 +27,7 @@ loop.
 
 ## Phase 1: Matrix Push Notifications
 
-**Status:** outbound notify path implemented for SiYuan `@pawn` ready-for-review
+**Status:** outbound notify path implemented for Obsidian vault `@pawn` ready-for-review
 alerts (`queue_push` → Matrix notifier inside `matrix_bot` when
 `notify_room_id` is set). Broader session-completed notifications remain future
 work.
@@ -41,7 +41,7 @@ Initial notification use cases:
 - A diarization session completed.
 - A standard analysis was generated.
 - A session contains likely decisions, tasks, risks, follow-ups, or useful
-  SiYuan notes.
+  Obsidian vault notes.
 - A queued agent job completed or failed.
 - The agent needs approval before taking a write action.
 
@@ -53,7 +53,7 @@ New session analyzed: project-sync-2026-04-25
 Detected:
 - 3 possible follow-up tasks
 - 2 decisions
-- 1 SiYuan-worthy summary
+- 1 Obsidian vault-worthy summary
 
 Actions:
 [Show tasks] [Save summary] [Ignore]
@@ -71,9 +71,8 @@ Implementation direction:
 
 ## Phase 2: Autonomous Background Analysis Loop
 
-**Related (shipped):** SiYuan `@pawn` plugin trigger (`POST /v1/siyuan/triggers`)
-plus watcher for approvals — see `docs/SIYUAN_AGENT.md`. Proactive
-`session.completed` proposals remain later stages.
+**Related:** Obsidian vault `@pawn` loop replaces the removed SiYuan integration.
+Proactive `session.completed` proposals remain later stages.
 
 The next step is a bounded autonomous loop for background analysis. This should
 not be an unrestricted agent that continuously acts. It should be an event-driven
@@ -84,7 +83,7 @@ Core events:
 
 - `session.completed`
 - `session.analysis.completed`
-- `siyuan.page.updated`
+- `vault.page.updated`
 - `matrix.message.received`
 - `schedule.daily_review`
 - `schedule.weekly_review`
@@ -94,7 +93,7 @@ Initial autonomous jobs:
 - Detect tasks, commitments, and follow-ups from a session.
 - Detect decisions and open questions.
 - Detect entities: people, projects, tools, places, recurring themes.
-- Suggest links to existing SiYuan pages.
+- Suggest links to existing Obsidian vault pages.
 - Suggest whether a session should be indexed for semantic search.
 - Produce a daily or weekly briefing.
 
@@ -129,9 +128,9 @@ Future queue commands could include:
 
 - `notify`: send a Matrix notification.
 - `analyze_session`: run a specific analysis template.
-- `search`: run cross-session or SiYuan knowledge search.
+- `search`: run cross-session or Obsidian vault knowledge search.
 - `daily_review`: summarize recent activity.
-- `index`: vectorize a session or SiYuan page.
+- `index`: vectorize a session or Obsidian vault page.
 - `propose_action`: create a pending action requiring approval.
 
 Recommended design constraints:
@@ -159,14 +158,14 @@ agent_autonomy:
   min_insight_score: 0.72
   max_notifications_per_day: 5
   max_self_enqueued_jobs_per_event: 3
-  require_approval_for_siyuan_writes: true
+  require_approval_for_vault_writes: true
   require_approval_for_matrix_replies: false
 ```
 
 Suggested policy levels:
 
 - `off`: no autonomous work.
-- `suggest_only`: analyze and notify, but do not write to SiYuan or enqueue
+- `suggest_only`: analyze and notify, but do not write to Obsidian vault or enqueue
   follow-up jobs without explicit approval.
 - `approve_writes`: run analysis and queue follow-up searches, but require
   approval for persistent writes.
@@ -223,7 +222,7 @@ Examples of "superpowers" such an agent could provide:
 - Identify when a conversation created a decision but no owner.
 - Suggest reconnecting with someone after a meaningful exchange.
 - Build a map of projects, people, and open loops from conversations.
-- Turn scattered voice notes into structured SiYuan pages.
+- Turn scattered voice notes into structured Obsidian vault pages.
 - Warn when current plans conflict with previous stated priorities.
 - Produce a weekly personal operating review grounded in real interactions.
 

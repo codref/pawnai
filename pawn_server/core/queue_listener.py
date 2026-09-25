@@ -9,7 +9,7 @@ Message format (published by pawn-diarize ``chain_agent``)::
 
     {
         "command": "run",
-        "prompt": "Summarise session abc123 and push to SiYuan",
+        "prompt": "Summarise session abc123",
         "session_id": "abc123",   // required — diarization session name
         "model": "openai:gpt-4o"  // optional per-message override
     }
@@ -41,7 +41,7 @@ _registry = SallmSessionRegistry()
 
 COMMAND_DEFAULTS: Dict[str, Dict[str, Any]] = {
     "run": {"prompt": None, "session_id": None, "model": None},
-    "siyuan_run": {
+    "vault_run": {
         "prompt": None,
         "session_id": None,
         "model": None,
@@ -70,7 +70,7 @@ async def _run_sallm(
     command: str = "run",
     source: str = "queue",
 ) -> None:
-    """Execute a ``run`` / ``siyuan_run`` command via the sallm session registry.
+    """Execute a ``run`` / ``vault_run`` command via the sallm session registry.
 
     Creates an ``agent_runs`` row immediately (so every attempt is tracked),
     then validates required fields.  On any failure the row is marked *failed*
@@ -114,8 +114,10 @@ async def dispatch(
     if command == "run":
         await _run_sallm(params, cfg, message_id, command="run", source="queue")
         return
-    if command == "siyuan_run":
-        await _run_sallm(params, cfg, message_id, command="siyuan_run", source="siyuan")
+    if command == "vault_run":
+        await _run_sallm(
+            params, cfg, message_id, command="vault_run", source="vault"
+        )
         return
 
     raise NotImplementedError(f"Command {command!r} has no handler registered")

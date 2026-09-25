@@ -658,7 +658,7 @@ class DiarizationEngine:
                                     matched_raw_labels[speaker_label] = matched_label
                                     # Persist the resolved name for every audio file in
                                     # this run so _load_transcript_from_db can find it via
-                                    # the speaker_names table (enables SiYuan sync to show
+                                    # the speaker_names table (enables display names in
                                     # real names instead of SPEAKER_XX labels).
                                     # Use the raw embedding label (e.g., "SPEAKER_00") not
                                     # the speaker_embeddings key which may be a display name

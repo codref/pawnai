@@ -132,7 +132,7 @@ def chat(prompt: str) -> str:
     return r.choices[0].message.content
 
 print(chat("Summarise session abc123"))
-print(chat("Now save that summary to SiYuan under 'Meetings/2026'"))
+print(chat("Now save that summary to Obsidian vault under 'Meetings/2026'"))
 ```
 
 ### curl example
@@ -305,10 +305,10 @@ for conversational recall.
 { "session_id": "abc123" }
 ```
 ```json
-{ "siyuan_path": "/Meetings/2026/april" }
+{ "vault_path": "/Meetings/2026/april" }
 ```
 
-Exactly one of `text`, `session_id`, or `siyuan_path` must be set.
+Exactly one of `text`, `session_id`, or `vault_path` must be set.
 
 Response: `{"chunks": 12, "message": "Indexed 12 chunks from inline text."}`
 

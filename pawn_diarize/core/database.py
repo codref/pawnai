@@ -32,7 +32,6 @@ from pawn_core.database import (  # noqa: F401
     Base,
     GraphTriple,
     SessionAnalysis,
-    SiyuanSessionDoc,
     SpeakerName,
     TranscriptionSegment,
     _get_session,

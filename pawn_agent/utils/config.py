@@ -33,11 +33,6 @@ Config file schema (all keys optional)::
       copilot:
         model: gpt-4.1
 
-    siyuan:
-      url: http://127.0.0.1:6806
-      token: ""
-      notebook: ""
-
     rag:
       embed_model: Qwen/Qwen3-Embedding-0.6B
       embed_dim: 1024
@@ -95,7 +90,7 @@ from pawn_core.config import (  # noqa: F401
     PawnConfig,
     RagConfig,
     S3Config,
-    SiYuanConfig,
+    VaultConfig,
 )
 
 # ── Agent-specific section models ─────────────────────────────────────────────
@@ -237,24 +232,13 @@ class MatrixBotConfig(BaseModel):
     notify_room_id: Optional[str] = None
 
 
-class SiyuanWatcherConfig(BaseModel):
-    """``siyuan_watcher:`` — SiYuan @pawn review polling (+ optional discovery)."""
+class VaultWatcherConfig(BaseModel):
+    """``vault_watcher:`` — poll vault task notes and enqueue agent runs."""
 
-    enabled: bool = False
-    poll_interval_seconds: float = 10.0
-    # Wait this long after the instruction text stops changing before claiming.
-    # SiYuan autosaves while typing; without this the agent runs mid-edit.
-    settle_seconds: float = 45.0
-    mention_token: str = "@pawn"
-    # When false (default), only the plugin/API enqueues new requests; the
-    # watcher still claims leftover queued rows and polls approvals.
-    discover_mentions: bool = False
-    # Empty → use configured ``siyuan.notebook`` only.
-    notebook_allowlist: list[str] = Field(default_factory=list)
-    max_ref_depth: int = 1
-    max_context_blocks: int = 40
-    matrix_target: str = "matrix"
+    enabled: bool = True
+    poll_interval_seconds: float = 15.0
     max_claims_per_tick: int = 3
+    matrix_target: str = "matrix"
 
 
 # ── AgentConfig ───────────────────────────────────────────────────────────────
@@ -281,12 +265,11 @@ _LITELLM_PREFIXES = {
 class AgentConfig(PawnConfig):
     """Full configuration for the pawn-agent application.
 
-    Inherits all shared sections (models, device, s3, siyuan, rag, db_dsn)
+    Inherits all shared sections (models, device, s3, rag, db_dsn)
     from :class:`pawn_core.config.PawnConfig` and adds agent-specific ones.
 
     Flat property aliases preserve the old ``cfg.api_token``, ``cfg.embed_model``,
-    ``cfg.siyuan_token`` etc. so all existing tools, core modules, and tests
-    continue to work without changes.
+    etc. so all existing tools, core modules, and tests continue to work.
     """
 
     model_config = SettingsConfigDict(
@@ -308,7 +291,7 @@ class AgentConfig(PawnConfig):
     diarize_queue: Optional[AgentQueueConfig] = None
     queue_producers: Optional[dict[str, QueueProducerConfig]] = None
     matrix_bot: MatrixBotConfig = Field(default_factory=MatrixBotConfig)
-    siyuan_watcher: SiyuanWatcherConfig = Field(default_factory=SiyuanWatcherConfig)
+    vault_watcher: VaultWatcherConfig = Field(default_factory=VaultWatcherConfig)
 
     # ── Flat property aliases (old flat-field names used throughout pawn_agent) ─
 
@@ -472,26 +455,17 @@ class AgentConfig(PawnConfig):
     def queue_config(self) -> Optional[dict]:
         return self.agent_queue.model_dump() if self.agent_queue else None
 
-    # SiYuan flat attrs
     @property
-    def siyuan_url(self) -> str:
-        return self.siyuan.url
+    def vault_bucket(self) -> str:
+        return self.vault.bucket
 
     @property
-    def siyuan_token(self) -> str:
-        return self.siyuan.token
+    def vault_agent_root(self) -> str:
+        return self.vault.agent_root
 
     @property
-    def siyuan_notebook(self) -> str:
-        return self.siyuan.notebook
-
-    @property
-    def siyuan_path_template(self) -> str:
-        return self.siyuan.path_template
-
-    @property
-    def siyuan_daily_template(self) -> str:
-        return self.siyuan.daily_note_path
+    def vault_auto_push_transcript(self) -> bool:
+        return self.vault.auto_push_transcript
 
 
 # ── Public factory (keeps load_config() signature unchanged) ──────────────────
