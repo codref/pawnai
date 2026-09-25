@@ -5,6 +5,12 @@ import {
   WorkspaceLeaf,
 } from "obsidian";
 import type PawnPlugin from "./main";
+import {
+  noticeIfNoNote,
+  promptText,
+  resolveActiveMarkdownFile,
+  resolveActiveMarkdownView,
+} from "./active";
 import { approveTask, chatCompletions, healthCheck } from "./api";
 import {
   appendInstructionFollowUp,
@@ -40,6 +46,16 @@ export class PawnPanelView extends ItemView {
   }
 
   async onOpen(): Promise<void> {
+    this.registerEvent(
+      this.app.workspace.on("file-open", () => {
+        void this.render();
+      }),
+    );
+    this.registerEvent(
+      this.app.workspace.on("active-leaf-change", () => {
+        void this.render();
+      }),
+    );
     await this.render();
   }
 
@@ -52,8 +68,11 @@ export class PawnPanelView extends ItemView {
   }
 
   private activeNotePath(): string | null {
-    const view = this.app.workspace.getActiveViewOfType(MarkdownView);
-    return view?.file?.path ?? null;
+    return resolveActiveMarkdownFile(this.app)?.path ?? null;
+  }
+
+  private markdownEditor(): MarkdownView | null {
+    return resolveActiveMarkdownView(this.app);
   }
 
   private async render(): Promise<void> {
@@ -150,7 +169,7 @@ export class PawnPanelView extends ItemView {
   }
 
   private insertResult(task: TaskMeta): void {
-    const view = this.app.workspace.getActiveViewOfType(MarkdownView);
+    const view = this.markdownEditor();
     if (!view?.editor || !task.result) {
       new Notice("No result to insert");
       return;
@@ -161,7 +180,7 @@ export class PawnPanelView extends ItemView {
   }
 
   private replaceSelection(task: TaskMeta): void {
-    const view = this.app.workspace.getActiveViewOfType(MarkdownView);
+    const view = this.markdownEditor();
     if (!view?.editor || !task.result) {
       new Notice("No result to insert");
       return;
@@ -175,7 +194,10 @@ export class PawnPanelView extends ItemView {
   }
 
   private async replyToTask(task: TaskMeta): Promise<void> {
-    const followUp = window.prompt("Follow-up for Pawn:");
+    const followUp = await promptText(this.app, {
+      title: "Follow-up for Pawn",
+      placeholder: "Add a follow-up instruction…",
+    });
     if (!followUp?.trim()) return;
     await appendInstructionFollowUp(this.app, task.path, followUp.trim());
     await setTaskStatus(this.app, task.path, "todo");
@@ -261,8 +283,11 @@ export class PawnPanelView extends ItemView {
       if (last.role === "assistant") {
         const insert = row.createEl("button", { text: "Insert into note" });
         insert.onclick = () => {
-          const view = this.app.workspace.getActiveViewOfType(MarkdownView);
-          if (!view?.editor) return;
+          const view = this.markdownEditor();
+          if (!view?.editor) {
+            noticeIfNoNote();
+            return;
+          }
           view.editor.replaceRange(
             "\n" + last.content.trim() + "\n",
             view.editor.getCursor(),

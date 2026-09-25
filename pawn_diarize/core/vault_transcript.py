@@ -414,7 +414,7 @@ def push_session_transcript(
     vault = _vault_cfg(cfg)
     if not dry_run and store is None:
         if not getattr(vault, "bucket", ""):
-            return "skipped: vault.bucket not configured"
+            return "skipped: vault.s3.bucket not configured"
         store = vault_store_from_config(cfg)
 
     engine = get_engine(db_dsn)
@@ -528,7 +528,7 @@ def refresh_transcript_after_relabel(
         vault = getattr(cfg, "vault", None)
         if not getattr(vault, "bucket", ""):
             if force:
-                return "skipped: vault.bucket not configured"
+                return "skipped: vault.s3.bucket not configured"
             return None
 
         mapping = get_vault_note(db_dsn, session_id)

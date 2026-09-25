@@ -37,15 +37,17 @@ def vault_setup(monkeypatch):
     store.write(f"Pawn/Tasks/{task_id}.md", body)
 
     vault = MagicMock()
-    vault.bucket = "b"
-    vault.prefix = ""
+    vault.s3 = MagicMock()
+    vault.s3.bucket = "b"
+    vault.s3.prefix = ""
+    vault.s3.endpoint_url = None
+    vault.s3.access_key = None
+    vault.s3.secret_key = None
+    vault.s3.region = None
+    vault.s3.path_style = True
+    vault.s3.verify_ssl = True
+    vault.bucket = "b"  # property-compatible shortcut used by helpers
     vault.agent_root = "Pawn"
-    vault.endpoint_url = None
-    vault.access_key = None
-    vault.secret_key = None
-    vault.region = None
-    vault.path_style = True
-    vault.verify_ssl = True
     vault.obsidian_vault_name = "TestVault"
 
     watcher = MagicMock()

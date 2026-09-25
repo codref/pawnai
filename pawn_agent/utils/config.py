@@ -457,7 +457,7 @@ class AgentConfig(PawnConfig):
 
     @property
     def vault_bucket(self) -> str:
-        return self.vault.bucket
+        return self.vault.s3.bucket
 
     @property
     def vault_agent_root(self) -> str:
@@ -466,6 +466,11 @@ class AgentConfig(PawnConfig):
     @property
     def vault_auto_push_transcript(self) -> bool:
         return self.vault.auto_push_transcript
+
+    @property
+    def vault_s3_config(self) -> dict:
+        """Dedicated Obsidian vault S3 credentials as a plain dict."""
+        return self.vault.s3.model_dump()
 
 
 # ── Public factory (keeps load_config() signature unchanged) ──────────────────

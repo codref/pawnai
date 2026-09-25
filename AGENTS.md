@@ -133,7 +133,7 @@ Precedence is CLI/explicit overrides, YAML, env vars, defaults. Env vars use `PA
 - `PAWN_AGENT__OPENAI__API_KEY`, `PAWN_AGENT__OPENAI__FAST_MODEL`, etc.
 - `PAWN_AGENT__SALLM__STATE_DIR`, `PAWN_AGENT__SALLM__MAX_STEPS`, `PAWN_AGENT__SALLM__PROFILE`, `PAWN_AGENT__SALLM__OTLP_ENDPOINT`
 - `PAWN_MATRIX_BOT__ENABLED`, `PAWN_MATRIX_BOT__HOMESERVER_URL`, `PAWN_MATRIX_BOT__USER_TOKEN`, etc.
-- `PAWN_VAULT__BUCKET`, `PAWN_VAULT__PREFIX`, `PAWN_VAULT__ENDPOINT_URL`, etc.
+- `PAWN_VAULT__S3__BUCKET`, `PAWN_VAULT__S3__ACCESS_KEY`, `PAWN_VAULT__S3__SECRET_KEY`, `PAWN_VAULT__S3__ENDPOINT_URL`, etc.
 - `PAWN_MATRIX_BOT__NOTIFY_ROOM_ID` for outbound ready-for-review alerts
 
 Chat model comes from `agent.openai` (etc.) and is mapped to LiteLLM via `cfg.litellm_model` (`openai:gpt-4o` → `openai/gpt-4o`). Optional Tempo: `agent.sallm.otlp_endpoint` / `metrics_port` (off by default for the server).

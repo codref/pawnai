@@ -136,7 +136,7 @@ class VaultStore:
         client: Optional[BaseClient] = None,
     ) -> None:
         if not bucket and client is None:
-            raise VaultError("vault.bucket is required")
+            raise VaultError("vault.s3.bucket is required")
         self.bucket = bucket
         self.prefix = normalize_vault_key(prefix)
         if self.prefix and not self.prefix.endswith("/"):

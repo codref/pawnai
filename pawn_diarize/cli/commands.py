@@ -1301,7 +1301,7 @@ def session_relabel(
         if vault_status:
             console.print(f"[cyan]Vault: {vault_status}[/cyan]")
         elif push_vault:
-            console.print("[yellow]Vault: skipped (vault.bucket not configured)[/yellow]")
+            console.print("[yellow]Vault: skipped (vault.s3.bucket not configured)[/yellow]")
 
     except typer.Exit:
         raise
@@ -1983,7 +1983,7 @@ def push_vault(
 
     if not dry_run and not vault_bucket:
         console.print(
-            "[red]Error: No vault bucket. Set vault.bucket in pawnai.yaml.[/red]"
+            "[red]Error: No vault bucket. Set vault.s3.bucket in pawnai.yaml.[/red]"
         )
         raise typer.Exit(1)
 

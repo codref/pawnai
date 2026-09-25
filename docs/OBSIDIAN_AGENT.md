@@ -29,13 +29,14 @@ api:
   port: 8000
 
 vault:
-  bucket: my-vault-bucket
-  endpoint_url: https://fsn1.your-objectstorage.com
-  access_key: "…"
-  secret_key: "…"
-  region: fsn1
-  prefix: vault/          # same prefix Sync Engine uses
-  path_style: true
+  s3:
+    bucket: my-obsidian-bucket
+    endpoint_url: https://fsn1.your-objectstorage.com
+    access_key: "…"
+    secret_key: "…"
+    region: fsn1
+    prefix: ""                 # same prefix Sync Engine uses (bucket root OK)
+    path_style: true
   agent_root: Pawn
   auto_push_transcript: true
   obsidian_vault_name: "MyVault"   # for Matrix obsidian:// links
@@ -75,7 +76,7 @@ Required settings on every device:
 |---------|-------|
 | Asymmetric storage | **Off** |
 | Client-side encryption | **Off** |
-| Prefix | Same as `vault.prefix` |
+| Prefix | Same as `vault.s3.prefix` |
 | Sync strategy | Bidirectional |
 | Conflict strategy | Smart merge or keep both |
 | Interval / startup sync | **On** (this is how devices see Pawn's S3 writes) |

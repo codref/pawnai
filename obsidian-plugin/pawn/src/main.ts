@@ -6,8 +6,13 @@ import {
   Plugin,
   PluginSettingTab,
   Setting,
-  WorkspaceLeaf,
 } from "obsidian";
+import {
+  noticeIfNoNote,
+  promptText,
+  resolveActiveMarkdownFile,
+  resolveActiveMarkdownView,
+} from "./active";
 import { approveTask, createTask, healthCheck } from "./api";
 import { PawnPanelView, PAWN_VIEW_TYPE } from "./panel";
 import { DEFAULT_SETTINGS, type PawnSettings } from "./settings";
@@ -37,8 +42,15 @@ export default class PawnPlugin extends Plugin {
     this.addCommand({
       id: "ask-pawn",
       name: "Ask Pawn",
-      editorCallback: async (editor: Editor, view: MarkdownView) => {
-        await this.askPawn(editor, view);
+      // callback (not editorCallback): works from the command palette even when
+      // the Pawn panel leaf has focus.
+      callback: async () => {
+        const view = resolveActiveMarkdownView(this.app);
+        if (!view?.file) {
+          noticeIfNoNote();
+          return;
+        }
+        await this.askPawn(view.editor, view);
       },
     });
 
@@ -53,11 +65,15 @@ export default class PawnPlugin extends Plugin {
     this.addCommand({
       id: "approve-pawn-task",
       name: "Approve Pawn task",
-      editorCallback: async (_editor, view) => {
-        if (!view.file) return;
+      callback: async () => {
+        const file = resolveActiveMarkdownFile(this.app);
+        if (!file) {
+          noticeIfNoNote();
+          return;
+        }
         const tasks = await listTasksForNote(
           this.app,
-          view.file.path,
+          file.path,
           this.settings.agentRoot,
         );
         const review = tasks.find((t) => t.status === "review") || tasks[0];
@@ -106,6 +122,11 @@ export default class PawnPlugin extends Plugin {
         void this.refreshStatus();
       }, 15000),
     );
+    this.registerEvent(
+      this.app.workspace.on("file-open", () => {
+        void this.refreshStatus();
+      }),
+    );
     await this.refreshStatus();
   }
 
@@ -134,7 +155,7 @@ export default class PawnPlugin extends Plugin {
 
   private async refreshStatus(): Promise<void> {
     this.reachability = await healthCheck(this.settings);
-    const file = this.app.workspace.getActiveFile();
+    const file = resolveActiveMarkdownFile(this.app);
     let pending = 0;
     if (file) {
       const tasks = await listTasksForNote(
@@ -163,43 +184,45 @@ export default class PawnPlugin extends Plugin {
 
   async askPawn(editor: Editor, view: MarkdownView): Promise<void> {
     if (!view.file) {
-      new Notice("Open a Markdown file first");
+      noticeIfNoNote();
       return;
     }
     const context = this.selectionOrParagraph(editor).trim();
-    const instruction =
-      window.prompt(
-        "Ask Pawn:",
-        context ? `Regarding the selection:\n${context.slice(0, 200)}` : "",
-      ) || "";
-    if (!instruction.trim()) return;
+    const instruction = await promptText(this.app, {
+      title: "Ask Pawn",
+      placeholder: "What should Pawn do with this note / selection?",
+      value: context
+        ? `Regarding the selection:\n${context.slice(0, 500)}`
+        : "",
+    });
+    if (!instruction?.trim()) return;
 
     const id = uuid4();
     const notePath = view.file.path;
     const conversation = conversationForNote(notePath);
-    const taskPath = await createTaskNote(this.app, this.settings, {
-      id,
-      instruction: instruction.trim(),
-      notePath,
-      context: context || undefined,
-      conversation,
-    });
-    insertCallout(editor, taskPath, instruction.trim().split("\n")[0]);
-    new Notice("Pawn task created");
-
-    if (this.settings.alwaysQueue) {
-      new Notice("Queued for vault sync (always-queue on)");
-      return;
-    }
-
-    const online = await healthCheck(this.settings);
-    if (!online) {
-      new Notice("Server offline — task will run after sync");
-      return;
-    }
-
-    new Notice("Asking Pawn…");
     try {
+      const taskPath = await createTaskNote(this.app, this.settings, {
+        id,
+        instruction: instruction.trim(),
+        notePath,
+        context: context || undefined,
+        conversation,
+      });
+      insertCallout(editor, taskPath, instruction.trim().split("\n")[0]);
+      new Notice("Pawn task created");
+
+      if (this.settings.alwaysQueue) {
+        new Notice("Queued for vault sync (always-queue on)");
+        return;
+      }
+
+      const online = await healthCheck(this.settings);
+      if (!online) {
+        new Notice("Server offline — task will run after sync");
+        return;
+      }
+
+      new Notice("Asking Pawn…");
       const { status, data } = await createTask(this.settings, {
         id,
         instruction: instruction.trim(),
@@ -222,7 +245,7 @@ export default class PawnPlugin extends Plugin {
         );
       }
     } catch (err) {
-      new Notice(`Fast path failed (${String(err)}); left as todo`);
+      new Notice(`Ask Pawn failed: ${String(err)}`);
     }
     await this.refreshStatus();
   }

@@ -97,8 +97,12 @@ class S3Config(BaseModel):
     path_style: bool = True
 
 
-class VaultConfig(BaseModel):
-    """S3 for the notes vault (may differ from queue S3)."""
+class VaultS3Config(BaseModel):
+    """Dedicated S3 credentials for the Obsidian notes vault.
+
+    Always separate from the top-level ``s3:`` queue/audio bucket. Env:
+    ``PAWN_VAULT__S3__BUCKET``, ``PAWN_VAULT__S3__ACCESS_KEY``, etc.
+    """
 
     bucket: str = ""
     endpoint_url: Optional[str] = None
@@ -106,8 +110,14 @@ class VaultConfig(BaseModel):
     secret_key: Optional[str] = None
     region: Optional[str] = None
     prefix: str = ""
-    path_style: bool = True
     verify_ssl: bool = True
+    path_style: bool = True
+
+
+class VaultConfig(BaseModel):
+    """Markdown notes vault on a dedicated S3 bucket (Obsidian Sync Engine)."""
+
+    s3: VaultS3Config = Field(default_factory=VaultS3Config)
     agent_root: str = "Pawn"
     transcript_path_template: str = "{agent_root}/Transcripts/{date} {session_id}.md"
     analysis_path_template: str = "{agent_root}/Analyses/{session_id}.md"
@@ -116,6 +126,15 @@ class VaultConfig(BaseModel):
     daily_note_path: Optional[str] = None
     auto_push_transcript: bool = False
     obsidian_vault_name: str = ""
+
+    @property
+    def bucket(self) -> str:
+        """S3 bucket name (shortcut for ``s3.bucket``)."""
+        return self.s3.bucket or ""
+
+    @property
+    def prefix(self) -> str:
+        return self.s3.prefix or ""
 
 
 class RagConfig(BaseModel):

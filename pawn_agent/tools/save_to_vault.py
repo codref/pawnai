@@ -41,7 +41,7 @@ def save_to_vault_impl(
     """Write analysis or free-form Markdown to the vault."""
     vault = cfg.vault
     if not vault.bucket:
-        return "Error: vault.bucket is not configured."
+        return "Error: vault.s3.bucket is not configured."
     doc_title = title or session_id
     when = datetime.now(timezone.utc)
     note_key = path or resolve_path_template(

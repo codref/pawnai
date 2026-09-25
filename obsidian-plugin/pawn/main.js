@@ -23,10 +23,102 @@ __export(main_exports, {
   default: () => PawnPlugin
 });
 module.exports = __toCommonJS(main_exports);
-var import_obsidian3 = require("obsidian");
+var import_obsidian4 = require("obsidian");
+
+// src/active.ts
+var import_obsidian = require("obsidian");
+function resolveActiveMarkdownFile(app) {
+  const active = app.workspace.getActiveFile();
+  if (active instanceof import_obsidian.TFile && active.extension === "md") {
+    return active;
+  }
+  const mdView = app.workspace.getActiveViewOfType(import_obsidian.MarkdownView);
+  if (mdView?.file) {
+    return mdView.file;
+  }
+  const leaves = app.workspace.getLeavesOfType("markdown");
+  for (const leaf of leaves) {
+    const view = leaf.view;
+    if (view instanceof import_obsidian.MarkdownView && view.file) {
+      return view.file;
+    }
+  }
+  return null;
+}
+function resolveActiveMarkdownView(app) {
+  const focused = app.workspace.getActiveViewOfType(import_obsidian.MarkdownView);
+  if (focused?.file) {
+    return focused;
+  }
+  const file = resolveActiveMarkdownFile(app);
+  if (!file) {
+    return null;
+  }
+  for (const leaf of app.workspace.getLeavesOfType("markdown")) {
+    const view = leaf.view;
+    if (view instanceof import_obsidian.MarkdownView && view.file?.path === file.path) {
+      return view;
+    }
+  }
+  return null;
+}
+function promptText(app, opts) {
+  return new Promise((resolve) => {
+    const modal = new class extends import_obsidian.Modal {
+      constructor() {
+        super(...arguments);
+        this.value = opts.value ?? "";
+        this.settled = false;
+      }
+      onOpen() {
+        const { contentEl } = this;
+        contentEl.empty();
+        contentEl.createEl("h2", { text: opts.title });
+        const ta = contentEl.createEl("textarea", {
+          attr: {
+            rows: "6",
+            placeholder: opts.placeholder ?? ""
+          }
+        });
+        ta.value = this.value;
+        ta.style.width = "100%";
+        ta.style.minHeight = "8em";
+        ta.focus();
+        const finish = (result) => {
+          if (this.settled) return;
+          this.settled = true;
+          resolve(result);
+          this.close();
+        };
+        ta.addEventListener("keydown", (ev) => {
+          if (ev.key === "Enter" && (ev.metaKey || ev.ctrlKey)) {
+            ev.preventDefault();
+            finish(ta.value);
+          }
+        });
+        new import_obsidian.Setting(contentEl).addButton(
+          (btn) => btn.setButtonText("Cancel").onClick(() => finish(null))
+        ).addButton(
+          (btn) => btn.setButtonText("Send").setCta().onClick(() => finish(ta.value))
+        );
+      }
+      onClose() {
+        if (!this.settled) {
+          this.settled = true;
+          resolve(null);
+        }
+        this.contentEl.empty();
+      }
+    }(app);
+    modal.open();
+  });
+}
+function noticeIfNoNote() {
+  new import_obsidian.Notice("Open a Markdown note first");
+}
 
 // src/api.ts
-var import_obsidian = require("obsidian");
+var import_obsidian2 = require("obsidian");
 function authHeaders(settings) {
   const headers = {
     "Content-Type": "application/json"
@@ -41,7 +133,7 @@ function baseUrl(settings) {
 }
 async function healthCheck(settings) {
   try {
-    const res = await (0, import_obsidian.requestUrl)({
+    const res = await (0, import_obsidian2.requestUrl)({
       url: `${baseUrl(settings)}/health`,
       method: "GET",
       throw: false
@@ -52,7 +144,7 @@ async function healthCheck(settings) {
   }
 }
 async function createTask(settings, body) {
-  const res = await (0, import_obsidian.requestUrl)({
+  const res = await (0, import_obsidian2.requestUrl)({
     url: `${baseUrl(settings)}/v1/vault/tasks`,
     method: "POST",
     headers: authHeaders(settings),
@@ -68,7 +160,7 @@ async function createTask(settings, body) {
   return { status: res.status, data };
 }
 async function approveTask(settings, id, result) {
-  const res = await (0, import_obsidian.requestUrl)({
+  const res = await (0, import_obsidian2.requestUrl)({
     url: `${baseUrl(settings)}/v1/vault/tasks/${encodeURIComponent(id)}/approve`,
     method: "POST",
     headers: authHeaders(settings),
@@ -78,7 +170,7 @@ async function approveTask(settings, id, result) {
   return res.json;
 }
 async function chatCompletions(settings, opts) {
-  const res = await (0, import_obsidian.requestUrl)({
+  const res = await (0, import_obsidian2.requestUrl)({
     url: `${baseUrl(settings)}/v1/chat/completions`,
     method: "POST",
     headers: authHeaders(settings),
@@ -94,7 +186,7 @@ async function chatCompletions(settings, opts) {
 }
 
 // src/panel.ts
-var import_obsidian2 = require("obsidian");
+var import_obsidian3 = require("obsidian");
 
 // src/tasks.ts
 function yamlEscape(value) {
@@ -287,7 +379,7 @@ function uuid4() {
 
 // src/panel.ts
 var PAWN_VIEW_TYPE = "pawn-panel";
-var PawnPanelView = class extends import_obsidian2.ItemView {
+var PawnPanelView = class extends import_obsidian3.ItemView {
   constructor(leaf, plugin) {
     super(leaf);
     this.tab = "tasks";
@@ -305,6 +397,16 @@ var PawnPanelView = class extends import_obsidian2.ItemView {
     return "bot";
   }
   async onOpen() {
+    this.registerEvent(
+      this.app.workspace.on("file-open", () => {
+        void this.render();
+      })
+    );
+    this.registerEvent(
+      this.app.workspace.on("active-leaf-change", () => {
+        void this.render();
+      })
+    );
     await this.render();
   }
   async onClose() {
@@ -314,8 +416,10 @@ var PawnPanelView = class extends import_obsidian2.ItemView {
     await this.render();
   }
   activeNotePath() {
-    const view = this.app.workspace.getActiveViewOfType(import_obsidian2.MarkdownView);
-    return view?.file?.path ?? null;
+    return resolveActiveMarkdownFile(this.app)?.path ?? null;
+  }
+  markdownEditor() {
+    return resolveActiveMarkdownView(this.app);
   }
   async render() {
     const root = this.containerEl.children[1];
@@ -397,14 +501,14 @@ var PawnPanelView = class extends import_obsidian2.ItemView {
       try {
         await onClick();
       } catch (err) {
-        new import_obsidian2.Notice(`Pawn: ${String(err)}`);
+        new import_obsidian3.Notice(`Pawn: ${String(err)}`);
       }
     };
   }
   insertResult(task) {
-    const view = this.app.workspace.getActiveViewOfType(import_obsidian2.MarkdownView);
+    const view = this.markdownEditor();
     if (!view?.editor || !task.result) {
-      new import_obsidian2.Notice("No result to insert");
+      new import_obsidian3.Notice("No result to insert");
       return;
     }
     const editor = view.editor;
@@ -412,9 +516,9 @@ var PawnPanelView = class extends import_obsidian2.ItemView {
     editor.replaceRange("\n" + task.result.trim() + "\n", cursor);
   }
   replaceSelection(task) {
-    const view = this.app.workspace.getActiveViewOfType(import_obsidian2.MarkdownView);
+    const view = this.markdownEditor();
     if (!view?.editor || !task.result) {
-      new import_obsidian2.Notice("No result to insert");
+      new import_obsidian3.Notice("No result to insert");
       return;
     }
     const editor = view.editor;
@@ -425,11 +529,14 @@ var PawnPanelView = class extends import_obsidian2.ItemView {
     }
   }
   async replyToTask(task) {
-    const followUp = window.prompt("Follow-up for Pawn:");
+    const followUp = await promptText(this.app, {
+      title: "Follow-up for Pawn",
+      placeholder: "Add a follow-up instruction\u2026"
+    });
     if (!followUp?.trim()) return;
     await appendInstructionFollowUp(this.app, task.path, followUp.trim());
     await setTaskStatus(this.app, task.path, "todo");
-    new import_obsidian2.Notice("Follow-up queued (status: todo)");
+    new import_obsidian3.Notice("Follow-up queued (status: todo)");
     await this.render();
   }
   async approve(task) {
@@ -438,14 +545,14 @@ var PawnPanelView = class extends import_obsidian2.ItemView {
     if (online) {
       try {
         await approveTask(this.plugin.settings, task.id, task.result);
-        new import_obsidian2.Notice("Approved and indexed into Pawn memory");
+        new import_obsidian3.Notice("Approved and indexed into Pawn memory");
       } catch (err) {
-        new import_obsidian2.Notice(
+        new import_obsidian3.Notice(
           `Approved locally; server index failed: ${String(err)}. Watcher will retry.`
         );
       }
     } else {
-      new import_obsidian2.Notice("Approved locally; will sync for watcher indexing");
+      new import_obsidian3.Notice("Approved locally; will sync for watcher indexing");
     }
     await this.render();
   }
@@ -498,7 +605,7 @@ var PawnPanelView = class extends import_obsidian2.ItemView {
         });
         this.chatLog.push({ role: "assistant", content: reply });
       } catch (err) {
-        new import_obsidian2.Notice(`Chat failed: ${String(err)}`);
+        new import_obsidian3.Notice(`Chat failed: ${String(err)}`);
       } finally {
         this.busy = false;
         await this.render();
@@ -509,8 +616,11 @@ var PawnPanelView = class extends import_obsidian2.ItemView {
       if (last.role === "assistant") {
         const insert = row.createEl("button", { text: "Insert into note" });
         insert.onclick = () => {
-          const view = this.app.workspace.getActiveViewOfType(import_obsidian2.MarkdownView);
-          if (!view?.editor) return;
+          const view = this.markdownEditor();
+          if (!view?.editor) {
+            noticeIfNoNote();
+            return;
+          }
           view.editor.replaceRange(
             "\n" + last.content.trim() + "\n",
             view.editor.getCursor()
@@ -531,7 +641,7 @@ var DEFAULT_SETTINGS = {
 };
 
 // src/main.ts
-var PawnPlugin = class extends import_obsidian3.Plugin {
+var PawnPlugin = class extends import_obsidian4.Plugin {
   constructor() {
     super(...arguments);
     this.settings = DEFAULT_SETTINGS;
@@ -547,8 +657,15 @@ var PawnPlugin = class extends import_obsidian3.Plugin {
     this.addCommand({
       id: "ask-pawn",
       name: "Ask Pawn",
-      editorCallback: async (editor, view) => {
-        await this.askPawn(editor, view);
+      // callback (not editorCallback): works from the command palette even when
+      // the Pawn panel leaf has focus.
+      callback: async () => {
+        const view = resolveActiveMarkdownView(this.app);
+        if (!view?.file) {
+          noticeIfNoNote();
+          return;
+        }
+        await this.askPawn(view.editor, view);
       }
     });
     this.addCommand({
@@ -561,34 +678,38 @@ var PawnPlugin = class extends import_obsidian3.Plugin {
     this.addCommand({
       id: "approve-pawn-task",
       name: "Approve Pawn task",
-      editorCallback: async (_editor, view) => {
-        if (!view.file) return;
+      callback: async () => {
+        const file = resolveActiveMarkdownFile(this.app);
+        if (!file) {
+          noticeIfNoNote();
+          return;
+        }
         const tasks = await listTasksForNote(
           this.app,
-          view.file.path,
+          file.path,
           this.settings.agentRoot
         );
         const review = tasks.find((t) => t.status === "review") || tasks[0];
         if (!review) {
-          new import_obsidian3.Notice("No Pawn task for this note");
+          new import_obsidian4.Notice("No Pawn task for this note");
           return;
         }
         await setApproved(this.app, review.path, true);
         if (await healthCheck(this.settings)) {
           try {
             await approveTask(this.settings, review.id, review.result);
-            new import_obsidian3.Notice("Approved and indexed");
+            new import_obsidian4.Notice("Approved and indexed");
           } catch {
-            new import_obsidian3.Notice("Approved locally; watcher will index");
+            new import_obsidian4.Notice("Approved locally; watcher will index");
           }
         } else {
-          new import_obsidian3.Notice("Approved locally; will sync");
+          new import_obsidian4.Notice("Approved locally; will sync");
         }
       }
     });
     this.registerEvent(
       this.app.workspace.on("editor-menu", (menu, editor, view) => {
-        if (!(view instanceof import_obsidian3.MarkdownView)) return;
+        if (!(view instanceof import_obsidian4.MarkdownView)) return;
         menu.addItem((item) => {
           item.setTitle("Ask Pawn").setIcon("bot").onClick(async () => {
             await this.askPawn(editor, view);
@@ -606,6 +727,11 @@ var PawnPlugin = class extends import_obsidian3.Plugin {
       window.setInterval(() => {
         void this.refreshStatus();
       }, 15e3)
+    );
+    this.registerEvent(
+      this.app.workspace.on("file-open", () => {
+        void this.refreshStatus();
+      })
     );
     await this.refreshStatus();
   }
@@ -630,7 +756,7 @@ var PawnPlugin = class extends import_obsidian3.Plugin {
   }
   async refreshStatus() {
     this.reachability = await healthCheck(this.settings);
-    const file = this.app.workspace.getActiveFile();
+    const file = resolveActiveMarkdownFile(this.app);
     let pending = 0;
     if (file) {
       const tasks = await listTasksForNote(
@@ -655,39 +781,40 @@ var PawnPlugin = class extends import_obsidian3.Plugin {
   }
   async askPawn(editor, view) {
     if (!view.file) {
-      new import_obsidian3.Notice("Open a Markdown file first");
+      noticeIfNoNote();
       return;
     }
     const context = this.selectionOrParagraph(editor).trim();
-    const instruction = window.prompt(
-      "Ask Pawn:",
-      context ? `Regarding the selection:
-${context.slice(0, 200)}` : ""
-    ) || "";
-    if (!instruction.trim()) return;
+    const instruction = await promptText(this.app, {
+      title: "Ask Pawn",
+      placeholder: "What should Pawn do with this note / selection?",
+      value: context ? `Regarding the selection:
+${context.slice(0, 500)}` : ""
+    });
+    if (!instruction?.trim()) return;
     const id = uuid4();
     const notePath = view.file.path;
     const conversation = conversationForNote(notePath);
-    const taskPath = await createTaskNote(this.app, this.settings, {
-      id,
-      instruction: instruction.trim(),
-      notePath,
-      context: context || void 0,
-      conversation
-    });
-    insertCallout(editor, taskPath, instruction.trim().split("\n")[0]);
-    new import_obsidian3.Notice("Pawn task created");
-    if (this.settings.alwaysQueue) {
-      new import_obsidian3.Notice("Queued for vault sync (always-queue on)");
-      return;
-    }
-    const online = await healthCheck(this.settings);
-    if (!online) {
-      new import_obsidian3.Notice("Server offline \u2014 task will run after sync");
-      return;
-    }
-    new import_obsidian3.Notice("Asking Pawn\u2026");
     try {
+      const taskPath = await createTaskNote(this.app, this.settings, {
+        id,
+        instruction: instruction.trim(),
+        notePath,
+        context: context || void 0,
+        conversation
+      });
+      insertCallout(editor, taskPath, instruction.trim().split("\n")[0]);
+      new import_obsidian4.Notice("Pawn task created");
+      if (this.settings.alwaysQueue) {
+        new import_obsidian4.Notice("Queued for vault sync (always-queue on)");
+        return;
+      }
+      const online = await healthCheck(this.settings);
+      if (!online) {
+        new import_obsidian4.Notice("Server offline \u2014 task will run after sync");
+        return;
+      }
+      new import_obsidian4.Notice("Asking Pawn\u2026");
       const { status, data } = await createTask(this.settings, {
         id,
         instruction: instruction.trim(),
@@ -701,21 +828,21 @@ ${context.slice(0, 200)}` : ""
       });
       if ((status === 200 || status === 201) && data.result) {
         await writeTaskResult(this.app, taskPath, data.result, "review");
-        new import_obsidian3.Notice("Pawn replied (review in panel)");
+        new import_obsidian4.Notice("Pawn replied (review in panel)");
       } else if (status === 202) {
-        new import_obsidian3.Notice("Accepted \u2014 result will arrive via sync");
+        new import_obsidian4.Notice("Accepted \u2014 result will arrive via sync");
       } else {
-        new import_obsidian3.Notice(
+        new import_obsidian4.Notice(
           `Pawn: ${data.error_code || status} \u2014 left as todo for sync`
         );
       }
     } catch (err) {
-      new import_obsidian3.Notice(`Fast path failed (${String(err)}); left as todo`);
+      new import_obsidian4.Notice(`Ask Pawn failed: ${String(err)}`);
     }
     await this.refreshStatus();
   }
 };
-var PawnSettingTab = class extends import_obsidian3.PluginSettingTab {
+var PawnSettingTab = class extends import_obsidian4.PluginSettingTab {
   constructor(app, plugin) {
     super(app, plugin);
     this.plugin = plugin;
@@ -724,25 +851,25 @@ var PawnSettingTab = class extends import_obsidian3.PluginSettingTab {
     const { containerEl } = this;
     containerEl.empty();
     containerEl.createEl("h2", { text: "Pawn" });
-    new import_obsidian3.Setting(containerEl).setName("Server URL").setDesc("pawn-server base URL (reachable from this device)").addText(
+    new import_obsidian4.Setting(containerEl).setName("Server URL").setDesc("pawn-server base URL (reachable from this device)").addText(
       (text) => text.setPlaceholder("http://127.0.0.1:8000").setValue(this.plugin.settings.serverUrl).onChange(async (value) => {
         this.plugin.settings.serverUrl = value.trim();
         await this.plugin.saveSettings();
       })
     );
-    new import_obsidian3.Setting(containerEl).setName("API token").setDesc("Same as api.token in pawnai.yaml").addText(
+    new import_obsidian4.Setting(containerEl).setName("API token").setDesc("Same as api.token in pawnai.yaml").addText(
       (text) => text.setPlaceholder("Bearer token").setValue(this.plugin.settings.apiToken).onChange(async (value) => {
         this.plugin.settings.apiToken = value.trim();
         await this.plugin.saveSettings();
       })
     );
-    new import_obsidian3.Setting(containerEl).setName("Agent root").setDesc("Vault folder Pawn owns (default Pawn)").addText(
+    new import_obsidian4.Setting(containerEl).setName("Agent root").setDesc("Vault folder Pawn owns (default Pawn)").addText(
       (text) => text.setValue(this.plugin.settings.agentRoot).onChange(async (value) => {
         this.plugin.settings.agentRoot = value.trim() || "Pawn";
         await this.plugin.saveSettings();
       })
     );
-    new import_obsidian3.Setting(containerEl).setName("Fast-path timeout (ms)").setDesc("Wait this long for a direct reply before falling back to sync").addText(
+    new import_obsidian4.Setting(containerEl).setName("Fast-path timeout (ms)").setDesc("Wait this long for a direct reply before falling back to sync").addText(
       (text) => text.setValue(String(this.plugin.settings.fastPathTimeoutMs)).onChange(async (value) => {
         const n = Number(value);
         if (!Number.isNaN(n) && n >= 1e3) {
@@ -751,7 +878,7 @@ var PawnSettingTab = class extends import_obsidian3.PluginSettingTab {
         }
       })
     );
-    new import_obsidian3.Setting(containerEl).setName("Always queue").setDesc("Skip HTTP fast path; always leave tasks as todo for the watcher").addToggle(
+    new import_obsidian4.Setting(containerEl).setName("Always queue").setDesc("Skip HTTP fast path; always leave tasks as todo for the watcher").addToggle(
       (toggle) => toggle.setValue(this.plugin.settings.alwaysQueue).onChange(async (value) => {
         this.plugin.settings.alwaysQueue = value;
         await this.plugin.saveSettings();

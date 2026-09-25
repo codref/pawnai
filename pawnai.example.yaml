@@ -79,17 +79,19 @@ s3:
   # Usually true for MinIO and many S3-compatible providers.
   path_style: true
 
-# Markdown notes vault (Obsidian Sync Engine / similar). May use a different
-# bucket or prefix than the queue S3 section above.
+# Markdown notes vault (Obsidian Sync Engine). Uses its own S3 credentials —
+# do not reuse the top-level s3: queue/audio keys.
 vault:
-  bucket: my-vault-bucket
-  endpoint_url: https://fsn1.your-objectstorage.com
-  access_key: ""
-  secret_key: ""
-  region: fsn1
-  prefix: vault/
-  path_style: true
-  verify_ssl: true
+  s3:
+    bucket: my-obsidian-bucket
+    endpoint_url: https://fsn1.your-objectstorage.com
+    access_key: ""
+    secret_key: ""
+    region: fsn1
+    # Key prefix shared with Sync Engine (e.g. vault/). Empty = bucket root.
+    prefix: ""
+    path_style: true
+    verify_ssl: true
   agent_root: Pawn
   transcript_path_template: "{agent_root}/Transcripts/{date} {session_id}.md"
   analysis_path_template: "{agent_root}/Analyses/{session_id}.md"
