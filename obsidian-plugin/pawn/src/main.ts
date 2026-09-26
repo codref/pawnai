@@ -121,7 +121,7 @@ export default class PawnPlugin extends Plugin {
       name: "New chat",
       callback: async () => {
         const view = await this.openChat({ tab: "chat" });
-        view?.open({ conversation: `chat:${newId()}` });
+        view?.applyOptions({ conversation: `chat:${newId()}` });
       },
     });
     this.addCommand({
@@ -241,7 +241,7 @@ export default class PawnPlugin extends Plugin {
     await workspace.revealLeaf(leaf);
     const view = leaf.view;
     if (!(view instanceof PawnChatView)) return null;
-    view.open(opts);
+    view.applyOptions(opts);
     return view;
   }
 

@@ -1731,7 +1731,8 @@ var PawnChatView = class extends import_obsidian10.ItemView {
     this.containerEl.empty();
   }
   // ── public API used by the plugin ─────────────────────────────────────────
-  open(opts) {
+  /** Not named `open`: that is Obsidian's internal View lifecycle method. */
+  applyOptions(opts) {
     var _a;
     if (opts.conversation)
       this.switchConversation(opts.conversation, true);
@@ -2594,7 +2595,7 @@ var PawnPlugin = class extends import_obsidian12.Plugin {
       name: "New chat",
       callback: async () => {
         const view = await this.openChat({ tab: "chat" });
-        view == null ? void 0 : view.open({ conversation: `chat:${newId()}` });
+        view == null ? void 0 : view.applyOptions({ conversation: `chat:${newId()}` });
       }
     });
     this.addCommand({
@@ -2704,7 +2705,7 @@ var PawnPlugin = class extends import_obsidian12.Plugin {
     const view = leaf.view;
     if (!(view instanceof PawnChatView))
       return null;
-    view.open(opts);
+    view.applyOptions(opts);
     return view;
   }
   async runPromptCommand(cmd) {

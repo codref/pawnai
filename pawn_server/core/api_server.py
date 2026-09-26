@@ -991,7 +991,7 @@ async def job_list(
 async def job_events_stream(request: Request, cfg: Any = Depends(_get_cfg)) -> StreamingResponse:
     """SSE stream of job updates (``event: job`` with the full job record)."""
     from pawn_server.core import jobs  # noqa: PLC0415
-    from pawn_server.core.job_events import job_events  # noqa: PLC0415
+    from pawn_server.core.job_events import SHUTDOWN_EVENT, job_events  # noqa: PLC0415
 
     keepalive = float(getattr(cfg.api, "stream_keepalive_seconds", 10.0))
     queue = job_events.subscribe()
@@ -1000,13 +1000,15 @@ async def job_events_stream(request: Request, cfg: Any = Depends(_get_cfg)) -> S
         try:
             yield _sse_event("ready", {"subscribers": job_events.subscriber_count})
             while True:
-                if await request.is_disconnected():
+                if job_events.closed or await request.is_disconnected():
                     break
                 try:
                     event = await asyncio.wait_for(queue.get(), timeout=keepalive)
                 except asyncio.TimeoutError:
                     yield _SSE_KEEPALIVE
                     continue
+                if event is SHUTDOWN_EVENT:
+                    break
                 job = await asyncio.to_thread(jobs.get_job, cfg, event["job_id"])
                 yield _sse_event("job", job or event)
         finally:

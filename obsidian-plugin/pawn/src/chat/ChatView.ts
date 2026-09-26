@@ -107,7 +107,8 @@ export class PawnChatView extends ItemView {
 
   // ── public API used by the plugin ─────────────────────────────────────────
 
-  open(opts: OpenChatOptions): void {
+  /** Not named `open`: that is Obsidian's internal View lifecycle method. */
+  applyOptions(opts: OpenChatOptions): void {
     if (opts.conversation) this.switchConversation(opts.conversation, true);
     if (opts.tab) this.tab = opts.tab;
     if (opts.focusJob) {

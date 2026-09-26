@@ -14,6 +14,8 @@ logger = logging.getLogger(__name__)
 
 _MAX_BACKLOG = 200
 
+SHUTDOWN_EVENT: dict[str, Any] = {"_shutdown": True}
+
 
 class JobEventBus:
     """Fan-out of job events to any number of asyncio subscribers."""
@@ -21,12 +23,38 @@ class JobEventBus:
     def __init__(self) -> None:
         self._subscribers: set[asyncio.Queue[dict[str, Any]]] = set()
         self._loop: Optional[asyncio.AbstractEventLoop] = None
+        self._closed = False
+
+    @property
+    def closed(self) -> bool:
+        return self._closed
 
     def subscribe(self) -> asyncio.Queue[dict[str, Any]]:
         self._loop = asyncio.get_running_loop()
         queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue(maxsize=_MAX_BACKLOG)
+        if self._closed:
+            queue.put_nowait(SHUTDOWN_EVENT)
         self._subscribers.add(queue)
         return queue
+
+    def close(self) -> None:
+        """Wake every subscriber with :data:`SHUTDOWN_EVENT` so SSE streams end.
+
+        Safe to call from a signal handler: delivery is scheduled on the loop.
+        """
+        self._closed = True
+        if self._loop is None or self._loop.is_closed():
+            return
+        self._loop.call_soon_threadsafe(self._deliver_shutdown)
+
+    def _deliver_shutdown(self) -> None:
+        for queue in list(self._subscribers):
+            while True:
+                try:
+                    queue.put_nowait(SHUTDOWN_EVENT)
+                    break
+                except asyncio.QueueFull:
+                    queue.get_nowait()
 
     def unsubscribe(self, queue: asyncio.Queue[dict[str, Any]]) -> None:
         self._subscribers.discard(queue)

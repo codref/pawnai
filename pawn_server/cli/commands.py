@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Optional
+from typing import Any, Optional
 
 import typer
 from rich.console import Console
@@ -598,10 +598,23 @@ def serve(
         from pawn_server.core.api_server import get_sallm_registry  # noqa: PLC0415
 
         shared_registry = get_sallm_registry()
+        from pawn_server.core.job_events import job_events  # noqa: PLC0415
+
+        class _Server(uvicorn.Server):
+            # Long-lived SSE streams (e.g. /v1/jobs/events) otherwise keep
+            # uvicorn in "Waiting for connections to close" forever.
+            def handle_exit(self, sig: int, frame: Any) -> None:
+                job_events.close()
+                super().handle_exit(sig, frame)
+
         uv_config = uvicorn.Config(
-            fastapi_app, host=effective_host, port=effective_port, log_level="info"
+            fastapi_app,
+            host=effective_host,
+            port=effective_port,
+            log_level="info",
+            timeout_graceful_shutdown=5,
         )
-        server = uvicorn.Server(uv_config)
+        server = _Server(uv_config)
 
         if not with_queue and not with_scheduler and not with_matrix and not with_vault_watcher:
             await server.serve()
