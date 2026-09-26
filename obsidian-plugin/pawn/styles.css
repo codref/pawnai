@@ -270,9 +270,37 @@ body:not(.is-mobile) .mod-left-split .pawn-composer {
   height: 12px;
 }
 
-.pawn-chip-remove {
+button.pawn-chip-remove {
+  background: transparent;
+  border: none;
+  box-shadow: none;
+  margin: 0;
+  padding: 0;
+  height: auto;
+  width: auto;
+  color: var(--text-muted);
   cursor: pointer;
   opacity: 0.7;
+  flex-shrink: 0;
+}
+
+button.pawn-chip-remove:hover {
+  opacity: 1;
+  color: var(--text-normal);
+}
+
+button.pawn-chip-pin {
+  font: inherit;
+  color: var(--text-muted);
+  background: transparent;
+  border: 1px dashed var(--background-modifier-border);
+  box-shadow: none;
+  cursor: pointer;
+}
+
+button.pawn-chip-pin:hover {
+  color: var(--text-normal);
+  background: var(--background-modifier-hover);
 }
 
 .pawn-chip-add {

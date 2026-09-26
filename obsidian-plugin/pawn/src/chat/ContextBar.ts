@@ -69,7 +69,12 @@ export interface ContextSnapshot {
 
 /** Context chips above the chat composer: active note, selection, extra notes. */
 export class ContextBar {
-  private includeActive: boolean;
+  /** Setting default. Per-file pin/unpin below overrides it. */
+  private defaultIncludeActive: boolean;
+  /** Active-note paths the user detached with the chip close button. */
+  private detached = new Set<string>();
+  /** Active-note paths the user pinned back (needed when the default is off). */
+  private explicitPins = new Set<string>();
   private includeSelection = true;
   private extra: TFile[] = [];
   private el: HTMLElement | null = null;
@@ -78,7 +83,7 @@ export class ContextBar {
     private app: App,
     defaultIncludeActive: boolean,
   ) {
-    this.includeActive = defaultIncludeActive;
+    this.defaultIncludeActive = defaultIncludeActive;
   }
 
   mount(container: HTMLElement): void {
@@ -100,7 +105,7 @@ export class ContextBar {
   snapshot(consume = false): ContextSnapshot {
     const active = resolveActiveMarkdownFile(this.app);
     const snap: ContextSnapshot = {
-      activeNote: this.includeActive ? active : null,
+      activeNote: active && this.isAttached(active) ? active : null,
       selection: this.includeSelection ? captureSelection(this.app) : null,
       extra: [...this.extra],
     };
@@ -112,8 +117,33 @@ export class ContextBar {
     return snap;
   }
 
+  /** Pin or unpin the open note. Falls back to the default when no note is open. */
   setIncludeActive(v: boolean): void {
-    this.includeActive = v;
+    const file = resolveActiveMarkdownFile(this.app);
+    if (!file) {
+      this.defaultIncludeActive = v;
+      this.render();
+      return;
+    }
+    if (v) this.pin(file.path);
+    else this.detach(file.path);
+  }
+
+  private isAttached(file: TFile): boolean {
+    if (this.detached.has(file.path)) return false;
+    if (this.explicitPins.has(file.path)) return true;
+    return this.defaultIncludeActive;
+  }
+
+  private detach(path: string): void {
+    this.detached.add(path);
+    this.explicitPins.delete(path);
+    this.render();
+  }
+
+  private pin(path: string): void {
+    this.detached.delete(path);
+    this.explicitPins.add(path);
     this.render();
   }
 
@@ -122,7 +152,7 @@ export class ContextBar {
     const sel = captureSelection(this.app);
     return [
       active?.path ?? "",
-      this.includeActive,
+      active ? this.isAttached(active) : false,
       this.includeSelection,
       sel ? `${sel.path}:${sel.from.line}:${sel.from.ch}:${sel.to.line}:${sel.to.ch}` : "",
       this.extra.map((f) => f.path).join("|"),
@@ -142,17 +172,16 @@ export class ContextBar {
     this.lastKey = this.stateKey();
     el.empty();
     const active = resolveActiveMarkdownFile(this.app);
-    if (active) {
+    if (active && this.isAttached(active)) {
       this.chip(el, {
         icon: "file-text",
         label: active.basename,
-        title: `Active note: ${active.path}`,
-        muted: !this.includeActive,
-        onToggle: () => {
-          this.includeActive = !this.includeActive;
-          this.render();
-        },
+        title: `${active.path} is attached to the next message`,
+        removeLabel: `Unpin ${active.basename}`,
+        onRemove: () => this.detach(active.path),
       });
+    } else if (active) {
+      this.pinChip(el, active);
     }
     const sel = captureSelection(this.app);
     if (sel) {
@@ -173,6 +202,7 @@ export class ContextBar {
         icon: "link",
         label: file.basename,
         title: file.path,
+        removeLabel: `Remove ${file.basename}`,
         onRemove: () => {
           this.extra = this.extra.filter((f) => f.path !== file.path);
           this.render();
@@ -187,6 +217,18 @@ export class ContextBar {
     add.onclick = () => this.openPicker();
   }
 
+  /** Dashed chip that reattaches the open note after it was unpinned. */
+  private pinChip(parent: HTMLElement, file: TFile): void {
+    const pin = parent.createEl("button", {
+      cls: "pawn-chip pawn-chip-pin",
+      attr: { type: "button", "aria-label": `Pin ${file.basename}` },
+    });
+    const icon = pin.createSpan({ cls: "pawn-chip-icon" });
+    setIcon(icon, "pin");
+    pin.createSpan({ text: file.basename, cls: "pawn-chip-label" });
+    pin.onclick = () => this.pin(file.path);
+  }
+
   private chip(
     parent: HTMLElement,
     opts: {
@@ -194,6 +236,7 @@ export class ContextBar {
       label: string;
       title: string;
       muted?: boolean;
+      removeLabel?: string;
       onToggle?: () => void;
       onRemove?: () => void;
     },
@@ -208,7 +251,10 @@ export class ContextBar {
       chip.onclick = opts.onToggle;
     }
     if (opts.onRemove) {
-      const x = chip.createSpan({ cls: "pawn-chip-remove" });
+      const x = chip.createEl("button", {
+        cls: "pawn-chip-remove clickable-icon",
+        attr: { type: "button", "aria-label": opts.removeLabel ?? "Remove" },
+      });
       setIcon(x, "x");
       x.onclick = (ev) => {
         ev.stopPropagation();

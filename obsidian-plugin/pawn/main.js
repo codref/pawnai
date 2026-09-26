@@ -1545,11 +1545,15 @@ function resolveDroppedNote(app, raw) {
 var ContextBar = class {
   constructor(app, defaultIncludeActive) {
     this.app = app;
+    /** Active-note paths the user detached with the chip close button. */
+    this.detached = /* @__PURE__ */ new Set();
+    /** Active-note paths the user pinned back (needed when the default is off). */
+    this.explicitPins = /* @__PURE__ */ new Set();
     this.includeSelection = true;
     this.extra = [];
     this.el = null;
     this.lastKey = "";
-    this.includeActive = defaultIncludeActive;
+    this.defaultIncludeActive = defaultIncludeActive;
   }
   mount(container) {
     this.el = container.createDiv({ cls: "pawn-context-bar" });
@@ -1569,7 +1573,7 @@ var ContextBar = class {
   snapshot(consume = false) {
     const active = resolveActiveMarkdownFile(this.app);
     const snap = {
-      activeNote: this.includeActive ? active : null,
+      activeNote: active && this.isAttached(active) ? active : null,
       selection: this.includeSelection ? captureSelection(this.app) : null,
       extra: [...this.extra]
     };
@@ -1580,8 +1584,34 @@ var ContextBar = class {
     }
     return snap;
   }
+  /** Pin or unpin the open note. Falls back to the default when no note is open. */
   setIncludeActive(v) {
-    this.includeActive = v;
+    const file = resolveActiveMarkdownFile(this.app);
+    if (!file) {
+      this.defaultIncludeActive = v;
+      this.render();
+      return;
+    }
+    if (v)
+      this.pin(file.path);
+    else
+      this.detach(file.path);
+  }
+  isAttached(file) {
+    if (this.detached.has(file.path))
+      return false;
+    if (this.explicitPins.has(file.path))
+      return true;
+    return this.defaultIncludeActive;
+  }
+  detach(path) {
+    this.detached.add(path);
+    this.explicitPins.delete(path);
+    this.render();
+  }
+  pin(path) {
+    this.detached.delete(path);
+    this.explicitPins.add(path);
     this.render();
   }
   stateKey() {
@@ -1590,7 +1620,7 @@ var ContextBar = class {
     const sel = captureSelection(this.app);
     return [
       (_a = active == null ? void 0 : active.path) != null ? _a : "",
-      this.includeActive,
+      active ? this.isAttached(active) : false,
       this.includeSelection,
       sel ? `${sel.path}:${sel.from.line}:${sel.from.ch}:${sel.to.line}:${sel.to.ch}` : "",
       this.extra.map((f) => f.path).join("|")
@@ -1608,17 +1638,16 @@ var ContextBar = class {
     this.lastKey = this.stateKey();
     el.empty();
     const active = resolveActiveMarkdownFile(this.app);
-    if (active) {
+    if (active && this.isAttached(active)) {
       this.chip(el, {
         icon: "file-text",
         label: active.basename,
-        title: `Active note: ${active.path}`,
-        muted: !this.includeActive,
-        onToggle: () => {
-          this.includeActive = !this.includeActive;
-          this.render();
-        }
+        title: `${active.path} is attached to the next message`,
+        removeLabel: `Unpin ${active.basename}`,
+        onRemove: () => this.detach(active.path)
       });
+    } else if (active) {
+      this.pinChip(el, active);
     }
     const sel = captureSelection(this.app);
     if (sel) {
@@ -1639,6 +1668,7 @@ var ContextBar = class {
         icon: "link",
         label: file.basename,
         title: file.path,
+        removeLabel: `Remove ${file.basename}`,
         onRemove: () => {
           this.extra = this.extra.filter((f) => f.path !== file.path);
           this.render();
@@ -1652,7 +1682,19 @@ var ContextBar = class {
     (0, import_obsidian9.setIcon)(add, "plus");
     add.onclick = () => this.openPicker();
   }
+  /** Dashed chip that reattaches the open note after it was unpinned. */
+  pinChip(parent, file) {
+    const pin = parent.createEl("button", {
+      cls: "pawn-chip pawn-chip-pin",
+      attr: { type: "button", "aria-label": `Pin ${file.basename}` }
+    });
+    const icon = pin.createSpan({ cls: "pawn-chip-icon" });
+    (0, import_obsidian9.setIcon)(icon, "pin");
+    pin.createSpan({ text: file.basename, cls: "pawn-chip-label" });
+    pin.onclick = () => this.pin(file.path);
+  }
   chip(parent, opts) {
+    var _a;
     const chip = parent.createDiv({ cls: "pawn-chip", attr: { "aria-label": opts.title } });
     chip.toggleClass("is-muted", !!opts.muted);
     const icon = chip.createSpan({ cls: "pawn-chip-icon" });
@@ -1663,12 +1705,15 @@ var ContextBar = class {
       chip.onclick = opts.onToggle;
     }
     if (opts.onRemove) {
-      const x = chip.createSpan({ cls: "pawn-chip-remove" });
+      const x = chip.createEl("button", {
+        cls: "pawn-chip-remove clickable-icon",
+        attr: { type: "button", "aria-label": (_a = opts.removeLabel) != null ? _a : "Remove" }
+      });
       (0, import_obsidian9.setIcon)(x, "x");
       x.onclick = (ev) => {
-        var _a;
+        var _a2;
         ev.stopPropagation();
-        (_a = opts.onRemove) == null ? void 0 : _a.call(opts);
+        (_a2 = opts.onRemove) == null ? void 0 : _a2.call(opts);
       };
     }
   }
@@ -1961,7 +2006,7 @@ ${(_a = e.stack) != null ? _a : ""}` : String(e)
     if (!conv.messages.length && !this.pending) {
       const empty = thread.createDiv({ cls: "pawn-empty" });
       empty.createEl("p", {
-        text: this.conversationId.startsWith("note:") ? "Ask Pawn about this note. It's attached as context automatically." : "Ask Pawn anything. Add notes with @ or the + chip."
+        text: this.conversationId.startsWith("note:") ? "Ask Pawn about this note. Unpin it with \xD7 on the file chip, and pin it again to include it." : "Ask Pawn anything. Pin the open note from the chip, or add others with @ or +."
       });
       empty.createEl("p", {
         cls: "pawn-hint",
@@ -2483,7 +2528,7 @@ var PawnSettingTab = class extends import_obsidian11.PluginSettingTab {
         await this.plugin.saveSettings();
       })
     );
-    new import_obsidian11.Setting(containerEl).setName("Include active note").setDesc("Attach the active note as context by default (you can toggle it per message).").addToggle(
+    new import_obsidian11.Setting(containerEl).setName("Include active note").setDesc("Attach the open note by default. Unpin it from the composer chip, and pin it to attach it again.").addToggle(
       (t) => t.setValue(s.autoIncludeActiveNote).onChange(async (v) => {
         s.autoIncludeActiveNote = v;
         await this.plugin.saveSettings();

@@ -142,10 +142,11 @@ the full feature list.
 - Right-side pane (ribbon icon or **Pawn: Open chat**). The conversation
   follows the active note (`note:{path}`) by default; pick another note, a
   recent chat, or **New chat** (`chat:{uuid}`) from the header.
-- Context chips above the composer: active note (click to toggle), current
-  selection, and extra notes via `@`, the `+` chip, or drag-and-drop from the
-  file explorer. With **Send local note content** on, the plugin sends note
-  bodies (including unsynced edits); otherwise the server reads the vault.
+- Context chips above the composer: the open note (× unpins that file; a
+  dashed pin chip attaches it again), current selection, and extra notes via
+  `@`, the `+` chip, or drag-and-drop from the file explorer. With **Send
+  local note content** on, the plugin sends note bodies (including unsynced
+  edits); otherwise the server reads the vault.
 - Replies stream: tool steps show live ("Ran note_read"), then the answer
   renders as Markdown with **Copy / Insert at cursor / Replace selection
   (diff preview) / Append to note / Save as new note**.

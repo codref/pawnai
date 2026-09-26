@@ -26,9 +26,10 @@ on change.
   editor menu.
 - The conversation follows the active note (`note:<path>`) unless you pick
   another one in the header (pinned) or start a **New chat** (`chat:<uuid>`).
-- **Context chips**: active note (click to toggle), current selection, and
-  extra notes added with `@`, the `+` chip, the file menu (**Add to Pawn chat
-  context**), or by dragging notes from the file explorer.
+- **Context chips**: the open note (× unpins it; the dashed pin chip attaches
+  it again), current selection, and extra notes added with `@`, the `+` chip,
+  the file menu (**Add to Pawn chat context**), or by dragging notes from the
+  file explorer.
 - Replies stream: tool steps appear live, then the answer renders as Markdown.
   Actions on each reply: **Copy**, **Insert at cursor**, **Replace
   selection** (diff preview; targets the selection you asked about),

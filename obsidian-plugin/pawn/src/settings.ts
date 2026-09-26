@@ -84,7 +84,7 @@ export class PawnSettingTab extends PluginSettingTab {
 
     new Setting(containerEl)
       .setName("Include active note")
-      .setDesc("Attach the active note as context by default (you can toggle it per message).")
+      .setDesc("Attach the open note by default. Unpin it from the composer chip, and pin it to attach it again.")
       .addToggle((t) =>
         t.setValue(s.autoIncludeActiveNote).onChange(async (v) => {
           s.autoIncludeActiveNote = v;

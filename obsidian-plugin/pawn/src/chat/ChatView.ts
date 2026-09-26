@@ -345,8 +345,8 @@ export class PawnChatView extends ItemView {
       const empty = thread.createDiv({ cls: "pawn-empty" });
       empty.createEl("p", {
         text: this.conversationId.startsWith("note:")
-          ? "Ask Pawn about this note. It's attached as context automatically."
-          : "Ask Pawn anything. Add notes with @ or the + chip.",
+          ? "Ask Pawn about this note. Unpin it with × on the file chip, and pin it again to include it."
+          : "Ask Pawn anything. Pin the open note from the chip, or add others with @ or +.",
       });
       empty.createEl("p", {
         cls: "pawn-hint",
