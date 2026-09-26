@@ -195,6 +195,12 @@
   gap: var(--size-4-1);
 }
 
+/* The desktop status bar floats over the bottom of the side panels. */
+body:not(.is-mobile) .mod-right-split .pawn-composer,
+body:not(.is-mobile) .mod-left-split .pawn-composer {
+  padding-bottom: calc(var(--size-4-2) + 28px);
+}
+
 .pawn-input {
   width: 100%;
   resize: none;

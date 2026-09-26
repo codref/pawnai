@@ -118,6 +118,8 @@ the vault bucket.
 
 If asymmetric was already on: turn it off in Sync Engine settings (let it
 migrate), confirm the bucket no longer contains `NNNNN~…` flat keys, then sync.
+`VaultStore` refuses writes while root keys like `00000~…` exist (logged as an
+error; tools report it instead of claiming a save that Obsidian never sees).
 Only after that should `pawn-diarize push-vault` / agent `note_write` run.
 
 Turn on **bucket versioning** on the vault bucket as your undo.

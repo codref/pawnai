@@ -11,6 +11,7 @@ from typing import Any, Optional
 
 from pawn_agent.core.agent_runner import run_agent_turn
 from pawn_agent.core.sallm_registry import SallmSessionRegistry
+from pawn_agent.core.sallm_session import strip_tool_trail
 from pawn_agent.tools.push_queue_message import push_queue_message_impl
 from pawn_agent.utils.db import get_vault_task, update_vault_task
 from pawn_core.vault import VaultNotFound, resolve_path_template
@@ -261,7 +262,7 @@ async def execute_vault_task(
             error_code="agent_failed",
         )
 
-    response_text = result.response or ""
+    response_text = strip_tool_trail(result.response or "")
     notify_id = await _notify_matrix(
         cfg,
         task_id=task_id,

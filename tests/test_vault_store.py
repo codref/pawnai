@@ -9,6 +9,7 @@ from botocore.exceptions import ClientError
 
 from pawn_core.vault import (
     VaultConflict,
+    VaultError,
     VaultStore,
     VaultWriteDenied,
     dump_frontmatter,
@@ -158,6 +159,23 @@ def test_write_and_write_if_unchanged(store: VaultStore) -> None:
     stat2 = store.write_if_unchanged("Pawn/Tasks/a.md", "# Task v2\n", stat.etag)
     assert "v2" in store.read("Pawn/Tasks/a.md")
     assert stat2.etag != stat.etag
+
+
+def test_write_refuses_sync_engine_asymmetric_layout() -> None:
+    client = FakeS3Client()
+    client.put_object(Bucket="vault", Key="pawnai/00000~Welcome.md", Body=b"hi")
+    client.put_object(Bucket="vault", Key="pawnai/00000euAJl~Pawn", Body=b"")
+    asym = VaultStore(bucket="vault", prefix="pawnai", client=client, agent_root="Pawn")
+    assert asym.uses_asymmetric_storage()
+    with pytest.raises(VaultError, match="asymmetric storage"):
+        asym.write("Pawn/Analyses/x.md", "# x\n")
+    assert "pawnai/Pawn/Analyses/x.md" not in client.objects
+
+
+def test_plain_layout_with_tilde_names_is_not_asymmetric(store: VaultStore) -> None:
+    store.write("hello~world.md", "---\npawn: editable\n---\n", skip_guards=True)
+    assert not store.uses_asymmetric_storage()
+    store.write("Pawn/ok.md", "ok\n")
 
 
 def test_delete_only_under_agent_root(store: VaultStore) -> None:

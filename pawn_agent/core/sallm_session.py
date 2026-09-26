@@ -218,6 +218,22 @@ class SallmChatSession:
         await asyncio.to_thread(self._agent.clear)
 
 
+def strip_tool_trail(raw: str) -> str:
+    """Drop the ``[tool] …`` trail that :meth:`SallmChatSession.ask` prefixes.
+
+    UIs that show tool progress separately (Matrix, the Obsidian plugin, job
+    results) only want the answer body.
+    """
+    text = (raw or "").strip()
+    if not text.startswith("[tool]"):
+        return text
+    parts = text.split("\n\n", 1)
+    if len(parts) == 2 and parts[1].strip():
+        return parts[1].strip()
+    kept = [ln for ln in text.splitlines() if not ln.startswith("[tool]")]
+    return "\n".join(kept).strip() or text
+
+
 async def run_sallm_chat(
     cfg: AgentConfig,
     emit: Callable[[str], None] = print,

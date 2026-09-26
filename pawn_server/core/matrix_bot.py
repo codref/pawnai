@@ -83,16 +83,9 @@ def chunk_text(text: str, limit: int = _MAX_CHUNK) -> list[str]:
 
 def matrix_reply_body(raw: str) -> str:
     """Drop CLI ``[tool]`` trail lines; Matrix users only need the answer."""
-    text = (raw or "").strip()
-    if not text.startswith("[tool]"):
-        return text
-    # handle_user_input joins tool lines + "\\n\\n" + answer
-    parts = text.split("\n\n", 1)
-    if len(parts) == 2 and parts[1].strip():
-        return parts[1].strip()
-    # No answer body — strip tool prefixes line by line
-    kept = [ln for ln in text.splitlines() if not ln.startswith("[tool]")]
-    return "\n".join(kept).strip() or text
+    from pawn_agent.core.sallm_session import strip_tool_trail  # noqa: PLC0415
+
+    return strip_tool_trail(raw)
 
 
 def verification_allowed(

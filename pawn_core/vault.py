@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import logging
 import re
+import time
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Optional
@@ -27,6 +28,17 @@ from botocore.exceptions import ClientError
 logger = logging.getLogger(__name__)
 
 _FRONTMATTER_RE = re.compile(r"\A---\s*\n(.*?)\n---\s*\n?", re.DOTALL)
+
+# Sync Engine "asymmetric storage" keys: root id 00000, then optional folder id.
+_ASYMMETRIC_ROOT_KEY_RE = re.compile(r"^00000[^/~]{0,5}~[^/]+$")
+_ASYMMETRIC_CACHE_TTL = 60.0
+
+ASYMMETRIC_STORAGE_ERROR = (
+    "the vault bucket uses Sync Engine asymmetric storage (keys like "
+    "'00000~Welcome.md'), so notes Pawn writes would never appear in Obsidian. "
+    "Turn off 'Asymmetric storage' in Sync Engine on every device, let it migrate, "
+    "then retry."
+)
 
 
 class VaultError(Exception):
@@ -144,6 +156,7 @@ class VaultStore:
             # slash into relative keys; applied only in _full_key.
             pass
         self.agent_root = normalize_vault_key(agent_root).rstrip("/") or "Pawn"
+        self._asymmetric_probe: Optional[tuple[float, bool]] = None
         if client is not None:
             self._client = client
         else:
@@ -235,6 +248,35 @@ class VaultStore:
             last_modified=resp.get("LastModified"),
         )
 
+    def uses_asymmetric_storage(self) -> bool:
+        """True when the prefix root holds Sync Engine asymmetric keys (cached briefly)."""
+        now = time.monotonic()
+        cached = self._asymmetric_probe
+        if cached is not None and now - cached[0] < _ASYMMETRIC_CACHE_TTL:
+            return cached[1]
+        root = self.prefix.rstrip("/")
+        list_prefix = f"{root}/" if root else ""
+        found = False
+        try:
+            resp = self._client.list_objects_v2(
+                Bucket=self.bucket, Prefix=list_prefix, Delimiter="/", MaxKeys=1000
+            )
+            for obj in resp.get("Contents") or []:
+                rel = str(obj.get("Key", ""))[len(list_prefix) :]
+                if _ASYMMETRIC_ROOT_KEY_RE.match(rel):
+                    found = True
+                    break
+        except Exception as exc:  # noqa: BLE001 - detection is best effort
+            logger.debug("asymmetric storage probe failed: %s", exc)
+        self._asymmetric_probe = (now, found)
+        if found:
+            logger.error("vault %s/%s: %s", self.bucket, root, ASYMMETRIC_STORAGE_ERROR)
+        return found
+
+    def _assert_plain_layout(self) -> None:
+        if self.uses_asymmetric_storage():
+            raise VaultError(ASYMMETRIC_STORAGE_ERROR)
+
     def _ensure_folder_markers(self, key: str) -> None:
         """Best-effort zero-byte ``folder/`` markers for Sync Engine."""
         parts = normalize_vault_key(key).split("/")
@@ -274,6 +316,7 @@ class VaultStore:
                 except VaultError:
                     existing = None
             self.assert_writable(k, existing_body=existing, new_body=body)
+        self._assert_plain_layout()
         self._ensure_folder_markers(k)
         full = self._full_key(k)
         data = body.encode("utf-8")
@@ -304,6 +347,7 @@ class VaultStore:
         k = normalize_vault_key(key)
         if not k or is_obsidian_meta(k) or not is_under_agent_root(k, self.agent_root):
             raise VaultWriteDenied(f"binary writes are only allowed under {self.agent_root}/")
+        self._assert_plain_layout()
         self._ensure_folder_markers(k)
         try:
             resp = self._client.put_object(

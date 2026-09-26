@@ -123,6 +123,7 @@ from pawn_agent.core.agent_runner import run_agent_turn  # noqa: E402
 
 # Sallm session registry — lazily populated, survives across requests.
 from pawn_agent.core.sallm_registry import SallmSessionRegistry  # noqa: E402
+from pawn_agent.core.sallm_session import strip_tool_trail  # noqa: E402
 
 _sallm_registry = SallmSessionRegistry()
 
@@ -1225,7 +1226,7 @@ async def pawn_chat(body: PawnChatRequest, cfg: Any = Depends(_get_cfg)) -> Stre
                 yield _sse_event("error", {"message": data})
             elif event == "result":
                 run_id = data.run_id
-                yield _sse_event("answer", {"content": data.response})
+                yield _sse_event("answer", {"content": strip_tool_trail(data.response or "")})
         yield _sse_event("done", {"conversation": conversation, "run_id": run_id})
 
     return StreamingResponse(_gen(), media_type="text/event-stream")
