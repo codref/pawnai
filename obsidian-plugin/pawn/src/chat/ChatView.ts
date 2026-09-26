@@ -85,6 +85,14 @@ export class PawnChatView extends ItemView {
   }
 
   async onOpen(): Promise<void> {
+    try {
+      this.setup();
+    } catch (e) {
+      this.showFatal(e);
+    }
+  }
+
+  private setup(): void {
     this.containerEl.addClass("pawn-view");
     this.conversationId = this.defaultConversation();
     this.unsubscribeJobs = this.plugin.jobs.onChange(() => this.onJobsChanged());
@@ -201,9 +209,26 @@ export class PawnChatView extends ItemView {
     const root = this.contentEl;
     root.empty();
     root.addClass("pawn-root");
-    this.renderHeader(root.createDiv({ cls: "pawn-header" }));
-    this.bodyEl = root.createDiv({ cls: "pawn-body" });
-    this.renderBody();
+    try {
+      this.renderHeader(root.createDiv({ cls: "pawn-header" }));
+      this.bodyEl = root.createDiv({ cls: "pawn-body" });
+      this.renderBody();
+    } catch (e) {
+      this.showFatal(e);
+    }
+  }
+
+  private showFatal(e: unknown): void {
+    console.error("Pawn chat view failed to render", e);
+    const root = this.contentEl;
+    root.empty();
+    const box = root.createDiv({ cls: "pawn-msg is-error" });
+    box.createEl("p", {
+      text: `Pawn ${this.plugin.manifest.version}: chat view failed to render.`,
+    });
+    box.createEl("pre", {
+      text: e instanceof Error ? `${e.message}\n\n${e.stack ?? ""}` : String(e),
+    });
   }
 
   private renderHeader(header: HTMLElement): void {

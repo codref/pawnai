@@ -1710,6 +1710,13 @@ var PawnChatView = class extends import_obsidian10.ItemView {
     return "chess-king";
   }
   async onOpen() {
+    try {
+      this.setup();
+    } catch (e) {
+      this.showFatal(e);
+    }
+  }
+  setup() {
     this.containerEl.addClass("pawn-view");
     this.conversationId = this.defaultConversation();
     this.unsubscribeJobs = this.plugin.jobs.onChange(() => this.onJobsChanged());
@@ -1819,9 +1826,28 @@ var PawnChatView = class extends import_obsidian10.ItemView {
     const root = this.contentEl;
     root.empty();
     root.addClass("pawn-root");
-    this.renderHeader(root.createDiv({ cls: "pawn-header" }));
-    this.bodyEl = root.createDiv({ cls: "pawn-body" });
-    this.renderBody();
+    try {
+      this.renderHeader(root.createDiv({ cls: "pawn-header" }));
+      this.bodyEl = root.createDiv({ cls: "pawn-body" });
+      this.renderBody();
+    } catch (e) {
+      this.showFatal(e);
+    }
+  }
+  showFatal(e) {
+    var _a;
+    console.error("Pawn chat view failed to render", e);
+    const root = this.contentEl;
+    root.empty();
+    const box = root.createDiv({ cls: "pawn-msg is-error" });
+    box.createEl("p", {
+      text: `Pawn ${this.plugin.manifest.version}: chat view failed to render.`
+    });
+    box.createEl("pre", {
+      text: e instanceof Error ? `${e.message}
+
+${(_a = e.stack) != null ? _a : ""}` : String(e)
+    });
   }
   renderHeader(header) {
     const row = header.createDiv({ cls: "pawn-header-row" });
@@ -2692,6 +2718,7 @@ var PawnPlugin = class extends import_obsidian12.Plugin {
   }
   // ── views ────────────────────────────────────────────────────────────────
   async openChat(opts) {
+    var _a, _b;
     const { workspace } = this.app;
     let leaf = workspace.getLeavesOfType(PAWN_CHAT_VIEW)[0];
     if (!leaf) {
@@ -2702,9 +2729,12 @@ var PawnPlugin = class extends import_obsidian12.Plugin {
       leaf = right;
     }
     await workspace.revealLeaf(leaf);
+    await ((_a = leaf.loadIfDeferred) == null ? void 0 : _a.call(leaf));
     const view = leaf.view;
-    if (!(view instanceof PawnChatView))
+    if (!(view instanceof PawnChatView)) {
+      console.warn("Pawn: chat leaf has unexpected view", (_b = view == null ? void 0 : view.getViewType) == null ? void 0 : _b.call(view));
       return null;
+    }
     view.applyOptions(opts);
     return view;
   }

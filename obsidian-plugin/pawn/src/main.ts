@@ -239,8 +239,12 @@ export default class PawnPlugin extends Plugin {
       leaf = right;
     }
     await workspace.revealLeaf(leaf);
+    await leaf.loadIfDeferred?.();
     const view = leaf.view;
-    if (!(view instanceof PawnChatView)) return null;
+    if (!(view instanceof PawnChatView)) {
+      console.warn("Pawn: chat leaf has unexpected view", view?.getViewType?.());
+      return null;
+    }
     view.applyOptions(opts);
     return view;
   }
