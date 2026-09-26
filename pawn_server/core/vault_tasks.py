@@ -1,4 +1,4 @@
-"""Vault task lifecycle: HTTP accept, execute, approve."""
+"""Vault task lifecycle: execute, approve (shared by jobs API and vault watcher)."""
 
 from __future__ import annotations
 
@@ -12,20 +12,14 @@ from typing import Any, Optional
 from pawn_agent.core.agent_runner import run_agent_turn
 from pawn_agent.core.sallm_registry import SallmSessionRegistry
 from pawn_agent.tools.push_queue_message import push_queue_message_impl
-from pawn_agent.utils.db import (
-    claim_vault_task,
-    get_vault_task,
-    update_vault_task,
-    upsert_vault_task,
-)
+from pawn_agent.utils.db import get_vault_task, update_vault_task
 from pawn_core.vault import VaultNotFound, resolve_path_template
-from pawn_core.vault_config import vault_store_from_config
+from pawn_server.core.job_events import publish_job_event
 from pawn_server.core.vault_protocol import (
     build_agent_prompt,
     build_obsidian_open_url,
     conversation_id_for_note,
     extract_wiki_links,
-    instruction_hash,
     parse_task_note,
     render_task_note,
     wiki_link_to_vault_key,
@@ -33,8 +27,8 @@ from pawn_server.core.vault_protocol import (
 
 logger = logging.getLogger(__name__)
 
-# In-flight HTTP continuations (task_id -> asyncio.Task)
-_background_tasks: dict[str, asyncio.Task[None]] = {}
+# In-flight background jobs (job id -> asyncio.Task)
+_background_tasks: dict[str, asyncio.Task[Any]] = {}
 
 
 @dataclass(frozen=True)
@@ -59,7 +53,7 @@ def task_key_for(cfg: Any, *, task_id: str, note_path: str | None = None) -> str
     )
 
 
-def _effective_conversation(
+def effective_conversation(
     conversation: str | None,
     note_path: str | None,
     task_key: str,
@@ -82,6 +76,14 @@ async def _gather_context(
     instruction = parsed.get("instruction") or ""
     task_context = parsed.get("context") or ""
     note_excerpt = ""
+    if store is None:
+        return build_agent_prompt(
+            task_id=str(parsed.get("id") or ""),
+            instruction=instruction,
+            task_context=task_context,
+            task_key=task_key,
+            note_path=note_path,
+        )
     if note_path:
         key = wiki_link_to_vault_key(note_path)
         try:
@@ -159,11 +161,12 @@ async def execute_vault_task(
 
     task_key = row.key
     update_vault_task(cfg.db_dsn, task_id, status="running")
+    publish_job_event(task_id, "running", conversation=row.conversation_id)
 
     parsed: dict[str, Any] = {
         "id": task_id,
         "instruction": row.instruction_text or "",
-        "context": "",
+        "context": str((row.payload or {}).get("context") or ""),
         "result": "",
     }
     note_path = row.note_path
@@ -228,6 +231,10 @@ async def execute_vault_task(
             status="blocked",
             error_code="agent_failed",
             etag=etag,
+            result_text=str(exc)[:4000],
+        )
+        publish_job_event(
+            task_id, "blocked", conversation=row.conversation_id, error_code="agent_failed"
         )
         if write_result_to_vault:
             try:
@@ -268,6 +275,7 @@ async def execute_vault_task(
         agent_run_id=result.run_id,
         matrix_notify_id=notify_id,
         etag=etag,
+        result_text=response_text,
     )
 
     if write_result_to_vault:
@@ -289,112 +297,9 @@ async def execute_vault_task(
         except Exception as exc:
             logger.error("Failed writing vault result for %s: %s", task_id, exc)
 
+    publish_job_event(task_id, "review", conversation=row.conversation_id)
     return VaultTaskResult(
         task_id=task_id,
-        status="review",
-        result=response_text,
-        agent_run_id=result.run_id,
-    )
-
-
-async def accept_vault_task_http(
-    cfg: Any,
-    *,
-    task_id: str,
-    instruction: str,
-    note_path: str | None,
-    context: str | None,
-    conversation_id: str | None,
-    registry: SallmSessionRegistry,
-) -> VaultTaskResult:
-    """Fast HTTP path: DB + agent run; plugin keeps the task file locally."""
-    key = task_key_for(cfg, task_id=task_id, note_path=note_path)
-    conv = _effective_conversation(conversation_id, note_path, key)
-    ih = instruction_hash(instruction)
-    effective_id = upsert_vault_task(
-        cfg.db_dsn,
-        task_id=task_id,
-        key=key,
-        instruction_hash=ih,
-        conversation_id=conv,
-        instruction_text=instruction,
-        note_path=note_path,
-        via="http",
-        status="queued",
-    )
-    if not claim_vault_task(cfg.db_dsn, effective_id):
-        row = get_vault_task(cfg.db_dsn, effective_id)
-        if row and row.status == "review":
-            return VaultTaskResult(
-                task_id=effective_id,
-                status="review",
-                result="",
-                agent_run_id=row.agent_run_id,
-            )
-        return VaultTaskResult(
-            task_id=effective_id,
-            status=row.status if row else "blocked",
-            result="",
-            error_code="not_claimable",
-        )
-
-    store = vault_store_from_config(cfg)
-    # Inject context into a synthetic parse for gather (file not on S3 fast path).
-    parsed = {
-        "id": effective_id,
-        "instruction": instruction,
-        "context": context or "",
-        "result": "",
-        "note_path": note_path,
-    }
-    update_vault_task(cfg.db_dsn, effective_id, status="running")
-    prompt = await _gather_context(
-        cfg,
-        store,
-        parsed=parsed,
-        task_key=key,
-        note_path=note_path,
-    )
-    try:
-        result = await run_agent_turn(
-            cfg=cfg,
-            registry=registry,
-            prompt=prompt,
-            session_id=conv,
-            source="vault",
-            command="vault_run",
-        )
-    except Exception as exc:
-        logger.error("vault HTTP run %s failed: %s", effective_id, exc, exc_info=True)
-        update_vault_task(
-            cfg.db_dsn,
-            effective_id,
-            status="blocked",
-            error_code="agent_failed",
-        )
-        return VaultTaskResult(
-            task_id=effective_id,
-            status="blocked",
-            result="",
-            error_code="agent_failed",
-        )
-
-    response_text = result.response or ""
-    notify_id = await _notify_matrix(
-        cfg,
-        task_id=effective_id,
-        task_key=key,
-        title=instruction,
-    )
-    update_vault_task(
-        cfg.db_dsn,
-        effective_id,
-        status="review",
-        agent_run_id=result.run_id,
-        matrix_notify_id=notify_id,
-    )
-    return VaultTaskResult(
-        task_id=effective_id,
         status="review",
         result=response_text,
         agent_run_id=result.run_id,
@@ -433,7 +338,7 @@ async def approve_vault_task(
             task_id=task_id, status="done", result="", agent_run_id=row.agent_run_id
         )
 
-    text = result_text or ""
+    text = result_text or row.result_text or ""
     task_key = row.key
     if not text.strip() and store is not None:
         try:
@@ -474,7 +379,9 @@ async def approve_vault_task(
         task_id,
         status="done",
         indexed_at=now,
+        result_text=text or None,
     )
+    publish_job_event(task_id, "done", conversation=row.conversation_id)
 
     if store is not None:
         try:
@@ -502,63 +409,6 @@ async def approve_vault_task(
     )
 
 
-async def write_result_to_vault_note(
-    cfg: Any,
-    task_id: str,
-    *,
-    result_text: str,
-) -> None:
-    """Write ## Result and status=review onto the task note in S3."""
-    row = get_vault_task(cfg.db_dsn, task_id)
-    if row is None:
-        return
-    store = vault_store_from_config(cfg)
-    task_key = row.key
-    try:
-        body = await asyncio.to_thread(store.read, task_key)
-        parsed = parse_task_note(body)
-        updated = render_task_note(
-            task_id=task_id,
-            status="review",
-            instruction=parsed.get("instruction") or row.instruction_text or "",
-            context=parsed.get("context") or "",
-            result=result_text,
-            conversation=row.conversation_id,
-            note_path=row.note_path,
-            approved=False,
-        )
-        st = await asyncio.to_thread(store.write, task_key, updated)
-        update_vault_task(cfg.db_dsn, task_id, etag=st.etag)
-    except Exception as exc:
-        logger.error("Failed slow-path vault write for %s: %s", task_id, exc)
-
-
-async def run_http_vault_task_with_optional_vault_write(
-    cfg: Any,
-    *,
-    task_id: str,
-    instruction: str,
-    note_path: str | None,
-    context: str | None,
-    conversation_id: str | None,
-    registry: SallmSessionRegistry,
-    write_result_to_vault: asyncio.Event,
-) -> VaultTaskResult:
-    """HTTP runner; writes the task note when *write_result_to_vault* is set."""
-    result = await accept_vault_task_http(
-        cfg,
-        task_id=task_id,
-        instruction=instruction,
-        note_path=note_path,
-        context=context,
-        conversation_id=conversation_id,
-        registry=registry,
-    )
-    if write_result_to_vault.is_set() and result.status == "review":
-        await write_result_to_vault_note(cfg, task_id, result_text=result.result)
-    return result
-
-
 def track_background_task(task_id: str, task: asyncio.Task[Any]) -> None:
     _background_tasks[task_id] = task
 
@@ -566,6 +416,10 @@ def track_background_task(task_id: str, task: asyncio.Task[Any]) -> None:
         _background_tasks.pop(task_id, None)
 
     task.add_done_callback(_done)
+
+
+def get_background_task(task_id: str) -> Optional[asyncio.Task[Any]]:
+    return _background_tasks.get(task_id)
 
 
 def new_task_id() -> str:

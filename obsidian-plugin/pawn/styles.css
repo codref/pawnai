@@ -1,88 +1,484 @@
-/* Pawn Obsidian plugin */
+/* ── Layout ─────────────────────────────────────────────────────────────── */
 
-.pawn-panel {
-  padding: 0.75rem;
-  overflow-y: auto;
+.pawn-view .view-content.pawn-root {
+  display: flex;
+  flex-direction: column;
+  padding: 0;
+  overflow: hidden;
+}
+
+.pawn-header {
+  flex-shrink: 0;
+  padding: var(--size-4-2) var(--size-4-2) 0;
+  border-bottom: 1px solid var(--background-modifier-border);
+}
+
+.pawn-header-row {
+  display: flex;
+  align-items: center;
+  gap: var(--size-4-1);
+}
+
+.pawn-conv-select {
+  flex: 1;
+  min-width: 0;
 }
 
 .pawn-tabs {
   display: flex;
-  gap: 0.5rem;
-  margin-bottom: 0.75rem;
+  align-items: center;
+  gap: var(--size-4-1);
+  margin-top: var(--size-4-2);
 }
 
 .pawn-tabs button {
-  flex: 1;
+  background: none;
+  box-shadow: none;
+  border-radius: 0;
+  border-bottom: 2px solid transparent;
+  padding: var(--size-4-1) var(--size-4-2);
+  color: var(--text-muted);
 }
 
 .pawn-tabs button.is-active {
-  font-weight: 600;
+  color: var(--text-normal);
+  border-bottom-color: var(--interactive-accent);
 }
 
-.pawn-muted {
-  opacity: 0.7;
-  font-size: 0.85em;
+.pawn-dot {
+  margin-left: auto;
+  font-size: 0.7em;
 }
 
-.pawn-task-card {
-  border: 1px solid var(--background-modifier-border);
-  border-radius: 6px;
-  padding: 0.6rem;
-  margin-bottom: 0.6rem;
+.pawn-dot.is-online {
+  color: var(--color-green);
 }
 
-.pawn-task-title {
-  font-weight: 600;
-  margin-bottom: 0.35rem;
+.pawn-dot.is-offline {
+  color: var(--color-red);
 }
 
-.pawn-task-result {
-  white-space: pre-wrap;
-  font-size: 0.85em;
-  max-height: 12em;
-  overflow: auto;
-  background: var(--background-secondary);
-  padding: 0.4rem;
-  border-radius: 4px;
+.status-bar-item .pawn-dot {
+  margin-left: 0;
 }
 
-.pawn-task-actions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.35rem;
-  margin-top: 0.5rem;
-}
-
-.pawn-chat-log {
+.pawn-body {
+  flex: 1;
   display: flex;
   flex-direction: column;
-  gap: 0.5rem;
-  margin-bottom: 0.75rem;
-  max-height: 50vh;
-  overflow-y: auto;
+  min-height: 0;
 }
 
-.pawn-chat-msg {
-  padding: 0.5rem;
-  border-radius: 6px;
+.pawn-body.is-dragover {
+  outline: 2px dashed var(--interactive-accent);
+  outline-offset: -4px;
+}
+
+.pawn-hidden {
+  display: none;
+}
+
+.pawn-empty {
+  color: var(--text-muted);
+  text-align: center;
+  padding: var(--size-4-6) var(--size-4-4);
+}
+
+.pawn-hint {
+  font-size: var(--font-ui-smaller);
+}
+
+/* ── Thread ─────────────────────────────────────────────────────────────── */
+
+.pawn-thread {
+  flex: 1;
+  overflow-y: auto;
+  padding: var(--size-4-2);
+  display: flex;
+  flex-direction: column;
+  gap: var(--size-4-2);
+}
+
+.pawn-msg {
+  border-radius: var(--radius-m);
+  padding: var(--size-4-2) var(--size-4-3);
+  word-break: break-word;
+  user-select: text;
+}
+
+.pawn-msg.is-user {
+  align-self: flex-end;
+  max-width: 90%;
+  background: var(--interactive-accent);
+  color: var(--text-on-accent);
   white-space: pre-wrap;
 }
 
-.pawn-chat-user {
+.pawn-msg.is-assistant {
   background: var(--background-secondary);
 }
 
-.pawn-chat-assistant {
-  border: 1px solid var(--background-modifier-border);
+.pawn-msg.is-error {
+  background: rgba(var(--color-red-rgb), 0.1);
+  color: var(--text-error);
+  font-size: var(--font-ui-small);
 }
 
-.pawn-chat-form textarea {
+.pawn-msg.is-job {
+  padding: 0;
+}
+
+.pawn-msg-context {
+  margin-top: var(--size-4-1);
+  font-size: var(--font-ui-smaller);
+  opacity: 0.8;
+}
+
+.pawn-msg .markdown-rendered > :first-child {
+  margin-top: 0;
+}
+
+.pawn-msg .markdown-rendered > :last-child {
+  margin-bottom: 0;
+}
+
+.pawn-progress-log {
+  font-size: var(--font-ui-smaller);
+  color: var(--text-muted);
+  margin-bottom: var(--size-4-1);
+}
+
+.pawn-pending-row {
+  display: flex;
+  align-items: center;
+  gap: var(--size-4-2);
+  color: var(--text-muted);
+}
+
+.pawn-spinner {
+  width: 12px;
+  height: 12px;
+  border: 2px solid var(--background-modifier-border);
+  border-top-color: var(--interactive-accent);
+  border-radius: 50%;
+  animation: pawn-spin 0.8s linear infinite;
+}
+
+@keyframes pawn-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.pawn-msg-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px;
+  margin-top: var(--size-4-1);
+  opacity: 0.6;
+}
+
+.pawn-msg:hover .pawn-msg-actions,
+.pawn-job-card:hover .pawn-msg-actions {
+  opacity: 1;
+}
+
+/* ── Composer ───────────────────────────────────────────────────────────── */
+
+.pawn-composer {
+  position: relative;
+  flex-shrink: 0;
+  border-top: 1px solid var(--background-modifier-border);
+  padding: var(--size-4-2);
+  display: flex;
+  flex-direction: column;
+  gap: var(--size-4-1);
+}
+
+.pawn-input {
   width: 100%;
-  margin-bottom: 0.5rem;
+  resize: none;
+  min-height: 3em;
+  max-height: 240px;
 }
 
-/* Callout styling for > [!pawn] */
+.pawn-composer-row {
+  display: flex;
+  align-items: center;
+  gap: var(--size-4-2);
+}
+
+.pawn-spacer {
+  flex: 1;
+}
+
+.pawn-bg-toggle {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: var(--font-ui-small);
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.pawn-context-bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.pawn-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  max-width: 100%;
+  padding: 1px 8px;
+  border-radius: var(--radius-l);
+  background: var(--background-modifier-hover);
+  font-size: var(--font-ui-smaller);
+}
+
+.pawn-chip.is-toggle {
+  cursor: pointer;
+}
+
+.pawn-chip.is-muted {
+  opacity: 0.45;
+  text-decoration: line-through;
+}
+
+.pawn-chip-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pawn-chip-icon,
+.pawn-chip-remove {
+  display: inline-flex;
+}
+
+.pawn-chip-icon svg,
+.pawn-chip-remove svg {
+  width: 12px;
+  height: 12px;
+}
+
+.pawn-chip-remove {
+  cursor: pointer;
+  opacity: 0.7;
+}
+
+.pawn-chip-add {
+  padding: 1px 6px;
+}
+
+.pawn-slash {
+  position: absolute;
+  left: var(--size-4-2);
+  right: var(--size-4-2);
+  bottom: 100%;
+  max-height: 260px;
+  overflow-y: auto;
+  background: var(--background-primary);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--radius-m);
+  box-shadow: var(--shadow-s);
+  z-index: var(--layer-popover);
+}
+
+.pawn-slash.is-hidden {
+  display: none;
+}
+
+.pawn-slash-item {
+  display: flex;
+  gap: var(--size-4-2);
+  padding: var(--size-4-1) var(--size-4-2);
+  cursor: pointer;
+}
+
+.pawn-slash-item.is-selected,
+.pawn-slash-item:hover {
+  background: var(--background-modifier-hover);
+}
+
+.pawn-slash-label {
+  font-family: var(--font-monospace);
+}
+
+.pawn-slash-hint {
+  color: var(--text-muted);
+}
+
+/* ── Jobs ───────────────────────────────────────────────────────────────── */
+
+.pawn-jobs {
+  flex: 1;
+  overflow-y: auto;
+  padding: var(--size-4-2);
+}
+
+.pawn-jobs-toolbar {
+  display: flex;
+  gap: var(--size-4-1);
+  margin-bottom: var(--size-4-2);
+}
+
+.pawn-jobs-toolbar button.is-active {
+  background: var(--interactive-accent);
+  color: var(--text-on-accent);
+}
+
+.pawn-jobs-toolbar .clickable-icon {
+  margin-left: auto;
+}
+
+.pawn-jobs-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--size-4-2);
+}
+
+.pawn-job-card {
+  border: 1px solid var(--background-modifier-border);
+  border-left: 3px solid var(--text-faint);
+  border-radius: var(--radius-m);
+  padding: var(--size-4-2) var(--size-4-3);
+  background: var(--background-primary);
+}
+
+.pawn-job-card.is-running,
+.pawn-job-card.is-claimed,
+.pawn-job-card.is-queued {
+  border-left-color: var(--color-blue);
+}
+
+.pawn-job-card.is-todo {
+  border-left-color: var(--color-yellow);
+}
+
+.pawn-job-card.is-review {
+  border-left-color: var(--color-orange);
+}
+
+.pawn-job-card.is-done {
+  border-left-color: var(--color-green);
+}
+
+.pawn-job-card.is-blocked {
+  border-left-color: var(--color-red);
+}
+
+.pawn-job-card.is-focused {
+  box-shadow: 0 0 0 2px var(--interactive-accent);
+}
+
+.pawn-job-head {
+  display: flex;
+  align-items: center;
+  gap: var(--size-4-2);
+}
+
+.pawn-job-icon {
+  display: inline-flex;
+  color: var(--text-muted);
+}
+
+.pawn-job-icon svg {
+  width: 14px;
+  height: 14px;
+}
+
+.pawn-job-title {
+  flex: 1;
+  min-width: 0;
+  font-weight: var(--font-semibold);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pawn-job-status {
+  font-size: var(--font-ui-smaller);
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+.pawn-job-status.is-active::before {
+  content: "";
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  margin-right: 4px;
+  border-radius: 50%;
+  background: var(--color-blue);
+  animation: pawn-pulse 1.2s ease-in-out infinite;
+}
+
+@keyframes pawn-pulse {
+  50% {
+    opacity: 0.3;
+  }
+}
+
+.pawn-job-meta {
+  font-size: var(--font-ui-smaller);
+  color: var(--text-faint);
+  margin-top: 2px;
+}
+
+.pawn-job-result {
+  margin-top: var(--size-4-2);
+  max-height: 320px;
+  overflow-y: auto;
+  user-select: text;
+}
+
+.pawn-job-result.is-error {
+  color: var(--text-error);
+}
+
+.pawn-notice {
+  cursor: pointer;
+}
+
+/* ── Diff modal ─────────────────────────────────────────────────────────── */
+
+.pawn-diff {
+  max-height: 60vh;
+  overflow: auto;
+  font-family: var(--font-monospace);
+  font-size: var(--font-ui-small);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--radius-s);
+  margin-bottom: var(--size-4-3);
+}
+
+.pawn-diff-line {
+  display: flex;
+  white-space: pre-wrap;
+  padding: 0 var(--size-4-2);
+}
+
+.pawn-diff-line.is-add {
+  background: rgba(var(--color-green-rgb), 0.15);
+}
+
+.pawn-diff-line.is-del {
+  background: rgba(var(--color-red-rgb), 0.15);
+  text-decoration: line-through;
+}
+
+.pawn-diff-sign {
+  width: 1.2em;
+  flex-shrink: 0;
+  color: var(--text-muted);
+}
+
+/* ── Callout (optional > [!pawn] links to task notes) ──────────────────── */
+
 .callout[data-callout="pawn"] {
-  --callout-color: 70, 130, 180;
-  --callout-icon: lucide-bot;
+  --callout-color: 120, 160, 255;
+  --callout-icon: chess-king;
 }

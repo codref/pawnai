@@ -293,6 +293,29 @@ class VaultStore:
                 return st
         return VaultStat(key=k, etag=etag, size=len(data))
 
+    def write_bytes(
+        self,
+        key: str,
+        data: bytes,
+        *,
+        content_type: str = "application/octet-stream",
+    ) -> VaultStat:
+        """Put binary *data* at *key* (attachments). Only allowed under the agent root."""
+        k = normalize_vault_key(key)
+        if not k or is_obsidian_meta(k) or not is_under_agent_root(k, self.agent_root):
+            raise VaultWriteDenied(f"binary writes are only allowed under {self.agent_root}/")
+        self._ensure_folder_markers(k)
+        try:
+            resp = self._client.put_object(
+                Bucket=self.bucket,
+                Key=self._full_key(k),
+                Body=data,
+                ContentType=content_type,
+            )
+        except ClientError as exc:
+            raise VaultError(f"write failed for {k!r}: {exc}") from exc
+        return VaultStat(key=k, etag=_strip_etag(resp.get("ETag")), size=len(data))
+
     def write_if_unchanged(
         self,
         key: str,

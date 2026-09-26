@@ -159,6 +159,24 @@ class ApiSection(BaseModel):
     host: str = "0.0.0.0"
     port: int = 8000
     model_idle_timeout_minutes: float = 10.0
+    # Browser origins allowed by CORS (Obsidian desktop / mobile webviews).
+    cors_origins: list[str] = Field(
+        default_factory=lambda: [
+            "app://obsidian.md",
+            "capacitor://localhost",
+            "http://localhost",
+        ]
+    )
+    # Prepend the client's system message (e.g. obsidian-copilot's) as context.
+    include_system_prompt: bool = False
+    # Stream agent tool steps as ``reasoning_content`` deltas on /v1/chat/completions.
+    stream_progress: bool = True
+    # Seconds between SSE keep-alive comments while the agent works.
+    stream_keepalive_seconds: float = 10.0
+    # queue_producers target used for audio uploads (transcribe-diarize).
+    upload_audio_target: str = "diarize"
+    # Key prefix in the main ``s3:`` bucket where uploaded audio is staged.
+    upload_s3_prefix: str = "uploads/obsidian"
 
 
 class MlflowSection(BaseModel):

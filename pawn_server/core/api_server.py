@@ -11,14 +11,24 @@ can be continued through the API and vice versa.
 Endpoints
 ---------
 POST /v1/chat/completions
-    OpenAI-compatible chat completions.  Handles the ``/reset`` sentinel
-    inline.  Supports ``stream=true`` (SSE, word-by-word after full generation).
+    OpenAI-compatible chat completions (works with obsidian-copilot).  Handles
+    the ``/reset`` sentinel inline.  ``stream=true`` sends SSE keep-alives and
+    tool progress (``reasoning_content``) while the agent runs, then the answer.
+
+GET /v1/models
+    OpenAI-compatible model list (``pawn-agent``).
+
+POST /v1/pawn/chat
+    Native SSE chat for the Pawn Obsidian plugin (typed progress/answer/job
+    events, structured note context).
+
+POST /v1/jobs, POST /v1/jobs/upload, GET /v1/jobs, GET /v1/jobs/{id},
+POST /v1/jobs/{id}/approve, POST /v1/jobs/{id}/cancel, GET /v1/jobs/events
+    Background jobs (ask / push_note / upload); always accepted with 202.
+    ``/v1/vault/tasks*`` remain as deprecated aliases.
 
 DELETE /sessions/{session_id}
     Clear all stored turns for a session (start fresh).
-
-POST /knowledge
-    Index content into the RAG vector store (inline text or session transcript).
 
 POST /v1/audio/transcriptions
     OpenAI-compatible audio transcription.  Accepts WAV, FLAC, and any format
@@ -77,10 +87,22 @@ import uuid
 from pathlib import Path
 from typing import Any, AsyncIterator, List, Optional, Union
 
-from fastapi import Depends, FastAPI, File, Form, HTTPException, Response, UploadFile
+from fastapi import (
+    Depends,
+    FastAPI,
+    File,
+    Form,
+    Header,
+    HTTPException,
+    Query,
+    Request,
+    Response,
+    UploadFile,
+)
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, PlainTextResponse, StreamingResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 logger = logging.getLogger(__name__)
 
@@ -95,6 +117,7 @@ _transcription_lock = threading.Lock()
 _tts_engine: Optional[Any] = None  # pawn_core.TTSEngine, lazy-loaded
 _tts_lock = threading.Lock()
 _tts_idle_handle: Optional[asyncio.TimerHandle] = None
+_cors_installed = False
 
 from pawn_agent.core.agent_runner import run_agent_turn  # noqa: E402
 
@@ -124,9 +147,35 @@ def set_sallm_registry(registry: SallmSessionRegistry) -> None:
 # ──────────────────────────────────────────────────────────────────────────────
 
 
+def _flatten_content(value: Any) -> str:
+    """Collapse OpenAI content parts (``[{"type": "text", "text": ...}]``) to text."""
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value
+    if isinstance(value, list):
+        parts: List[str] = []
+        for part in value:
+            if isinstance(part, str):
+                parts.append(part)
+            elif isinstance(part, dict) and part.get("type") in (None, "text", "input_text"):
+                text = part.get("text")
+                if isinstance(text, str):
+                    parts.append(text)
+        return "\n".join(p for p in parts if p)
+    return str(value)
+
+
 class ChatCompletionMessage(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
     role: str
-    content: str
+    content: str = ""
+
+    @field_validator("content", mode="before")
+    @classmethod
+    def _coerce_content(cls, value: Any) -> str:
+        return _flatten_content(value)
 
 
 class ChatCompletionRequest(BaseModel):
@@ -183,8 +232,56 @@ class SpeechRequest(BaseModel):
     language: Optional[str] = None  # BCP-47 code, e.g. "en", "it", "fr"; falls back to config
 
 
+class JobCreateRequest(BaseModel):
+    """POST /v1/jobs — accept a background job (always 202)."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    kind: str = "ask"
+    id: Optional[str] = None
+    conversation: Optional[str] = None
+    note_path: Optional[str] = None
+    # ask
+    instruction: Optional[str] = None
+    selection: Optional[str] = None
+    context_paths: List[str] = Field(default_factory=list)
+    context: Optional[str] = None
+    # push_note
+    path: Optional[str] = None
+    content: Optional[str] = None
+    mode: str = "replace"
+
+
+class JobApproveRequest(BaseModel):
+    """POST /v1/jobs/{id}/approve — index a result into agent memory."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    result: Optional[str] = None
+
+
+class ContextNote(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    path: str
+    content: Optional[str] = None
+
+
+class PawnChatRequest(BaseModel):
+    """POST /v1/pawn/chat — native streaming chat for the Pawn Obsidian plugin."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    conversation: str
+    message: str
+    active_note: Optional[ContextNote] = None
+    selection: Optional[str] = None
+    context: List[ContextNote] = Field(default_factory=list)
+    background: bool = False
+
+
 class VaultTaskCreateRequest(BaseModel):
-    """POST /v1/vault/tasks — submit a task from the Obsidian plugin."""
+    """Deprecated: POST /v1/vault/tasks (alias of an ``ask`` job)."""
 
     model_config = ConfigDict(extra="ignore")
 
@@ -193,15 +290,7 @@ class VaultTaskCreateRequest(BaseModel):
     note_path: Optional[str] = None
     context: Optional[str] = None
     conversation: Optional[str] = None
-    timeout_seconds: Optional[float] = 60.0
-
-
-class VaultTaskApproveRequest(BaseModel):
-    """POST /v1/vault/tasks/{task_id}/approve — index an approved result."""
-
-    model_config = ConfigDict(extra="ignore")
-
-    result: Optional[str] = None
+    timeout_seconds: Optional[float] = None
 
 
 class VaultTaskStatusResponse(BaseModel):
@@ -322,13 +411,98 @@ def _is_reset(messages: List[dict]) -> bool:
     return _last_user_message(messages).strip() == _RESET_SENTINEL
 
 
-def _session_id(messages: List[dict], user: Optional[str]) -> str:
+def _session_id(messages: List[dict], user: Optional[str], header: Optional[str] = None) -> str:
     if user:
         return user
+    if header and header.strip():
+        return header.strip()
     first = next((m["content"] for m in messages if m.get("role") == "user"), "")
     if first:
         return str(uuid.UUID(hashlib.md5(first.encode()).hexdigest()))
     return str(uuid.uuid4())
+
+
+def _system_prompt(messages: List[dict]) -> str:
+    return "\n\n".join(
+        m["content"] for m in messages if m.get("role") == "system" and m.get("content")
+    )
+
+
+def _build_prompt(messages: List[dict], include_system: bool) -> str:
+    prompt = _last_user_message(messages)
+    if not include_system or not prompt:
+        return prompt
+    system = _system_prompt(messages)
+    if not system:
+        return prompt
+    return f"Client instructions (from the calling app):\n{system}\n\nUser message:\n{prompt}"
+
+
+def _sse(data: dict) -> str:
+    return f"data: {json.dumps(data)}\n\n"
+
+
+def _sse_event(event: str, data: dict) -> str:
+    return f"event: {event}\ndata: {json.dumps(data)}\n\n"
+
+
+_SSE_KEEPALIVE = ": keep-alive\n\n"
+
+
+def _chunk(completion_id: str, created: int, model: str, delta: dict, finish: Any = None) -> dict:
+    return {
+        "id": completion_id,
+        "object": "chat.completion.chunk",
+        "created": created,
+        "model": model,
+        "choices": [{"index": 0, "delta": delta, "finish_reason": finish}],
+    }
+
+
+async def _stream_agent_turn_openai(
+    cfg: Any, *, prompt: str, session_id: str, model: str
+) -> AsyncIterator[str]:
+    """OpenAI SSE while the agent runs: keep-alives, progress as reasoning, answer."""
+    from pawn_server.core.progress import stream_turn  # noqa: PLC0415
+
+    completion_id = f"chatcmpl-{uuid.uuid4().hex}"
+    created = int(time.time())
+    show_progress = bool(getattr(cfg.api, "stream_progress", True))
+    yield _sse(_chunk(completion_id, created, model, {"role": "assistant", "content": ""}))
+
+    async def _run(on_progress: Any) -> Any:
+        return await run_agent_turn(
+            cfg=cfg,
+            registry=_sallm_registry,
+            prompt=prompt,
+            session_id=session_id,
+            source="api",
+            command="run",
+            on_progress=on_progress,
+        )
+
+    reply = ""
+    async for event, data in stream_turn(
+        _run, keepalive_seconds=float(getattr(cfg.api, "stream_keepalive_seconds", 10.0))
+    ):
+        if event == "keepalive":
+            yield _SSE_KEEPALIVE
+        elif event == "progress":
+            if show_progress:
+                delta = {"reasoning_content": f"{data['text']}\n"}
+                yield _sse(_chunk(completion_id, created, model, delta))
+        elif event == "error":
+            logger.error("sallm agent error for session %r: %s", session_id, data)
+            reply = f"Agent error: {data}"
+        elif event == "result":
+            reply = data.response
+
+    words = reply.split(" ")
+    for i, word in enumerate(words):
+        content = word if i == 0 else f" {word}"
+        yield _sse(_chunk(completion_id, created, model, {"content": content}))
+    yield _sse(_chunk(completion_id, created, model, {}, "stop"))
+    yield "data: [DONE]\n\n"
 
 
 def _build_openai_response(reply: str, model: str) -> ChatCompletionResponse:
@@ -420,21 +594,27 @@ async def health() -> dict:
 async def chat_completions(
     req: ChatCompletionRequest,
     cfg: Any = Depends(_get_cfg),
+    x_pawn_conversation: Optional[str] = Header(default=None),
 ) -> Union[ChatCompletionResponse, StreamingResponse]:
     """OpenAI-compatible chat completions endpoint.
 
     All requests are handled by the sallm agent.  The ``model`` field is
-    accepted for OpenAI client compatibility but ignored.
+    accepted for OpenAI client compatibility but ignored.  sallm owns the
+    conversation history, so only the last user message is sent to the agent
+    (plus the client system prompt when ``api.include_system_prompt`` is on).
+
+    Session key: ``user`` field, then ``X-Pawn-Conversation`` header, then a
+    hash of the first user message.
 
     Send ``/reset`` as the last user message to clear the session history.
     """
     logger.debug("chat/completions raw payload: %s", req.model_dump())
     messages = [m.model_dump() for m in req.messages]
-    session_id = _session_id(messages, req.user)
+    session_id = _session_id(messages, req.user, x_pawn_conversation)
     loop = asyncio.get_running_loop()
     _schedule_idle_reset(loop, cfg.api_model_idle_timeout_minutes * 60)
 
-    if req.user:
+    if req.user or x_pawn_conversation:
         logger.info("chat/completions: session_id=%r model=%r", session_id, req.model)
     else:
         logger.warning(
@@ -451,9 +631,15 @@ async def chat_completions(
             return StreamingResponse(_stream_sse(reply, req.model), media_type="text/event-stream")
         return _build_openai_response(reply, req.model)
 
-    prompt = _last_user_message(messages)
+    prompt = _build_prompt(messages, bool(getattr(cfg.api, "include_system_prompt", False)))
     if not prompt:
         raise HTTPException(status_code=422, detail="No user message found in messages")
+
+    if req.stream:
+        return StreamingResponse(
+            _stream_agent_turn_openai(cfg, prompt=prompt, session_id=session_id, model=req.model),
+            media_type="text/event-stream",
+        )
 
     try:
         result = await run_agent_turn(
@@ -469,9 +655,23 @@ async def chat_completions(
         logger.error("sallm agent error for session %r: %s", session_id, exc, exc_info=True)
         reply = f"Agent error: {exc}"
 
-    if req.stream:
-        return StreamingResponse(_stream_sse(reply, req.model), media_type="text/event-stream")
     return _build_openai_response(reply, req.model)
+
+
+@app.get("/v1/models", dependencies=[Depends(_require_token)])
+async def list_models() -> dict:
+    """OpenAI-compatible model list (one virtual model: the Pawn agent)."""
+    return {
+        "object": "list",
+        "data": [
+            {
+                "id": "pawn-agent",
+                "object": "model",
+                "created": 0,
+                "owned_by": "pawnai",
+            }
+        ],
+    }
 
 
 @app.delete(
@@ -683,124 +883,350 @@ async def audio_speech(
     return Response(content=proc.stdout, media_type=media_type)
 
 
-def _vault_task_status_payload(cfg: Any, task_id: str) -> VaultTaskStatusResponse:
-    from pawn_agent.utils.db import AgentRun, get_vault_task  # noqa: PLC0415
-    from sqlalchemy.orm import Session  # noqa: PLC0415
-    from pawn_core.database import get_engine  # noqa: PLC0415
-
-    row = get_vault_task(cfg.db_dsn, task_id)
-    if row is None:
-        raise HTTPException(status_code=404, detail="Task not found")
-    result_text: Optional[str] = None
-    if row.agent_run_id:
-        with Session(get_engine(cfg.db_dsn)) as db:
-            run = db.get(AgentRun, row.agent_run_id)
-            if run and run.response:
-                result_text = run.response
-    return VaultTaskStatusResponse(
-        task_id=row.id,
-        status=row.status,
-        result=result_text,
-        agent_run_id=row.agent_run_id,
-        error_code=row.error_code,
-    )
+# ── Background jobs ───────────────────────────────────────────────────────────
 
 
-@app.post(
-    "/v1/vault/tasks",
-    response_model=None,
-    dependencies=[Depends(_require_token)],
-)
-async def vault_task_create(
-    body: VaultTaskCreateRequest,
+def _job_error(exc: Exception) -> HTTPException:
+    from pawn_server.core.jobs import JobError  # noqa: PLC0415
+
+    if isinstance(exc, JobError):
+        return HTTPException(status_code=exc.status_code, detail=str(exc))
+    return HTTPException(status_code=500, detail=str(exc))
+
+
+async def _create_job(cfg: Any, body: JobCreateRequest) -> dict:
+    from pawn_server.core import jobs  # noqa: PLC0415
+    from pawn_server.core.vault_tasks import new_task_id  # noqa: PLC0415
+
+    job_id = (body.id or "").strip() or new_task_id()
+    if body.kind == "ask":
+        row = await jobs.create_ask_job(
+            cfg,
+            registry=_sallm_registry,
+            job_id=job_id,
+            instruction=body.instruction or "",
+            note_path=body.note_path,
+            selection=body.selection,
+            context_paths=body.context_paths,
+            context=body.context,
+            conversation=body.conversation,
+        )
+    elif body.kind == "push_note":
+        row = await jobs.create_push_note_job(
+            cfg,
+            job_id=job_id,
+            path=body.path or body.note_path or "",
+            content=body.content or "",
+            mode=body.mode,
+            conversation=body.conversation,
+        )
+    else:
+        raise jobs.JobError(
+            f"unknown job kind {body.kind!r} (use ask or push_note; uploads go to "
+            "/v1/jobs/upload)",
+            status_code=422,
+        )
+    return jobs.serialize_job(row)
+
+
+@app.post("/v1/jobs", status_code=202, dependencies=[Depends(_require_token)])
+async def job_create(body: JobCreateRequest, cfg: Any = Depends(_get_cfg)) -> JSONResponse:
+    """Accept a background job. Always returns 202 with the job record."""
+    try:
+        job = await _create_job(cfg, body)
+    except Exception as exc:
+        raise _job_error(exc) from exc
+    return JSONResponse(status_code=202, content=job)
+
+
+@app.post("/v1/jobs/upload", status_code=202, dependencies=[Depends(_require_token)])
+async def job_upload(
+    file: UploadFile = File(...),
+    conversation: Optional[str] = Form(default=None),
+    note_path: Optional[str] = Form(default=None),
+    index: bool = Form(default=False),
+    job_id: Optional[str] = Form(default=None, alias="id"),
     cfg: Any = Depends(_get_cfg),
 ) -> JSONResponse:
-    """Run a vault task synchronously up to *timeout_seconds*, else 202 Accepted."""
-    from pawn_server.core.vault_tasks import (  # noqa: PLC0415
-        new_task_id,
-        run_http_vault_task_with_optional_vault_write,
-        track_background_task,
-    )
+    """Upload a file: audio is queued for transcribe-diarize, other files land in Pawn/Inbox/."""
+    from pawn_server.core import jobs  # noqa: PLC0415
+    from pawn_server.core.vault_tasks import new_task_id  # noqa: PLC0415
 
-    task_id = (body.id or "").strip() or new_task_id()
-    timeout = float(body.timeout_seconds if body.timeout_seconds is not None else 60.0)
-    write_event = asyncio.Event()
-    runner = asyncio.create_task(
-        run_http_vault_task_with_optional_vault_write(
-            cfg,
-            task_id=task_id,
-            instruction=body.instruction,
-            note_path=body.note_path,
-            context=body.context,
-            conversation_id=body.conversation,
-            registry=_sallm_registry,
-            write_result_to_vault=write_event,
-        ),
-        name=f"vault-http-{task_id}",
-    )
-    track_background_task(task_id, runner)
+    data = await file.read()
     try:
-        outcome = await asyncio.wait_for(asyncio.shield(runner), timeout=timeout)
-    except asyncio.TimeoutError:
-        write_event.set()
-        payload = {"task_id": task_id, "status": "accepted", "message": "still running"}
-        return JSONResponse(status_code=202, content=payload)
-    payload = outcome.__dict__
-    status_code = 200 if outcome.status == "review" else 500 if outcome.error_code else 200
-    return JSONResponse(status_code=status_code, content=payload)
+        row = await jobs.create_upload_job(
+            cfg,
+            registry=_sallm_registry,
+            job_id=(job_id or "").strip() or new_task_id(),
+            filename=file.filename or "upload.bin",
+            data=data,
+            content_type=file.content_type,
+            note_path=note_path,
+            conversation=conversation,
+            index=index,
+        )
+    except Exception as exc:
+        raise _job_error(exc) from exc
+    return JSONResponse(status_code=202, content=jobs.serialize_job(row))
 
 
-@app.get(
-    "/v1/vault/tasks/{task_id}",
-    response_model=VaultTaskStatusResponse,
-    dependencies=[Depends(_require_token)],
-)
-async def vault_task_get(
-    task_id: str,
+@app.get("/v1/jobs", dependencies=[Depends(_require_token)])
+async def job_list(
+    conversation: Optional[str] = Query(default=None),
+    status: Optional[str] = Query(default=None, description="Comma-separated statuses"),
+    limit: int = Query(default=50),
     cfg: Any = Depends(_get_cfg),
-) -> VaultTaskStatusResponse:
-    """Poll vault task status and agent result."""
-    return _vault_task_status_payload(cfg, task_id)
+) -> dict:
+    """List jobs newest first, optionally filtered by conversation / status."""
+    from pawn_server.core import jobs  # noqa: PLC0415
+
+    statuses = [s.strip() for s in (status or "").split(",") if s.strip()]
+    return {
+        "object": "list",
+        "data": jobs.list_jobs(cfg, conversation=conversation, statuses=statuses, limit=limit),
+    }
 
 
-@app.post(
-    "/v1/vault/tasks/{task_id}/approve",
-    response_model=VaultTaskStatusResponse,
-    dependencies=[Depends(_require_token)],
-)
-async def vault_task_approve(
-    task_id: str,
-    body: VaultTaskApproveRequest,
-    cfg: Any = Depends(_get_cfg),
-) -> VaultTaskStatusResponse:
-    """Index an approved vault task into durable agent memory."""
+@app.get("/v1/jobs/events", dependencies=[Depends(_require_token)])
+async def job_events_stream(request: Request, cfg: Any = Depends(_get_cfg)) -> StreamingResponse:
+    """SSE stream of job updates (``event: job`` with the full job record)."""
+    from pawn_server.core import jobs  # noqa: PLC0415
+    from pawn_server.core.job_events import job_events  # noqa: PLC0415
+
+    keepalive = float(getattr(cfg.api, "stream_keepalive_seconds", 10.0))
+    queue = job_events.subscribe()
+
+    async def _gen() -> AsyncIterator[str]:
+        try:
+            yield _sse_event("ready", {"subscribers": job_events.subscriber_count})
+            while True:
+                if await request.is_disconnected():
+                    break
+                try:
+                    event = await asyncio.wait_for(queue.get(), timeout=keepalive)
+                except asyncio.TimeoutError:
+                    yield _SSE_KEEPALIVE
+                    continue
+                job = await asyncio.to_thread(jobs.get_job, cfg, event["job_id"])
+                yield _sse_event("job", job or event)
+        finally:
+            job_events.unsubscribe(queue)
+
+    return StreamingResponse(_gen(), media_type="text/event-stream")
+
+
+@app.get("/v1/jobs/{job_id}", dependencies=[Depends(_require_token)])
+async def job_get(job_id: str, cfg: Any = Depends(_get_cfg)) -> dict:
+    from pawn_server.core import jobs  # noqa: PLC0415
+
+    job = jobs.get_job(cfg, job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Job not found")
+    return job
+
+
+async def _approve(cfg: Any, job_id: str, result: Optional[str]) -> Any:
     from pawn_core.vault_config import vault_store_from_config  # noqa: PLC0415
     from pawn_server.core.vault_tasks import approve_vault_task  # noqa: PLC0415
 
     try:
         store = vault_store_from_config(cfg)
-    except ValueError:
+    except Exception:
         store = None
     outcome = await approve_vault_task(
-        cfg,
-        task_id,
-        registry=_sallm_registry,
-        store=store,
-        result_text=body.result,
+        cfg, job_id, registry=_sallm_registry, store=store, result_text=result
     )
     if outcome.error_code == "not_found":
-        raise HTTPException(status_code=404, detail="Task not found")
+        raise HTTPException(status_code=404, detail="Job not found")
     if outcome.error_code == "not_ready":
-        raise HTTPException(status_code=409, detail=f"Task is {outcome.status}, not ready")
+        raise HTTPException(status_code=409, detail=f"Job is {outcome.status}, not ready")
     if outcome.error_code == "index_failed":
         raise HTTPException(status_code=500, detail="Could not index into agent memory")
+    return outcome
+
+
+@app.post("/v1/jobs/{job_id}/approve", dependencies=[Depends(_require_token)])
+async def job_approve(job_id: str, body: JobApproveRequest, cfg: Any = Depends(_get_cfg)) -> dict:
+    """Index an ``ask`` job's result into sallm memory and mark it done."""
+    from pawn_server.core import jobs  # noqa: PLC0415
+
+    job = jobs.get_job(cfg, job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Job not found")
+    if job["kind"] != "ask":
+        raise HTTPException(status_code=409, detail="Only ask jobs can be approved")
+    await _approve(cfg, job_id, body.result)
+    return jobs.get_job(cfg, job_id) or job
+
+
+@app.post("/v1/jobs/{job_id}/cancel", dependencies=[Depends(_require_token)])
+async def job_cancel(job_id: str, cfg: Any = Depends(_get_cfg)) -> dict:
+    """Stop tracking a running job and mark it blocked/cancelled."""
+    from pawn_server.core import jobs  # noqa: PLC0415
+
+    try:
+        return await jobs.cancel_job(cfg, job_id)
+    except Exception as exc:
+        raise _job_error(exc) from exc
+
+
+# ── Deprecated vault task aliases (plugin <= 0.1) ─────────────────────────────
+
+
+def _legacy_status(job: dict) -> VaultTaskStatusResponse:
     return VaultTaskStatusResponse(
-        task_id=outcome.task_id,
-        status=outcome.status,
-        result=outcome.result or None,
-        agent_run_id=outcome.agent_run_id,
-        error_code=outcome.error_code,
+        task_id=job["id"],
+        status=job["status"],
+        result=job.get("result"),
+        agent_run_id=job.get("agent_run_id"),
+        error_code=job.get("error_code"),
     )
+
+
+@app.post("/v1/vault/tasks", deprecated=True, dependencies=[Depends(_require_token)])
+async def vault_task_create(
+    body: VaultTaskCreateRequest, cfg: Any = Depends(_get_cfg)
+) -> JSONResponse:
+    """Deprecated alias: starts an ``ask`` job and returns 202 immediately."""
+    try:
+        job = await _create_job(
+            cfg,
+            JobCreateRequest(
+                kind="ask",
+                id=body.id,
+                instruction=body.instruction,
+                note_path=body.note_path,
+                context=body.context,
+                conversation=body.conversation,
+            ),
+        )
+    except Exception as exc:
+        raise _job_error(exc) from exc
+    return JSONResponse(
+        status_code=202,
+        content={"task_id": job["id"], "status": "accepted", "message": "running in background"},
+    )
+
+
+@app.get(
+    "/v1/vault/tasks/{task_id}",
+    deprecated=True,
+    response_model=VaultTaskStatusResponse,
+    dependencies=[Depends(_require_token)],
+)
+async def vault_task_get(task_id: str, cfg: Any = Depends(_get_cfg)) -> VaultTaskStatusResponse:
+    return _legacy_status(await job_get(task_id, cfg))
+
+
+@app.post(
+    "/v1/vault/tasks/{task_id}/approve",
+    deprecated=True,
+    response_model=VaultTaskStatusResponse,
+    dependencies=[Depends(_require_token)],
+)
+async def vault_task_approve(
+    task_id: str, body: JobApproveRequest, cfg: Any = Depends(_get_cfg)
+) -> VaultTaskStatusResponse:
+    return _legacy_status(await job_approve(task_id, body, cfg))
+
+
+# ── Native streaming chat for the Pawn plugin ─────────────────────────────────
+
+
+@app.post("/v1/pawn/chat", dependencies=[Depends(_require_token)])
+async def pawn_chat(body: PawnChatRequest, cfg: Any = Depends(_get_cfg)) -> StreamingResponse:
+    """SSE chat with typed events: ``progress``, ``answer``, ``job``, ``error``, ``done``.
+
+    Context (active note, selection, extra notes) is structured; the server
+    builds the agent prompt. ``background: true`` turns the message into an
+    ``ask`` job instead of a live turn.
+    """
+    from pawn_core.vault_config import vault_store_from_config  # noqa: PLC0415
+    from pawn_server.core.chat_context import (  # noqa: PLC0415
+        NoteRef,
+        build_chat_prompt,
+        resolve_notes,
+    )
+    from pawn_server.core.progress import stream_turn  # noqa: PLC0415
+
+    conversation = body.conversation.strip()
+    message = body.message.strip()
+    if not conversation or not message:
+        raise HTTPException(status_code=422, detail="conversation and message are required")
+    loop = asyncio.get_running_loop()
+    _schedule_idle_reset(loop, cfg.api_model_idle_timeout_minutes * 60)
+    keepalive = float(getattr(cfg.api, "stream_keepalive_seconds", 10.0))
+
+    async def _gen() -> AsyncIterator[str]:
+        if message == _RESET_SENTINEL:
+            await _sallm_registry.reset(conversation, cfg.db_dsn)
+            yield _sse_event("answer", {"content": "Session reset."})
+            yield _sse_event("done", {"conversation": conversation})
+            return
+
+        if body.background:
+            context_paths = [n.path for n in body.context]
+            try:
+                job = await _create_job(
+                    cfg,
+                    JobCreateRequest(
+                        kind="ask",
+                        instruction=message,
+                        conversation=conversation,
+                        note_path=body.active_note.path if body.active_note else None,
+                        selection=body.selection,
+                        context_paths=context_paths,
+                    ),
+                )
+            except Exception as exc:
+                yield _sse_event("error", {"message": str(exc)})
+            else:
+                yield _sse_event("job", job)
+            yield _sse_event("done", {"conversation": conversation})
+            return
+
+        try:
+            store = vault_store_from_config(cfg)
+        except Exception:
+            store = None
+        active = (
+            NoteRef(path=body.active_note.path, content=body.active_note.content)
+            if body.active_note
+            else None
+        )
+        if active is not None:
+            active = (await resolve_notes(store, [active]))[0]
+        extra = await resolve_notes(store, [NoteRef(n.path, n.content) for n in body.context])
+        prompt = build_chat_prompt(
+            message, active_note=active, selection=body.selection, context=extra
+        )
+
+        async def _run(on_progress: Any) -> Any:
+            return await run_agent_turn(
+                cfg=cfg,
+                registry=_sallm_registry,
+                prompt=prompt,
+                session_id=conversation,
+                source="obsidian",
+                command="run",
+                on_progress=on_progress,
+            )
+
+        run_id: Optional[str] = None
+        async for event, data in stream_turn(_run, keepalive_seconds=keepalive):
+            if event == "keepalive":
+                yield _SSE_KEEPALIVE
+            elif event == "progress":
+                yield _sse_event("progress", data)
+            elif event == "error":
+                logger.error("pawn chat error for %r: %s", conversation, data)
+                yield _sse_event("error", {"message": data})
+            elif event == "result":
+                run_id = data.run_id
+                yield _sse_event("answer", {"content": data.response})
+        yield _sse_event("done", {"conversation": conversation, "run_id": run_id})
+
+    return StreamingResponse(_gen(), media_type="text/event-stream")
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -810,6 +1236,15 @@ async def vault_task_approve(
 
 def create_app(cfg: Any) -> FastAPI:
     """Initialise the FastAPI app with the given config and return it."""
-    global _cfg
+    global _cfg, _cors_installed
     _cfg = cfg
+    origins = list(getattr(getattr(cfg, "api", None), "cors_origins", None) or [])
+    if origins and not _cors_installed:
+        app.add_middleware(
+            CORSMiddleware,
+            allow_origins=origins,
+            allow_methods=["*"],
+            allow_headers=["*"],
+        )
+        _cors_installed = True
     return app

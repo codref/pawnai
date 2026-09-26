@@ -1,59 +1,111 @@
-# Pawn (Obsidian plugin)
+# Pawn (Obsidian)
 
-Co-author with Pawn AI from Obsidian (desktop and mobile). Creates vault task
-notes under `Pawn/Tasks/`, talks to `pawn-server` when reachable, and falls
-back to S3 sync for the vault watcher.
+A Copilot-style side pane for **Pawn AI**, plus background jobs that report
+back. Works on **desktop and mobile** (`isDesktopOnly: false`).
+
+This plugin was written from scratch (MIT). Its UX takes ideas from
+[obsidian-copilot](https://github.com/logancyang/obsidian-copilot) (AGPL-3.0),
+but it contains none of that project's code. If you prefer Copilot itself,
+point it at Pawn's OpenAI-compatible endpoint; see
+[docs/OBSIDIAN_AGENT.md](../../docs/OBSIDIAN_AGENT.md#use-with-obsidian-copilot).
 
 ## Install
 
 ```bash
-cd obsidian-plugin/pawn
 npm install
-npm run build
+npm run build          # type-check + bundle to main.js
 ```
 
-Symlink or copy this folder into your vault:
+Symlink or copy this folder to `<vault>/.obsidian/plugins/pawn/`, then enable
+**Pawn** under **Settings → Community plugins**. Use `npm run dev` to rebuild
+on change.
 
-```bash
-ln -s /path/to/parakeet/obsidian-plugin/pawn \
-  /path/to/vault/.obsidian/plugins/pawn
+## Chat
+
+- Open with the ribbon icon, **Pawn: Open chat**, or **Ask Pawn** in the
+  editor menu.
+- The conversation follows the active note (`note:<path>`) unless you pick
+  another one in the header (pinned) or start a **New chat** (`chat:<uuid>`).
+- **Context chips**: active note (click to toggle), current selection, and
+  extra notes added with `@`, the `+` chip, the file menu (**Add to Pawn chat
+  context**), or by dragging notes from the file explorer.
+- Replies stream: tool steps appear live, then the answer renders as Markdown.
+  Actions on each reply: **Copy**, **Insert at cursor**, **Replace
+  selection** (diff preview; targets the selection you asked about),
+  **Append to note**, **Save as new note** (`<agent root>/Notes`).
+- **Stop** aborts the stream. The server may still finish the turn, and it
+  stays in Pawn's memory.
+- `/reset` clears the conversation on the server and locally.
+
+## Prompt commands
+
+Type `/` in the composer, use the palette (**Pawn: Prompt: …**, **Pawn: Run
+prompt command…**), or the editor menu (**Pawn: …**). Built-ins: Summarize,
+Rewrite for clarity, Fix grammar, Translate to English, Extract action items.
+
+Add your own as Markdown files in the commands folder (default
+`Pawn/Commands`; **Settings → Create defaults** writes the built-ins there to
+edit):
+
+```markdown
+---
+name: Meeting recap
+description: Decisions and owners
+slash: recap            # /recap (defaults to the file name)
+context_menu: true      # show in the editor menu
+background: false       # true = run as a background job
+---
+Write a recap of {selection}: decisions, owners, open questions.
 ```
 
-Enable **Pawn** under Settings → Community plugins (or turn off Safe mode and
-enable the local plugin).
+Placeholders: `{selection}` (the selection if any, otherwise the active note),
+`{note}` (active note link), `{date}`. The selection and active note are
+always attached as structured context.
 
-## Sync Engine settings (required)
+## Background jobs
 
-Pawn writes plain Markdown into the same S3 prefix Sync Engine uses. Configure:
-
-| Setting | Value |
-|---------|-------|
-| Asymmetric storage | **Off** |
-| Client-side encryption | **Off** |
-| Prefix | Same as `vault.prefix` in `pawnai.yaml` |
-| Sync strategy | Bidirectional |
-| Conflict strategy | Smart merge or keep both |
-| Interval / startup sync | **On** |
+- Tick **Background** in the composer, or use **Send to Pawn (background)**
+  from the editor menu or palette. The job card appears in the thread right away
+  and updates live. The **Jobs** tab lists all jobs (All / Running / This
+  conversation).
+- **Uploads**: paperclip button, drag files from disk into the pane, or
+  **Upload to Pawn** in the file menu. Audio goes to transcription
+  (`transcribe-diarize`); other files are saved to `Pawn/Inbox/` (text files
+  are also indexed into Pawn's memory).
+- Finished jobs raise a notice (click to open). Results offer Insert /
+  Replace / Append / Save plus **Approve** (index into Pawn memory),
+  **Cancel**, and **Open task note**.
+- **Offline**: if the server is unreachable, the job is saved as
+  `Pawn/Tasks/<id>.md` (`status: todo`). The server's vault watcher runs it
+  after Sync Engine uploads it; the result syncs back and shows in the Jobs
+  tab.
+- The status bar shows server reachability, running jobs and results
+  awaiting review. Click it to open the Jobs tab.
 
 ## Settings
 
-| Key | Default | Notes |
-|-----|---------|-------|
-| Server URL | `http://127.0.0.1:8000` | Must be reachable for chat / fast path |
-| API token | _(empty)_ | Same as `api.token` in `pawnai.yaml` |
-| Agent root | `Pawn` | Folder Pawn owns |
-| Fast-path timeout (ms) | `60000` | Wait for HTTP reply before sync fallback |
-| Always queue | off | Skip HTTP; leave tasks as `todo` |
+| Setting | Default | Description |
+|--------|---------|-------------|
+| Server URL | `http://127.0.0.1:8000` | `pawn-server` base URL |
+| API token | *(empty)* | `api.token` from `pawnai.yaml` |
+| Default conversation | Per note | Per note (`note:<path>`) or one global chat |
+| Include active note | on | Attach the active note by default |
+| Send local note content | on | Send note bodies from this device (unsynced edits included) |
+| Prompt commands folder | `Pawn/Commands` | Markdown prompt commands |
+| Agent root | `Pawn` | Folder Pawn owns (`Tasks/`, `Notes/`, `Inbox/`) |
+| Notify when a job finishes | on | Notice on completion |
+| Insert callout for background jobs | off | Adds `> [!pawn] [[task note]]` at the cursor |
 
-## Usage
+## Server endpoints used
 
-1. **Ask Pawn** (command palette, editor menu, or mobile toolbar via commands):
-   creates `Pawn/Tasks/<uuid>.md`, inserts a `> [!pawn]` callout, and tries
-   the HTTP fast path. If the server is down, the task stays `todo` and the
-   vault watcher runs it after sync.
-2. **Pawn panel** (ribbon / command): Tasks tab for the active note (Insert,
-   Replace, Reply, Approve, Open) and Chat tab (online only, `user=note:…`).
-3. **Approve** indexes the result into Pawn memory (HTTP when online, else
-   watcher after sync sees `approved: true`).
+| Purpose | Endpoint |
+|---------|----------|
+| Health | `GET /health` |
+| Chat (SSE) | `POST /v1/pawn/chat` |
+| Jobs | `POST /v1/jobs`, `POST /v1/jobs/upload`, `GET /v1/jobs`, `GET /v1/jobs/{id}` |
+| Job actions | `POST /v1/jobs/{id}/approve`, `POST /v1/jobs/{id}/cancel` |
+| Live job updates | `GET /v1/jobs/events` (desktop; mobile polls) |
 
-See `docs/OBSIDIAN_AGENT.md` in the PawnAI repo for the full architecture.
+Desktop streams with `fetch`, so the server must allow the `app://obsidian.md`
+origin (`api.cors_origins`, on by default). Mobile uses Obsidian's
+`requestUrl`, which does not stream: the reply arrives when the turn finishes.

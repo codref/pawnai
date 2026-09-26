@@ -1,264 +1,157 @@
-import type { App, Editor, TFile } from "obsidian";
-import type { PawnSettings } from "./settings";
+import { App, TFile, normalizePath } from "obsidian";
+import { noteConversationId } from "./chat/conversations";
 
-export interface TaskMeta {
+/** Task note statuses (Pawn/Tasks/*.md frontmatter). */
+export type TaskStatus = "todo" | "running" | "review" | "done" | "blocked";
+
+export interface ParsedTaskNote {
   id: string;
-  status: string;
-  approved: boolean;
-  note: string;
+  status: TaskStatus;
+  note?: string;
   conversation: string;
-  path: string;
+  approved: boolean;
   instruction: string;
+  context: string;
   result: string;
+  path: string;
 }
 
-function yamlEscape(value: string): string {
-  if (/[:#{}[\],&*?|>!%@`]/.test(value) || value.includes("\n")) {
-    return JSON.stringify(value);
-  }
-  return value;
+const STATUSES: TaskStatus[] = ["todo", "running", "review", "done", "blocked"];
+
+export function tasksFolder(agentRoot: string): string {
+  return normalizePath(`${agentRoot.replace(/\\/g, "/").replace(/\/+$/, "")}/Tasks`);
 }
 
 export function taskPathForId(agentRoot: string, id: string): string {
-  return `${agentRoot.replace(/\/+$/, "")}/Tasks/${id}.md`;
+  return normalizePath(`${tasksFolder(agentRoot)}/${id}.md`);
 }
 
-export function conversationForNote(notePath: string): string {
-  return `note:${notePath.replace(/^\/+/, "")}`;
-}
-
-export function renderTaskNote(opts: {
-  id: string;
-  status: string;
-  instruction: string;
-  context?: string;
-  result?: string;
-  notePath?: string;
-  conversation?: string;
-  approved?: boolean;
-}): string {
-  const lines = [
-    "---",
-    "pawn: task",
-    `id: ${opts.id}`,
-    `status: ${opts.status}`,
-    `approved: ${opts.approved ? "true" : "false"}`,
-  ];
-  if (opts.conversation) {
-    lines.push(`conversation: ${yamlEscape(opts.conversation)}`);
-  }
-  if (opts.notePath) {
-    const wiki = opts.notePath.replace(/\.md$/i, "");
-    lines.push(`note: "[[${wiki}]]"`);
-  }
-  lines.push("---", "", "## Instruction", opts.instruction.trim(), "");
-  if (opts.context?.trim()) {
-    lines.push("## Context", opts.context.trim(), "");
-  }
-  if (opts.result?.trim()) {
-    lines.push("## Result", opts.result.trim(), "");
-  }
-  return lines.join("\n");
-}
-
-function getSection(body: string, name: string): string {
-  const re = new RegExp(
-    `^##\\s+${name}\\s*\\n([\\s\\S]*?)(?=^##\\s+|$)`,
-    "m",
-  );
-  const m = body.match(re);
-  return m ? m[1].trim() : "";
-}
-
-export function parseTaskFile(path: string, text: string): TaskMeta | null {
-  if (!text.startsWith("---")) return null;
-  const end = text.indexOf("\n---", 3);
-  if (end < 0) return null;
-  const fm = text.slice(3, end).trim();
-  const body = text.slice(end + 4);
-  if (!/^pawn:\s*task\b/m.test(fm)) return null;
-  const id = (fm.match(/^id:\s*(.+)$/m)?.[1] || "").trim();
-  const status = (fm.match(/^status:\s*(.+)$/m)?.[1] || "todo").trim();
-  const approved = /^approved:\s*(true|yes|1)\b/im.test(fm);
-  const conversation = (fm.match(/^conversation:\s*(.+)$/m)?.[1] || "")
-    .trim()
-    .replace(/^["']|["']$/g, "");
-  let note = (fm.match(/^note:\s*(.+)$/m)?.[1] || "").trim();
-  note = note.replace(/^["']|["']$/g, "");
-  const wiki = note.match(/^\[\[([^\]|]+)/);
-  if (wiki) note = wiki[1].trim();
-  return {
-    id,
-    status,
-    approved,
-    note,
-    conversation,
-    path,
-    instruction: getSection(body, "Instruction"),
-    result: getSection(body, "Result"),
-  };
-}
-
-export async function createTaskNote(
-  app: App,
-  settings: PawnSettings,
-  opts: {
-    id: string;
-    instruction: string;
-    notePath: string;
-    context?: string;
-    conversation?: string;
-  },
-): Promise<string> {
-  const path = taskPathForId(settings.agentRoot, opts.id);
-  const folder = path.includes("/") ? path.slice(0, path.lastIndexOf("/")) : "";
-  if (folder && !app.vault.getAbstractFileByPath(folder)) {
-    await app.vault.createFolder(folder).catch(() => undefined);
-  }
-  const content = renderTaskNote({
-    id: opts.id,
-    status: "todo",
-    instruction: opts.instruction,
-    context: opts.context,
-    notePath: opts.notePath,
-    conversation: opts.conversation || conversationForNote(opts.notePath),
-    approved: false,
-  });
-  const existing = app.vault.getAbstractFileByPath(path);
-  if (existing) {
-    await app.vault.modify(existing as TFile, content);
-  } else {
-    await app.vault.create(path, content);
-  }
-  return path;
-}
-
-export async function writeTaskResult(
-  app: App,
-  taskPath: string,
-  result: string,
-  status: string,
-): Promise<void> {
-  const file = app.vault.getAbstractFileByPath(taskPath);
-  if (!file || !("extension" in file)) return;
-  const text = await app.vault.read(file as TFile);
-  const meta = parseTaskFile(taskPath, text);
-  if (!meta) return;
-  const content = renderTaskNote({
-    id: meta.id,
-    status,
-    instruction: meta.instruction,
-    context: getSection(
-      text.includes("---")
-        ? text.slice(text.indexOf("\n---", 3) + 4)
-        : text,
-      "Context",
-    ),
-    result,
-    notePath: meta.note,
-    conversation: meta.conversation,
-    approved: false,
-  });
-  await app.vault.modify(file as TFile, content);
-}
-
-export async function setApproved(
-  app: App,
-  taskPath: string,
-  approved: boolean,
-): Promise<void> {
-  const file = app.vault.getAbstractFileByPath(taskPath);
-  if (!file || !("extension" in file)) return;
-  await app.fileManager.processFrontMatter(file as TFile, (fm) => {
-    fm.approved = approved;
-    if (approved) fm.status = "done";
-  });
-}
-
-export async function setTaskStatus(
-  app: App,
-  taskPath: string,
-  status: string,
-): Promise<void> {
-  const file = app.vault.getAbstractFileByPath(taskPath);
-  if (!file || !("extension" in file)) return;
-  await app.fileManager.processFrontMatter(file as TFile, (fm) => {
-    fm.status = status;
-  });
-}
-
-export async function appendInstructionFollowUp(
-  app: App,
-  taskPath: string,
-  followUp: string,
-): Promise<void> {
-  const file = app.vault.getAbstractFileByPath(taskPath);
-  if (!file || !("extension" in file)) return;
-  const text = await app.vault.read(file as TFile);
-  const meta = parseTaskFile(taskPath, text);
-  if (!meta) return;
-  const bodyStart = text.indexOf("\n---", 3) + 4;
-  const body = text.slice(bodyStart);
-  const context = getSection(body, "Context");
-  const instruction =
-    meta.instruction.trim() +
-    "\n\n### Follow-up\n" +
-    followUp.trim();
-  const content = renderTaskNote({
-    id: meta.id,
-    status: "todo",
-    instruction,
-    context,
-    result: meta.result,
-    notePath: meta.note,
-    conversation: meta.conversation,
-    approved: false,
-  });
-  await app.vault.modify(file as TFile, content);
-}
-
-export async function listTasksForNote(
-  app: App,
-  notePath: string,
-  agentRoot: string,
-): Promise<TaskMeta[]> {
-  const folder = `${agentRoot.replace(/\/+$/, "")}/Tasks`;
-  const files = app.vault.getMarkdownFiles().filter((f) =>
-    f.path.startsWith(folder + "/")
-  );
-  const noteKey = notePath.replace(/\.md$/i, "");
-  const out: TaskMeta[] = [];
-  for (const file of files) {
-    const text = await app.vault.read(file);
-    const meta = parseTaskFile(file.path, text);
-    if (!meta) continue;
-    const linked = meta.note.replace(/\.md$/i, "");
-    if (
-      linked === noteKey ||
-      meta.conversation === conversationForNote(notePath) ||
-      meta.conversation === `note:${notePath}`
-    ) {
-      out.push(meta);
+function parseSimpleYaml(yaml: string): Record<string, string | boolean> {
+  const out: Record<string, string | boolean> = {};
+  for (const line of yaml.split(/\r?\n/)) {
+    const m = line.match(/^([A-Za-z0-9_-]+):\s*(.*)$/);
+    if (!m) continue;
+    let val = m[2].trim();
+    if (val === "true") out[m[1]] = true;
+    else if (val === "false") out[m[1]] = false;
+    else {
+      if (
+        (val.startsWith('"') && val.endsWith('"')) ||
+        (val.startsWith("'") && val.endsWith("'"))
+      ) {
+        val = val.slice(1, -1);
+      }
+      out[m[1]] = val;
     }
   }
   return out;
 }
 
-export function insertCallout(editor: Editor, taskPath: string, title: string): void {
-  const wiki = taskPath.replace(/\.md$/i, "");
-  const short = (title || "Pawn task").replace(/\n/g, " ").slice(0, 60);
-  const callout = `> [!pawn] [[${wiki}|${short}]]\n`;
-  const cursor = editor.getCursor();
-  editor.replaceRange(callout, cursor);
+function splitFrontmatter(text: string): { meta: Record<string, string | boolean>; body: string } {
+  const m = text.match(/^---\r?\n([\s\S]*?)\r?\n---\r?\n?([\s\S]*)$/);
+  if (!m) return { meta: {}, body: text };
+  return { meta: parseSimpleYaml(m[1]), body: m[2] };
 }
 
-export function uuid4(): string {
-  if (typeof crypto !== "undefined" && "randomUUID" in crypto) {
-    return crypto.randomUUID();
+function getSection(body: string, name: string): string {
+  const lines = (body || "").split(/\r?\n/);
+  const start = lines.findIndex((l) => new RegExp(`^##\\s+${name}\\s*$`).test(l));
+  if (start < 0) return "";
+  const rest = lines.slice(start + 1);
+  const end = rest.findIndex((l) => /^##\s+/.test(l));
+  return (end < 0 ? rest : rest.slice(0, end)).join("\n").replace(/\s+$/, "");
+}
+
+function noteFromMeta(raw: unknown): string | undefined {
+  if (typeof raw !== "string") return undefined;
+  let s = raw.trim();
+  if (s.startsWith("[[") && s.endsWith("]]")) s = s.slice(2, -2).split("|")[0].trim();
+  return s || undefined;
+}
+
+export function parseTaskNote(text: string, path: string): ParsedTaskNote | null {
+  const { meta, body } = splitFrontmatter(text);
+  if (meta.pawn !== "task") return null;
+  const id = String(meta.id ?? "").trim();
+  if (!id) return null;
+  let status = String(meta.status ?? "todo").toLowerCase() as TaskStatus;
+  if (!STATUSES.includes(status)) status = "todo";
+  return {
+    id,
+    status,
+    note: noteFromMeta(meta.note),
+    conversation: String(meta.conversation ?? "").trim(),
+    approved: meta.approved === true,
+    instruction: getSection(body, "Instruction"),
+    context: getSection(body, "Context"),
+    result: getSection(body, "Result"),
+    path,
+  };
+}
+
+function renderTaskNote(p: {
+  id: string;
+  instruction: string;
+  context: string;
+  conversation: string;
+  notePath?: string;
+}): string {
+  const meta = [
+    "pawn: task",
+    `id: ${p.id}`,
+    "status: todo",
+    "approved: false",
+    `conversation: ${p.conversation}`,
+  ];
+  if (p.notePath) {
+    const link = `[[${p.notePath.replace(/\.md$/i, "")}]]`;
+    meta.push(`note: ${p.notePath.includes(" ") ? `"${link}"` : link}`);
   }
-  return "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, (c) => {
-    const r = (Math.random() * 16) | 0;
-    const v = c === "x" ? r : (r & 0x3) | 0x8;
-    return v.toString(16);
+  let body = `## Instruction\n${p.instruction.trim()}\n`;
+  if (p.context.trim()) body += `\n## Context\n${p.context.trim()}\n`;
+  return `---\n${meta.join("\n")}\n---\n\n${body}`;
+}
+
+/** Offline fallback: a todo task note the vault watcher runs once it syncs to S3. */
+export async function createTaskNote(
+  app: App,
+  agentRoot: string,
+  p: { id: string; instruction: string; context?: string; notePath?: string; conversation?: string },
+): Promise<string> {
+  const path = taskPathForId(agentRoot, p.id);
+  const folder = tasksFolder(agentRoot);
+  if (!app.vault.getAbstractFileByPath(folder)) {
+    await app.vault.createFolder(folder).catch(() => undefined);
+  }
+  const content = renderTaskNote({
+    id: p.id,
+    instruction: p.instruction,
+    context: p.context ?? "",
+    conversation:
+      p.conversation ?? (p.notePath ? noteConversationId(p.notePath) : noteConversationId(path)),
+    notePath: p.notePath,
   });
+  const existing = app.vault.getAbstractFileByPath(path);
+  if (existing instanceof TFile) await app.vault.modify(existing, content);
+  else await app.vault.create(path, content);
+  return path;
+}
+
+export async function setApproved(app: App, taskPath: string): Promise<void> {
+  const file = app.vault.getAbstractFileByPath(taskPath);
+  if (!(file instanceof TFile)) return;
+  await app.fileManager.processFrontMatter(file, (fm) => {
+    fm.approved = true;
+  });
+}
+
+export async function listTaskNotes(app: App, agentRoot: string): Promise<ParsedTaskNote[]> {
+  const prefix = `${tasksFolder(agentRoot)}/`;
+  const out: ParsedTaskNote[] = [];
+  for (const file of app.vault.getMarkdownFiles()) {
+    if (!file.path.startsWith(prefix)) continue;
+    const parsed = parseTaskNote(await app.vault.cachedRead(file), file.path);
+    if (parsed) out.push(parsed);
+  }
+  return out;
 }

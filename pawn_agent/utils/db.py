@@ -144,6 +144,11 @@ class VaultTask(_Base):
     indexed_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     created_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     updated_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    # Job kind: ask | push_note | upload (vault-watcher tasks are always ask).
+    kind: Mapped[str] = mapped_column(String, nullable=False, default="ask")
+    # Kind-specific request data and outcome (e.g. upload target key).
+    payload: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
+    result_text: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 
 
 def get_session_analysis(session_id: str, dsn: str) -> Optional[SessionAnalysis]:
@@ -310,6 +315,8 @@ def upsert_vault_task(
     etag: Optional[str] = None,
     via: str = "vault",
     status: str = "queued",
+    kind: str = "ask",
+    payload: Optional[dict] = None,
 ) -> str:
     """Insert or refresh a task for *key* + *instruction_hash*."""
     now = datetime.now(timezone.utc)
@@ -351,6 +358,8 @@ def upsert_vault_task(
             note_path=note_path,
             etag=etag,
             via=via,
+            kind=kind,
+            payload=payload,
             created_at=now,
             updated_at=now,
         )
@@ -426,6 +435,8 @@ def update_vault_task(
     error_code: Optional[str] = None,
     indexed_at: Optional[datetime] = None,
     etag: Optional[str] = None,
+    result_text: Optional[str] = None,
+    payload: Optional[dict] = None,
 ) -> None:
     """Patch mutable fields on a vault task."""
     now = datetime.now(timezone.utc)
@@ -445,6 +456,10 @@ def update_vault_task(
             row.indexed_at = indexed_at
         if etag is not None:
             row.etag = etag
+        if result_text is not None:
+            row.result_text = result_text
+        if payload is not None:
+            row.payload = payload
         row.updated_at = now
 
 

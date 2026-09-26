@@ -1,332 +1,337 @@
+import { Editor, MarkdownView, Menu, Notice, Plugin, TAbstractFile, TFile, debounce } from "obsidian";
+import { promptText, resolveActiveMarkdownFile } from "./active";
+import { Job, PawnClient } from "./api";
+import { insertCallout, shortTitle } from "./callout";
+import { OpenChatOptions, PAWN_CHAT_VIEW, PawnChatView } from "./chat/ChatView";
 import {
-  App,
-  Editor,
-  MarkdownView,
-  Notice,
-  Plugin,
-  PluginSettingTab,
-  Setting,
-} from "obsidian";
-import {
-  noticeIfNoNote,
-  promptText,
-  resolveActiveMarkdownFile,
-  resolveActiveMarkdownView,
-} from "./active";
-import { approveTask, createTask, healthCheck } from "./api";
-import { PawnPanelView, PAWN_VIEW_TYPE } from "./panel";
-import { DEFAULT_SETTINGS, type PawnSettings } from "./settings";
-import {
-  conversationForNote,
-  createTaskNote,
-  insertCallout,
-  listTasksForNote,
-  setApproved,
-  uuid4,
-  writeTaskResult,
-} from "./tasks";
+  Conversation,
+  ConversationStore,
+  newId,
+  noteConversationId,
+} from "./chat/conversations";
+import { PromptCommand, PromptCommandRegistry, PromptPickerModal } from "./commands/PromptCommands";
+import { JobStore } from "./jobs/JobStore";
+import { DEFAULT_SETTINGS, PawnSettings, PawnSettingTab } from "./settings";
+
+const LEGACY_PANEL_VIEW = "pawn-panel";
+const TEXT_UPLOAD = /\.(md|markdown|txt)$/i;
+
+interface PawnData {
+  settings: PawnSettings;
+  conversations: Record<string, Conversation>;
+  lastGlobalConversation: string;
+}
 
 export default class PawnPlugin extends Plugin {
-  settings: PawnSettings = DEFAULT_SETTINGS;
-  statusEl: HTMLElement | null = null;
-  private reachability = false;
+  settings: PawnSettings = { ...DEFAULT_SETTINGS };
+  data: PawnData = { settings: this.settings, conversations: {}, lastGlobalConversation: "" };
+  client!: PawnClient;
+  jobs!: JobStore;
+  prompts!: PromptCommandRegistry;
+  conversations!: ConversationStore;
+  private statusEl: HTMLElement | null = null;
+
+  persistSoon = debounce(() => void this.persist(), 1000, true);
 
   async onload(): Promise<void> {
-    await this.loadSettings();
-
-    this.registerView(
-      PAWN_VIEW_TYPE,
-      (leaf) => new PawnPanelView(leaf, this),
-    );
-
-    this.addCommand({
-      id: "ask-pawn",
-      name: "Ask Pawn",
-      // callback (not editorCallback): works from the command palette even when
-      // the Pawn panel leaf has focus.
-      callback: async () => {
-        const view = resolveActiveMarkdownView(this.app);
-        if (!view?.file) {
-          noticeIfNoNote();
-          return;
-        }
-        await this.askPawn(view.editor, view);
-      },
-    });
-
-    this.addCommand({
-      id: "open-pawn-panel",
-      name: "Open Pawn panel",
-      callback: async () => {
-        await this.activatePanel();
-      },
-    });
-
-    this.addCommand({
-      id: "approve-pawn-task",
-      name: "Approve Pawn task",
-      callback: async () => {
-        const file = resolveActiveMarkdownFile(this.app);
-        if (!file) {
-          noticeIfNoNote();
-          return;
-        }
-        const tasks = await listTasksForNote(
-          this.app,
-          file.path,
-          this.settings.agentRoot,
-        );
-        const review = tasks.find((t) => t.status === "review") || tasks[0];
-        if (!review) {
-          new Notice("No Pawn task for this note");
-          return;
-        }
-        await setApproved(this.app, review.path, true);
-        if (await healthCheck(this.settings)) {
-          try {
-            await approveTask(this.settings, review.id, review.result);
-            new Notice("Approved and indexed");
-          } catch {
-            new Notice("Approved locally; watcher will index");
-          }
-        } else {
-          new Notice("Approved locally; will sync");
-        }
-      },
-    });
-
-    this.registerEvent(
-      this.app.workspace.on("editor-menu", (menu, editor, view) => {
-        if (!(view instanceof MarkdownView)) return;
-        menu.addItem((item) => {
-          item
-            .setTitle("Ask Pawn")
-            .setIcon("bot")
-            .onClick(async () => {
-              await this.askPawn(editor, view);
-            });
-        });
-      }),
-    );
-
-    this.addRibbonIcon("bot", "Open Pawn panel", async () => {
-      await this.activatePanel();
-    });
+    await this.loadPluginData();
+    this.client = new PawnClient(() => this.settings);
+    this.conversations = new ConversationStore(this.data.conversations, () => this.persistSoon());
+    this.jobs = new JobStore(this, this.client);
+    this.prompts = new PromptCommandRegistry(this);
 
     this.addSettingTab(new PawnSettingTab(this.app, this));
+    this.registerView(PAWN_CHAT_VIEW, (leaf) => new PawnChatView(leaf, this));
+    this.registerCommands();
+    this.registerMenus();
 
+    this.addRibbonIcon("chess-king", "Open Pawn chat", () => void this.openChat({}));
     this.statusEl = this.addStatusBarItem();
-    this.statusEl.setText("Pawn …");
-    this.registerInterval(
-      window.setInterval(() => {
-        void this.refreshStatus();
-      }, 15000),
-    );
+    this.statusEl.addClass("mod-clickable");
+    this.statusEl.onclick = () => void this.openChat({ tab: "jobs" });
+
+    this.app.workspace.onLayoutReady(() => {
+      this.app.workspace.detachLeavesOfType(LEGACY_PANEL_VIEW);
+      void this.prompts.reload();
+      this.jobs.start();
+      this.updateStatusBar();
+    });
+
+    const reloadPrompts = debounce(() => void this.prompts.reload(), 500, true);
+    const onVaultChange = (file: TAbstractFile) => {
+      if (this.prompts.isCommandFile(file.path)) reloadPrompts();
+    };
+    this.registerEvent(this.app.metadataCache.on("changed", onVaultChange));
+    this.registerEvent(this.app.vault.on("delete", onVaultChange));
     this.registerEvent(
-      this.app.workspace.on("file-open", () => {
-        void this.refreshStatus();
+      this.app.vault.on("rename", (file, oldPath) => {
+        if (this.prompts.isCommandFile(file.path) || this.prompts.isCommandFile(oldPath)) {
+          reloadPrompts();
+        }
       }),
     );
-    await this.refreshStatus();
   }
 
   onunload(): void {
-    this.app.workspace.detachLeavesOfType(PAWN_VIEW_TYPE);
+    this.jobs?.stop();
+    void this.persist();
   }
 
-  async loadSettings(): Promise<void> {
-    this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
+  // ── persistence ──────────────────────────────────────────────────────────
+
+  private async loadPluginData(): Promise<void> {
+    const raw = ((await this.loadData()) ?? {}) as Partial<PawnData> & Partial<PawnSettings>;
+    // 0.1 stored settings flat at the top level.
+    const storedSettings = raw.settings ?? (raw as Partial<PawnSettings>);
+    const settings: PawnSettings = { ...DEFAULT_SETTINGS };
+    for (const key of Object.keys(DEFAULT_SETTINGS) as Array<keyof PawnSettings>) {
+      if (storedSettings[key] !== undefined) {
+        (settings as unknown as Record<string, unknown>)[key] = storedSettings[key];
+      }
+    }
+    this.settings = settings;
+    this.data = {
+      settings,
+      conversations: raw.conversations ?? {},
+      lastGlobalConversation: raw.lastGlobalConversation ?? "",
+    };
+  }
+
+  private async persist(): Promise<void> {
+    this.data.settings = this.settings;
+    this.data.conversations = this.conversations?.toJSON() ?? this.data.conversations;
+    await this.saveData(this.data);
   }
 
   async saveSettings(): Promise<void> {
-    await this.saveData(this.settings);
+    await this.persist();
+    this.updateStatusBar();
   }
 
-  async activatePanel(): Promise<void> {
+  // ── commands and menus ───────────────────────────────────────────────────
+
+  private registerCommands(): void {
+    this.addCommand({
+      id: "open-chat",
+      name: "Open chat",
+      callback: () => void this.openChat({ tab: "chat" }),
+    });
+    this.addCommand({
+      id: "new-chat",
+      name: "New chat",
+      callback: async () => {
+        const view = await this.openChat({ tab: "chat" });
+        view?.open({ conversation: `chat:${newId()}` });
+      },
+    });
+    this.addCommand({
+      id: "ask-pawn",
+      name: "Ask about selection or note",
+      editorCallback: () => void this.openChat({ tab: "chat" }),
+    });
+    this.addCommand({
+      id: "send-background",
+      name: "Send to Pawn (background)",
+      editorCallback: (editor, ctx) => {
+        const file = ctx.file;
+        if (file) void this.sendBackgroundFromEditor(editor, file);
+      },
+    });
+    this.addCommand({
+      id: "run-prompt",
+      name: "Run prompt command…",
+      callback: () =>
+        new PromptPickerModal(this, (cmd) => void this.runPromptCommand(cmd)).open(),
+    });
+    this.addCommand({
+      id: "show-jobs",
+      name: "Show background jobs",
+      callback: () => void this.openChat({ tab: "jobs" }),
+    });
+    this.addCommand({
+      id: "add-note-context",
+      name: "Add current note to chat context",
+      checkCallback: (checking) => {
+        const file = resolveActiveMarkdownFile(this.app);
+        if (!file) return false;
+        if (!checking) void this.addToContext(file);
+        return true;
+      },
+    });
+    this.addCommand({
+      id: "upload-active-file",
+      name: "Upload active file to Pawn",
+      checkCallback: (checking) => {
+        const file = this.app.workspace.getActiveFile();
+        if (!file) return false;
+        if (!checking) void this.uploadVaultFile(file);
+        return true;
+      },
+    });
+    this.addCommand({
+      id: "create-default-prompts",
+      name: "Create default prompt commands",
+      callback: () => void this.prompts.writeDefaults(),
+    });
+  }
+
+  private registerMenus(): void {
+    this.registerEvent(
+      this.app.workspace.on("editor-menu", (menu: Menu, editor: Editor, view) => {
+        if (!(view instanceof MarkdownView)) return;
+        menu.addSeparator();
+        menu.addItem((i) =>
+          i
+            .setTitle("Ask Pawn")
+            .setIcon("chess-king")
+            .onClick(() => void this.openChat({ tab: "chat" })),
+        );
+        menu.addItem((i) =>
+          i
+            .setTitle("Send to Pawn (background)")
+            .setIcon("clock")
+            .onClick(() => {
+              if (view.file) void this.sendBackgroundFromEditor(editor, view.file);
+            }),
+        );
+        for (const cmd of this.prompts.list().filter((c) => c.contextMenu)) {
+          menu.addItem((i) =>
+            i
+              .setTitle(`Pawn: ${cmd.name}`)
+              .setIcon("sparkles")
+              .onClick(() => void this.runPromptCommand(cmd)),
+          );
+        }
+      }),
+    );
+
+    this.registerEvent(
+      this.app.workspace.on("file-menu", (menu: Menu, file: TAbstractFile) => {
+        if (!(file instanceof TFile)) return;
+        if (file.extension === "md") {
+          menu.addItem((i) =>
+            i
+              .setTitle("Add to Pawn chat context")
+              .setIcon("chess-king")
+              .onClick(() => void this.addToContext(file)),
+          );
+        } else {
+          menu.addItem((i) =>
+            i
+              .setTitle("Upload to Pawn")
+              .setIcon("upload")
+              .onClick(() => void this.uploadVaultFile(file)),
+          );
+        }
+      }),
+    );
+  }
+
+  // ── views ────────────────────────────────────────────────────────────────
+
+  async openChat(opts: OpenChatOptions): Promise<PawnChatView | null> {
     const { workspace } = this.app;
-    let leaf = workspace.getLeavesOfType(PAWN_VIEW_TYPE)[0];
+    let leaf = workspace.getLeavesOfType(PAWN_CHAT_VIEW)[0];
     if (!leaf) {
       const right = workspace.getRightLeaf(false);
-      leaf = right ?? workspace.getLeaf(true);
-      await leaf.setViewState({ type: PAWN_VIEW_TYPE, active: true });
+      if (!right) return null;
+      await right.setViewState({ type: PAWN_CHAT_VIEW, active: true });
+      leaf = right;
     }
-    workspace.revealLeaf(leaf);
+    await workspace.revealLeaf(leaf);
+    const view = leaf.view;
+    if (!(view instanceof PawnChatView)) return null;
+    view.open(opts);
+    return view;
   }
 
-  private async refreshStatus(): Promise<void> {
-    this.reachability = await healthCheck(this.settings);
-    const file = resolveActiveMarkdownFile(this.app);
-    let pending = 0;
-    if (file) {
-      const tasks = await listTasksForNote(
-        this.app,
-        file.path,
-        this.settings.agentRoot,
-      );
-      pending = tasks.filter((t) => t.status === "review").length;
-    }
-    if (this.statusEl) {
-      this.statusEl.setText(
-        `Pawn ${this.reachability ? "online" : "offline"}${
-          pending ? ` · ${pending} review` : ""
-        }`,
-      );
-    }
+  async runPromptCommand(cmd: PromptCommand): Promise<void> {
+    const view = await this.openChat({ tab: "chat" });
+    await view?.runPrompt(cmd);
   }
 
-  private selectionOrParagraph(editor: Editor): string {
-    if (editor.somethingSelected()) {
-      return editor.getSelection();
-    }
-    const cursor = editor.getCursor();
-    return editor.getLine(cursor.line);
+  private async addToContext(file: TFile): Promise<void> {
+    const view = await this.openChat({ tab: "chat" });
+    view?.addContextFile(file);
   }
 
-  async askPawn(editor: Editor, view: MarkdownView): Promise<void> {
-    if (!view.file) {
-      noticeIfNoNote();
-      return;
-    }
-    const context = this.selectionOrParagraph(editor).trim();
+  // ── background jobs ──────────────────────────────────────────────────────
+
+  private async sendBackgroundFromEditor(editor: Editor, file: TFile): Promise<void> {
+    const selection = editor.getSelection();
     const instruction = await promptText(this.app, {
-      title: "Ask Pawn",
-      placeholder: "What should Pawn do with this note / selection?",
-      value: context
-        ? `Regarding the selection:\n${context.slice(0, 500)}`
-        : "",
+      title: "Background job for Pawn",
+      placeholder: selection
+        ? "What should Pawn do with the selected text?"
+        : "What should Pawn do with this note?",
     });
     if (!instruction?.trim()) return;
-
-    const id = uuid4();
-    const notePath = view.file.path;
-    const conversation = conversationForNote(notePath);
     try {
-      const taskPath = await createTaskNote(this.app, this.settings, {
-        id,
+      const job = await this.jobs.submitAsk({
         instruction: instruction.trim(),
-        notePath,
-        context: context || undefined,
-        conversation,
+        conversation: noteConversationId(file.path),
+        note_path: file.path,
+        selection: selection || undefined,
       });
-      insertCallout(editor, taskPath, instruction.trim().split("\n")[0]);
-      new Notice("Pawn task created");
-
-      if (this.settings.alwaysQueue) {
-        new Notice("Queued for vault sync (always-queue on)");
-        return;
-      }
-
-      const online = await healthCheck(this.settings);
-      if (!online) {
-        new Notice("Server offline — task will run after sync");
-        return;
-      }
-
-      new Notice("Asking Pawn…");
-      const { status, data } = await createTask(this.settings, {
-        id,
-        instruction: instruction.trim(),
-        note_path: notePath,
-        context: context || undefined,
-        conversation,
-        timeout_seconds: Math.max(
-          5,
-          Math.floor(this.settings.fastPathTimeoutMs / 1000),
-        ),
-      });
-      if ((status === 200 || status === 201) && data.result) {
-        await writeTaskResult(this.app, taskPath, data.result, "review");
-        new Notice("Pawn replied (review in panel)");
-      } else if (status === 202) {
-        new Notice("Accepted — result will arrive via sync");
-      } else {
-        new Notice(
-          `Pawn: ${data.error_code || status} — left as todo for sync`,
-        );
-      }
-    } catch (err) {
-      new Notice(`Ask Pawn failed: ${String(err)}`);
+      this.maybeInsertCallout(job, editor);
+      new Notice(
+        job.offline ? "Saved as task note (offline)." : "Pawn is working on it in the background.",
+      );
+    } catch (e) {
+      new Notice(`Could not start job: ${e instanceof Error ? e.message : e}`);
     }
-    await this.refreshStatus();
-  }
-}
-
-class PawnSettingTab extends PluginSettingTab {
-  plugin: PawnPlugin;
-
-  constructor(app: App, plugin: PawnPlugin) {
-    super(app, plugin);
-    this.plugin = plugin;
   }
 
-  display(): void {
-    const { containerEl } = this;
-    containerEl.empty();
-    containerEl.createEl("h2", { text: "Pawn" });
+  maybeInsertCallout(job: Job, editor?: Editor): void {
+    if (!this.settings.insertCalloutForJobs || !job.task_key) return;
+    const ed = editor ?? this.app.workspace.getActiveViewOfType(MarkdownView)?.editor;
+    if (ed) insertCallout(ed, job.task_key, shortTitle(job.instruction));
+  }
 
-    new Setting(containerEl)
-      .setName("Server URL")
-      .setDesc("pawn-server base URL (reachable from this device)")
-      .addText((text) =>
-        text
-          .setPlaceholder("http://127.0.0.1:8000")
-          .setValue(this.plugin.settings.serverUrl)
-          .onChange(async (value) => {
-            this.plugin.settings.serverUrl = value.trim();
-            await this.plugin.saveSettings();
-          }),
-      );
+  async uploadVaultFile(file: TFile, conversation?: string): Promise<Job | null> {
+    const data = await this.app.vault.readBinary(file);
+    return this.uploadData(file.name, data, "", conversation, file.path);
+  }
 
-    new Setting(containerEl)
-      .setName("API token")
-      .setDesc("Same as api.token in pawnai.yaml")
-      .addText((text) =>
-        text
-          .setPlaceholder("Bearer token")
-          .setValue(this.plugin.settings.apiToken)
-          .onChange(async (value) => {
-            this.plugin.settings.apiToken = value.trim();
-            await this.plugin.saveSettings();
-          }),
-      );
+  async uploadData(
+    filename: string,
+    data: ArrayBuffer,
+    contentType: string,
+    conversation?: string,
+    notePath?: string,
+  ): Promise<Job | null> {
+    try {
+      const job = await this.client.upload({
+        filename,
+        data,
+        contentType: contentType || undefined,
+        conversation,
+        notePath,
+        index: TEXT_UPLOAD.test(filename),
+      });
+      this.jobs.track(job);
+      new Notice(`Uploading ${filename} to Pawn…`);
+      return job;
+    } catch (e) {
+      new Notice(`Upload failed: ${e instanceof Error ? e.message : e}`);
+      return null;
+    }
+  }
 
-    new Setting(containerEl)
-      .setName("Agent root")
-      .setDesc("Vault folder Pawn owns (default Pawn)")
-      .addText((text) =>
-        text
-          .setValue(this.plugin.settings.agentRoot)
-          .onChange(async (value) => {
-            this.plugin.settings.agentRoot = value.trim() || "Pawn";
-            await this.plugin.saveSettings();
-          }),
-      );
-
-    new Setting(containerEl)
-      .setName("Fast-path timeout (ms)")
-      .setDesc("Wait this long for a direct reply before falling back to sync")
-      .addText((text) =>
-        text
-          .setValue(String(this.plugin.settings.fastPathTimeoutMs))
-          .onChange(async (value) => {
-            const n = Number(value);
-            if (!Number.isNaN(n) && n >= 1000) {
-              this.plugin.settings.fastPathTimeoutMs = n;
-              await this.plugin.saveSettings();
-            }
-          }),
-      );
-
-    new Setting(containerEl)
-      .setName("Always queue")
-      .setDesc("Skip HTTP fast path; always leave tasks as todo for the watcher")
-      .addToggle((toggle) =>
-        toggle
-          .setValue(this.plugin.settings.alwaysQueue)
-          .onChange(async (value) => {
-            this.plugin.settings.alwaysQueue = value;
-            await this.plugin.saveSettings();
-          }),
-      );
+  updateStatusBar(): void {
+    const el = this.statusEl;
+    if (!el || !this.jobs) return;
+    el.empty();
+    const online = this.jobs.online;
+    el.createSpan({
+      cls: online ? "pawn-dot is-online" : "pawn-dot is-offline",
+      text: "● ",
+    });
+    const { active, review } = this.jobs.counts();
+    const parts = ["Pawn"];
+    if (active) parts.push(`${active} running`);
+    if (review) parts.push(`${review} to review`);
+    el.createSpan({ text: parts.join(" · ") });
+    el.setAttr("aria-label", online ? "Pawn server reachable" : "Pawn server offline");
   }
 }

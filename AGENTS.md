@@ -14,7 +14,7 @@ Packages:
 - `pawn_diarize/`: CLI and audio business logic. Real transcription engine is `pawn_core/transcription.py`; `pawn_diarize/core/transcription.py` is only a compatibility re-export.
 - `pawn_agent/`: CLI, sallm harness, scheduler, domain tool impls + CliTool CLIs, agent DB models.
 - `pawn_server/`: HTTP API, queue listener, Matrix bot, vault watcher, scheduler CLI/server runner.
-- `obsidian-plugin/pawn/`: Obsidian desktop/mobile plugin (Ask Pawn, panel, chat).
+- `obsidian-plugin/pawn/`: Obsidian desktop/mobile plugin (Copilot-style chat pane, prompt commands, background jobs, uploads). MIT, written from scratch; do not copy obsidian-copilot (AGPL) code into it.
 
 ## Setup / Commands
 
@@ -54,7 +54,11 @@ Notes: pytest defaults to `--cov=pawn_diarize --cov-report=term-missing`; pass `
 - Conversation keys: queue/scheduler use the diarization session name; API uses OpenAI `user` (or message hash); Matrix bot uses `matrix:{room_id}`; vault tasks/chat use `note:{path}`. Tools must discover diarization ids via `sessions_list` when the chat key is not a session name.
 - Queue listener (`pawn_server/core/queue_listener.py`) expects `{"command": "run"|"vault_run", "prompt": ..., "session_id": ..., "model": ...}` (vault_run is usually started by the vault watcher / HTTP API, not the queue).
 - Matrix bot (`pawn_server/core/matrix_bot.py`) is an optional `serve` worker: in-process `run_agent_turn` with `source="matrix"` (same tools/skills as CLI chat). When `matrix_bot.notify_room_id` is set, it also consumes `queue_producers.matrix` for outbound alerts. See `docs/MATRIX_BOT.md`.
-- Obsidian vault loop (`docs/OBSIDIAN_AGENT.md`): Sync Engine keeps devices ↔ S3 in sync; Pawn reads/writes the bucket via `pawn_core/vault.py`. Plugin posts `POST /v1/vault/tasks` (fast path) or leaves `Pawn/Tasks/*.md` as `todo` for `vault_watcher`. Approve indexes into sallm memory. Session key `note:{path}`. See `obsidian-plugin/pawn/` and `pawn_server/core/vault_tasks.py`.
+- Obsidian (`docs/OBSIDIAN_AGENT.md`): Sync Engine keeps devices ↔ S3 in sync; Pawn reads/writes the bucket via `pawn_core/vault.py`. Three modes:
+  - Plugin chat: `POST /v1/pawn/chat` (SSE `progress`/`answer`/`job`/`error`/`done`; prompt built server-side in `pawn_server/core/chat_context.py`).
+  - Background jobs: `POST /v1/jobs` (+ `/upload`, `/events` SSE, `/approve`, `/cancel`). Always 202, no sync/async race. Logic in `pawn_server/core/jobs.py`; rows in `vault_tasks` (`kind` = ask | push_note | upload, `payload`, `result_text`). `ask` jobs mirror to `Pawn/Tasks/{id}.md`. Offline plugin writes `todo` task notes for `vault_watcher`. Status events: `pawn_server/core/job_events.py` (in-process only).
+  - Stock obsidian-copilot → `/v1/chat/completions` + `/v1/models` (list content parts, CORS, `X-Pawn-Conversation`, streamed keep-alives/`reasoning_content` progress via `pawn_server/core/progress.py`).
+  - `/v1/vault/tasks*` are deprecated aliases. Approve indexes into sallm memory. Session keys `note:{path}` / `chat:{uuid}`.
 - Agent run persistence is centralized in `pawn_agent/core/agent_runner.py`.
 
 ## Agent Tools / Skills
@@ -135,6 +139,7 @@ Precedence is CLI/explicit overrides, YAML, env vars, defaults. Env vars use `PA
 - `PAWN_MATRIX_BOT__ENABLED`, `PAWN_MATRIX_BOT__HOMESERVER_URL`, `PAWN_MATRIX_BOT__USER_TOKEN`, etc.
 - `PAWN_VAULT__S3__BUCKET`, `PAWN_VAULT__S3__ACCESS_KEY`, `PAWN_VAULT__S3__SECRET_KEY`, `PAWN_VAULT__S3__ENDPOINT_URL`, etc.
 - `PAWN_MATRIX_BOT__NOTIFY_ROOM_ID` for outbound ready-for-review alerts
+- `api.cors_origins`, `api.include_system_prompt`, `api.stream_progress`, `api.upload_audio_target` (queue_producers name for audio uploads) — see `ApiSection` in `pawn_agent/utils/config.py`
 
 Chat model comes from `agent.openai` (etc.) and is mapped to LiteLLM via `cfg.litellm_model` (`openai:gpt-4o` → `openai/gpt-4o`). Optional Tempo: `agent.sallm.otlp_endpoint` / `metrics_port` (off by default for the server).
 `agent.sallm.profile` is a sallm CompiledProfile YAML/JSON path (default `large.yaml` in `pawn_agent/profiles/`, 10× token budgets). Empty string uses stock sallm limits.
@@ -149,6 +154,8 @@ Default DB uses PostgreSQL on port `5433` and requires `pgvector`.
 - Queue listener coverage: `tests/test_agent_queue_listener.py`.
 - Matrix bot helpers: `tests/test_matrix_bot.py`.
 - Vault: `tests/test_vault_store.py`, `tests/test_vault_transcript.py`, `tests/test_vault_tasks.py`, `tests/test_vault_watcher.py`.
+- HTTP API: `tests/test_api_chat_compat.py` (OpenAI/Copilot compat), `tests/test_api_jobs.py` (jobs + `/v1/pawn/chat`).
+- Plugin: `cd obsidian-plugin/pawn && npm run build` (runs `tsc -noEmit` first); no JS test runner.
 - No CI workflows are present in `.github/workflows/`.
 
 ## Constraints / Gotchas
