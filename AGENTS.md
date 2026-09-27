@@ -60,6 +60,7 @@ Notes: pytest defaults to `--cov=pawn_diarize --cov-report=term-missing`; pass `
   - Stock obsidian-copilot → `/v1/chat/completions` + `/v1/models` (list content parts, CORS, `X-Pawn-Conversation`, streamed keep-alives/`reasoning_content` progress via `pawn_server/core/progress.py`).
   - `/v1/vault/tasks*` are deprecated aliases. Approve indexes into sallm memory. Session keys `note:{path}` / `chat:{uuid}`.
 - Agent run persistence is centralized in `pawn_agent/core/agent_runner.py`.
+- Coworker loop (`coworker:` in config, off by default): after diarization, `chain_agent.command: session_completed` extracts items, scores them against `Goals.md`, writes `Pawn/Items` and `Pawn/Today.md`, and notifies only on an active-thread interrupt. Triage is `file|task|later|ignore` from Matrix, item-note frontmatter, or `GET/POST /v1/items`. Morning and weekly crons live in `pawn_server/core/coworker_worker.py`. See `docs/COWORKER.md`.
 
 ## Agent Tools / Skills
 

@@ -42,7 +42,10 @@ async def push_queue_message_impl(
     except ImportError as exc:
         return f"Error: pawn-queue is not installed ({exc})."
 
-    envelope = {"command": command, **payload}
+    from pawn_agent.core.coworker.lineage import child_lineage  # noqa: PLC0415
+
+    lineage = child_lineage() if command in {"run", "session_completed", "vault_run"} else {}
+    envelope = {"command": command, **payload, **lineage}
 
     endpoint_url: str = s3_cfg.get("endpoint_url", "http://localhost:9000")
     use_ssl: bool = bool(s3_cfg.get("verify_ssl", s3_cfg.get("use_ssl", False)))

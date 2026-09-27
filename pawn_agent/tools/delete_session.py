@@ -30,9 +30,7 @@ def delete_session_impl(cfg: AgentConfig, session_id: str, confirm: str) -> str:
 
     with Session(get_engine(cfg.db_dsn)) as db:
         seg_result = db.execute(
-            delete(TranscriptionSegment).where(
-                TranscriptionSegment.session_id == session_id_clean
-            )
+            delete(TranscriptionSegment).where(TranscriptionSegment.session_id == session_id_clean)
         )
         analysis_result = db.execute(
             delete(SessionAnalysis).where(SessionAnalysis.session_id == session_id_clean)
@@ -45,16 +43,22 @@ def delete_session_impl(cfg: AgentConfig, session_id: str, confirm: str) -> str:
         )
         db.commit()
 
-        segments = int(seg_result.rowcount or 0)
-        analyses = int(analysis_result.rowcount or 0)
-        states = int(state_result.rowcount or 0)
-        triples = int(triples_result.rowcount or 0)
+    try:
+        from pawn_core.knowledge_index import delete_source  # noqa: PLC0415
+
+        delete_source(cfg.db_dsn, session_id_clean)
+    except Exception:
+        pass
+
+    segments = int(seg_result.rowcount or 0)
+    analyses = int(analysis_result.rowcount or 0)
+    states = int(state_result.rowcount or 0)
+    triples = int(triples_result.rowcount or 0)
 
     total = segments + analyses + states + triples
     if total == 0:
         return (
-            f"No matching rows for session '{session_id_clean}' "
-            "(already gone or never stored)."
+            f"No matching rows for session '{session_id_clean}' " "(already gone or never stored)."
         )
     return (
         f"Deleted session '{session_id_clean}': "

@@ -225,6 +225,18 @@ class VaultStore:
         raw = resp["Body"].read()
         return raw.decode("utf-8")
 
+    def read_bytes(self, key: str) -> bytes:
+        """Return an object body as raw bytes (audio capture, attachments)."""
+        full = self._full_key(key)
+        try:
+            resp = self._client.get_object(Bucket=self.bucket, Key=full)
+        except ClientError as exc:
+            code = exc.response.get("Error", {}).get("Code", "")
+            if code in {"404", "NoSuchKey", "NotFound"}:
+                raise VaultNotFound(normalize_vault_key(key)) from exc
+            raise VaultError(f"read failed for {key!r}: {exc}") from exc
+        return bytes(resp["Body"].read())
+
     def exists(self, key: str) -> bool:
         return self.stat(key) is not None
 

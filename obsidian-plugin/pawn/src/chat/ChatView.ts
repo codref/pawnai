@@ -11,6 +11,7 @@ import {
 import { resolveActiveMarkdownFile } from "../active";
 import { NoteContext, ServerUnreachable } from "../api";
 import { PromptCommand, renderPrompt } from "../commands/PromptCommands";
+import { renderInbox } from "../inbox/InboxView";
 import { JobFilter, renderJobCard, renderJobsList } from "../jobs/JobsView";
 import type PawnPlugin from "../main";
 import { ContextBar, ContextSnapshot, resolveDroppedNote } from "./ContextBar";
@@ -25,7 +26,7 @@ import {
 
 export const PAWN_CHAT_VIEW = "pawn-chat";
 
-type TabId = "chat" | "jobs";
+type TabId = "chat" | "jobs" | "inbox";
 
 interface Pending {
   abort: AbortController;
@@ -63,6 +64,7 @@ export class PawnChatView extends ItemView {
   private slashItems: SlashItem[] = [];
   private slashIndex = 0;
   private unsubscribeJobs: (() => void) | null = null;
+  private unsubscribeInbox: (() => void) | null = null;
   private fileInput: HTMLInputElement | null = null;
   private keyboardFrame = 0;
   private keyboardTimer = 0;
@@ -100,6 +102,7 @@ export class PawnChatView extends ItemView {
     this.containerEl.addClass("pawn-view");
     this.conversationId = this.defaultConversation();
     this.unsubscribeJobs = this.plugin.jobs.onChange(() => this.onJobsChanged());
+    this.unsubscribeInbox = this.plugin.inbox?.onChange(() => this.onJobsChanged());
     this.registerEvent(
       this.app.workspace.on("active-leaf-change", () => this.onActiveNoteChanged()),
     );
@@ -113,6 +116,7 @@ export class PawnChatView extends ItemView {
   }
 
   async onClose(): Promise<void> {
+    this.unsubscribeInbox?.();
     this.unsubscribeJobs?.();
     this.pending?.abort.abort();
     this.clearKeyboardInset();
@@ -403,6 +407,8 @@ export class PawnChatView extends ItemView {
       .filter(Boolean)
       .join(", ");
     mk("jobs", badge ? `Jobs (${badge})` : "Jobs");
+    const waiting = this.plugin.inbox?.attention() ?? 0;
+    mk("inbox", waiting ? `Inbox (${waiting})` : "Inbox");
     const dot = tabs.createSpan({
       cls: this.plugin.jobs.online ? "pawn-dot is-online" : "pawn-dot is-offline",
       attr: { "aria-label": this.plugin.jobs.online ? "Server reachable" : "Server offline" },
@@ -414,6 +420,10 @@ export class PawnChatView extends ItemView {
     const body = this.bodyEl;
     if (!body) return;
     body.empty();
+    if (this.tab === "inbox") {
+      renderInbox(body.createDiv({ cls: "pawn-jobs" }), this.plugin);
+      return;
+    }
     if (this.tab === "jobs") {
       const jobs = body.createDiv({ cls: "pawn-jobs" });
       renderJobsList(jobs, this.plugin, this.freshScope(), {

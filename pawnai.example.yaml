@@ -239,10 +239,29 @@ diarize_queue:
 
   chain_agent:
     # When enabled, successful transcribe-diarize jobs enqueue a pawn-agent
-    # "run" message so the transcript can be analyzed automatically.
+    # message. command "run" keeps the free-form prompt; "session_completed"
+    # runs the coworker extract/score loop (requires coworker.enabled).
     enabled: false
     topic: pawn-agent-jobs
+    command: run
     prompt: Analyze this conversation.
+
+coworker:
+  enabled: false
+  goals_path: Goals.md
+  timezone: Europe/Rome
+  briefing_cron: "0 8 * * *"
+  weekly_cron: "0 17 * * 5"
+  watch_folders: ["Ideas/"]
+  watch_tags: ["idea"]
+  # Folder where the phone's audio recorder drops files. Empty disables capture.
+  capture_audio_dir: ""
+  me: []
+  autonomy:
+    mode: suggest_only
+  notify:
+    ntfy_url: ""
+    topic: ""
 
 agent_queue:
   # Queue consumed by `pawn-agent listen` / pawn-server queue listener.

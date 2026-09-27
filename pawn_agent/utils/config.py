@@ -182,9 +182,7 @@ class ApiSection(BaseModel):
     enable_docs: bool = True
     # IPs that skip brute-force tracking and blacklist checks (exact match).
     # IPv4-mapped IPv6 (::ffff:x.x.x.x) is normalised before comparison.
-    whitelist_ips: list[str] = Field(
-        default_factory=lambda: ["127.0.0.1", "::1"]
-    )
+    whitelist_ips: list[str] = Field(default_factory=lambda: ["127.0.0.1", "::1"])
     # Auto-blacklist after repeated 401s or 404s inside a window.
     bruteforce_enabled: bool = True
     auth_fail_threshold: int = 10
@@ -195,9 +193,7 @@ class ApiSection(BaseModel):
     # Honour X-Forwarded-For / X-Real-IP only when the TCP peer is listed in
     # ``trusted_proxies``. Leave false when clients connect to pawn directly.
     trust_proxy: bool = False
-    trusted_proxies: list[str] = Field(
-        default_factory=lambda: ["127.0.0.1", "::1"]
-    )
+    trusted_proxies: list[str] = Field(default_factory=lambda: ["127.0.0.1", "::1"])
     # Optional TLS for direct exposure (no reverse proxy). Both paths required.
     # Generate a self-signed pair with ``make ssl-cert`` (see Makefile).
     ssl_certfile: Optional[str] = None
@@ -284,6 +280,53 @@ class VaultWatcherConfig(BaseModel):
     matrix_target: str = "matrix"
 
 
+class CoworkerAutonomyConfig(BaseModel):
+    """``coworker.autonomy:`` — how far unattended follow-ups may go."""
+
+    mode: str = "suggest_only"  # off | suggest_only | approve_writes | limited_act
+    max_self_jobs_per_event: int = 3
+    max_self_jobs_per_day: int = 20
+    max_depth: int = 2
+    auto_actions: list[str] = Field(default_factory=lambda: ["research"])
+
+
+class CoworkerNotifyConfig(BaseModel):
+    """``coworker.notify:`` — optional extra push transport (ntfy)."""
+
+    ntfy_url: str = ""
+    topic: str = ""
+    token: str = ""
+
+
+class CoworkerConfig(BaseModel):
+    """``coworker:`` — goal-driven inbox, briefings, and bounded autonomy."""
+
+    enabled: bool = False
+    goals_path: str = "Goals.md"
+    items_dir: str = "Pawn/Items"
+    threads_dir: str = "Pawn/Threads"
+    daily_dir: str = "Pawn/Daily"
+    today_path: str = "Pawn/Today.md"
+    ideas_dir: str = "Pawn/Ideas"
+    reviews_dir: str = "Pawn/Reviews"
+    capture_dir: str = "Pawn/Capture"
+    briefing_cron: str = "0 8 * * *"
+    weekly_cron: str = "0 17 * * 5"
+    timezone: str = "UTC"
+    matrix_target: str = "matrix"
+    watch_folders: list[str] = Field(default_factory=lambda: ["Ideas/"])
+    watch_tags: list[str] = Field(default_factory=lambda: ["idea"])
+    note_quiet_seconds: int = 120
+    max_notes_per_tick: int = 5
+    capture_audio_dir: str = ""
+    me: list[str] = Field(default_factory=list)
+    commitment_days: int = 7
+    stale_days: int = 14
+    embed_dim: int = 1024
+    autonomy: CoworkerAutonomyConfig = Field(default_factory=CoworkerAutonomyConfig)
+    notify: CoworkerNotifyConfig = Field(default_factory=CoworkerNotifyConfig)
+
+
 # ── AgentConfig ───────────────────────────────────────────────────────────────
 
 # PydanticAI-style prefixes (colon) → LiteLLM-style prefixes (slash).
@@ -335,6 +378,7 @@ class AgentConfig(PawnConfig):
     queue_producers: Optional[dict[str, QueueProducerConfig]] = None
     matrix_bot: MatrixBotConfig = Field(default_factory=MatrixBotConfig)
     vault_watcher: VaultWatcherConfig = Field(default_factory=VaultWatcherConfig)
+    coworker: CoworkerConfig = Field(default_factory=CoworkerConfig)
 
     # ── Flat property aliases (old flat-field names used throughout pawn_agent) ─
 

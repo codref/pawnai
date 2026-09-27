@@ -10,6 +10,9 @@ import {
   noteConversationId,
 } from "./chat/conversations";
 import { PromptCommand, PromptCommandRegistry, PromptPickerModal } from "./commands/PromptCommands";
+import { applyGoalsFromActiveFile } from "./inbox/ApplyGoals";
+import { InboxStore } from "./inbox/InboxView";
+import { QuickCaptureModal } from "./inbox/QuickCapture";
 import { JobStore } from "./jobs/JobStore";
 import { DEFAULT_SETTINGS, PawnSettings, PawnSettingTab } from "./settings";
 
@@ -27,6 +30,7 @@ export default class PawnPlugin extends Plugin {
   data: PawnData = { settings: this.settings, conversations: {}, lastGlobalConversation: "" };
   client!: PawnClient;
   jobs!: JobStore;
+  inbox!: InboxStore;
   prompts!: PromptCommandRegistry;
   conversations!: ConversationStore;
   private statusEl: HTMLElement | null = null;
@@ -38,6 +42,7 @@ export default class PawnPlugin extends Plugin {
     this.client = new PawnClient(() => this.settings);
     this.conversations = new ConversationStore(this.data.conversations, () => this.persistSoon());
     this.jobs = new JobStore(this, this.client);
+    this.inbox = new InboxStore(this, this.client);
     this.prompts = new PromptCommandRegistry(this);
 
     this.addSettingTab(new PawnSettingTab(this.app, this));
@@ -54,6 +59,7 @@ export default class PawnPlugin extends Plugin {
       this.app.workspace.detachLeavesOfType(LEGACY_PANEL_VIEW);
       void this.prompts.reload();
       this.jobs.start();
+      this.inbox.start();
       this.updateStatusBar();
     });
 
@@ -74,6 +80,7 @@ export default class PawnPlugin extends Plugin {
 
   onunload(): void {
     this.jobs?.stop();
+    this.inbox?.stop();
     void this.persist();
   }
 
@@ -147,6 +154,30 @@ export default class PawnPlugin extends Plugin {
       id: "show-jobs",
       name: "Show background jobs",
       callback: () => void this.openChat({ tab: "jobs" }),
+    });
+    this.addCommand({
+      id: "show-inbox",
+      name: "Show inbox",
+      callback: () => void this.openChat({ tab: "inbox" }),
+    });
+    this.addCommand({
+      id: "quick-capture",
+      name: "Quick capture",
+      callback: () => {
+        new QuickCaptureModal(this.app, async (title) => {
+          const day = window.moment().format("YYYY-MM-DD");
+          const slug = title.split("\n")[0].slice(0, 60).replace(/[\\/:*?"<>|]/g, "").trim() || "idea";
+          const path = `Ideas/${day} ${slug}.md`;
+          const body = `---\ntags: [idea]\n---\n# ${slug}\n\n${title.trim()}\n`;
+          await this.app.vault.create(path, body);
+          new Notice(`Saved ${path}`);
+        }).open();
+      },
+    });
+    this.addCommand({
+      id: "apply-goals",
+      name: "Apply goals proposal",
+      callback: () => void applyGoalsFromActiveFile(this.app),
     });
     this.addCommand({
       id: "add-note-context",
@@ -332,9 +363,11 @@ export default class PawnPlugin extends Plugin {
       text: "● ",
     });
     const { active, review } = this.jobs.counts();
+    const waiting = this.inbox?.attention() ?? 0;
     const parts = ["Pawn"];
     if (active) parts.push(`${active} running`);
     if (review) parts.push(`${review} to review`);
+    if (waiting) parts.push(`${waiting} inbox`);
     el.createSpan({ text: parts.join(" · ") });
     el.setAttr("aria-label", online ? "Pawn server reachable" : "Pawn server offline");
   }

@@ -35,6 +35,9 @@ async def run_agent_turn(
     schedule_id: Optional[str] = None,
     scheduled_fire_id: Optional[str] = None,
     on_progress: Optional[Callable[[str, dict[str, Any]], None]] = None,
+    parent_run_id: Optional[str] = None,
+    depth: int = 0,
+    event_id: Optional[str] = None,
 ) -> AgentRunResult:
     """Persist and execute one sallm agent turn.
 
@@ -60,8 +63,13 @@ async def run_agent_turn(
         prompt=prompt,
         session_id=session_id,
         model=effective_cfg.pydantic_model,
+        parent_run_id=parent_run_id,
+        depth=depth,
+        event_id=event_id,
     )
     update_agent_run(cfg.db_dsn, run_id, "running")
+
+    from pawn_agent.core.coworker.lineage import lineage_env  # noqa: PLC0415
 
     try:
         if not prompt:
@@ -77,13 +85,14 @@ async def run_agent_turn(
                 "it must be the diarization session name used by agent tools"
             )
 
-        reply = await registry.handle_turn(
-            session_id,
-            prompt,
-            effective_cfg,
-            cfg.db_dsn,
-            on_progress=on_progress,
-        )
+        with lineage_env(run_id, depth=depth, event_id=event_id or run_id):
+            reply = await registry.handle_turn(
+                session_id,
+                prompt,
+                effective_cfg,
+                cfg.db_dsn,
+                on_progress=on_progress,
+            )
         update_agent_run(cfg.db_dsn, run_id, "completed", response=reply)
         return AgentRunResult(run_id=run_id, response=reply)
     except Exception as exc:

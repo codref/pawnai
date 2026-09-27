@@ -367,11 +367,14 @@ async def _run_upload(
             )
             session = PurePosixPath(filename).stem
             target = getattr(cfg.api, "upload_audio_target", "diarize")
+            audio_payload: dict[str, Any] = {"audio_paths": [uri], "session": session}
+            if getattr(getattr(cfg, "coworker", None), "enabled", False):
+                audio_payload["chain_agent"] = {"command": "session_completed"}
             receipt = await push_queue_message_impl(
                 cfg,
                 target=target,
                 command="transcribe-diarize",
-                payload={"audio_paths": [uri], "session": session},
+                payload=audio_payload,
             )
             if receipt.startswith("Error"):
                 raise VaultError(f"{receipt} (stored at {uri})")
@@ -399,9 +402,9 @@ async def _run_upload(
         payload["vault_key"] = key
         message = f"Saved to [[{key}]]."
         if index and text and text.strip() and conv:
-            session = await registry.get_or_create(conv, cfg, cfg.db_dsn)
+            chat = await registry.get_or_create(conv, cfg, cfg.db_dsn)
             await asyncio.to_thread(
-                session._agent.remember,  # noqa: SLF001 — intentional index path
+                chat._agent.remember,  # noqa: SLF001 — intentional index path
                 f"Uploaded document {key}:\n\n{text[:20000]}",
                 source=f"upload:{job_id}",
                 index_raw=False,
@@ -518,3 +521,44 @@ async def cancel_job(cfg: Any, job_id: str) -> dict[str, Any]:
     out = get_job(cfg, job_id)
     assert out is not None
     return out
+
+
+async def recover_abandoned_jobs(cfg: Any, registry: SallmSessionRegistry) -> dict[str, int]:
+    """Respawn ask jobs abandoned by a restart; mark the rest blocked."""
+    from pawn_agent.core.coworker.recovery import recovery_plan  # noqa: PLC0415
+
+    rows = list_vault_tasks(cfg.db_dsn, statuses=["running", "claimed"], limit=100)
+    respawned = 0
+    abandoned = 0
+    for row in rows:
+        plan = recovery_plan(row.kind, row.instruction_text, row.payload)
+        if plan == "respawn":
+            payload = dict(row.payload or {})
+            payload["recovered"] = True
+            update_vault_task(cfg.db_dsn, row.id, status="queued", payload=payload, error_code=None)
+            if claim_vault_task(cfg.db_dsn, row.id):
+                _spawn(
+                    row.id,
+                    execute_vault_task(
+                        cfg,
+                        row.id,
+                        registry=registry,
+                        store=_vault_store_or_none(cfg),
+                        write_result_to_vault=True,
+                    ),
+                )
+                publish_job_event(
+                    row.id, "running", kind=row.kind, conversation=row.conversation_id
+                )
+                respawned += 1
+            continue
+        update_vault_task(
+            cfg.db_dsn,
+            row.id,
+            status="blocked",
+            error_code="abandoned",
+            result_text="Abandoned by a server restart.",
+        )
+        publish_job_event(row.id, "blocked", kind=row.kind, conversation=row.conversation_id)
+        abandoned += 1
+    return {"respawned": respawned, "abandoned": abandoned}

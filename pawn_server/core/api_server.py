@@ -268,6 +268,15 @@ class JobApproveRequest(BaseModel):
     result: Optional[str] = None
 
 
+class ItemActionRequest(BaseModel):
+    """POST /v1/items/{id}/action — triage a coworker inbox item."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    action: str
+    arg: Optional[str] = None
+
+
 class ContextNote(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
@@ -1080,6 +1089,38 @@ async def job_cancel(job_id: str, cfg: Any = Depends(_get_cfg)) -> dict:
         raise _job_error(exc) from exc
 
 
+@app.get("/v1/items", dependencies=[Depends(_require_token)])
+async def items_list(
+    status: Optional[str] = None,
+    limit: int = 100,
+    cfg: Any = Depends(_get_cfg),
+) -> dict:
+    """List coworker inbox items, newest first."""
+    from pawn_agent.core.coworker import db as itemdb  # noqa: PLC0415
+
+    rows = await asyncio.to_thread(
+        itemdb.list_items, cfg.db_dsn, status=status or None, limit=limit
+    )
+    return {"items": rows}
+
+
+@app.post("/v1/items/{item_id}/action", dependencies=[Depends(_require_token)])
+async def item_action(
+    item_id: str,
+    body: ItemActionRequest,
+    cfg: Any = Depends(_get_cfg),
+) -> dict:
+    """Apply file, task, later, ignore, approve, or reject to one item."""
+    from pawn_agent.core.coworker.actions import apply_action  # noqa: PLC0415
+    from pawn_agent.core.coworker import db as itemdb  # noqa: PLC0415
+
+    receipt = await apply_action(cfg, item_id, body.action, body.arg, registry=_sallm_registry)
+    item = await asyncio.to_thread(itemdb.get_item, cfg.db_dsn, item_id)
+    if item is None:
+        raise HTTPException(status_code=404, detail=receipt)
+    return {"receipt": receipt, "item": item}
+
+
 # ── Deprecated vault task aliases (plugin <= 0.1) ─────────────────────────────
 
 
@@ -1247,9 +1288,7 @@ async def pawn_chat(body: PawnChatRequest, cfg: Any = Depends(_get_cfg)) -> Stre
 def _apply_docs_enabled(enabled: bool) -> None:
     """Register or strip FastAPI docs / OpenAPI routes based on *enabled*."""
     app.router.routes = [
-        route
-        for route in app.router.routes
-        if getattr(route, "path", None) not in _DOC_PATHS
+        route for route in app.router.routes if getattr(route, "path", None) not in _DOC_PATHS
     ]
     if enabled:
         app.openapi_url = "/openapi.json"

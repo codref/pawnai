@@ -6,8 +6,10 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any, List, Optional, Tuple
 
+from pgvector.sqlalchemy import Vector
 from sqlalchemy import (
     JSON,
+    Boolean,
     DateTime,
     ForeignKey,
     Integer,
@@ -18,7 +20,6 @@ from sqlalchemy import (
 from sqlalchemy.orm import Mapped, Session, mapped_column
 
 from pawn_core.database import Base as _Base  # noqa: F401
-from pawn_core.vault import normalize_vault_key
 from pawn_core.database import (
     GraphTriple,
     SessionAnalysis,
@@ -28,6 +29,7 @@ from pawn_core.database import (
     get_engine,
     make_db_session,
 )
+from pawn_core.vault import normalize_vault_key
 
 
 class AgentRun(_Base):
@@ -49,6 +51,9 @@ class AgentRun(_Base):
     created_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     started_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     completed_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    parent_run_id: Mapped[Optional[str]] = mapped_column(String, nullable=True, index=True)
+    depth: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    event_id: Mapped[Optional[str]] = mapped_column(String, nullable=True, index=True)
 
 
 class AgentSchedule(_Base):
@@ -75,6 +80,7 @@ class AgentSchedule(_Base):
     created_from_proposal_id: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     revision: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     metadata_json: Mapped[Optional[Any]] = mapped_column("metadata", JSON, nullable=True)
+    output_note: Mapped[Optional[str]] = mapped_column(String, nullable=True)
 
 
 class AgentScheduleProposal(_Base):
@@ -161,6 +167,101 @@ class VaultTask(_Base):
     # Kind-specific request data and outcome (e.g. upload target key).
     payload: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
     result_text: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+
+
+class CoworkerItem(_Base):
+    """One extracted decision, commitment, question, or follow-up proposal."""
+
+    __tablename__ = "coworker_items"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    short_id: Mapped[str] = mapped_column(String, nullable=False, unique=True, index=True)
+    source_kind: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    source_ref: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    kind: Mapped[str] = mapped_column(String, nullable=False)
+    text: Mapped[str] = mapped_column(Text, nullable=False)
+    owner: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    due: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    quote: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    thread: Mapped[Optional[str]] = mapped_column(String, nullable=True, index=True)
+    interrupt: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    movement: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    reason: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    fingerprint: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    recurrence: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    status: Mapped[str] = mapped_column(String, nullable=False, default="new", index=True)
+    snooze_until: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    note_key: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    payload: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
+    created_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    updated_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+
+
+class CoworkerSuppression(_Base):
+    """Fingerprints the user asked Pawn to stop surfacing."""
+
+    __tablename__ = "coworker_suppressions"
+
+    fingerprint: Mapped[str] = mapped_column(String, primary_key=True)
+    created_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+
+
+class VaultNoteState(_Base):
+    """Etag ledger so the vault scanner does not reprocess quiet notes."""
+
+    __tablename__ = "vault_note_state"
+
+    key: Mapped[str] = mapped_column(String, primary_key=True)
+    etag: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    content_hash: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    last_seen_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    last_processed_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    last_processed_hash: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+
+
+class KnowledgeChunk(_Base):
+    """Shared embedding of a note, transcript, analysis, or coworker item."""
+
+    __tablename__ = "knowledge_chunks"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    source_kind: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    source_ref: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    heading: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    text: Mapped[str] = mapped_column(Text, nullable=False)
+    embedding: Mapped[list] = mapped_column(Vector(1024), nullable=False)
+    content_hash: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    updated_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+
+
+class CoworkerThread(_Base):
+    """Movement tracking for one goals thread."""
+
+    __tablename__ = "coworker_threads"
+
+    slug: Mapped[str] = mapped_column(String, primary_key=True)
+    name: Mapped[str] = mapped_column(String, nullable=False)
+    status: Mapped[str] = mapped_column(String, nullable=False, default="active", index=True)
+    last_movement_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    last_mention_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    open_items: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    created_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+
+
+class CoworkerDecision(_Base):
+    """Audit row for an autonomy or notification decision."""
+
+    __tablename__ = "coworker_decisions"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    event_id: Mapped[Optional[str]] = mapped_column(String, nullable=True, index=True)
+    event_kind: Mapped[str] = mapped_column(String, nullable=False)
+    proposed_action: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    policy_decision: Mapped[str] = mapped_column(String, nullable=False)
+    outcome: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    agent_run_id: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    error: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    created_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
 
 
 def get_session_analysis(session_id: str, dsn: str) -> Optional[SessionAnalysis]:
@@ -264,6 +365,9 @@ def create_agent_run(
     prompt: Optional[str] = None,
     session_id: Optional[str] = None,
     model: str,
+    parent_run_id: Optional[str] = None,
+    depth: int = 0,
+    event_id: Optional[str] = None,
 ) -> str:
     """Insert a new ``agent_runs`` row with status ``pending``. Returns the UUID."""
     row_id = str(uuid.uuid4())
@@ -279,6 +383,9 @@ def create_agent_run(
         model=model,
         status="pending",
         created_at=datetime.now(timezone.utc),
+        parent_run_id=parent_run_id,
+        depth=depth,
+        event_id=event_id,
     )
     with _get_session(dsn) as db:
         db.add(row)

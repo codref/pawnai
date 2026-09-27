@@ -94,8 +94,11 @@ always attached as structured context.
   `Pawn/Tasks/<id>.md` (`status: todo`). The server's vault watcher runs it
   after Sync Engine uploads it; the result syncs back and shows in the Jobs
   tab.
-- The status bar shows server reachability, running jobs and results
-  awaiting review. Click it to open the Jobs tab.
+- The status bar shows server reachability, running jobs, results
+  awaiting review, and inbox items that need a tap. Click it to open the Jobs tab.
+- **Inbox** tab lists coworker items (File / Task / Later / Ignore, or Approve / Reject).
+- **Quick capture** saves an `#idea` note under `Ideas/`. **Apply goals proposal**
+  writes `Goals.md` from the `goals` fence in the active weekly review, after a diff.
 
 ## Settings
 

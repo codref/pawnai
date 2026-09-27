@@ -7,6 +7,10 @@ and Obsidian vault workflow, while gaining enough autonomy to notice useful patt
 suggest actions, and eventually run bounded background analysis without waiting
 for a direct chat prompt.
 
+## Status (2026-09)
+
+The coworker loop in [COWORKER.md](COWORKER.md) covers the proactive path this roadmap described: `session_completed` extraction, scoring against a user-owned `Goals.md`, a vault inbox plus Matrix replies, a morning briefing, note/idea capture, a weekly review, and bounded self-queued follow-ups. Chat memory is sallm (SQLite + Lance), not LangGraph. `langgraph_session_state` is unused leftover schema.
+
 ## Current Baseline
 
 Pawn already has several foundations needed for autonomy:

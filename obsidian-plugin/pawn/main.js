@@ -27,7 +27,7 @@ __export(main_exports, {
   default: () => PawnPlugin
 });
 module.exports = __toCommonJS(main_exports);
-var import_obsidian12 = require("obsidian");
+var import_obsidian15 = require("obsidian");
 
 // src/active.ts
 var import_obsidian = require("obsidian");
@@ -280,6 +280,21 @@ var PawnClient = class {
     const resp = await this.request("POST", "/v1/jobs", { kind: "ask", ...req });
     return resp.json;
   }
+  async listItems(status) {
+    var _a;
+    const query = status ? `?status=${encodeURIComponent(status)}` : "";
+    const resp = await this.request("GET", `/v1/items${query}`);
+    const body = resp.json;
+    return (_a = body.items) != null ? _a : [];
+  }
+  async itemAction(id, action, arg) {
+    var _a;
+    const resp = await this.request("POST", `/v1/items/${encodeURIComponent(id)}/action`, {
+      action,
+      arg
+    });
+    return String((_a = resp.json.receipt) != null ? _a : "ok");
+  }
   async pushNote(path, content, mode) {
     const resp = await this.request("POST", "/v1/jobs", {
       kind: "push_note",
@@ -452,7 +467,7 @@ function insertCallout(editor, taskPath, title) {
 }
 
 // src/chat/ChatView.ts
-var import_obsidian10 = require("obsidian");
+var import_obsidian11 = require("obsidian");
 
 // src/commands/PromptCommands.ts
 var import_obsidian3 = require("obsidian");
@@ -637,14 +652,104 @@ var PromptPickerModal = class extends import_obsidian3.FuzzySuggestModal {
   }
 };
 
+// src/inbox/InboxView.ts
+var import_obsidian4 = require("obsidian");
+var POLL_MS = 15e3;
+var InboxStore = class {
+  constructor(plugin, client) {
+    this.plugin = plugin;
+    this.client = client;
+    this.items = [];
+    this.listeners = /* @__PURE__ */ new Set();
+    this.timer = null;
+    this.stopped = true;
+  }
+  start() {
+    this.stopped = false;
+    void this.refresh();
+    this.timer = window.setInterval(() => void this.refresh(), POLL_MS);
+  }
+  stop() {
+    this.stopped = true;
+    if (this.timer != null)
+      window.clearInterval(this.timer);
+  }
+  onChange(fn) {
+    this.listeners.add(fn);
+    return () => this.listeners.delete(fn);
+  }
+  all() {
+    return this.items;
+  }
+  attention() {
+    return this.items.filter((item) => item.interrupt && (item.status === "new" || item.status === "notified")).length;
+  }
+  async refresh() {
+    if (this.stopped)
+      return;
+    try {
+      const open = await this.client.listItems();
+      this.items = open.filter((item) => item.status === "new" || item.status === "notified" || item.status === "snoozed");
+    } catch (e) {
+    }
+    for (const fn of this.listeners)
+      fn();
+    this.plugin.updateStatusBar();
+  }
+  async act(item, action) {
+    try {
+      const receipt = await this.client.itemAction(item.short_id || item.id, action);
+      new import_obsidian4.Notice(receipt, 4e3);
+    } catch (e) {
+      new import_obsidian4.Notice(e instanceof Error ? e.message : String(e), 6e3);
+    }
+    await this.refresh();
+  }
+};
+function renderInbox(parent, plugin) {
+  const items = plugin.inbox.all();
+  if (!items.length) {
+    parent.createDiv({ cls: "pawn-empty", text: "Nothing waiting." });
+    return;
+  }
+  for (const item of items) {
+    const card = parent.createDiv({ cls: "pawn-job-card" });
+    card.createDiv({ cls: "pawn-job-title", text: item.text });
+    const meta = [item.kind, item.thread, item.status].filter(Boolean).join(" \xB7 ");
+    card.createDiv({ cls: "pawn-job-meta", text: meta });
+    const actions = card.createDiv({ cls: "pawn-job-actions" });
+    const add = (label, action) => {
+      const button = actions.createEl("button", { text: label });
+      button.onclick = () => void plugin.inbox.act(item, action);
+    };
+    if (item.kind === "schedule_proposal" || item.kind === "proposal") {
+      add("Approve", "approve");
+      add("Reject", "reject");
+    } else {
+      add("File", "file");
+      add("Task", "task");
+      add("Later", "later");
+      add("Ignore", "ignore");
+    }
+    if (item.note_key && plugin.app.vault.getAbstractFileByPath(item.note_key) instanceof import_obsidian4.TFile) {
+      const open = actions.createEl("button", { text: "Open" });
+      open.onclick = () => {
+        const file = plugin.app.vault.getAbstractFileByPath(item.note_key);
+        if (file instanceof import_obsidian4.TFile)
+          void plugin.app.workspace.getLeaf(false).openFile(file);
+      };
+    }
+  }
+}
+
 // src/jobs/JobsView.ts
-var import_obsidian8 = require("obsidian");
+var import_obsidian9 = require("obsidian");
 
 // src/chat/MessageActions.ts
-var import_obsidian5 = require("obsidian");
+var import_obsidian6 = require("obsidian");
 
 // src/editing.ts
-var import_obsidian4 = require("obsidian");
+var import_obsidian5 = require("obsidian");
 
 // src/chat/diff.ts
 var MAX_CELLS = 25e4;
@@ -687,7 +792,7 @@ function diffLines(before, after) {
 }
 
 // src/editing.ts
-var DiffModal = class extends import_obsidian4.Modal {
+var DiffModal = class extends import_obsidian5.Modal {
   constructor(app, before, after, onDecide) {
     super(app);
     this.before = before;
@@ -708,7 +813,7 @@ var DiffModal = class extends import_obsidian4.Modal {
       });
       line.createSpan({ text: op.text || " " });
     }
-    new import_obsidian4.Setting(contentEl).addButton((b) => b.setButtonText("Cancel").onClick(() => this.finish(false))).addButton(
+    new import_obsidian5.Setting(contentEl).addButton((b) => b.setButtonText("Cancel").onClick(() => this.finish(false))).addButton(
       (b) => b.setButtonText("Apply").setCta().onClick(() => this.finish(true))
     );
   }
@@ -731,7 +836,7 @@ function viewForPath(app, path) {
   var _a;
   for (const leaf of app.workspace.getLeavesOfType("markdown")) {
     const view = leaf.view;
-    if (view instanceof import_obsidian4.MarkdownView && ((_a = view.file) == null ? void 0 : _a.path) === path)
+    if (view instanceof import_obsidian5.MarkdownView && ((_a = view.file) == null ? void 0 : _a.path) === path)
       return view;
   }
   return null;
@@ -739,7 +844,7 @@ function viewForPath(app, path) {
 function insertAtCursor(app, text) {
   const view = resolveActiveMarkdownView(app);
   if (!view) {
-    new import_obsidian4.Notice("Open a Markdown note first.");
+    new import_obsidian5.Notice("Open a Markdown note first.");
     return;
   }
   const editor = view.editor;
@@ -759,7 +864,7 @@ function replaceSelection(app, text, ref) {
   if (!from || !to) {
     view = resolveActiveMarkdownView(app);
     if (!view || !view.editor.getSelection()) {
-      new import_obsidian4.Notice("Select the text to replace first.");
+      new import_obsidian5.Notice("Select the text to replace first.");
       return;
     }
     from = view.editor.getCursor("from");
@@ -776,28 +881,28 @@ function replaceSelection(app, text, ref) {
 }
 async function appendToNote(app, text, path) {
   const file = path ? app.vault.getAbstractFileByPath(path) : resolveActiveMarkdownFile(app);
-  if (!(file instanceof import_obsidian4.TFile)) {
-    new import_obsidian4.Notice("No note to append to.");
+  if (!(file instanceof import_obsidian5.TFile)) {
+    new import_obsidian5.Notice("No note to append to.");
     return;
   }
   await app.vault.process(file, (body) => `${body.replace(/\s+$/, "")}
 
 ${text.trim()}
 `);
-  new import_obsidian4.Notice(`Appended to ${file.basename}`);
+  new import_obsidian5.Notice(`Appended to ${file.basename}`);
 }
 async function saveAsNewNote(app, text, folder) {
   var _a, _b;
   const stamp = window.moment().format("YYYY-MM-DD HHmm");
   const heading = (_b = (_a = text.match(/^#\s+(.+)$/m)) == null ? void 0 : _a[1]) == null ? void 0 : _b.trim();
   const base = (heading || `Pawn ${stamp}`).replace(/[\\/:*?"<>|#^[\]]/g, "").slice(0, 80);
-  const dir = (0, import_obsidian4.normalizePath)(folder);
+  const dir = (0, import_obsidian5.normalizePath)(folder);
   if (!app.vault.getAbstractFileByPath(dir)) {
     await app.vault.createFolder(dir).catch(() => void 0);
   }
-  let path = (0, import_obsidian4.normalizePath)(`${dir}/${base}.md`);
+  let path = (0, import_obsidian5.normalizePath)(`${dir}/${base}.md`);
   for (let i = 2; app.vault.getAbstractFileByPath(path); i++) {
-    path = (0, import_obsidian4.normalizePath)(`${dir}/${base} ${i}.md`);
+    path = (0, import_obsidian5.normalizePath)(`${dir}/${base} ${i}.md`);
   }
   const file = await app.vault.create(path, text.trim() + "\n");
   await app.workspace.getLeaf(true).openFile(file);
@@ -809,14 +914,14 @@ function renderMessageActions(parent, opts) {
   const bar = parent.createDiv({ cls: "pawn-msg-actions" });
   const btn = (icon, label, onClick) => {
     const b = bar.createEl("button", { cls: "clickable-icon", attr: { "aria-label": label } });
-    (0, import_obsidian5.setIcon)(b, icon);
+    (0, import_obsidian6.setIcon)(b, icon);
     b.onclick = (ev) => {
       ev.stopPropagation();
       onClick();
     };
   };
   btn("copy", "Copy", () => {
-    void navigator.clipboard.writeText(opts.text).then(() => new import_obsidian5.Notice("Copied"));
+    void navigator.clipboard.writeText(opts.text).then(() => new import_obsidian6.Notice("Copied"));
   });
   btn("text-cursor-input", "Insert at cursor", () => insertAtCursor(opts.app, opts.text));
   btn(
@@ -917,16 +1022,16 @@ var ConversationStore = class {
 };
 
 // src/jobs/JobStore.ts
-var import_obsidian7 = require("obsidian");
+var import_obsidian8 = require("obsidian");
 
 // src/tasks.ts
-var import_obsidian6 = require("obsidian");
+var import_obsidian7 = require("obsidian");
 var STATUSES = ["todo", "running", "review", "done", "blocked"];
 function tasksFolder(agentRoot) {
-  return (0, import_obsidian6.normalizePath)(`${agentRoot.replace(/\\/g, "/").replace(/\/+$/, "")}/Tasks`);
+  return (0, import_obsidian7.normalizePath)(`${agentRoot.replace(/\\/g, "/").replace(/\/+$/, "")}/Tasks`);
 }
 function taskPathForId(agentRoot, id) {
-  return (0, import_obsidian6.normalizePath)(`${tasksFolder(agentRoot)}/${id}.md`);
+  return (0, import_obsidian7.normalizePath)(`${tasksFolder(agentRoot)}/${id}.md`);
 }
 function parseSimpleYaml(yaml) {
   const out = {};
@@ -1035,7 +1140,7 @@ async function createTaskNote(app, agentRoot, p) {
     notePath: p.notePath
   });
   const existing = app.vault.getAbstractFileByPath(path);
-  if (existing instanceof import_obsidian6.TFile)
+  if (existing instanceof import_obsidian7.TFile)
     await app.vault.modify(existing, content);
   else
     await app.vault.create(path, content);
@@ -1043,7 +1148,7 @@ async function createTaskNote(app, agentRoot, p) {
 }
 async function setApproved(app, taskPath) {
   const file = app.vault.getAbstractFileByPath(taskPath);
-  if (!(file instanceof import_obsidian6.TFile))
+  if (!(file instanceof import_obsidian7.TFile))
     return;
   await app.fileManager.processFrontMatter(file, (fm) => {
     fm.approved = true;
@@ -1152,14 +1257,14 @@ var JobStore = class {
     const folderPrefix = () => `${tasksFolder(this.plugin.settings.agentRoot)}/`;
     this.plugin.registerEvent(
       this.plugin.app.vault.on("modify", (file) => {
-        if (file instanceof import_obsidian7.TFile && file.path.startsWith(folderPrefix())) {
+        if (file instanceof import_obsidian8.TFile && file.path.startsWith(folderPrefix())) {
           void this.mergeTaskFile(file);
         }
       })
     );
     this.plugin.registerEvent(
       this.plugin.app.vault.on("create", (file) => {
-        if (file instanceof import_obsidian7.TFile && file.path.startsWith(folderPrefix())) {
+        if (file instanceof import_obsidian8.TFile && file.path.startsWith(folderPrefix())) {
           void this.mergeTaskFile(file);
         }
       })
@@ -1215,7 +1320,7 @@ var JobStore = class {
     if (!this.plugin.settings.notifyOnJobDone)
       return;
     const verb = job.status === "blocked" ? "failed" : job.status === "review" ? "ready for review" : "done";
-    const n = new import_obsidian7.Notice(`Pawn job ${verb}: ${job.title}`, 8e3);
+    const n = new import_obsidian8.Notice(`Pawn job ${verb}: ${job.title}`, 8e3);
     n.noticeEl.addClass("pawn-notice");
     n.noticeEl.onclick = () => void this.plugin.openChat({ tab: "jobs", focusJob: job.id });
   }
@@ -1297,7 +1402,7 @@ var JobStore = class {
         throw e;
       this.online = false;
       job = await queueOffline(this.plugin.app, this.plugin.settings.agentRoot, req);
-      new import_obsidian7.Notice("Pawn server unreachable: job saved as a task note and will run after sync.");
+      new import_obsidian8.Notice("Pawn server unreachable: job saved as a task note and will run after sync.");
     }
     this.upsert(job, { quiet: true });
     this.plugin.updateStatusBar();
@@ -1322,15 +1427,15 @@ var JobStore = class {
       if (job.offline)
         throw new ServerUnreachable("offline job");
       this.upsert(await this.client.approveJob(job.id, (_a = job.result) != null ? _a : void 0));
-      new import_obsidian7.Notice("Approved: indexed into Pawn memory.");
+      new import_obsidian8.Notice("Approved: indexed into Pawn memory.");
     } catch (e) {
       if (!(e instanceof ServerUnreachable) || !job.task_key) {
-        new import_obsidian7.Notice(`Approve failed: ${e instanceof Error ? e.message : e}`);
+        new import_obsidian8.Notice(`Approve failed: ${e instanceof Error ? e.message : e}`);
         return;
       }
       await setApproved(this.plugin.app, job.task_key);
       this.upsert({ ...job, approved: true, status: "done" });
-      new import_obsidian7.Notice("Marked approved in the task note; Pawn indexes it after sync.");
+      new import_obsidian8.Notice("Marked approved in the task note; Pawn indexes it after sync.");
     }
     this.plugin.updateStatusBar();
   }
@@ -1338,7 +1443,7 @@ var JobStore = class {
     try {
       this.upsert(await this.client.cancelJob(job.id));
     } catch (e) {
-      new import_obsidian7.Notice(`Cancel failed: ${e instanceof Error ? e.message : e}`);
+      new import_obsidian8.Notice(`Cancel failed: ${e instanceof Error ? e.message : e}`);
     }
     this.plugin.updateStatusBar();
   }
@@ -1373,7 +1478,7 @@ function renderJobCard(parent, job, plugin, component, opts = {}) {
   card.dataset.jobId = job.id;
   const head = card.createDiv({ cls: "pawn-job-head" });
   const icon = head.createSpan({ cls: "pawn-job-icon" });
-  (0, import_obsidian8.setIcon)(icon, (_a = KIND_ICON[job.kind]) != null ? _a : "bot");
+  (0, import_obsidian9.setIcon)(icon, (_a = KIND_ICON[job.kind]) != null ? _a : "bot");
   head.createSpan({ cls: "pawn-job-title", text: job.title || job.id });
   const status = head.createSpan({
     cls: `pawn-job-status is-${job.status}`,
@@ -1393,7 +1498,7 @@ function renderJobCard(parent, job, plugin, component, opts = {}) {
     const body = card.createDiv({ cls: "pawn-job-result markdown-rendered" });
     if (job.status === "blocked")
       body.addClass("is-error");
-    void import_obsidian8.MarkdownRenderer.render(plugin.app, result, body, (_e = job.note_path) != null ? _e : "", component);
+    void import_obsidian9.MarkdownRenderer.render(plugin.app, result, body, (_e = job.note_path) != null ? _e : "", component);
   }
   const extra = [];
   if (job.kind === "ask" && job.status === "review" && !job.approved) {
@@ -1406,7 +1511,7 @@ function renderJobCard(parent, job, plugin, component, opts = {}) {
   if (isActive(job) && !job.offline) {
     extra.push({ icon: "square", label: "Cancel job", onClick: () => void plugin.jobs.cancel(job) });
   }
-  if (job.task_key && plugin.app.vault.getAbstractFileByPath(job.task_key) instanceof import_obsidian8.TFile) {
+  if (job.task_key && plugin.app.vault.getAbstractFileByPath(job.task_key) instanceof import_obsidian9.TFile) {
     extra.push({
       icon: "file-search",
       label: "Open task note",
@@ -1435,7 +1540,7 @@ function renderJobCard(parent, job, plugin, component, opts = {}) {
     const bar = card.createDiv({ cls: "pawn-msg-actions" });
     for (const a of extra) {
       const b = bar.createEl("button", { cls: "clickable-icon", attr: { "aria-label": a.label } });
-      (0, import_obsidian8.setIcon)(b, a.icon);
+      (0, import_obsidian9.setIcon)(b, a.icon);
       b.onclick = a.onClick;
     }
   }
@@ -1457,7 +1562,7 @@ function renderJobsList(parent, plugin, component, opts) {
     cls: "clickable-icon",
     attr: { "aria-label": "Refresh" }
   });
-  (0, import_obsidian8.setIcon)(refresh, "refresh-cw");
+  (0, import_obsidian9.setIcon)(refresh, "refresh-cw");
   refresh.onclick = () => void plugin.jobs.refresh();
   let jobs = plugin.jobs.all();
   if (opts.filter === "active")
@@ -1484,8 +1589,8 @@ function renderJobsList(parent, plugin, component, opts) {
 }
 
 // src/chat/ContextBar.ts
-var import_obsidian9 = require("obsidian");
-var NotePickerModal = class extends import_obsidian9.FuzzySuggestModal {
+var import_obsidian10 = require("obsidian");
+var NotePickerModal = class extends import_obsidian10.FuzzySuggestModal {
   constructor(app, onPick) {
     super(app);
     this.onPick = onPick;
@@ -1538,7 +1643,7 @@ function resolveDroppedNote(app, raw) {
   if (!target)
     return null;
   const direct = app.vault.getAbstractFileByPath(target);
-  if (direct instanceof import_obsidian9.TFile)
+  if (direct instanceof import_obsidian10.TFile)
     return direct;
   return (_b = app.metadataCache.getFirstLinkpathDest(target.replace(/\.md$/i, ""), "")) != null ? _b : null;
 }
@@ -1679,7 +1784,7 @@ var ContextBar = class {
       cls: "pawn-chip pawn-chip-add clickable-icon",
       attr: { "aria-label": "Add note as context (or type @)" }
     });
-    (0, import_obsidian9.setIcon)(add, "plus");
+    (0, import_obsidian10.setIcon)(add, "plus");
     add.onclick = () => this.openPicker();
   }
   /** Dashed chip that reattaches the open note after it was unpinned. */
@@ -1689,7 +1794,7 @@ var ContextBar = class {
       attr: { type: "button", "aria-label": `Pin ${file.basename}` }
     });
     const icon = pin.createSpan({ cls: "pawn-chip-icon" });
-    (0, import_obsidian9.setIcon)(icon, "pin");
+    (0, import_obsidian10.setIcon)(icon, "pin");
     pin.createSpan({ text: file.basename, cls: "pawn-chip-label" });
     pin.onclick = () => this.pin(file.path);
   }
@@ -1698,7 +1803,7 @@ var ContextBar = class {
     const chip = parent.createDiv({ cls: "pawn-chip", attr: { "aria-label": opts.title } });
     chip.toggleClass("is-muted", !!opts.muted);
     const icon = chip.createSpan({ cls: "pawn-chip-icon" });
-    (0, import_obsidian9.setIcon)(icon, opts.icon);
+    (0, import_obsidian10.setIcon)(icon, opts.icon);
     chip.createSpan({ text: opts.label, cls: "pawn-chip-label" });
     if (opts.onToggle) {
       chip.addClass("is-toggle");
@@ -1709,7 +1814,7 @@ var ContextBar = class {
         cls: "pawn-chip-remove clickable-icon",
         attr: { type: "button", "aria-label": (_a = opts.removeLabel) != null ? _a : "Remove" }
       });
-      (0, import_obsidian9.setIcon)(x, "x");
+      (0, import_obsidian10.setIcon)(x, "x");
       x.onclick = (ev) => {
         var _a2;
         ev.stopPropagation();
@@ -1721,7 +1826,7 @@ var ContextBar = class {
 
 // src/chat/ChatView.ts
 var PAWN_CHAT_VIEW = "pawn-chat";
-var PawnChatView = class extends import_obsidian10.ItemView {
+var PawnChatView = class extends import_obsidian11.ItemView {
   constructor(leaf, plugin) {
     super(leaf);
     this.plugin = plugin;
@@ -1739,6 +1844,7 @@ var PawnChatView = class extends import_obsidian10.ItemView {
     this.slashItems = [];
     this.slashIndex = 0;
     this.unsubscribeJobs = null;
+    this.unsubscribeInbox = null;
     this.fileInput = null;
     this.keyboardFrame = 0;
     this.keyboardTimer = 0;
@@ -1765,9 +1871,11 @@ var PawnChatView = class extends import_obsidian10.ItemView {
     }
   }
   setup() {
+    var _a;
     this.containerEl.addClass("pawn-view");
     this.conversationId = this.defaultConversation();
     this.unsubscribeJobs = this.plugin.jobs.onChange(() => this.onJobsChanged());
+    this.unsubscribeInbox = (_a = this.plugin.inbox) == null ? void 0 : _a.onChange(() => this.onJobsChanged());
     this.registerEvent(
       this.app.workspace.on("active-leaf-change", () => this.onActiveNoteChanged())
     );
@@ -1781,9 +1889,10 @@ var PawnChatView = class extends import_obsidian10.ItemView {
     this.render();
   }
   async onClose() {
-    var _a, _b;
-    (_a = this.unsubscribeJobs) == null ? void 0 : _a.call(this);
-    (_b = this.pending) == null ? void 0 : _b.abort.abort();
+    var _a, _b, _c;
+    (_a = this.unsubscribeInbox) == null ? void 0 : _a.call(this);
+    (_b = this.unsubscribeJobs) == null ? void 0 : _b.call(this);
+    (_c = this.pending) == null ? void 0 : _c.abort.abort();
     this.clearKeyboardInset();
     this.containerEl.empty();
   }
@@ -1796,7 +1905,7 @@ var PawnChatView = class extends import_obsidian10.ItemView {
    * chat view only when its box still extends past the visible bottom.
    */
   bindMobileKeyboard() {
-    if (!import_obsidian10.Platform.isMobile)
+    if (!import_obsidian11.Platform.isMobile)
       return;
     const win = this.containerEl.win;
     const doc = this.containerEl.doc;
@@ -1971,7 +2080,7 @@ var PawnChatView = class extends import_obsidian10.ItemView {
   freshScope() {
     if (this.renderScope)
       this.removeChild(this.renderScope);
-    this.renderScope = this.addChild(new import_obsidian10.Component());
+    this.renderScope = this.addChild(new import_obsidian11.Component());
     return this.renderScope;
   }
   render() {
@@ -2027,7 +2136,7 @@ ${(_a = e.stack) != null ? _a : ""}` : String(e)
     };
     const iconBtn = (icon, label, onClick) => {
       const b = row.createEl("button", { cls: "clickable-icon", attr: { "aria-label": label } });
-      (0, import_obsidian10.setIcon)(b, icon);
+      (0, import_obsidian11.setIcon)(b, icon);
       b.onclick = onClick;
       return b;
     };
@@ -2050,6 +2159,7 @@ ${(_a = e.stack) != null ? _a : ""}` : String(e)
     this.renderTabs();
   }
   renderTabs() {
+    var _a, _b;
     const tabs = this.tabsEl;
     if (!tabs)
       return;
@@ -2068,6 +2178,8 @@ ${(_a = e.stack) != null ? _a : ""}` : String(e)
     mk("chat", "Chat");
     const badge = [active ? `${active} running` : "", review ? `${review} review` : ""].filter(Boolean).join(", ");
     mk("jobs", badge ? `Jobs (${badge})` : "Jobs");
+    const waiting = (_b = (_a = this.plugin.inbox) == null ? void 0 : _a.attention()) != null ? _b : 0;
+    mk("inbox", waiting ? `Inbox (${waiting})` : "Inbox");
     const dot = tabs.createSpan({
       cls: this.plugin.jobs.online ? "pawn-dot is-online" : "pawn-dot is-offline",
       attr: { "aria-label": this.plugin.jobs.online ? "Server reachable" : "Server offline" }
@@ -2079,6 +2191,10 @@ ${(_a = e.stack) != null ? _a : ""}` : String(e)
     if (!body)
       return;
     body.empty();
+    if (this.tab === "inbox") {
+      renderInbox(body.createDiv({ cls: "pawn-jobs" }), this.plugin);
+      return;
+    }
     if (this.tab === "jobs") {
       const jobs = body.createDiv({ cls: "pawn-jobs" });
       renderJobsList(jobs, this.plugin, this.freshScope(), {
@@ -2166,7 +2282,7 @@ ${(_a = e.stack) != null ? _a : ""}` : String(e)
       body.setText(msg.content);
       return;
     }
-    void import_obsidian10.MarkdownRenderer.render(this.app, msg.content, body, (_c = msg.notePath) != null ? _c : "", scope);
+    void import_obsidian11.MarkdownRenderer.render(this.app, msg.content, body, (_c = msg.notePath) != null ? _c : "", scope);
     renderMessageActions(el, {
       app: this.app,
       text: msg.content,
@@ -2211,7 +2327,7 @@ ${(_a = e.stack) != null ? _a : ""}` : String(e)
       cls: "clickable-icon",
       attr: { "aria-label": "Upload a file to Pawn" }
     });
-    (0, import_obsidian10.setIcon)(attach, "paperclip");
+    (0, import_obsidian11.setIcon)(attach, "paperclip");
     this.fileInput = row.createEl("input", { type: "file", cls: "pawn-hidden" });
     this.fileInput.multiple = true;
     attach.onclick = () => {
@@ -2408,7 +2524,7 @@ ${(_a = e.stack) != null ? _a : ""}` : String(e)
         }
       }
       if (!added && text.trim())
-        new import_obsidian10.Notice("Drop notes from the file explorer, or files from disk.");
+        new import_obsidian11.Notice("Drop notes from the file explorer, or files from disk.");
     });
   }
   async uploadFiles(files) {
@@ -2454,7 +2570,7 @@ ${(_a = e.stack) != null ? _a : ""}` : String(e)
   async send(text, opts = {}) {
     var _a, _b, _c, _d;
     if (this.pending) {
-      new import_obsidian10.Notice("Pawn is still answering; stop it first or wait.");
+      new import_obsidian11.Notice("Pawn is still answering; stop it first or wait.");
       return;
     }
     const conversation = this.conversationId;
@@ -2463,9 +2579,9 @@ ${(_a = e.stack) != null ? _a : ""}` : String(e)
       try {
         await this.plugin.client.chat({ conversation, message: "/reset" }, {});
         convs.clear(conversation);
-        new import_obsidian10.Notice("Conversation reset.");
+        new import_obsidian11.Notice("Conversation reset.");
       } catch (e) {
-        new import_obsidian10.Notice(`Reset failed: ${e instanceof Error ? e.message : e}`);
+        new import_obsidian11.Notice(`Reset failed: ${e instanceof Error ? e.message : e}`);
       }
       this.render();
       return;
@@ -2607,8 +2723,103 @@ function readKeyboardHeight(doc) {
   return Number.isFinite(computed) ? Math.max(0, computed) : 0;
 }
 
+// src/inbox/ApplyGoals.ts
+var import_obsidian12 = require("obsidian");
+
+// src/inbox/goalsBlock.ts
+function extractGoalsBlock(text) {
+  const marker = "```goals";
+  const start = text.indexOf(marker);
+  if (start < 0)
+    return "";
+  const body = text.slice(start + marker.length);
+  const end = body.indexOf("```");
+  if (end < 0)
+    return "";
+  return body.slice(0, end).trim() + "\n";
+}
+
+// src/inbox/ApplyGoals.ts
+var ApplyGoalsModal = class extends import_obsidian12.Modal {
+  constructor(app, before, after, onConfirm) {
+    super(app);
+    this.before = before;
+    this.after = after;
+    this.onConfirm = onConfirm;
+  }
+  onOpen() {
+    const { contentEl } = this;
+    contentEl.createEl("h3", { text: "Apply goals proposal" });
+    const pre = contentEl.createEl("pre", { cls: "pawn-diff" });
+    for (const op of diffLines(this.before, this.after)) {
+      const line = pre.createDiv({ cls: `pawn-diff-line is-${op.kind}`, text: op.text || " " });
+      line.setAttr("data-kind", op.kind);
+    }
+    const row = contentEl.createDiv({ cls: "pawn-job-actions" });
+    const cancel = row.createEl("button", { text: "Cancel" });
+    cancel.onclick = () => this.close();
+    const ok = row.createEl("button", { text: "Write Goals.md", cls: "mod-cta" });
+    ok.onclick = () => {
+      void this.onConfirm().then(() => this.close());
+    };
+  }
+};
+async function applyGoalsFromActiveFile(app, goalsPath = "Goals.md") {
+  const file = app.workspace.getActiveFile();
+  if (!(file instanceof import_obsidian12.TFile)) {
+    new import_obsidian12.Notice("Open a review note first.");
+    return;
+  }
+  const review = await app.vault.read(file);
+  const proposed = extractGoalsBlock(review);
+  if (!proposed.trim()) {
+    new import_obsidian12.Notice("This note has no ```goals block.");
+    return;
+  }
+  const existing = app.vault.getAbstractFileByPath(goalsPath);
+  const before = existing instanceof import_obsidian12.TFile ? await app.vault.read(existing) : "";
+  new ApplyGoalsModal(app, before, proposed, async () => {
+    if (existing instanceof import_obsidian12.TFile)
+      await app.vault.modify(existing, proposed);
+    else
+      await app.vault.create(goalsPath, proposed);
+    new import_obsidian12.Notice(`Wrote ${goalsPath}`);
+  }).open();
+}
+
+// src/inbox/QuickCapture.ts
+var import_obsidian13 = require("obsidian");
+var QuickCaptureModal = class extends import_obsidian13.Modal {
+  constructor(app, onSave) {
+    super(app);
+    this.onSave = onSave;
+    this.text = "";
+  }
+  onOpen() {
+    const { contentEl } = this;
+    contentEl.createEl("h3", { text: "Quick capture" });
+    const input = contentEl.createEl("textarea");
+    input.rows = 4;
+    input.placeholder = "An idea, in one or two lines";
+    input.oninput = () => {
+      this.text = input.value;
+    };
+    const row = contentEl.createDiv({ cls: "pawn-job-actions" });
+    const save = row.createEl("button", { text: "Save to Ideas", cls: "mod-cta" });
+    save.onclick = () => {
+      const title = this.text.trim();
+      if (!title) {
+        new import_obsidian13.Notice("Write something first.");
+        return;
+      }
+      void this.onSave(title).then(() => this.close());
+    };
+    input.focus();
+  }
+};
+
 // src/settings.ts
-var import_obsidian11 = require("obsidian");
+var import_obsidian14 = require("obsidian");
 var DEFAULT_SETTINGS = {
   serverUrl: "http://127.0.0.1:8000",
   apiToken: "",
@@ -2620,7 +2831,7 @@ var DEFAULT_SETTINGS = {
   notifyOnJobDone: true,
   insertCalloutForJobs: false
 };
-var PawnSettingTab = class extends import_obsidian11.PluginSettingTab {
+var PawnSettingTab = class extends import_obsidian14.PluginSettingTab {
   constructor(app, plugin) {
     super(app, plugin);
     this.plugin = plugin;
@@ -2629,22 +2840,22 @@ var PawnSettingTab = class extends import_obsidian11.PluginSettingTab {
     const { containerEl } = this;
     const s = this.plugin.settings;
     containerEl.empty();
-    new import_obsidian11.Setting(containerEl).setName("Connection").setHeading();
-    new import_obsidian11.Setting(containerEl).setName("Server URL").setDesc("pawn-server base URL (no trailing slash).").addText(
+    new import_obsidian14.Setting(containerEl).setName("Connection").setHeading();
+    new import_obsidian14.Setting(containerEl).setName("Server URL").setDesc("pawn-server base URL (no trailing slash).").addText(
       (t) => t.setPlaceholder("http://127.0.0.1:8000").setValue(s.serverUrl).onChange(async (v) => {
         s.serverUrl = v.trim().replace(/\/+$/, "");
         await this.plugin.saveSettings();
       })
     );
-    new import_obsidian11.Setting(containerEl).setName("API token").setDesc("Bearer token (pawnai.yaml api.token). Leave empty if the server is open.").addText((t) => {
+    new import_obsidian14.Setting(containerEl).setName("API token").setDesc("Bearer token (pawnai.yaml api.token). Leave empty if the server is open.").addText((t) => {
       t.inputEl.type = "password";
       t.setValue(s.apiToken).onChange(async (v) => {
         s.apiToken = v.trim();
         await this.plugin.saveSettings();
       });
     });
-    new import_obsidian11.Setting(containerEl).setName("Chat").setHeading();
-    new import_obsidian11.Setting(containerEl).setName("Default conversation").setDesc(
+    new import_obsidian14.Setting(containerEl).setName("Chat").setHeading();
+    new import_obsidian14.Setting(containerEl).setName("Default conversation").setDesc(
       "Per note: each note has its own Pawn conversation (note:<path>). Global: one free-standing chat you switch manually."
     ).addDropdown(
       (d) => d.addOption("note", "Per note").addOption("global", "Global chat").setValue(s.conversationMode).onChange(async (v) => {
@@ -2652,13 +2863,13 @@ var PawnSettingTab = class extends import_obsidian11.PluginSettingTab {
         await this.plugin.saveSettings();
       })
     );
-    new import_obsidian11.Setting(containerEl).setName("Include active note").setDesc("Attach the open note by default. Unpin it from the composer chip, and pin it to attach it again.").addToggle(
+    new import_obsidian14.Setting(containerEl).setName("Include active note").setDesc("Attach the open note by default. Unpin it from the composer chip, and pin it to attach it again.").addToggle(
       (t) => t.setValue(s.autoIncludeActiveNote).onChange(async (v) => {
         s.autoIncludeActiveNote = v;
         await this.plugin.saveSettings();
       })
     );
-    new import_obsidian11.Setting(containerEl).setName("Send local note content").setDesc(
+    new import_obsidian14.Setting(containerEl).setName("Send local note content").setDesc(
       "Send note bodies from this device (includes unsynced edits). Off: the server reads notes from the vault bucket."
     ).addToggle(
       (t) => t.setValue(s.sendLocalNoteContent).onChange(async (v) => {
@@ -2666,7 +2877,7 @@ var PawnSettingTab = class extends import_obsidian11.PluginSettingTab {
         await this.plugin.saveSettings();
       })
     );
-    new import_obsidian11.Setting(containerEl).setName("Prompt commands folder").setDesc("Markdown files here become commands (palette, editor menu, / in chat).").addText(
+    new import_obsidian14.Setting(containerEl).setName("Prompt commands folder").setDesc("Markdown files here become commands (palette, editor menu, / in chat).").addText(
       (t) => t.setPlaceholder("Pawn/Commands").setValue(s.commandsFolder).onChange(async (v) => {
         s.commandsFolder = v.trim().replace(/\/+$/, "") || "Pawn/Commands";
         await this.plugin.saveSettings();
@@ -2677,20 +2888,20 @@ var PawnSettingTab = class extends import_obsidian11.PluginSettingTab {
         await this.plugin.prompts.writeDefaults();
       })
     );
-    new import_obsidian11.Setting(containerEl).setName("Background jobs").setHeading();
-    new import_obsidian11.Setting(containerEl).setName("Agent root").setDesc("Vault folder Pawn owns (task notes live in <root>/Tasks).").addText(
+    new import_obsidian14.Setting(containerEl).setName("Background jobs").setHeading();
+    new import_obsidian14.Setting(containerEl).setName("Agent root").setDesc("Vault folder Pawn owns (task notes live in <root>/Tasks).").addText(
       (t) => t.setPlaceholder("Pawn").setValue(s.agentRoot).onChange(async (v) => {
         s.agentRoot = v.trim() || "Pawn";
         await this.plugin.saveSettings();
       })
     );
-    new import_obsidian11.Setting(containerEl).setName("Notify when a job finishes").addToggle(
+    new import_obsidian14.Setting(containerEl).setName("Notify when a job finishes").addToggle(
       (t) => t.setValue(s.notifyOnJobDone).onChange(async (v) => {
         s.notifyOnJobDone = v;
         await this.plugin.saveSettings();
       })
     );
-    new import_obsidian11.Setting(containerEl).setName("Insert callout for background jobs").setDesc("Add a > [!pawn] link to the task note at the cursor when you send a job.").addToggle(
+    new import_obsidian14.Setting(containerEl).setName("Insert callout for background jobs").setDesc("Add a > [!pawn] link to the task note at the cursor when you send a job.").addToggle(
       (t) => t.setValue(s.insertCalloutForJobs).onChange(async (v) => {
         s.insertCalloutForJobs = v;
         await this.plugin.saveSettings();
@@ -2702,19 +2913,20 @@ var PawnSettingTab = class extends import_obsidian11.PluginSettingTab {
 // src/main.ts
 var LEGACY_PANEL_VIEW = "pawn-panel";
 var TEXT_UPLOAD = /\.(md|markdown|txt)$/i;
-var PawnPlugin = class extends import_obsidian12.Plugin {
+var PawnPlugin = class extends import_obsidian15.Plugin {
   constructor() {
     super(...arguments);
     this.settings = { ...DEFAULT_SETTINGS };
     this.data = { settings: this.settings, conversations: {}, lastGlobalConversation: "" };
     this.statusEl = null;
-    this.persistSoon = (0, import_obsidian12.debounce)(() => void this.persist(), 1e3, true);
+    this.persistSoon = (0, import_obsidian15.debounce)(() => void this.persist(), 1e3, true);
   }
   async onload() {
     await this.loadPluginData();
     this.client = new PawnClient(() => this.settings);
     this.conversations = new ConversationStore(this.data.conversations, () => this.persistSoon());
     this.jobs = new JobStore(this, this.client);
+    this.inbox = new InboxStore(this, this.client);
     this.prompts = new PromptCommandRegistry(this);
     this.addSettingTab(new PawnSettingTab(this.app, this));
     this.registerView(PAWN_CHAT_VIEW, (leaf) => new PawnChatView(leaf, this));
@@ -2728,9 +2940,10 @@ var PawnPlugin = class extends import_obsidian12.Plugin {
       this.app.workspace.detachLeavesOfType(LEGACY_PANEL_VIEW);
       void this.prompts.reload();
       this.jobs.start();
+      this.inbox.start();
       this.updateStatusBar();
     });
-    const reloadPrompts = (0, import_obsidian12.debounce)(() => void this.prompts.reload(), 500, true);
+    const reloadPrompts = (0, import_obsidian15.debounce)(() => void this.prompts.reload(), 500, true);
     const onVaultChange = (file) => {
       if (this.prompts.isCommandFile(file.path))
         reloadPrompts();
@@ -2746,8 +2959,9 @@ var PawnPlugin = class extends import_obsidian12.Plugin {
     );
   }
   onunload() {
-    var _a;
+    var _a, _b;
     (_a = this.jobs) == null ? void 0 : _a.stop();
+    (_b = this.inbox) == null ? void 0 : _b.stop();
     void this.persist();
   }
   // ── persistence ──────────────────────────────────────────────────────────
@@ -2818,6 +3032,36 @@ var PawnPlugin = class extends import_obsidian12.Plugin {
       callback: () => void this.openChat({ tab: "jobs" })
     });
     this.addCommand({
+      id: "show-inbox",
+      name: "Show inbox",
+      callback: () => void this.openChat({ tab: "inbox" })
+    });
+    this.addCommand({
+      id: "quick-capture",
+      name: "Quick capture",
+      callback: () => {
+        new QuickCaptureModal(this.app, async (title) => {
+          const day = window.moment().format("YYYY-MM-DD");
+          const slug = title.split("\n")[0].slice(0, 60).replace(/[\\/:*?"<>|]/g, "").trim() || "idea";
+          const path = `Ideas/${day} ${slug}.md`;
+          const body = `---
+tags: [idea]
+---
+# ${slug}
+
+${title.trim()}
+`;
+          await this.app.vault.create(path, body);
+          new import_obsidian15.Notice(`Saved ${path}`);
+        }).open();
+      }
+    });
+    this.addCommand({
+      id: "apply-goals",
+      name: "Apply goals proposal",
+      callback: () => void applyGoalsFromActiveFile(this.app)
+    });
+    this.addCommand({
       id: "add-note-context",
       name: "Add current note to chat context",
       checkCallback: (checking) => {
@@ -2850,7 +3094,7 @@ var PawnPlugin = class extends import_obsidian12.Plugin {
   registerMenus() {
     this.registerEvent(
       this.app.workspace.on("editor-menu", (menu, editor, view) => {
-        if (!(view instanceof import_obsidian12.MarkdownView))
+        if (!(view instanceof import_obsidian15.MarkdownView))
           return;
         menu.addSeparator();
         menu.addItem(
@@ -2871,7 +3115,7 @@ var PawnPlugin = class extends import_obsidian12.Plugin {
     );
     this.registerEvent(
       this.app.workspace.on("file-menu", (menu, file) => {
-        if (!(file instanceof import_obsidian12.TFile))
+        if (!(file instanceof import_obsidian15.TFile))
           return;
         if (file.extension === "md") {
           menu.addItem(
@@ -2932,18 +3176,18 @@ var PawnPlugin = class extends import_obsidian12.Plugin {
         selection: selection || void 0
       });
       this.maybeInsertCallout(job, editor);
-      new import_obsidian12.Notice(
+      new import_obsidian15.Notice(
         job.offline ? "Saved as task note (offline)." : "Pawn is working on it in the background."
       );
     } catch (e) {
-      new import_obsidian12.Notice(`Could not start job: ${e instanceof Error ? e.message : e}`);
+      new import_obsidian15.Notice(`Could not start job: ${e instanceof Error ? e.message : e}`);
     }
   }
   maybeInsertCallout(job, editor) {
     var _a;
     if (!this.settings.insertCalloutForJobs || !job.task_key)
       return;
-    const ed = editor != null ? editor : (_a = this.app.workspace.getActiveViewOfType(import_obsidian12.MarkdownView)) == null ? void 0 : _a.editor;
+    const ed = editor != null ? editor : (_a = this.app.workspace.getActiveViewOfType(import_obsidian15.MarkdownView)) == null ? void 0 : _a.editor;
     if (ed)
       insertCallout(ed, job.task_key, shortTitle(job.instruction));
   }
@@ -2962,14 +3206,15 @@ var PawnPlugin = class extends import_obsidian12.Plugin {
         index: TEXT_UPLOAD.test(filename)
       });
       this.jobs.track(job);
-      new import_obsidian12.Notice(`Uploading ${filename} to Pawn\u2026`);
+      new import_obsidian15.Notice(`Uploading ${filename} to Pawn\u2026`);
       return job;
     } catch (e) {
-      new import_obsidian12.Notice(`Upload failed: ${e instanceof Error ? e.message : e}`);
+      new import_obsidian15.Notice(`Upload failed: ${e instanceof Error ? e.message : e}`);
       return null;
     }
   }
   updateStatusBar() {
+    var _a, _b;
     const el = this.statusEl;
     if (!el || !this.jobs)
       return;
@@ -2980,11 +3225,14 @@ var PawnPlugin = class extends import_obsidian12.Plugin {
       text: "\u25CF "
     });
     const { active, review } = this.jobs.counts();
+    const waiting = (_b = (_a = this.inbox) == null ? void 0 : _a.attention()) != null ? _b : 0;
     const parts = ["Pawn"];
     if (active)
       parts.push(`${active} running`);
     if (review)
       parts.push(`${review} to review`);
+    if (waiting)
+      parts.push(`${waiting} inbox`);
     el.createSpan({ text: parts.join(" \xB7 ") });
     el.setAttr("aria-label", online ? "Pawn server reachable" : "Pawn server offline");
   }

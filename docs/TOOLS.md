@@ -66,6 +66,7 @@ to `Pawn/Analyses/{session_id}.md` via `save_to_vault`. Free-form notes use
 | `task_update` | `notes_impl` | Update task note status / Result |
 | `schedule_propose` | `propose_schedule` | Create schedule proposals (approve via CLI) |
 | `queue_push` | `push_queue_message` | Publish to a named queue producer |
+| `knowledge_search` | `knowledge_search` | Semantic search across notes, transcripts, and coworker items |
 
 ## Shared helpers
 

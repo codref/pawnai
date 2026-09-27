@@ -98,6 +98,7 @@ SESSIONS = Skill(
         "session_analyze",
         "session_relabel",
         "session_delete",
+        "knowledge_search",
     ),
 )
 
@@ -142,6 +143,7 @@ NOTES = Skill(
         "note_search",
         "note_write",
         "note_append",
+        "knowledge_search",
     ),
 )
 
@@ -156,7 +158,9 @@ SCHEDULING = Skill(
         "Use schedule_propose via ```run. This only creates a proposal — "
         "it never applies changes. The application must approve proposals.\n"
         "For create/update pass --schedule as a JSON object string with "
-        "schedule_kind once|interval|cron and a session_id."
+        "schedule_kind once|interval|cron and a session_id. session_id is a "
+        "conversation key (a diarization session, note:Path, or coworker:daily). "
+        "Optional output_note is a vault path the fire result is appended to."
     ),
     tools=("schedule_propose",),
 )
@@ -209,6 +213,7 @@ VAULT_TASKS = Skill(
         "sessions_list",
         "session_transcript",
         "session_analyze",
+        "knowledge_search",
     ),
 )
 

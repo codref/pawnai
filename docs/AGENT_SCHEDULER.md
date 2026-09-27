@@ -56,6 +56,10 @@ pawn-server serve --disable-scheduler
 pawn-server serve --scheduler-only
 ```
 
+`session_id` is the conversation key the turn resumes: a diarization session name, `note:{path}`, or something like `coworker:daily`. Optional `output_note` is a vault path; each fire's reply is appended there.
+
+Proposals are still approved with `pawn-server schedules approve`. When `coworker.enabled` is true, the same proposal also appears as an inbox item you can `approve` or `reject` from Matrix or the Obsidian plugin.
+
 ## Schedule Shapes
 
 One-shot:

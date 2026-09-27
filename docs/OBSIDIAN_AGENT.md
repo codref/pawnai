@@ -27,6 +27,13 @@ Free-standing plugin chats use `chat:{uuid}`.
 | `Pawn/Analyses/{session_id}.md` | Pawn | `session_analyze --save` |
 | `Pawn/Tasks/{id}.md` | Shared | Mirror of one `ask` job (status decides who may write) |
 | `Pawn/Notes/…` | Pawn | Free-form agent notes / scheduled output / "Save as new note" |
+| `Pawn/Items/{id}.md` | Pawn | One coworker inbox item. Set `action:` to file, task, later, or ignore |
+| `Pawn/Threads/…` | Pawn | Filed items and open loops for one goal thread |
+| `Pawn/Today.md` | Pawn | What needs a tap, then what was filed quietly |
+| `Pawn/Daily/{date}.md` | Pawn | Morning briefing |
+| `Pawn/Ideas/…` | Pawn | Companion notes for ideas you captured. Your original note is not edited |
+| `Pawn/Reviews/{week}.md` | Pawn | Weekly review, including a proposed Goals.md |
+| `Goals.md` | You | Active threads and attention rules. Pawn reads this and does not write it |
 | `Pawn/Inbox/…` | Pawn | Non-audio files uploaded from the plugin |
 | `Pawn/Commands/*.md` | You | Prompt commands for the plugin (`/`, palette, editor menu) |
 | Everything else | You | Editable by Pawn only if frontmatter has `pawn: editable` |

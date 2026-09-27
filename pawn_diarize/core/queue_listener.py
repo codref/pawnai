@@ -55,19 +55,18 @@ class ModelCache:
 
     @property
     def has_models(self) -> bool:
-        return (
-            self._transcription_engine is not None
-            or self._diarization_engine is not None
-        )
+        return self._transcription_engine is not None or self._diarization_engine is not None
 
     def get_transcription_engine(self, device: str, backend: str) -> Any:
         """Return a cached (or newly created) :class:`TranscriptionEngine`."""
         key: Tuple[str, str] = (device, backend)
         if self._transcription_engine is None or self._transcription_key != key:
             from .transcription import TranscriptionEngine
+
             logger.info(
                 "ModelCache: loading TranscriptionEngine (device=%s, backend=%s)",
-                device, backend,
+                device,
+                backend,
             )
             self._transcription_engine = TranscriptionEngine(device=device, backend=backend)
             self._transcription_key = key
@@ -78,6 +77,7 @@ class ModelCache:
         diarize_device: Optional[str] = device if device != "cpu" else None
         if self._diarization_engine is None or self._diarization_key != diarize_device:
             from .diarization import DiarizationEngine
+
             logger.info(
                 "ModelCache: loading DiarizationEngine (device=%s)",
                 diarize_device,
@@ -98,11 +98,13 @@ class ModelCache:
         gc.collect()
         try:
             import torch
+
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
                 logger.info("ModelCache: CUDA memory cache cleared")
         except ImportError:
             pass
+
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Per-command parameter defaults
@@ -112,10 +114,10 @@ class ModelCache:
 
 COMMAND_DEFAULTS: Dict[str, Dict[str, Any]] = {
     "transcribe-diarize": {
-        "audio_paths": [],          # required — producer MUST supply this
+        "audio_paths": [],  # required — producer MUST supply this
         "output": None,
         "session": None,
-        "db_dsn": None,             # None → AppConfig default
+        "db_dsn": None,  # None → AppConfig default
         "threshold": 0.7,
         "store_new": True,
         "device": "cuda",
@@ -124,7 +126,7 @@ COMMAND_DEFAULTS: Dict[str, Dict[str, Any]] = {
         "no_timestamps": False,
         "verbose": False,
         "backend": "nemo",
-        "chain_agent": None,        # None = use config; True = enable; str = custom prompt; False = disable
+        "chain_agent": None,  # None = use config; True = enable; str = custom prompt; False = disable
     },
     "transcribe": {
         "audio_paths": [],
@@ -145,7 +147,7 @@ COMMAND_DEFAULTS: Dict[str, Dict[str, Any]] = {
     },
     "embed": {
         "audio_paths": [],
-        "speaker_id": None,         # required for embed
+        "speaker_id": None,  # required for embed
         "db_dsn": None,
     },
     "push-vault": {
@@ -181,6 +183,7 @@ def _merge_params(command: str, payload: Dict[str, Any]) -> Dict[str, Any]:
 def _resolve_db_dsn(params: Dict[str, Any], cfg: Any) -> str:
     """Return the DB DSN from *params* or fall back to the AppConfig default."""
     from .config import DEFAULT_DB_DSN
+
     return params.get("db_dsn") or cfg.get("db_dsn") or DEFAULT_DB_DSN
 
 
@@ -253,7 +256,9 @@ def _resolve_audio_paths(paths: List[str], cfg: Any) -> tuple[List[str], List[st
     if base_dir:
         base_dir.mkdir(parents=True, exist_ok=True)
 
-    tmp_dir = Path(tempfile.mkdtemp(prefix="pawn_diarize_queue_", dir=str(base_dir) if base_dir else None))
+    tmp_dir = Path(
+        tempfile.mkdtemp(prefix="pawn_diarize_queue_", dir=str(base_dir) if base_dir else None)
+    )
 
     expanded: List[str] = []
     for path in paths:
@@ -279,6 +284,7 @@ def _resolve_audio_paths(paths: List[str], cfg: Any) -> tuple[List[str], List[st
 
 def _cleanup(temp_dirs: List[str]) -> None:
     import shutil
+
     for d in temp_dirs:
         try:
             shutil.rmtree(d, ignore_errors=True)
@@ -294,8 +300,11 @@ def _run_transcribe_diarize(
     from .combined import transcribe_with_diarization, format_transcript_with_speakers
     from .config import DEFAULT_DB_DSN
     from .database import (
-        get_engine, init_db,
-        load_session_state, save_session_state, save_transcription_segments,
+        get_engine,
+        init_db,
+        load_session_state,
+        save_session_state,
+        save_transcription_segments,
     )
 
     audio_paths: List[str] = params.get("audio_paths") or []
@@ -327,7 +336,9 @@ def _run_transcribe_diarize(
 
         if session:
             # load_session_state returns (embeddings, time_cursor, processed_files, segment_count)
-            prior_embeddings, time_cursor, processed_files, prior_segment_count = load_session_state(session, engine)
+            prior_embeddings, time_cursor, processed_files, prior_segment_count = (
+                load_session_state(session, engine)
+            )
 
         result = transcribe_with_diarization(
             audio_path=resolved if len(resolved) > 1 else resolved[0],
@@ -343,17 +354,19 @@ def _run_transcribe_diarize(
             time_cursor=time_cursor,
             transcription_engine=(
                 model_cache.get_transcription_engine(device, backend)
-                if model_cache is not None else None
+                if model_cache is not None
+                else None
             ),
             diarization_engine=(
-                model_cache.get_diarization_engine(device)
-                if model_cache is not None else None
+                model_cache.get_diarization_engine(device) if model_cache is not None else None
             ),
         )
 
         # Save session state
         if session and result:
-            new_processed = processed_files + (resolved if isinstance(resolved, list) else [resolved])
+            new_processed = processed_files + (
+                resolved if isinstance(resolved, list) else [resolved]
+            )
             save_session_state(
                 session,
                 result.get("session_speaker_embeddings") or {},
@@ -362,12 +375,12 @@ def _run_transcribe_diarize(
                 engine,
             )
             if result.get("segments"):
-                save_transcription_segments(result["segments"], session, engine, start_index=prior_segment_count)
+                save_transcription_segments(
+                    result["segments"], session, engine, start_index=prior_segment_count
+                )
 
         # Format and write output
-        text = format_transcript_with_speakers(
-            result, include_timestamps=not no_timestamps
-        )
+        text = format_transcript_with_speakers(result, include_timestamps=not no_timestamps)
         if output:
             out_path = _Path(output)
             out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -461,6 +474,7 @@ def _run_transcribe(
             engine = model_cache.get_transcription_engine(device, backend)
         else:
             from .transcription import TranscriptionEngine
+
             engine = TranscriptionEngine(device=device, backend=backend)
         results = engine.transcribe(
             resolved,
@@ -501,6 +515,7 @@ def _run_diarize(
             engine = model_cache.get_diarization_engine(device)
         else:
             from .diarization import DiarizationEngine
+
             engine = DiarizationEngine()
         result = engine.diarize(
             resolved,
@@ -563,6 +578,12 @@ def _resolve_chain_cfg(
 
     if msg_override is False or str(msg_override).lower() == "false":
         return None
+    if isinstance(msg_override, dict):
+        return {
+            "prompt": msg_override.get("prompt")
+            or config_chain.get("prompt", "Analyze this session."),
+            "command": msg_override.get("command") or config_chain.get("command") or "run",
+        }
     if not msg_override and not config_chain.get("enabled"):
         return None
 
@@ -571,7 +592,7 @@ def _resolve_chain_cfg(
         if isinstance(msg_override, str)
         else config_chain.get("prompt", "Analyze this session.")
     )
-    return {"prompt": prompt}
+    return {"prompt": prompt, "command": config_chain.get("command") or "run"}
 
 
 def make_message_handler(
@@ -636,9 +657,7 @@ def make_message_handler(
         command: Optional[str] = payload.pop("command", None)
 
         if not command:
-            logger.error(
-                "Message %s has no 'command' key — sending to dead-letter", msg.id
-            )
+            logger.error("Message %s has no 'command' key — sending to dead-letter", msg.id)
             await msg.nack()
             return
 
@@ -667,31 +686,35 @@ def make_message_handler(
                 queue_cfg = cfg.get_queue_config() or {}
                 chain_cfg = _resolve_chain_cfg(params, queue_cfg)
                 if chain_cfg and session:
+                    command_name = chain_cfg.get("command") or "run"
                     agent_payload = {
-                        "command": "run",
+                        "command": command_name,
                         "session_id": session,
-                        "prompt": chain_cfg["prompt"],
                     }
+                    if command_name == "run":
+                        agent_payload["prompt"] = chain_cfg["prompt"]
                     try:
                         await publisher.publish(agent_topic, agent_payload)
                         logger.info(
                             "Chained agent job for session %r on topic %r",
-                            session, agent_topic,
+                            session,
+                            agent_topic,
                         )
                     except Exception as chain_exc:
                         # Diarize job already succeeded — log but don't nack
                         logger.error(
                             "Failed to publish agent chain job for session %r: %s",
-                            session, chain_exc,
+                            session,
+                            chain_exc,
                         )
                 elif chain_cfg and not session:
-                    logger.debug(
-                        "chain_agent is enabled but message has no 'session' — skipping"
-                    )
+                    logger.debug("chain_agent is enabled but message has no 'session' — skipping")
 
         except Exception as exc:
             logger.error(
-                "Message %s failed: %s — sending to dead-letter", msg.id, exc,
+                "Message %s failed: %s — sending to dead-letter",
+                msg.id,
+                exc,
                 exc_info=True,
             )
             await msg.nack()
@@ -732,9 +755,7 @@ async def start_listener(
     try:
         from pawn_queue import PawnQueueBuilder
     except ImportError as exc:
-        raise ImportError(
-            "pawn-queue is not installed. Run: uv pip install pawn-queue"
-        ) from exc
+        raise ImportError("pawn-queue is not installed. Run: uv pip install pawn-queue") from exc
 
     queue_cfg: Optional[Dict[str, Any]] = cfg.get_queue_config()
     if queue_cfg is None:
@@ -775,25 +796,27 @@ async def start_listener(
     )
 
     if polling_section:
-        builder = builder.polling(**{
-            k: v for k, v in polling_section.items()
-            if k in (
-                "interval_seconds",
-                "max_messages_per_poll",
-                "visibility_timeout_seconds",
-                "lease_refresh_interval_seconds",
-                "jitter_max_ms",
-            )
-        })
+        builder = builder.polling(
+            **{
+                k: v
+                for k, v in polling_section.items()
+                if k
+                in (
+                    "interval_seconds",
+                    "max_messages_per_poll",
+                    "visibility_timeout_seconds",
+                    "lease_refresh_interval_seconds",
+                    "jitter_max_ms",
+                )
+            }
+        )
 
     if concurrency_section.get("strategy"):
         builder = builder.concurrency(strategy=concurrency_section["strategy"])
 
     # Model idle timeout: release loaded engines after N minutes of inactivity.
     # Configured under models.model_idle_timeout_minutes in pawnai.yaml.
-    model_idle_timeout_minutes: float = float(
-        cfg.get("model_idle_timeout_minutes", 10)
-    )
+    model_idle_timeout_minutes: float = float(cfg.get("model_idle_timeout_minutes", 10))
     model_idle_timeout_seconds: float = model_idle_timeout_minutes * 60.0
     model_cache = ModelCache()
 
@@ -822,15 +845,11 @@ async def start_listener(
         if chain_section.get("enabled"):
             agent_queue_cfg: Dict[str, Any] = cfg.get("agent_queue") or {}
             agent_topic_for_chain = (
-                chain_section.get("topic")
-                or agent_queue_cfg.get("topic")
-                or "pawn-agent-jobs"
+                chain_section.get("topic") or agent_queue_cfg.get("topic") or "pawn-agent-jobs"
             )
             try:
                 await pq.create_topic(agent_topic_for_chain)
-                logger.info(
-                    "chain_agent enabled — agent topic %r ready", agent_topic_for_chain
-                )
+                logger.info("chain_agent enabled — agent topic %r ready", agent_topic_for_chain)
             except Exception as exc:
                 logger.warning(
                     "Could not create agent chain topic %r: %s", agent_topic_for_chain, exc
@@ -838,9 +857,7 @@ async def start_listener(
 
         consumer = await pq.register_consumer(consumer_name, topics=[topic])
         producer = (
-            await pq.register_producer(f"{consumer_name}-chain")
-            if agent_topic_for_chain
-            else None
+            await pq.register_producer(f"{consumer_name}-chain") if agent_topic_for_chain else None
         )
         handler = make_message_handler(
             cfg,

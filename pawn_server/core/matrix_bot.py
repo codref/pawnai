@@ -225,8 +225,7 @@ def _patch_nio_sas_for_element() -> None:
         assert self.commitment
         calculated = _unpadded_b64(
             sha256(
-                key.encode()
-                + Api.to_canonical_json(self.start_verification().content).encode()
+                key.encode() + Api.to_canonical_json(self.start_verification().content).encode()
             ).digest()
         )
         return self.commitment == calculated
@@ -235,15 +234,11 @@ def _patch_nio_sas_for_element() -> None:
         if self.we_started_it:
             from nio.exceptions import LocalProtocolError
 
-            raise LocalProtocolError(
-                "Verification was started by us, can't accept offer."
-            )
+            raise LocalProtocolError("Verification was started by us, can't accept offer.")
         if self.state == SasState.canceled:
             from nio.exceptions import LocalProtocolError
 
-            raise LocalProtocolError(
-                "SAS verification was canceled, can't accept offer."
-            )
+            raise LocalProtocolError("SAS verification was canceled, can't accept offer.")
 
         sas_methods = []
         if "emoji" in self.short_auth_string:
@@ -282,9 +277,7 @@ def _patch_nio_sas_for_element() -> None:
         if self.state == SasState.canceled:
             from nio.exceptions import LocalProtocolError
 
-            raise LocalProtocolError(
-                "SAS verification was canceled, can't generate MAC."
-            )
+            raise LocalProtocolError("SAS verification was canceled, can't generate MAC.")
 
         key_id = f"ed25519:{self.own_device}"
         calculate_mac = _mac_fn(self)
@@ -329,8 +322,7 @@ def _patch_nio_sas_for_element() -> None:
         if event.keys != calculate_mac(key_ids, info + "KEY_IDS"):
             # Element may include cross-signing keys; still try device key alone.
             logger.warning(
-                "SAS KEY_IDS MAC mismatch (will still check device key); "
-                "chosen_mac_method=%s",
+                "SAS KEY_IDS MAC mismatch (will still check device key); " "chosen_mac_method=%s",
                 self.chosen_mac_method,
             )
 
@@ -516,9 +508,7 @@ class MatrixTurnProgress:
                 logger.exception("Failed to set working reaction")
         if self._updates:
             try:
-                self._status_event_id = await _send_text(
-                    self._client, self._room_id, "Working…"
-                )
+                self._status_event_id = await _send_text(self._client, self._room_id, "Working…")
             except Exception:
                 logger.exception("Failed to send progress status message")
 
@@ -594,9 +584,7 @@ class MatrixTurnProgress:
         if self._updates and self._status_event_id:
             async with self._lock:
                 try:
-                    await _edit_text(
-                        self._client, self._room_id, self._status_event_id, text
-                    )
+                    await _edit_text(self._client, self._room_id, self._status_event_id, text)
                 except Exception:
                     logger.exception("Failed to edit error into status")
                     try:
@@ -867,6 +855,19 @@ def _register_callbacks(client: Any, cfg: Any, registry: Any) -> None:
                 await _send_text(client, room.room_id, text)
                 return
 
+            from pawn_agent.core.coworker.actions import (  # noqa: PLC0415
+                parse_coworker_command,
+                apply_action,
+            )
+
+            coworker_cmd = parse_coworker_command(prompt)
+            if coworker_cmd is not None and getattr(cfg.coworker, "enabled", False):
+                action, item_id, arg = coworker_cmd
+                await client.room_typing(room.room_id, typing_state=True)
+                receipt = await apply_action(cfg, item_id, action, arg, registry=registry)
+                await _send_text(client, room.room_id, receipt)
+                return
+
             from pawn_agent.core.agent_runner import run_agent_turn
 
             progress = MatrixTurnProgress(
@@ -887,9 +888,7 @@ def _register_callbacks(client: Any, cfg: Any, registry: Any) -> None:
                 session_id=session_id,
                 source="matrix",
                 on_progress=(
-                    progress.on_progress
-                    if getattr(mb, "progress_updates", True)
-                    else None
+                    progress.on_progress if getattr(mb, "progress_updates", True) else None
                 ),
             )
             await progress.finish(result.response or "(empty reply)")
@@ -899,9 +898,7 @@ def _register_callbacks(client: Any, cfg: Any, registry: Any) -> None:
                 await progress.fail("Sorry — something went wrong.")
             else:
                 try:
-                    await _send_text(
-                        client, room.room_id, "Sorry — something went wrong."
-                    )
+                    await _send_text(client, room.room_id, "Sorry — something went wrong.")
                 except Exception:
                     logger.exception("Failed to send error reply")
         finally:
@@ -942,9 +939,7 @@ def _register_callbacks(client: Any, cfg: Any, registry: Any) -> None:
         except Exception:
             pass
 
-    client.add_to_device_callback(
-        on_to_device, (KeyVerificationEvent, UnknownToDeviceEvent)
-    )
+    client.add_to_device_callback(on_to_device, (KeyVerificationEvent, UnknownToDeviceEvent))
     client.add_event_callback(on_message, (RoomMessageText,))
     client.add_event_callback(on_invite, (InviteMemberEvent,))
     client.add_event_callback(on_megolm, (MegolmEvent,))
@@ -996,9 +991,7 @@ async def run_sync_with_reconnect(
     while True:
         try:
             await _assert_online(client)
-            logger.info(
-                "Matrix sync starting (presence=online, timeout=%sms)", timeout_ms
-            )
+            logger.info("Matrix sync starting (presence=online, timeout=%sms)", timeout_ms)
             await client.sync_forever(
                 timeout=timeout_ms,
                 full_state=True,
@@ -1009,9 +1002,7 @@ async def run_sync_with_reconnect(
         except asyncio.CancelledError:
             raise
         except Exception:
-            logger.exception(
-                "Matrix sync crashed; reconnecting in %.0fs", backoff
-            )
+            logger.exception("Matrix sync crashed; reconnecting in %.0fs", backoff)
             await asyncio.sleep(backoff)
             backoff = next_sync_backoff(backoff, max_s=max_backoff_s)
 

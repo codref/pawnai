@@ -40,13 +40,21 @@ _registry = SallmSessionRegistry()
 # ──────────────────────────────────────────────────────────────────────────────
 
 COMMAND_DEFAULTS: Dict[str, Dict[str, Any]] = {
-    "run": {"prompt": None, "session_id": None, "model": None},
+    "run": {
+        "prompt": None,
+        "session_id": None,
+        "model": None,
+        "parent_run_id": None,
+        "depth": 0,
+        "event_id": None,
+    },
     "vault_run": {
         "prompt": None,
         "session_id": None,
         "model": None,
         "request_id": None,
     },
+    "session_completed": {"session_id": None},
 }
 
 
@@ -79,6 +87,12 @@ async def _run_sallm(
     prompt: Optional[str] = params.get("prompt") or None
     session_id: Optional[str] = params.get("session_id") or None
     model: Optional[str] = params.get("model") or None
+    parent = params.get("parent_run_id") or None
+    event_id = params.get("event_id") or None
+    try:
+        depth = int(params.get("depth") or 0)
+    except (TypeError, ValueError):
+        depth = 0
 
     await run_agent_turn(
         cfg=cfg,
@@ -89,6 +103,9 @@ async def _run_sallm(
         prompt=prompt,
         session_id=session_id,
         model=model,
+        parent_run_id=parent,
+        depth=depth,
+        event_id=event_id,
     )
 
 
@@ -115,12 +132,72 @@ async def dispatch(
         await _run_sallm(params, cfg, message_id, command="run", source="queue")
         return
     if command == "vault_run":
-        await _run_sallm(
-            params, cfg, message_id, command="vault_run", source="vault"
-        )
+        await _run_sallm(params, cfg, message_id, command="vault_run", source="vault")
+        return
+    if command == "session_completed":
+        await _session_completed(params, cfg)
         return
 
     raise NotImplementedError(f"Command {command!r} has no handler registered")
+
+
+def _reject_self_run(cfg: Any, params: Dict[str, Any]) -> Optional[str]:
+    """Return a policy reason when a child run must be dropped."""
+    parent = params.get("parent_run_id")
+    if not parent:
+        return None
+    from datetime import datetime, timedelta, timezone  # noqa: PLC0415
+
+    from pawn_agent.core.coworker import db as itemdb  # noqa: PLC0415
+    from pawn_agent.core.coworker.autonomy import reject_reason  # noqa: PLC0415
+
+    autonomy = cfg.coworker.autonomy
+    try:
+        depth = int(params.get("depth") or 0)
+    except (TypeError, ValueError):
+        depth = 0
+    event_id = params.get("event_id") or ""
+    event_count = itemdb.count_runs_for_event(cfg.db_dsn, event_id) if event_id else 0
+    day_count = itemdb.count_self_runs_since(
+        cfg.db_dsn, datetime.now(timezone.utc) - timedelta(days=1)
+    )
+    duplicate = itemdb.recent_duplicate_run(
+        cfg.db_dsn, str(params.get("prompt") or ""), str(params.get("session_id") or "")
+    )
+    reason = reject_reason(
+        depth=depth,
+        event_count=event_count,
+        day_count=day_count,
+        max_depth=int(autonomy.max_depth),
+        max_per_event=int(autonomy.max_self_jobs_per_event),
+        max_per_day=int(autonomy.max_self_jobs_per_day),
+        duplicate=duplicate,
+    )
+    if reason:
+        try:
+            itemdb.record_decision(
+                cfg.db_dsn,
+                event_kind="self_queue",
+                policy_decision="deny",
+                event_id=event_id or None,
+                proposed_action=str(params.get("prompt") or "")[:500],
+                outcome=reason,
+            )
+        except Exception as exc:
+            logger.warning("could not record self-queue denial: %s", exc)
+    return reason
+
+
+async def _session_completed(params: Dict[str, Any], cfg: Any) -> None:
+    session_id = params.get("session_id") or None
+    if not session_id:
+        raise ValueError("session_completed requires session_id")
+    if not getattr(cfg.coworker, "enabled", False):
+        logger.info("session_completed for %s ignored; coworker disabled", session_id)
+        return
+    from pawn_agent.core.coworker.pipeline import process_session  # noqa: PLC0415
+
+    await process_session(cfg, session_id)
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -160,6 +237,13 @@ def make_message_handler(
 
         params = _merge_params(command, payload)
         logger.info("Processing message %s: command=%r", msg.id, command)
+
+        if command == "run":
+            reason = _reject_self_run(cfg, params)
+            if reason:
+                logger.info("Message %s dropped by coworker policy: %s", msg.id, reason)
+                await msg.ack()
+                return
 
         try:
             await dispatch(command, params, cfg, message_id=msg.id)

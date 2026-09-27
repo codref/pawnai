@@ -142,6 +142,15 @@ def build_pawn_clitools() -> dict[str, CliTool]:
                 "--rationale TEXT. Does NOT apply changes."
             ),
         ),
+        "knowledge_search": CliTool(
+            name="knowledge_search",
+            argv=_cli_argv("knowledge_search.py"),
+            summary=(
+                "Semantic search across vault notes, transcripts, and coworker items. "
+                "Flags: --query TEXT --kind note|transcript|analysis|item --limit N. "
+                "Use when the user asks where something was discussed."
+            ),
+        ),
         "queue_push": CliTool(
             name="queue_push",
             argv=_cli_argv("queue_push.py"),

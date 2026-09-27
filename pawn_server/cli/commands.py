@@ -33,9 +33,16 @@ blacklist_app = typer.Typer(
     add_completion=False,
     rich_markup_mode="rich",
 )
+coworker_app = typer.Typer(
+    name="coworker",
+    help="Goal-driven inbox: process a session, reindex, pause, or resume.",
+    add_completion=False,
+    rich_markup_mode="rich",
+)
 app.add_typer(schedules_app, name="schedules")
 app.add_typer(queue_app, name="queue")
 app.add_typer(blacklist_app, name="blacklist")
+app.add_typer(coworker_app, name="coworker")
 
 
 def _load_scheduler_service(config: Optional[str]):
@@ -500,10 +507,7 @@ def blacklist_add(
     ttl: Optional[int] = typer.Option(
         None,
         "--ttl",
-        help=(
-            "Seconds until expiry. Default: permanent "
-            "(or api.blacklist_ttl_seconds)."
-        ),
+        help=("Seconds until expiry. Default: permanent " "(or api.blacklist_ttl_seconds)."),
     ),
 ) -> None:
     """Manually blacklist an IP."""
@@ -520,8 +524,7 @@ def blacklist_add(
     )
     expires = row.expires_at.isoformat() if row.expires_at else "never"
     console.print(
-        f"[green]Blacklisted {row.ip}[/green] "
-        f"reason={row.reason!r} expires={expires}"
+        f"[green]Blacklisted {row.ip}[/green] " f"reason={row.reason!r} expires={expires}"
     )
 
 
@@ -551,13 +554,104 @@ def blacklist_clear(
     from pawn_agent.utils.db import clear_ip_blacklist  # noqa: PLC0415
 
     cfg = _load_blacklist_cfg(config)
-    if not yes and not typer.confirm(
-        "Clear the entire API IP blacklist?", default=False
-    ):
+    if not yes and not typer.confirm("Clear the entire API IP blacklist?", default=False):
         raise typer.Exit(0)
     n = clear_ip_blacklist(cfg.db_dsn)
     noun = "y" if n == 1 else "ies"
     console.print(f"[green]Cleared {n} blacklist entr{noun}.[/green]")
+
+
+@coworker_app.command("process")
+def coworker_process(
+    session: str = typer.Option(..., "--session", "-s", help="Diarization session id."),
+    config: Optional[str] = typer.Option(None, "--config", "-c"),
+) -> None:
+    """Run the coworker loop for one finished session."""
+    import asyncio  # noqa: PLC0415
+
+    from pawn_agent.core.coworker.pipeline import process_session  # noqa: PLC0415
+    from pawn_agent.utils.config import load_config  # noqa: PLC0415
+
+    cfg = load_config(config)
+    result = asyncio.run(process_session(cfg, session))
+    console.print(result)
+
+
+@coworker_app.command("reindex")
+def coworker_reindex(
+    notes: bool = typer.Option(False, "--notes", help="Index vault markdown."),
+    sessions: bool = typer.Option(False, "--sessions", help="Index diarization transcripts."),
+    config: Optional[str] = typer.Option(None, "--config", "-c"),
+) -> None:
+    """Backfill the knowledge index. With no flags, indexes both."""
+    from sqlalchemy import select  # noqa: PLC0415
+    from sqlalchemy.orm import Session  # noqa: PLC0415
+
+    from pawn_agent.utils.config import load_config  # noqa: PLC0415
+    from pawn_agent.utils.transcript import fetch_transcript  # noqa: PLC0415
+    from pawn_core.database import get_engine  # noqa: PLC0415
+    from pawn_core.knowledge_index import index_text  # noqa: PLC0415
+    from pawn_core.vault_config import vault_store_from_config  # noqa: PLC0415
+    from pawn_diarize.core.database import TranscriptionSegment  # noqa: PLC0415
+
+    cfg = load_config(config)
+    do_notes = notes or not sessions
+    do_sessions = sessions or not notes
+    count = 0
+    if do_notes:
+        store = vault_store_from_config(cfg)
+        for key in store.list(""):
+            if key.startswith(f"{cfg.vault.agent_root.strip('/')}/") or key.startswith(
+                ".obsidian/"
+            ):
+                continue
+            try:
+                index_text(cfg, source_kind="note", source_ref=key, text=store.read(key))
+                count += 1
+            except Exception as exc:
+                console.print(f"[yellow]{key}: {exc}[/yellow]")
+    if do_sessions:
+        with Session(get_engine(cfg.db_dsn)) as db:
+            ids = db.scalars(select(TranscriptionSegment.session_id).distinct()).all()
+        for session_id in ids:
+            text = fetch_transcript(cfg, session_id)
+            if text.startswith("Error") or text.startswith("No transcript"):
+                continue
+            index_text(cfg, source_kind="transcript", source_ref=session_id, text=text)
+            count += 1
+    console.print(f"[green]Indexed {count} sources.[/green]")
+
+
+@coworker_app.command("pause")
+def coworker_pause(config: Optional[str] = typer.Option(None, "--config", "-c")) -> None:
+    """Stop unattended follow-ups until resume."""
+    from pawn_agent.core.coworker.autonomy import set_paused  # noqa: PLC0415
+    from pawn_agent.utils.config import load_config  # noqa: PLC0415
+
+    path = set_paused(load_config(config), True)
+    console.print(f"[yellow]Coworker paused ({path}).[/yellow]")
+
+
+@coworker_app.command("resume")
+def coworker_resume(config: Optional[str] = typer.Option(None, "--config", "-c")) -> None:
+    """Allow unattended follow-ups again."""
+    from pawn_agent.core.coworker.autonomy import set_paused  # noqa: PLC0415
+    from pawn_agent.utils.config import load_config  # noqa: PLC0415
+
+    set_paused(load_config(config), False)
+    console.print("[green]Coworker resumed.[/green]")
+
+
+@coworker_app.command("status")
+def coworker_status(config: Optional[str] = typer.Option(None, "--config", "-c")) -> None:
+    """Show whether the coworker loop is enabled and paused."""
+    from pawn_agent.core.coworker.autonomy import effective_mode, is_paused  # noqa: PLC0415
+    from pawn_agent.utils.config import load_config  # noqa: PLC0415
+
+    cfg = load_config(config)
+    console.print(
+        f"enabled={cfg.coworker.enabled} paused={is_paused(cfg)} mode={effective_mode(cfg)}"
+    )
 
 
 @app.command()
@@ -619,6 +713,16 @@ def serve(
         "--vault-watcher-only",
         help="Run only the vault task watcher (no HTTP API, queue, or scheduler).",
     ),
+    no_coworker: bool = typer.Option(
+        False,
+        "--no-coworker",
+        help="Disable the coworker briefing loop even if coworker.enabled is true.",
+    ),
+    coworker_only: bool = typer.Option(
+        False,
+        "--coworker-only",
+        help="Run only the coworker loop (briefing, review, vault scan).",
+    ),
     ssl_certfile: Optional[str] = typer.Option(
         None,
         "--ssl-certfile",
@@ -671,6 +775,7 @@ def serve(
         DEFAULT_TOPIC,
         start_listener,
     )
+
     cfg = load_config(config)
 
     # Configure logging from pawnai.yaml before uvicorn starts.
@@ -687,10 +792,13 @@ def serve(
     if model:
         _apply_model_override(cfg, model)
 
-    only_flags = sum(bool(x) for x in (scheduler_only, matrix_only, vault_watcher_only))
+    only_flags = sum(
+        bool(x) for x in (scheduler_only, matrix_only, vault_watcher_only, coworker_only)
+    )
     if only_flags > 1:
         console.print(
-            "[red]Use only one of --scheduler-only / --matrix-only / --vault-watcher-only.[/red]"
+            "[red]Use only one of --scheduler-only / --matrix-only / "
+            "--vault-watcher-only / --coworker-only.[/red]"
         )
         raise typer.Exit(1)
 
@@ -712,9 +820,10 @@ def serve(
     with_matrix = bool(cfg.matrix_bot.enabled) and not no_matrix
     with_matrix_notifier = with_matrix and matrix_notifier_enabled(cfg) and not no_matrix
     with_vault_watcher = bool(cfg.vault_watcher.enabled) and not no_vault_watcher
+    with_coworker = bool(cfg.coworker.enabled) and not no_coworker
     effective_topic = topic or queue_cfg.get("topic", DEFAULT_TOPIC)
     effective_consumer = consumer_name or queue_cfg.get("consumer_name", DEFAULT_CONSUMER_NAME)
-    only_mode = scheduler_only or matrix_only or vault_watcher_only
+    only_mode = scheduler_only or matrix_only or vault_watcher_only or coworker_only
 
     bf = "on" if cfg.api.bruteforce_enabled else "off"
     bf_detail = (
@@ -722,9 +831,7 @@ def serve(
         f"404≥{cfg.api.not_found_threshold}"
         f"/{cfg.api.bruteforce_window_seconds}s)"
     )
-    ssl_line = (
-        f"enabled ({effective_cert})" if effective_cert else "disabled"
-    )
+    ssl_line = f"enabled ({effective_cert})" if effective_cert else "disabled"
     console.print(
         f"[bold green]pawn-server serve starting[/bold green]\n"
         f"  host     : [cyan]{effective_host}[/cyan]\n"
@@ -739,7 +846,8 @@ def serve(
         f"  scheduler: [dim]{'enabled' if with_scheduler and not matrix_only else 'disabled'}[/dim]\n"
         f"  matrix   : [dim]{'enabled' if with_matrix and not scheduler_only else 'disabled'}[/dim]\n"
         f"  notify   : [dim]{'via matrix bot' if with_matrix_notifier and with_matrix and not scheduler_only else 'disabled'}[/dim]\n"
-        f"  vault    : [dim]{'enabled' if with_vault_watcher and not scheduler_only and not matrix_only else 'disabled'}[/dim]"
+        f"  vault    : [dim]{'enabled' if with_vault_watcher and not scheduler_only and not matrix_only and not coworker_only else 'disabled'}[/dim]\n"
+        f"  coworker : [dim]{'enabled' if with_coworker and not scheduler_only and not matrix_only else 'disabled'}[/dim]"
     )
     console.print("[dim]Press Ctrl-C to stop.[/dim]\n")
 
@@ -762,6 +870,14 @@ def serve(
             from pawn_server.core.vault_watcher import start_vault_watcher  # noqa: PLC0415
 
             await start_vault_watcher(cfg)
+            return
+
+        if coworker_only:
+            if not with_coworker:
+                raise RuntimeError("Coworker is disabled by config or --no-coworker")
+            from pawn_server.core.coworker_worker import start_coworker  # noqa: PLC0415
+
+            await start_coworker(cfg)
             return
 
         fastapi_app = create_app(cfg)
@@ -788,7 +904,13 @@ def serve(
         )
         server = _Server(uv_config)
 
-        if not with_queue and not with_scheduler and not with_matrix and not with_vault_watcher:
+        if (
+            not with_queue
+            and not with_scheduler
+            and not with_matrix
+            and not with_vault_watcher
+            and not with_coworker
+        ):
             await server.serve()
             return
 
@@ -807,6 +929,17 @@ def serve(
             from pawn_server.core.vault_watcher import start_vault_watcher  # noqa: PLC0415
 
             tasks.append(asyncio.create_task(start_vault_watcher(cfg, registry=shared_registry)))
+        if with_coworker:
+            from pawn_server.core.coworker_worker import start_coworker  # noqa: PLC0415
+            from pawn_server.core.jobs import recover_abandoned_jobs  # noqa: PLC0415
+
+            try:
+                recovered = await recover_abandoned_jobs(cfg, shared_registry)
+                if any(recovered.values()):
+                    console.print(f"[dim]recovered jobs: {recovered}[/dim]")
+            except Exception as exc:
+                console.print(f"[yellow]job recovery skipped: {exc}[/yellow]")
+            tasks.append(asyncio.create_task(start_coworker(cfg)))
 
         # Stop all when any exits (Ctrl-C, error, or natural completion)
         done, pending = await asyncio.wait(

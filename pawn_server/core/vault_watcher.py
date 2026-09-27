@@ -146,7 +146,42 @@ async def run_vault_watcher_tick(
         )
         executed += 1
 
-    return {"executed": executed, "approved": approved}
+    acted = await _apply_item_actions(cfg, store, registry=active)
+    return {"executed": executed, "approved": approved, "items": acted}
+
+
+async def _apply_item_actions(cfg: Any, store: Any, *, registry: Any) -> int:
+    """Apply ``action:`` frontmatter on coworker item notes."""
+    coworker = getattr(cfg, "coworker", None)
+    if coworker is None or not getattr(coworker, "enabled", False):
+        return 0
+    items_dir = getattr(coworker, "items_dir", "") or ""
+    if not items_dir:
+        return 0
+    from pawn_agent.core.coworker.actions import apply_action  # noqa: PLC0415
+    from pawn_agent.core.coworker.notes import TERMINAL_STATUSES, parse_item_note  # noqa: PLC0415
+
+    try:
+        keys = await asyncio.to_thread(store.list, items_dir)
+    except Exception as exc:
+        logger.debug("item scan skipped: %s", exc)
+        return 0
+    acted = 0
+    for key in keys:
+        try:
+            body = await asyncio.to_thread(store.read, key)
+            parsed = parse_item_note(body)
+        except Exception:
+            continue
+        action = parsed.get("action") or ""
+        if not action or parsed.get("status") in TERMINAL_STATUSES:
+            continue
+        item_id = parsed.get("id") or parsed.get("short_id")
+        if not item_id:
+            continue
+        await apply_action(cfg, item_id, action, registry=registry, store=store)
+        acted += 1
+    return acted
 
 
 async def start_vault_watcher(

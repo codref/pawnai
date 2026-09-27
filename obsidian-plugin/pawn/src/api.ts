@@ -63,6 +63,19 @@ export interface AskJobRequest {
   context?: string;
 }
 
+export interface InboxItem {
+  id: string;
+  short_id: string;
+  kind: string;
+  text: string;
+  thread?: string | null;
+  status: string;
+  interrupt: boolean;
+  reason?: string | null;
+  note_key?: string | null;
+  created_at?: string | null;
+}
+
 export class ServerUnreachable extends Error {}
 
 export class HttpError extends Error {
@@ -176,6 +189,21 @@ export class PawnClient {
   async createAskJob(req: AskJobRequest): Promise<Job> {
     const resp = await this.request("POST", "/v1/jobs", { kind: "ask", ...req });
     return resp.json as Job;
+  }
+
+  async listItems(status?: string): Promise<InboxItem[]> {
+    const query = status ? `?status=${encodeURIComponent(status)}` : "";
+    const resp = await this.request("GET", `/v1/items${query}`);
+    const body = resp.json as { items?: InboxItem[] };
+    return body.items ?? [];
+  }
+
+  async itemAction(id: string, action: string, arg?: string): Promise<string> {
+    const resp = await this.request("POST", `/v1/items/${encodeURIComponent(id)}/action`, {
+      action,
+      arg,
+    });
+    return String((resp.json as { receipt?: string }).receipt ?? "ok");
   }
 
   async pushNote(path: string, content: string, mode: "replace" | "append"): Promise<Job> {

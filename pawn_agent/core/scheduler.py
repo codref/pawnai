@@ -41,6 +41,7 @@ class SchedulePayload:
     cron_expression: Optional[str]
     next_run_at: Optional[datetime]
     metadata: Optional[dict[str, Any]]
+    output_note: Optional[str] = None
 
 
 @dataclass(frozen=True)
@@ -53,6 +54,7 @@ class ClaimedScheduleFire:
     prompt: str
     session_id: str
     model: Optional[str]
+    output_note: Optional[str] = None
 
 
 def utc_now() -> datetime:
@@ -224,6 +226,8 @@ def validate_schedule_payload(
     if next_run_at is None and schedule_kind == "once":
         raise ValueError("run_at must be in the future for a new one-shot schedule")
 
+    output_note = _field("output_note")
+    output_note = str(output_note).strip() if output_note else None
     return SchedulePayload(
         name=name,
         prompt=prompt,
@@ -236,6 +240,7 @@ def validate_schedule_payload(
         cron_expression=cron_expression,
         next_run_at=next_run_at,
         metadata=metadata,
+        output_note=output_note,
     )
 
 
@@ -261,6 +266,7 @@ def serialize_schedule(row: AgentSchedule) -> dict[str, Any]:
         "created_from_proposal_id": row.created_from_proposal_id,
         "revision": row.revision,
         "metadata": row.metadata_json or {},
+        "output_note": row.output_note,
     }
 
 
@@ -324,6 +330,13 @@ class AgentSchedulerService:
         )
         with _get_session(self.dsn) as db:
             db.add(row)
+        _mirror_proposal_to_inbox(
+            proposal_id=proposal_id,
+            action=normalized_action,
+            payload=payload,
+            rationale=rationale,
+            schedule_id=schedule_id,
+        )
         return proposal_id
 
     def create_schedule(
@@ -356,6 +369,7 @@ class AgentSchedulerService:
             created_from_proposal_id=created_from_proposal_id,
             revision=1,
             metadata_json=details.metadata,
+            output_note=details.output_note,
         )
         with _get_session(self.dsn) as db:
             db.add(row)
@@ -388,6 +402,7 @@ class AgentSchedulerService:
             row.updated_at = utc_now()
             row.revision += 1
             row.metadata_json = details.metadata
+            row.output_note = details.output_note
 
     def approve_proposal(self, proposal_id: str, *, reviewed_by: str = "user") -> Optional[str]:
         """Approve and apply a proposed mutation. Returns created schedule id if any."""
@@ -568,6 +583,7 @@ class AgentSchedulerService:
                         prompt=schedule.prompt,
                         session_id=schedule.session_id,
                         model=schedule.model,
+                        output_note=schedule.output_note,
                     )
                 )
         return claimed
@@ -666,6 +682,8 @@ async def run_scheduler_tick(
             )
             run_id = result.run_id
             service.mark_fire_completed(fire.fire_id, agent_run_id=run_id)
+            if fire.output_note and result.response:
+                _write_schedule_output(cfg, fire.output_note, result.response)
         except Exception as exc:
             logger.error("Scheduled fire %s failed: %s", fire.fire_id, exc, exc_info=True)
             service.mark_fire_failed(fire.fire_id, error=str(exc), agent_run_id=run_id)
@@ -693,3 +711,66 @@ async def start_scheduler(
     except asyncio.CancelledError:
         logger.info("Scheduler cancelled - shutting down cleanly")
         raise
+
+
+def _write_schedule_output(cfg: Any, path: str, response: str) -> None:
+    """Append a scheduled turn to its vault note. Failures stay in the log."""
+    try:
+        from pawn_agent.tools.notes_impl import note_append_impl  # noqa: PLC0415
+
+        note_append_impl(cfg, path, response)
+    except Exception as exc:
+        logger.warning("schedule output note %s skipped: %s", path, exc)
+
+
+def _mirror_proposal_to_inbox(
+    *,
+    proposal_id: str,
+    action: str,
+    payload: dict[str, Any],
+    rationale: Optional[str],
+    schedule_id: Optional[str],
+) -> None:
+    """Surface a schedule proposal as a coworker inbox item when the loop is on."""
+    try:
+        from pawn_agent.core.coworker import db as itemdb  # noqa: PLC0415
+        from pawn_agent.core.coworker.policy import fingerprint  # noqa: PLC0415
+        from pawn_agent.utils.config import load_config  # noqa: PLC0415
+
+        cfg = load_config()
+        if not cfg.coworker.enabled:
+            return
+        text = rationale or f"Schedule proposal ({action})"
+        row = itemdb.insert_item(
+            cfg.db_dsn,
+            source_kind="schedule",
+            source_ref=proposal_id,
+            kind="schedule_proposal",
+            text=text,
+            fingerprint=fingerprint(text, proposal_id),
+            payload={
+                "proposal_id": proposal_id,
+                "action": action,
+                "schedule_id": schedule_id,
+                "proposed": payload,
+            },
+            status="new",
+            interrupt=True,
+        )
+        from pawn_agent.core.coworker.notes import render_item_note  # noqa: PLC0415
+        from pawn_core.vault_config import vault_store_from_config  # noqa: PLC0415
+
+        key = f"{cfg.coworker.items_dir.strip('/')}/{row['short_id']}.md"
+        note = render_item_note(
+            item_id=row["id"],
+            short_id=row["short_id"],
+            status="new",
+            kind="schedule_proposal",
+            text=text,
+            reason="Approve or reject this schedule.",
+            interrupt=True,
+        )
+        vault_store_from_config(cfg).write(key, note)
+        itemdb.update_item(cfg.db_dsn, row["id"], note_key=key)
+    except Exception as exc:
+        logger.debug("schedule proposal inbox mirror skipped: %s", exc)
