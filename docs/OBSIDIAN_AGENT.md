@@ -39,6 +39,8 @@ Free-standing plugin chats use `chat:{uuid}`.
 | Everything else | You | Editable by Pawn only if frontmatter has `pawn: editable` |
 | `.obsidian/` | You | Never touched by Pawn |
 
+How to turn the coworker loop on, write `Goals.md`, and triage from the Inbox is in [COWORKER.md](COWORKER.md).
+
 ## Enable
 
 In `pawnai.yaml`:
@@ -133,6 +135,14 @@ Turn on **bucket versioning** on the vault bucket as your undo.
 
 ## Install the plugin
 
+Download `pawn.zip` from the GitHub release tagged `obsidian-plugin-v…`
+and unzip it into `<vault>/.obsidian/plugins/`. The archive contains a
+`pawn/` folder. Enable **Pawn** in Obsidian (Restricted mode off). Set
+Server URL + API token to match `api.*`.
+
+From a checkout, `make obsidian-plugin-dist` writes the same zip.
+Symlinking the source tree still works after `npm run build`:
+
 ```bash
 cd obsidian-plugin/pawn
 npm install && npm run build
@@ -140,9 +150,8 @@ ln -s /path/to/parakeet/obsidian-plugin/pawn \
   /path/to/vault/.obsidian/plugins/pawn
 ```
 
-Enable **Pawn** in Obsidian. Set Server URL + API token to match `api.*`.
 See [obsidian-plugin/pawn/README.md](../obsidian-plugin/pawn/README.md) for
-the full feature list.
+the release tag, BRAT, and the full feature list.
 
 ## Chat (plugin)
 

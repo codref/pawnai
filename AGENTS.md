@@ -165,7 +165,7 @@ Default DB uses PostgreSQL on port `5433` and requires `pgvector`.
 - Matrix bot helpers: `tests/test_matrix_bot.py`.
 - Vault: `tests/test_vault_store.py`, `tests/test_vault_transcript.py`, `tests/test_vault_tasks.py`, `tests/test_vault_watcher.py`.
 - HTTP API: `tests/test_api_chat_compat.py` (OpenAI/Copilot compat), `tests/test_api_jobs.py` (jobs + `/v1/pawn/chat`).
-- Plugin: `cd obsidian-plugin/pawn && npm run build` (runs `tsc -noEmit` first); no JS test runner.
+- Plugin: `cd obsidian-plugin/pawn && npm run build` (runs `tsc -noEmit` first); no JS test runner. `make dist` in that directory (or `make obsidian-plugin-dist` from the repo root) writes `pawn.zip` (`pawn/main.js`, `manifest.json`, `styles.css`). `.github/workflows/obsidian-plugin.yml` uploads that zip as the `pawn-obsidian-plugin` artifact and, on an `obsidian-plugin-v*` tag whose version matches `manifest.json`, publishes it on the GitHub release.
 - No CI workflows are present in `.github/workflows/`.
 
 ## Constraints / Gotchas

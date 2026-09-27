@@ -11,9 +11,31 @@ point it at Pawn's OpenAI-compatible endpoint; see
 
 ## Install
 
+Download `pawn.zip` from the GitHub release tagged `obsidian-plugin-v…`
+([releases](https://github.com/codref/pawnai/releases)), or from the
+`pawn-obsidian-plugin` artifact on a workflow run. Unzip it into
+`<vault>/.obsidian/plugins/`. The archive already contains the `pawn/`
+folder (`main.js`, `manifest.json`, `styles.css`). Turn off Restricted
+mode, then enable **Pawn** under **Settings → Community plugins**.
+
+[BRAT](https://github.com/TfTHacker/obsidian-brat) installs the same
+release: add `codref/pawnai` and select the `obsidian-plugin-v…` tag.
+That release also attaches `main.js`, `manifest.json`, and `styles.css`
+on their own, which is what BRAT downloads.
+
+To publish a release, set `version` in `manifest.json`, then:
+
+```bash
+git tag obsidian-plugin-v0.2.0   # must match manifest.json
+git push origin obsidian-plugin-v0.2.0
+```
+
+### From source
+
 ```bash
 npm install
 npm run build          # type-check + bundle to main.js
+make dist              # optional: write pawn.zip (same layout as the release)
 ```
 
 Copy only the three runtime files (`main.js`, `manifest.json`, `styles.css`)

@@ -22,7 +22,7 @@ CERT_CN         ?= localhost
 CERT_SAN        ?= DNS:localhost,IP:127.0.0.1
 
 .PHONY: build push run mlflow clean ssl-cert \
-	obsidian-plugin obsidian-plugin-adb obsidian-plugin-list-vaults
+	obsidian-plugin obsidian-plugin-dist obsidian-plugin-adb obsidian-plugin-list-vaults
 
 build:
 	docker build -f $(DOCKERFILE) -t $(IMAGE):$(TAG) .
@@ -31,6 +31,11 @@ build:
 # Example: make obsidian-plugin-adb ADB_VAULT=/sdcard/Documents/MyVault
 obsidian-plugin:
 	$(MAKE) -C obsidian-plugin/pawn build
+
+# pawn.zip for a manual install or a GitHub release asset.
+# Unzip into <vault>/.obsidian/plugins/
+obsidian-plugin-dist:
+	$(MAKE) -C obsidian-plugin/pawn dist
 
 obsidian-plugin-list-vaults:
 	$(MAKE) -C obsidian-plugin/pawn adb-list-vaults ADB_SERIAL="$(ADB_SERIAL)" ADB_CONFIG="$(ADB_CONFIG)"

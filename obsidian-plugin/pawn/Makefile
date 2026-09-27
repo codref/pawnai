@@ -3,6 +3,7 @@
 #
 # Usage:
 #   make build
+#   make dist                                   # pawn.zip for GitHub / manual install
 #   make adb-list-vaults
 #   make adb-push ADB_VAULT=/sdcard/Documents/MyVault
 #
@@ -13,6 +14,7 @@
 
 PLUGIN_ID       := pawn
 DIST_FILES      := main.js manifest.json styles.css
+DIST_ZIP        := pawn.zip
 
 ADB             ?= adb
 ADB_SERIAL      ?=
@@ -31,11 +33,14 @@ endif
 
 ADB_PLUGIN = $(ADB_VAULT)/$(ADB_CONFIG)/plugins/$(PLUGIN_ID)
 
-.PHONY: help build install-deps check-dist adb-devices adb-list-vaults adb-push adb-restart
+.PHONY: help build install-deps check-dist package dist \
+	adb-devices adb-list-vaults adb-push adb-restart
 
 help:
 	@echo "Targets:"
 	@echo "  build             Bundle main.js (npm run build)"
+	@echo "  package           Zip the three runtime files into $(DIST_ZIP)"
+	@echo "  dist              Build + package $(DIST_ZIP)"
 	@echo "  adb-list-vaults   Find vaults with a .obsidian folder on the phone"
 	@echo "  adb-push          Build + push main.js/manifest.json/styles.css"
 	@echo ""
@@ -55,6 +60,22 @@ check-dist: build
 	@for f in $(DIST_FILES); do \
 		test -f $$f || { echo "missing $$f — build failed?"; exit 1; }; \
 	done
+
+# pawn.zip contains pawn/{main.js,manifest.json,styles.css}. Unzip it into
+# <vault>/.obsidian/plugins/ and Obsidian sees the plugin folder.
+package:
+	@for f in $(DIST_FILES); do \
+		test -f $$f || { echo "missing $$f — run 'make build' first"; exit 1; }; \
+	done
+	rm -rf .dist $(DIST_ZIP)
+	mkdir -p .dist/$(PLUGIN_ID)
+	cp $(DIST_FILES) .dist/$(PLUGIN_ID)/
+	cd .dist && zip -r ../$(DIST_ZIP) $(PLUGIN_ID)
+	rm -rf .dist
+	@echo "Wrote $(DIST_ZIP)"
+	@echo "Unzip into <vault>/.obsidian/plugins/ (creates $(PLUGIN_ID)/)."
+
+dist: check-dist package
 
 adb-devices:
 	$(ADB_CMD) devices -l
