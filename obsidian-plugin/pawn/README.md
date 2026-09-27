@@ -16,9 +16,23 @@ npm install
 npm run build          # type-check + bundle to main.js
 ```
 
-Symlink or copy this folder to `<vault>/.obsidian/plugins/pawn/`, then enable
-**Pawn** under **Settings → Community plugins**. Use `npm run dev` to rebuild
-on change.
+Copy only the three runtime files (`main.js`, `manifest.json`, `styles.css`)
+into `<vault>/.obsidian/plugins/pawn/` (or symlink this folder on desktop),
+then enable **Pawn** under **Settings → Community plugins**. Use `npm run
+dev` to rebuild on change.
+
+### Android (ADB)
+
+When vault sync skips `.obsidian/plugins`, push the bundle to a USB-connected
+phone:
+
+```bash
+make adb-list-vaults                          # discover vault paths
+make adb-push ADB_VAULT=/sdcard/Documents/MyVault
+```
+
+From the repo root: `make obsidian-plugin-adb ADB_VAULT=…`. Obsidian is
+force-stopped after push so the next open reloads the plugin.
 
 ## Chat
 
