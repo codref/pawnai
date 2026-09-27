@@ -182,19 +182,42 @@ api:
   # Idle timeout for API-managed model resources.
   model_idle_timeout_minutes: 10.0
 
+  # FastAPI /docs, /redoc, /openapi.json — turn off when exposing the port publicly.
+  enable_docs: true
+
+  # IPs that skip auto-blacklist (exact match; ::ffff:x.x.x.x normalised).
+  whitelist_ips:
+    - 127.0.0.1
+    - "::1"
+
+  # Auto-blacklist after N 401s or 404s inside the sliding window.
+  bruteforce_enabled: true
+  auth_fail_threshold: 10
+  not_found_threshold: 40
+  bruteforce_window_seconds: 300
+  # null = permanent until `pawn-server blacklist remove|clear`
+  blacklist_ttl_seconds: null
+
+  # Reverse-proxy support (nginx, Caddy, …). Off by default — enable only when
+  # pawn-server sits behind a proxy that sets X-Real-IP / X-Forwarded-For, and
+  # list the proxy peer address(es). Headers from non-trusted peers are ignored.
+  trust_proxy: false
+  trusted_proxies:
+    - 127.0.0.1
+    - "::1"
+
+  # Optional TLS when clients hit pawn-server directly (no reverse proxy).
+  # Both paths required. Create a self-signed pair with: make ssl-cert
+  # ssl_certfile: certs/cert.pem
+  # ssl_keyfile: certs/key.pem
+  ssl_certfile: null
+  ssl_keyfile: null
+
 mlflow:
   # Optional MLflow tracing/experiment logging.
   enabled: false
   tracking_uri: null
   experiment: pawn-agent
-
-phoenix:
-  # Optional Phoenix/OpenTelemetry tracing for LangGraph flows.
-  enabled: false
-  endpoint: http://localhost:6006/v1/traces
-  project_name: parakeet-langgraph
-  protocol: http/protobuf
-  api_key: null
 
 diarize_queue:
   # Queue consumed by `pawn-diarize listen`.

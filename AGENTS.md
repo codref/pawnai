@@ -118,6 +118,13 @@ Durable schedules are in `pawn_agent/core/scheduler.py` and DB models in `pawn_a
   `stats` lists all by default; mutating commands take `--name` / `--topic` / `--all`.
   Pause writes `{topic}/.paused` in the queue bucket; agent and diarize listeners
   stop claiming new messages until `resume`.
+- API IP blacklist is under `pawn-server blacklist`: `list`, `add`, `remove`, `clear`.
+  Auto-ban heuristics (auth 401 / path-scan 404) and `api.whitelist_ips` /
+  `api.enable_docs` live on `ApiSection` — disable docs when exposing port 8000.
+  Behind a reverse proxy set `api.trust_proxy` + `api.trusted_proxies` so
+  X-Real-IP / X-Forwarded-For are used (off by default).
+  Direct TLS: `api.ssl_certfile` + `api.ssl_keyfile` (or `--ssl-*` flags);
+  `make ssl-cert` writes a self-signed pair under `certs/`.
 
 ## Matrix bot
 
@@ -139,7 +146,9 @@ Precedence is CLI/explicit overrides, YAML, env vars, defaults. Env vars use `PA
 - `PAWN_MATRIX_BOT__ENABLED`, `PAWN_MATRIX_BOT__HOMESERVER_URL`, `PAWN_MATRIX_BOT__USER_TOKEN`, etc.
 - `PAWN_VAULT__S3__BUCKET`, `PAWN_VAULT__S3__ACCESS_KEY`, `PAWN_VAULT__S3__SECRET_KEY`, `PAWN_VAULT__S3__ENDPOINT_URL`, etc.
 - `PAWN_MATRIX_BOT__NOTIFY_ROOM_ID` for outbound ready-for-review alerts
-- `api.cors_origins`, `api.include_system_prompt`, `api.stream_progress`, `api.upload_audio_target` (queue_producers name for audio uploads) — see `ApiSection` in `pawn_agent/utils/config.py`
+- `api.cors_origins`, `api.include_system_prompt`, `api.stream_progress`, `api.upload_audio_target`
+  (queue_producers name for audio uploads), `api.enable_docs`, `api.whitelist_ips`,
+  `api.bruteforce_*` / thresholds — see `ApiSection` in `pawn_agent/utils/config.py`
 
 Chat model comes from `agent.openai` (etc.) and is mapped to LiteLLM via `cfg.litellm_model` (`openai:gpt-4o` → `openai/gpt-4o`). Optional Tempo: `agent.sallm.otlp_endpoint` / `metrics_port` (off by default for the server).
 `agent.sallm.profile` is a sallm CompiledProfile YAML/JSON path (default `large.yaml` in `pawn_agent/profiles/`, 10× token budgets). Empty string uses stock sallm limits.

@@ -27,8 +27,15 @@ queue_app = typer.Typer(
     add_completion=False,
     rich_markup_mode="rich",
 )
+blacklist_app = typer.Typer(
+    name="blacklist",
+    help="Manage the API IP blacklist (brute-force / scan protection).",
+    add_completion=False,
+    rich_markup_mode="rich",
+)
 app.add_typer(schedules_app, name="schedules")
 app.add_typer(queue_app, name="queue")
+app.add_typer(blacklist_app, name="blacklist")
 
 
 def _load_scheduler_service(config: Optional[str]):
@@ -421,6 +428,138 @@ def queue_resume(
             console.print(f"[dim]{result.name} topic={result.topic!r} was not paused.[/dim]")
 
 
+def _load_blacklist_cfg(config: Optional[str]):
+    from pawn_agent.utils.config import load_config  # noqa: PLC0415
+
+    return load_config(config)
+
+
+def resolve_ssl_files(
+    certfile: Optional[str],
+    keyfile: Optional[str],
+) -> tuple[Optional[str], Optional[str]]:
+    """Validate optional TLS paths; return ``(cert, key)`` or ``(None, None)``.
+
+    Raises ``ValueError`` when only one path is set or a path is missing.
+    """
+    from pathlib import Path  # noqa: PLC0415
+
+    cert = (certfile or "").strip() or None
+    key = (keyfile or "").strip() or None
+    if not cert and not key:
+        return None, None
+    if not cert or not key:
+        raise ValueError(
+            "TLS requires both ssl_certfile and ssl_keyfile "
+            "(or --ssl-certfile and --ssl-keyfile)."
+        )
+    cert_path = Path(cert).expanduser()
+    key_path = Path(key).expanduser()
+    if not cert_path.is_file():
+        raise ValueError(f"ssl_certfile not found: {cert_path}")
+    if not key_path.is_file():
+        raise ValueError(f"ssl_keyfile not found: {key_path}")
+    return str(cert_path), str(key_path)
+
+
+@blacklist_app.command("list")
+def blacklist_list(
+    config: Optional[str] = typer.Option(None, "--config", "-c"),
+    all: bool = typer.Option(False, "--all", help="Include expired entries."),
+) -> None:
+    """List blacklisted client IPs."""
+    from pawn_agent.utils.db import list_ip_blacklist  # noqa: PLC0415
+
+    cfg = _load_blacklist_cfg(config)
+    rows = list_ip_blacklist(cfg.db_dsn, include_expired=all)
+    if not rows:
+        console.print("[dim]No blacklisted IPs.[/dim]")
+        return
+    table = Table(show_header=True)
+    table.add_column("IP", style="cyan", no_wrap=True)
+    table.add_column("Reason")
+    table.add_column("Hits", no_wrap=True)
+    table.add_column("Created", no_wrap=True)
+    table.add_column("Expires", no_wrap=True)
+    for row in rows:
+        table.add_row(
+            row.ip,
+            row.reason,
+            str(row.hit_count),
+            row.created_at.isoformat() if row.created_at else "-",
+            row.expires_at.isoformat() if row.expires_at else "never",
+        )
+    console.print(table)
+
+
+@blacklist_app.command("add")
+def blacklist_add(
+    ip: str = typer.Argument(..., help="Client IP to blacklist."),
+    config: Optional[str] = typer.Option(None, "--config", "-c"),
+    reason: str = typer.Option("manual", "--reason", "-r", help="Ban reason."),
+    ttl: Optional[int] = typer.Option(
+        None,
+        "--ttl",
+        help=(
+            "Seconds until expiry. Default: permanent "
+            "(or api.blacklist_ttl_seconds)."
+        ),
+    ),
+) -> None:
+    """Manually blacklist an IP."""
+    from pawn_agent.utils.db import add_ip_blacklist  # noqa: PLC0415
+    from pawn_server.core.ip_guard import normalize_ip  # noqa: PLC0415
+
+    cfg = _load_blacklist_cfg(config)
+    effective_ttl = ttl if ttl is not None else cfg.api.blacklist_ttl_seconds
+    row = add_ip_blacklist(
+        cfg.db_dsn,
+        normalize_ip(ip),
+        reason=reason,
+        ttl_seconds=effective_ttl,
+    )
+    expires = row.expires_at.isoformat() if row.expires_at else "never"
+    console.print(
+        f"[green]Blacklisted {row.ip}[/green] "
+        f"reason={row.reason!r} expires={expires}"
+    )
+
+
+@blacklist_app.command("remove")
+def blacklist_remove(
+    ip: str = typer.Argument(..., help="Client IP to unban."),
+    config: Optional[str] = typer.Option(None, "--config", "-c"),
+) -> None:
+    """Remove an IP from the blacklist."""
+    from pawn_agent.utils.db import remove_ip_blacklist  # noqa: PLC0415
+    from pawn_server.core.ip_guard import normalize_ip  # noqa: PLC0415
+
+    cfg = _load_blacklist_cfg(config)
+    if remove_ip_blacklist(cfg.db_dsn, normalize_ip(ip)):
+        console.print(f"[green]Removed {ip} from blacklist.[/green]")
+    else:
+        console.print(f"[dim]{ip} was not on the blacklist.[/dim]")
+        raise typer.Exit(1)
+
+
+@blacklist_app.command("clear")
+def blacklist_clear(
+    config: Optional[str] = typer.Option(None, "--config", "-c"),
+    yes: bool = typer.Option(False, "--yes", "-y", help="Skip confirmation."),
+) -> None:
+    """Remove every IP from the blacklist."""
+    from pawn_agent.utils.db import clear_ip_blacklist  # noqa: PLC0415
+
+    cfg = _load_blacklist_cfg(config)
+    if not yes and not typer.confirm(
+        "Clear the entire API IP blacklist?", default=False
+    ):
+        raise typer.Exit(0)
+    n = clear_ip_blacklist(cfg.db_dsn)
+    noun = "y" if n == 1 else "ies"
+    console.print(f"[green]Cleared {n} blacklist entr{noun}.[/green]")
+
+
 @app.command()
 def serve(
     config: Optional[str] = typer.Option(
@@ -480,6 +619,16 @@ def serve(
         "--vault-watcher-only",
         help="Run only the vault task watcher (no HTTP API, queue, or scheduler).",
     ),
+    ssl_certfile: Optional[str] = typer.Option(
+        None,
+        "--ssl-certfile",
+        help="TLS certificate PEM path. Overrides api.ssl_certfile.",
+    ),
+    ssl_keyfile: Optional[str] = typer.Option(
+        None,
+        "--ssl-keyfile",
+        help="TLS private key PEM path. Overrides api.ssl_keyfile.",
+    ),
 ) -> None:
     """Start the HTTP API and optional workers (queue, scheduler, Matrix).
 
@@ -493,8 +642,8 @@ def serve(
     DELETE /sessions/{session_id}  Clear a session (Bearer token required)
     POST   /knowledge              Index content into RAG (Bearer token required)
     GET    /health                 Liveness probe (no auth)
-    GET    /docs                   Swagger UI
-    GET    /openapi.json           OpenAPI spec
+    GET    /docs                   Swagger UI (when api.enable_docs)
+    GET    /openapi.json           OpenAPI spec (when api.enable_docs)
 
     \b
     Queue message format
@@ -548,6 +697,15 @@ def serve(
     effective_host = host or cfg.api_host
     effective_port = port or cfg.api_port
 
+    try:
+        effective_cert, effective_key = resolve_ssl_files(
+            ssl_certfile if ssl_certfile is not None else cfg.api.ssl_certfile,
+            ssl_keyfile if ssl_keyfile is not None else cfg.api.ssl_keyfile,
+        )
+    except ValueError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1)
+
     queue_cfg = cfg.queue_config or {}
     with_queue = not no_queue and bool(queue_cfg)
     with_scheduler = bool(cfg.agent_scheduler.enabled) and not disable_scheduler
@@ -558,13 +716,25 @@ def serve(
     effective_consumer = consumer_name or queue_cfg.get("consumer_name", DEFAULT_CONSUMER_NAME)
     only_mode = scheduler_only or matrix_only or vault_watcher_only
 
+    bf = "on" if cfg.api.bruteforce_enabled else "off"
+    bf_detail = (
+        f"{bf} (auth≥{cfg.api.auth_fail_threshold} "
+        f"404≥{cfg.api.not_found_threshold}"
+        f"/{cfg.api.bruteforce_window_seconds}s)"
+    )
+    ssl_line = (
+        f"enabled ({effective_cert})" if effective_cert else "disabled"
+    )
     console.print(
         f"[bold green]pawn-server serve starting[/bold green]\n"
         f"  host     : [cyan]{effective_host}[/cyan]\n"
         f"  port     : [cyan]{effective_port}[/cyan]\n"
+        f"  ssl      : [dim]{ssl_line}[/dim]\n"
         f"  model    : [dim]{cfg.pydantic_model}[/dim]\n"
         f"  idle     : [dim]{cfg.api_model_idle_timeout_minutes} min[/dim]\n"
         f"  auth     : [dim]{'token set' if cfg.api_token else 'NO TOKEN — open access'}[/dim]\n"
+        f"  docs     : [dim]{'enabled' if cfg.api.enable_docs else 'disabled'}[/dim]\n"
+        f"  bruteforce: [dim]{bf_detail}[/dim]\n"
         f"  queue    : [dim]{'topic=' + effective_topic + ' consumer=' + effective_consumer if with_queue and not only_mode else 'disabled'}[/dim]\n"
         f"  scheduler: [dim]{'enabled' if with_scheduler and not matrix_only else 'disabled'}[/dim]\n"
         f"  matrix   : [dim]{'enabled' if with_matrix and not scheduler_only else 'disabled'}[/dim]\n"
@@ -613,6 +783,8 @@ def serve(
             port=effective_port,
             log_level="info",
             timeout_graceful_shutdown=5,
+            ssl_certfile=effective_cert,
+            ssl_keyfile=effective_key,
         )
         server = _Server(uv_config)
 

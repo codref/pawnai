@@ -429,42 +429,26 @@ Start an interactive multi-turn conversation session.
 pawn-agent chat [OPTIONS]
 
 Options:
-  --config TEXT    Path to pawnai.yaml
-  --model TEXT     Override the configured LLM model (e.g. openai:gpt-4o)
-  --session TEXT   Session ID to load and continue a stored conversation
-  --db-dsn TEXT    PostgreSQL DSN override
-  --langgraph      Run the LangGraph evaluation chat path
-  --langgraph-trace-state
-                   Attach the full LangGraph state as JSON to Phoenix spans
+  --config TEXT       Path to pawnai.yaml
+  --model TEXT        Override the configured LLM model (e.g. openai:gpt-4o)
+  --db-dsn TEXT       PostgreSQL DSN override
+  --otlp TEXT         Optional OTLP/HTTP endpoint for sallm Tempo traces
+  --metrics-port INT  Optional Prometheus /metrics port (0 = off)
 ```
 
 **Terminal features:**
 
-- **Multi-line paste**: pasted text is buffered as a single message (no spurious multi-turn splits)
-- **Context size indicator**: the prompt shows serialized history size and a token estimate after every turn:
-  ```
-  You [18.3 KB · ~4k tok]:
-  ```
-  On session load the same figures are printed next to the resume banner:
-  ```
-  Resuming session 'warren-20260325' (42 stored message(s) · 18.3 KB · ~4k tok)
-  ```
 - **Slash commands:**
 
   | Command | Effect |
   |---------|--------|
   | `/exit` or `/quit` | End the session |
-  | `/reset` | Clear in-memory history and wipe stored turns from the database |
+  | `/stats` | Show sallm session metrics |
+  | `/reset` | Clear sallm session memory |
 
   `Ctrl-D` and `Ctrl-C` also exit cleanly.
 
-**Session persistence**: when `--session` is given, every turn is appended to `agent_session_turns` in PostgreSQL. Resuming the same session replays the full stored history so the model retains context across invocations. `/reset` deletes all stored turns so the next message starts fresh.
-
-**LangGraph evaluation mode**: `pawn-agent chat --langgraph` runs the explicit orchestration path used to evaluate routed multi-step chat behavior. It still has a minimal REPL surface, but internally it uses structured state, fast/deep response routing, session-aware tool nodes, artifact carry-forward for later save steps, and optional Phoenix tracing via `--langgraph-trace-state`. It does not yet support `--session`, DB-backed chat history, or the richer slash commands from the default chat path.
-
-```bash
-pawn-agent chat --langgraph
-```
+Chat uses the durable sallm ReAct agent (skills + CliTools). Conversation memory lives under `agent.sallm.state_dir` (SQLite + Lance); optional tracing goes to Tempo via `--otlp` / `agent.sallm.otlp_endpoint`.
 
 #### `run`
 
@@ -547,6 +531,8 @@ Options:
 --matrix-only              Run only the Matrix bot
 --no-vault-watcher         Disable the vault task watcher
 --vault-watcher-only       Run only the vault task watcher
+--ssl-certfile PATH        TLS certificate PEM (overrides api.ssl_certfile)
+--ssl-keyfile PATH         TLS private key PEM (overrides api.ssl_keyfile)
 ```
 
 `pawn-server serve` starts the OpenAI-compatible HTTP API and, when configured,
@@ -607,6 +593,66 @@ pawn-server queue empty --name diarize --yes
 `stats` lists every configured queue by default. Mutating commands need
 `--name`, `--topic`, or `--all`. Pause/resume toggle `{topic}/.paused` in the
 queue bucket; agent and diarize listeners stop claiming new work while paused.
+
+### API security (docs, IP blacklist, reverse proxy)
+
+When exposing the HTTP API, set a Bearer token and turn docs off:
+
+```yaml
+api:
+  token: "strong-secret"
+  enable_docs: false
+  whitelist_ips:
+    - 127.0.0.1
+    - "::1"
+  bruteforce_enabled: true
+  auth_fail_threshold: 10
+  not_found_threshold: 40
+  bruteforce_window_seconds: 300
+  # Behind nginx/Caddy that sets X-Real-IP / X-Forwarded-For:
+  trust_proxy: false          # keep false for direct :8000 exposure
+  trusted_proxies:
+    - 127.0.0.1
+    - "::1"
+  # Direct TLS (no reverse proxy). Create files with: make ssl-cert
+  # ssl_certfile: certs/cert.pem
+  # ssl_keyfile: certs/key.pem
+```
+
+Repeated auth failures (401) or path scans (404) auto-ban the client IP in
+PostgreSQL. Manage the list with:
+
+```bash
+pawn-server blacklist list
+pawn-server blacklist add 203.0.113.9 --reason manual
+pawn-server blacklist remove 203.0.113.9
+pawn-server blacklist clear --yes
+```
+
+`trust_proxy` is off by default. Enable it only when a reverse proxy is the
+TCP peer (e.g. local nginx → `127.0.0.1:8000`); headers from peers outside
+`trusted_proxies` are ignored so clients cannot spoof their IP. See also
+`deploy/nginx-pawn-location.conf` and [docs/OPENAI_API.md](docs/OPENAI_API.md).
+
+For **direct HTTPS** (no proxy), generate a self-signed cert and point the
+API at it:
+
+```bash
+make ssl-cert
+# optional LAN IP / hostname:
+# make ssl-cert CERT_CN=pawn.local \
+#   CERT_SAN='DNS:pawn.local,DNS:localhost,IP:192.168.1.10,IP:127.0.0.1'
+```
+
+```yaml
+api:
+  ssl_certfile: certs/cert.pem
+  ssl_keyfile: certs/key.pem
+```
+
+Or pass `--ssl-certfile` / `--ssl-keyfile` on `pawn-server serve`. Clients must
+trust (or skip verification of) the self-signed certificate. Prefer a real
+reverse-proxy cert when you already terminate TLS at nginx/Caddy.
 
 Schedule kinds:
 

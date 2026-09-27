@@ -33,8 +33,34 @@ Useful for local development; not recommended in production.
 | `POST` | `/knowledge` | Index content into the RAG store |
 | `DELETE` | `/sessions/{session_id}` | Clear a session's conversation history |
 | `GET` | `/health` | Liveness probe (no auth) |
-| `GET` | `/docs` | Swagger UI |
-| `GET` | `/openapi.json` | OpenAPI spec |
+| `GET` | `/docs` | Swagger UI (disabled when `api.enable_docs: false`) |
+| `GET` | `/openapi.json` | OpenAPI spec (disabled when `api.enable_docs: false`) |
+
+When exposing port 8000 beyond localhost, set `api.enable_docs: false`.  The
+server also auto-blacklists client IPs after repeated 401s or 404s (scan
+symptom); manage the list with `pawn-server blacklist list|add|remove|clear`.
+Whitelist trusted peers via `api.whitelist_ips` (defaults to loopback).
+
+Behind a reverse proxy, set `api.trust_proxy: true` and list the proxy peer in
+`api.trusted_proxies` (defaults to loopback).  Only then are `X-Real-IP` /
+`X-Forwarded-For` used for blacklist decisions; leave `trust_proxy` false when
+clients connect to pawn-server directly.
+
+### TLS (direct HTTPS)
+
+When there is no reverse proxy terminating TLS, set both paths (or use the
+CLI flags).  Create a self-signed pair with `make ssl-cert`:
+
+```yaml
+api:
+  ssl_certfile: certs/cert.pem
+  ssl_keyfile: certs/key.pem
+```
+
+```bash
+make ssl-cert
+pawn-server serve --ssl-certfile certs/cert.pem --ssl-keyfile certs/key.pem
+```
 
 ---
 

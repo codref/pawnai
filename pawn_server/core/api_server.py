@@ -48,16 +48,20 @@ GET /health
     Liveness probe — no auth required.
 
 GET /docs
-    Swagger UI (FastAPI built-in).
+    Swagger UI (FastAPI built-in).  Disabled when ``api.enable_docs`` is false.
 
 GET /openapi.json
     OpenAPI spec (FastAPI built-in, auto-generated from Pydantic models).
+    Disabled when ``api.enable_docs`` is false.
 
 Authentication
 --------------
 All endpoints except ``/health`` require ``Authorization: Bearer <token>``.
 If ``api.token`` is not set in ``pawnai.yaml`` the server starts in open
 mode with a warning — useful for local development.
+
+When the API is exposed beyond localhost, set ``api.enable_docs: false`` and
+rely on ``api.whitelist_ips`` / auto-blacklist (see ``pawn-server blacklist``).
 
 Model selection
 ---------------
@@ -118,6 +122,9 @@ _tts_engine: Optional[Any] = None  # pawn_core.TTSEngine, lazy-loaded
 _tts_lock = threading.Lock()
 _tts_idle_handle: Optional[asyncio.TimerHandle] = None
 _cors_installed = False
+_ip_guard_installed = False
+
+_DOC_PATHS = frozenset({"/openapi.json", "/docs", "/docs/oauth2-redirect", "/redoc"})
 
 from pawn_agent.core.agent_runner import run_agent_turn  # noqa: E402
 
@@ -1237,10 +1244,38 @@ async def pawn_chat(body: PawnChatRequest, cfg: Any = Depends(_get_cfg)) -> Stre
 # ──────────────────────────────────────────────────────────────────────────────
 
 
+def _apply_docs_enabled(enabled: bool) -> None:
+    """Register or strip FastAPI docs / OpenAPI routes based on *enabled*."""
+    app.router.routes = [
+        route
+        for route in app.router.routes
+        if getattr(route, "path", None) not in _DOC_PATHS
+    ]
+    if enabled:
+        app.openapi_url = "/openapi.json"
+        app.docs_url = "/docs"
+        app.redoc_url = "/redoc"
+        app.setup()
+    else:
+        app.openapi_url = None
+        app.docs_url = None
+        app.redoc_url = None
+
+
 def create_app(cfg: Any) -> FastAPI:
     """Initialise the FastAPI app with the given config and return it."""
-    global _cfg, _cors_installed
+    global _cfg, _cors_installed, _ip_guard_installed
     _cfg = cfg
+
+    from pawn_server.core.ip_guard import (  # noqa: PLC0415
+        IpGuardMiddleware,
+        reset_counters,
+    )
+
+    reset_counters()
+    enable_docs = bool(getattr(getattr(cfg, "api", None), "enable_docs", True))
+    _apply_docs_enabled(enable_docs)
+
     origins = list(getattr(getattr(cfg, "api", None), "cors_origins", None) or [])
     if origins and not _cors_installed:
         app.add_middleware(
@@ -1250,4 +1285,9 @@ def create_app(cfg: Any) -> FastAPI:
             allow_headers=["*"],
         )
         _cors_installed = True
+
+    if not _ip_guard_installed:
+        app.add_middleware(IpGuardMiddleware, get_cfg=lambda: _cfg)
+        _ip_guard_installed = True
+
     return app

@@ -169,7 +169,7 @@ class ApiSection(BaseModel):
     )
     # Prepend the client's system message (e.g. obsidian-copilot's) as context.
     include_system_prompt: bool = False
-    # Stream agent tool steps as ``reasoning_content`` deltas on /v1/chat/completions.
+    # Stream agent tool steps as ``reasoning_content`` deltas.
     stream_progress: bool = True
     # Seconds between SSE keep-alive comments while the agent works.
     stream_keepalive_seconds: float = 10.0
@@ -177,6 +177,31 @@ class ApiSection(BaseModel):
     upload_audio_target: str = "diarize"
     # Key prefix in the main ``s3:`` bucket where uploaded audio is staged.
     upload_s3_prefix: str = "uploads/obsidian"
+    # Expose FastAPI /docs, /redoc, and /openapi.json. Disable when the port
+    # is reachable from the internet — the schema reveals every endpoint.
+    enable_docs: bool = True
+    # IPs that skip brute-force tracking and blacklist checks (exact match).
+    # IPv4-mapped IPv6 (::ffff:x.x.x.x) is normalised before comparison.
+    whitelist_ips: list[str] = Field(
+        default_factory=lambda: ["127.0.0.1", "::1"]
+    )
+    # Auto-blacklist after repeated 401s or 404s inside a window.
+    bruteforce_enabled: bool = True
+    auth_fail_threshold: int = 10
+    not_found_threshold: int = 40
+    bruteforce_window_seconds: int = 300
+    # None = permanent until removed via ``pawn-server blacklist``.
+    blacklist_ttl_seconds: Optional[int] = None
+    # Honour X-Forwarded-For / X-Real-IP only when the TCP peer is listed in
+    # ``trusted_proxies``. Leave false when clients connect to pawn directly.
+    trust_proxy: bool = False
+    trusted_proxies: list[str] = Field(
+        default_factory=lambda: ["127.0.0.1", "::1"]
+    )
+    # Optional TLS for direct exposure (no reverse proxy). Both paths required.
+    # Generate a self-signed pair with ``make ssl-cert`` (see Makefile).
+    ssl_certfile: Optional[str] = None
+    ssl_keyfile: Optional[str] = None
 
 
 class MlflowSection(BaseModel):

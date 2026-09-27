@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, List, Optional, Tuple
 
 from sqlalchemy import (
@@ -122,6 +122,18 @@ class AgentScheduleFire(_Base):
     completed_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     error: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     created_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+
+
+class ApiIpBlacklist(_Base):
+    """Client IPs blocked by API brute-force / scan heuristics."""
+
+    __tablename__ = "api_ip_blacklist"
+
+    ip: Mapped[str] = mapped_column(String, primary_key=True)
+    reason: Mapped[str] = mapped_column(String, nullable=False)
+    created_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    expires_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True, index=True)
+    hit_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
 
 
 class VaultTask(_Base):
@@ -322,9 +334,7 @@ def upsert_vault_task(
     now = datetime.now(timezone.utc)
     with _get_session(dsn) as db:
         by_hash = (
-            db.query(VaultTask)
-            .filter_by(key=key, instruction_hash=instruction_hash)
-            .one_or_none()
+            db.query(VaultTask).filter_by(key=key, instruction_hash=instruction_hash).one_or_none()
         )
         if by_hash is not None:
             return by_hash.id
@@ -411,9 +421,7 @@ def list_vault_tasks(
             q = q.filter(VaultTask.status.in_(statuses))
         if conversation_id:
             q = q.filter(VaultTask.conversation_id == conversation_id)
-        order = (
-            VaultTask.created_at.desc() if newest_first else VaultTask.created_at.asc()
-        )
+        order = VaultTask.created_at.desc() if newest_first else VaultTask.created_at.asc()
         rows = q.order_by(order).limit(limit).all()
         out: List[VaultTask] = []
         from sqlalchemy.orm import make_transient
@@ -474,3 +482,103 @@ def claim_vault_task(dsn: str, task_id: str) -> bool:
         row.updated_at = now
         return True
 
+
+# ---------------------------------------------------------------------------
+# API IP blacklist helpers
+# ---------------------------------------------------------------------------
+
+
+def _blacklist_active(row: ApiIpBlacklist, now: datetime) -> bool:
+    if row.expires_at is None:
+        return True
+    expires = row.expires_at
+    if expires.tzinfo is None:
+        expires = expires.replace(tzinfo=timezone.utc)
+    return expires > now
+
+
+def is_ip_blacklisted(dsn: str, ip: str) -> bool:
+    """Return True if *ip* has an active blacklist row."""
+    now = datetime.now(timezone.utc)
+    with Session(get_engine(dsn)) as db:
+        row = db.get(ApiIpBlacklist, ip)
+        if row is None:
+            return False
+        if not _blacklist_active(row, now):
+            db.delete(row)
+            db.commit()
+            return False
+        return True
+
+
+def add_ip_blacklist(
+    dsn: str,
+    ip: str,
+    *,
+    reason: str,
+    ttl_seconds: Optional[int] = None,
+    hit_count: int = 0,
+) -> ApiIpBlacklist:
+    """Insert or refresh a blacklist entry. Returns a detached row."""
+    now = datetime.now(timezone.utc)
+    expires = now + timedelta(seconds=ttl_seconds) if ttl_seconds else None
+    with _get_session(dsn) as db:
+        row = db.get(ApiIpBlacklist, ip)
+        if row is None:
+            row = ApiIpBlacklist(
+                ip=ip,
+                reason=reason,
+                created_at=now,
+                expires_at=expires,
+                hit_count=hit_count,
+            )
+            db.add(row)
+        else:
+            row.reason = reason
+            row.expires_at = expires
+            if hit_count:
+                row.hit_count = hit_count
+        db.flush()
+        db.expunge(row)
+        from sqlalchemy.orm import make_transient
+
+        make_transient(row)
+        return row
+
+
+def remove_ip_blacklist(dsn: str, ip: str) -> bool:
+    """Delete a blacklist row. Returns True if a row was removed."""
+    with _get_session(dsn) as db:
+        row = db.get(ApiIpBlacklist, ip)
+        if row is None:
+            return False
+        db.delete(row)
+        return True
+
+
+def list_ip_blacklist(dsn: str, *, include_expired: bool = False) -> List[ApiIpBlacklist]:
+    """Return blacklist rows, optionally including expired ones."""
+    now = datetime.now(timezone.utc)
+    with Session(get_engine(dsn)) as db:
+        rows = db.query(ApiIpBlacklist).order_by(ApiIpBlacklist.created_at.desc()).all()
+        out: List[ApiIpBlacklist] = []
+        from sqlalchemy.orm import make_transient
+
+        for row in rows:
+            active = _blacklist_active(row, now)
+            if not active and not include_expired:
+                continue
+            db.expunge(row)
+            make_transient(row)
+            out.append(row)
+        return out
+
+
+def clear_ip_blacklist(dsn: str) -> int:
+    """Delete every blacklist row. Returns the number removed."""
+    with _get_session(dsn) as db:
+        rows = db.query(ApiIpBlacklist).all()
+        count = len(rows)
+        for row in rows:
+            db.delete(row)
+        return count

@@ -14,7 +14,15 @@ ADB_SERIAL      ?=
 ADB_CONFIG      ?= .obsidian
 ADB_RESTART     ?= 1
 
-.PHONY: build push run mlflow clean obsidian-plugin obsidian-plugin-adb obsidian-plugin-list-vaults
+# Self-signed TLS for direct pawn-server exposure (api.ssl_certfile / ssl_keyfile).
+CERT_DIR        ?= certs
+CERT_DAYS       ?= 825
+CERT_CN         ?= localhost
+# Comma-separated SANs for openssl -addext (OpenSSL 1.1.1+).
+CERT_SAN        ?= DNS:localhost,IP:127.0.0.1
+
+.PHONY: build push run mlflow clean ssl-cert \
+	obsidian-plugin obsidian-plugin-adb obsidian-plugin-list-vaults
 
 build:
 	docker build -f $(DOCKERFILE) -t $(IMAGE):$(TAG) .
@@ -46,6 +54,23 @@ run:
 
 mlflow:
 	mlflow server --host $(MLFLOW_HOST) --port $(MLFLOW_PORT)
+
+# Self-signed certificate for api.ssl_certfile / api.ssl_keyfile.
+# Example with a LAN IP: make ssl-cert CERT_CN=pawn.local \
+#   CERT_SAN='DNS:pawn.local,DNS:localhost,IP:192.168.1.10,IP:127.0.0.1'
+ssl-cert:
+	@mkdir -p "$(CERT_DIR)"
+	openssl req -x509 -newkey rsa:4096 -sha256 -days $(CERT_DAYS) \
+		-nodes \
+		-keyout "$(CERT_DIR)/key.pem" \
+		-out "$(CERT_DIR)/cert.pem" \
+		-subj "/CN=$(CERT_CN)" \
+		-addext "subjectAltName=$(CERT_SAN)"
+	@chmod 600 "$(CERT_DIR)/key.pem"
+	@echo "Wrote $(CERT_DIR)/cert.pem and $(CERT_DIR)/key.pem"
+	@echo "Set in pawnai.yaml:"
+	@echo "  api.ssl_certfile: $(CERT_DIR)/cert.pem"
+	@echo "  api.ssl_keyfile:  $(CERT_DIR)/key.pem"
 
 clean:
 	docker rmi $(IMAGE):$(TAG)
