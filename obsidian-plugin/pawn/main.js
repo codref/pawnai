@@ -1740,6 +1740,9 @@ var PawnChatView = class extends import_obsidian10.ItemView {
     this.slashIndex = 0;
     this.unsubscribeJobs = null;
     this.fileInput = null;
+    this.keyboardFrame = 0;
+    this.keyboardTimer = 0;
+    this.keyboardInsetApplied = false;
     // ── rendering ────────────────────────────────────────────────────────────
     this.tabsEl = null;
     this.renderScope = null;
@@ -1774,13 +1777,117 @@ var PawnChatView = class extends import_obsidian10.ItemView {
         window.clearTimeout(timer);
       timer = window.setTimeout(() => this.context.refresh(), 300);
     });
+    this.bindMobileKeyboard();
     this.render();
   }
   async onClose() {
     var _a, _b;
     (_a = this.unsubscribeJobs) == null ? void 0 : _a.call(this);
     (_b = this.pending) == null ? void 0 : _b.abort.abort();
+    this.clearKeyboardInset();
     this.containerEl.empty();
+  }
+  /**
+   * Keep the composer above the soft keyboard.
+   *
+   * On Android the webview stays full height while the keyboard is up, and
+   * side drawers do too. Obsidian writes `--keyboard-height` on the document
+   * element (and sometimes shrinks the main app container). This shortens the
+   * chat view only when its box still extends past the visible bottom.
+   */
+  bindMobileKeyboard() {
+    if (!import_obsidian10.Platform.isMobile)
+      return;
+    const win = this.containerEl.win;
+    const doc = this.containerEl.doc;
+    const vv = win.visualViewport;
+    const onInset = () => this.scheduleKeyboardInset();
+    const observer = new MutationObserver(onInset);
+    observer.observe(doc.documentElement, { attributes: true, attributeFilter: ["style"] });
+    if (doc.body)
+      observer.observe(doc.body, { attributes: true, attributeFilter: ["style"] });
+    vv == null ? void 0 : vv.addEventListener("resize", onInset);
+    vv == null ? void 0 : vv.addEventListener("scroll", onInset);
+    this.registerEvent(this.app.workspace.on("layout-change", onInset));
+    this.registerDomEvent(win, "resize", onInset);
+    this.register(() => {
+      observer.disconnect();
+      vv == null ? void 0 : vv.removeEventListener("resize", onInset);
+      vv == null ? void 0 : vv.removeEventListener("scroll", onInset);
+      if (this.keyboardFrame)
+        win.cancelAnimationFrame(this.keyboardFrame);
+      if (this.keyboardTimer)
+        win.clearTimeout(this.keyboardTimer);
+      this.keyboardFrame = 0;
+      this.keyboardTimer = 0;
+      this.clearKeyboardInset();
+    });
+  }
+  scheduleKeyboardInset() {
+    const win = this.contentEl.win;
+    this.applyKeyboardInset();
+    if (this.keyboardFrame)
+      win.cancelAnimationFrame(this.keyboardFrame);
+    this.keyboardFrame = win.requestAnimationFrame(() => {
+      this.keyboardFrame = 0;
+      this.applyKeyboardInset();
+    });
+    if (this.keyboardTimer)
+      win.clearTimeout(this.keyboardTimer);
+    this.keyboardTimer = win.setTimeout(() => {
+      this.keyboardTimer = 0;
+      this.applyKeyboardInset();
+    }, 300);
+  }
+  applyKeyboardInset() {
+    var _a, _b;
+    const root = this.contentEl;
+    const win = root.win;
+    const kb = readKeyboardHeight(root.doc);
+    const vv = win.visualViewport;
+    const visualInset = vv ? Math.max(0, win.innerHeight - vv.height - vv.offsetTop) : 0;
+    if (kb < 50 && visualInset < 50) {
+      this.clearKeyboardInset();
+      return;
+    }
+    const vvBottom = vv ? vv.offsetTop + vv.height : win.innerHeight;
+    const visibleBottom = Math.min(vvBottom, win.innerHeight - kb);
+    const rect = root.getBoundingClientRect();
+    if (rect.width < 1 || rect.height < 1) {
+      this.clearKeyboardInset();
+      return;
+    }
+    const parentBottom = (_b = (_a = root.parentElement) == null ? void 0 : _a.getBoundingClientRect().bottom) != null ? _b : rect.bottom;
+    const natural = parentBottom - rect.top;
+    const wanted = visibleBottom - rect.top;
+    if (natural - wanted < 8) {
+      this.clearKeyboardInset();
+      return;
+    }
+    const height = Math.max(0, Math.floor(wanted));
+    root.style.flexGrow = "0";
+    root.style.flexShrink = "0";
+    root.style.minHeight = "0";
+    root.style.height = `${height}px`;
+    root.style.maxHeight = `${height}px`;
+    this.keyboardInsetApplied = true;
+    this.containerEl.addClass("is-keyboard-open");
+    const thread = this.threadEl;
+    if (thread && thread.scrollHeight - thread.scrollTop - thread.clientHeight < 48) {
+      thread.scrollTop = thread.scrollHeight;
+    }
+  }
+  clearKeyboardInset() {
+    if (!this.keyboardInsetApplied)
+      return;
+    const root = this.contentEl;
+    root.style.height = "";
+    root.style.maxHeight = "";
+    root.style.minHeight = "";
+    root.style.flexGrow = "";
+    root.style.flexShrink = "";
+    this.containerEl.removeClass("is-keyboard-open");
+    this.keyboardInsetApplied = false;
   }
   // ── public API used by the plugin ─────────────────────────────────────────
   /** Not named `open`: that is Obsidian's internal View lifecycle method. */
@@ -2088,7 +2195,11 @@ ${(_a = e.stack) != null ? _a : ""}` : String(e)
     this.composer = ta;
     ta.addEventListener("input", () => this.onComposerInput());
     ta.addEventListener("keydown", (ev) => this.onComposerKey(ev));
-    ta.addEventListener("focus", () => this.context.refresh());
+    ta.addEventListener("focus", () => {
+      this.context.refresh();
+      this.scheduleKeyboardInset();
+    });
+    ta.addEventListener("blur", () => this.scheduleKeyboardInset());
     const row = wrap.createDiv({ cls: "pawn-composer-row" });
     const bgLabel = row.createEl("label", { cls: "pawn-bg-toggle" });
     const bg = bgLabel.createEl("input", { type: "checkbox" });
@@ -2482,6 +2593,19 @@ ${(_a = e.stack) != null ? _a : ""}` : String(e)
     (_a = this.pending) == null ? void 0 : _a.abort.abort();
   }
 };
+function readKeyboardHeight(doc) {
+  for (const el of [doc.documentElement, doc.body]) {
+    if (!el)
+      continue;
+    const inline = parseFloat(el.style.getPropertyValue("--keyboard-height"));
+    if (Number.isFinite(inline) && inline > 0)
+      return inline;
+  }
+  const computed = parseFloat(
+    getComputedStyle(doc.documentElement).getPropertyValue("--keyboard-height")
+  );
+  return Number.isFinite(computed) ? Math.max(0, computed) : 0;
+}
 
 // src/settings.ts
 var import_obsidian11 = require("obsidian");

@@ -5,6 +5,16 @@
   flex-direction: column;
   padding: 0;
   overflow: hidden;
+  box-sizing: border-box;
+  min-height: 0;
+}
+
+/* Phone keyboard: the view height is set in JS. Let the thread absorb the
+   shrink so the composer stays on screen. */
+.pawn-view.is-keyboard-open .pawn-header {
+  flex-shrink: 1;
+  min-height: 0;
+  overflow: hidden;
 }
 
 .pawn-header {
