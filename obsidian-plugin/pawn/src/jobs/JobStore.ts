@@ -2,7 +2,7 @@ import { Notice, TFile } from "obsidian";
 import { AskJobRequest, Job, PawnClient, ServerUnreachable } from "../api";
 import type PawnPlugin from "../main";
 import { jobFromTaskNote, offlineJobs, queueOffline } from "../offline";
-import { parseTaskNote, setApproved, tasksFolder } from "../tasks";
+import { parseTaskNote, setApproved, setDismissed, tasksFolder } from "../tasks";
 
 const TERMINAL = new Set(["review", "done", "blocked"]);
 const ACTIVE_POLL_MS = 5000;
@@ -88,7 +88,10 @@ export class JobStore {
   upsert(job: Job, opts: { quiet?: boolean } = {}): void {
     const prev = this.jobs.get(job.id);
     if (prev && !prev.offline && job.offline) return; // server state wins
-    this.jobs.set(job.id, { ...prev, ...job });
+    // Server payloads omit `offline`; clear a sticky flag from an earlier offline card.
+    const merged: Job = { ...prev, ...job };
+    if (!job.offline) merged.offline = false;
+    this.jobs.set(job.id, merged);
     if (!opts.quiet && prev && isActive(prev) && !isActive(job)) this.notifyDone(job);
     this.emit();
   }
@@ -212,6 +215,23 @@ export class JobStore {
       await setApproved(this.plugin.app, job.task_key);
       this.upsert({ ...job, approved: true, status: "done" });
       new Notice("Marked approved in the task note; Pawn indexes it after sync.");
+    }
+    this.plugin.updateStatusBar();
+  }
+
+  async dismiss(job: Job): Promise<void> {
+    try {
+      if (job.offline) throw new ServerUnreachable("offline job");
+      this.upsert(await this.client.dismissJob(job.id));
+      new Notice("Dismissed: closed without indexing.");
+    } catch (e) {
+      if (!(e instanceof ServerUnreachable) || !job.task_key) {
+        new Notice(`Dismiss failed: ${e instanceof Error ? e.message : e}`);
+        return;
+      }
+      await setDismissed(this.plugin.app, job.task_key);
+      this.upsert({ ...job, approved: false, status: "done" });
+      new Notice("Marked done in the task note; Pawn closes it after sync.");
     }
     this.plugin.updateStatusBar();
   }

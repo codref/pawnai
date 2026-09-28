@@ -92,3 +92,66 @@ def test_watcher_tick_executes_todo(vault_setup):
     assert upsert_calls == [task_id]
     execute.assert_awaited_once()
     assert execute.await_args.kwargs["write_result_to_vault"] is True
+
+
+def test_watcher_tick_dismisses_done_review(monkeypatch):
+    client = FakeS3Client()
+    store = VaultStore(bucket="b", agent_root="Pawn", client=client)
+    task_id = "task-dismiss-1"
+    store.write(
+        f"Pawn/Tasks/{task_id}.md",
+        render_task_note(
+            task_id=task_id,
+            status="done",
+            instruction="Ignore this.",
+            result="some draft",
+            conversation="note:x.md",
+            approved=False,
+        ),
+    )
+
+    vault = MagicMock()
+    vault.s3 = MagicMock(
+        bucket="b",
+        prefix="",
+        endpoint_url=None,
+        access_key=None,
+        secret_key=None,
+        region=None,
+        path_style=True,
+        verify_ssl=True,
+    )
+    vault.bucket = "b"
+    vault.agent_root = "Pawn"
+    vault.obsidian_vault_name = "TestVault"
+    watcher = MagicMock(max_claims_per_tick=3, matrix_target="matrix")
+    cfg = _Cfg(vault=vault, vault_watcher=watcher)
+
+    existing = MagicMock(
+        id=task_id,
+        status="review",
+        indexed_at=None,
+        etag="stale",
+        key=f"Pawn/Tasks/{task_id}.md",
+    )
+    monkeypatch.setattr(
+        "pawn_server.core.vault_watcher.vault_store_from_config",
+        lambda _cfg: store,
+    )
+    monkeypatch.setattr(
+        "pawn_server.core.vault_watcher.get_vault_task", lambda *a, **k: existing
+    )
+    monkeypatch.setattr(
+        "pawn_server.core.vault_watcher.get_vault_task_by_key", lambda *a, **k: existing
+    )
+    dismiss = AsyncMock(return_value={"id": task_id, "status": "done", "approved": False})
+    monkeypatch.setattr("pawn_server.core.jobs.dismiss_job", dismiss)
+    monkeypatch.setattr(
+        "pawn_server.core.vault_watcher._apply_item_actions",
+        AsyncMock(return_value=0),
+    )
+
+    stats = asyncio.run(run_vault_watcher_tick(cfg, registry=MagicMock()))
+    assert stats["dismissed"] == 1
+    dismiss.assert_awaited_once()
+    assert dismiss.await_args.args[1] == task_id

@@ -145,6 +145,16 @@ export async function setApproved(app: App, taskPath: string): Promise<void> {
   });
 }
 
+/** Close without indexing: status done, approved false (watcher / dismiss API). */
+export async function setDismissed(app: App, taskPath: string): Promise<void> {
+  const file = app.vault.getAbstractFileByPath(taskPath);
+  if (!(file instanceof TFile)) return;
+  await app.fileManager.processFrontMatter(file, (fm) => {
+    fm.status = "done";
+    fm.approved = false;
+  });
+}
+
 export async function listTaskNotes(app: App, agentRoot: string): Promise<ParsedTaskNote[]> {
   const prefix = `${tasksFolder(agentRoot)}/`;
   const out: ParsedTaskNote[] = [];

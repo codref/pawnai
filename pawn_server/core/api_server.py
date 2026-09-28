@@ -23,7 +23,8 @@ POST /v1/pawn/chat
     events, structured note context).
 
 POST /v1/jobs, POST /v1/jobs/upload, GET /v1/jobs, GET /v1/jobs/{id},
-POST /v1/jobs/{id}/approve, POST /v1/jobs/{id}/cancel, GET /v1/jobs/events
+POST /v1/jobs/{id}/approve, POST /v1/jobs/{id}/cancel, POST /v1/jobs/{id}/dismiss,
+GET /v1/jobs/events
     Background jobs (ask / push_note / upload); always accepted with 202.
     ``/v1/vault/tasks*`` remain as deprecated aliases.
 
@@ -1105,6 +1106,17 @@ async def job_cancel(job_id: str, cfg: Any = Depends(_get_cfg)) -> dict:
 
     try:
         return await jobs.cancel_job(cfg, job_id)
+    except Exception as exc:
+        raise _job_error(exc) from exc
+
+
+@app.post("/v1/jobs/{job_id}/dismiss", dependencies=[Depends(_require_token)])
+async def job_dismiss(job_id: str, cfg: Any = Depends(_get_cfg)) -> dict:
+    """Close a review ask job without indexing the result into memory."""
+    from pawn_server.core import jobs  # noqa: PLC0415
+
+    try:
+        return await jobs.dismiss_job(cfg, job_id)
     except Exception as exc:
         raise _job_error(exc) from exc
 

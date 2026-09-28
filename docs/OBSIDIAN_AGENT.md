@@ -197,13 +197,15 @@ Every job is accepted immediately (202) and runs as an asyncio task inside
 The plugin follows `GET /v1/jobs/events` (SSE) on desktop and polls
 `GET /v1/jobs` on mobile. Finished jobs raise a notice, update their card in
 the chat thread and in the **Jobs** tab, and offer Insert / Replace /
-**Approve** (index into sallm memory) / Cancel / Open task note.
+**Approve** (index into sallm memory) / **Dismiss** (close without indexing) /
+Cancel / Open task note.
 
 **Offline / mobile fallback:** if the server is unreachable, the plugin writes
 `Pawn/Tasks/{id}.md` with `status: todo`. Sync Engine uploads it, the vault
 watcher runs it, writes `## Result` + `status: review` back to S3, and the
 plugin picks up the synced note. Approving an offline job sets
-`approved: true` in the note; the watcher indexes it.
+`approved: true` in the note; the watcher indexes it. Dismissing (or setting
+`status: done` with `approved: false`) closes the job without indexing.
 
 ### Task note format
 
@@ -271,6 +273,7 @@ Behaviour notes:
 | GET | `/v1/jobs/{id}` | One job |
 | POST | `/v1/jobs/{id}/approve` | Index an `ask` result into memory |
 | POST | `/v1/jobs/{id}/cancel` | Cancel a running job |
+| POST | `/v1/jobs/{id}/dismiss` | Close a review `ask` job without indexing |
 | GET | `/v1/jobs/events` | SSE `job` events (this server process only) |
 | GET | `/v1/vault/events?since=&timeout=` | Long-poll vault writes from agent turns (this process only) |
 | POST/GET | `/v1/vault/tasks…` | Deprecated aliases (always 202 now) |

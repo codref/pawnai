@@ -127,6 +127,58 @@ def test_ask_job_accepted_then_review(env: SimpleNamespace) -> None:
         assert parse_task_note(env.store.read("Pawn/Tasks/job-1.md"))["approved"] is True
 
 
+def test_ask_job_dismiss_closes_without_indexing(env: SimpleNamespace) -> None:
+    with TestClient(api_server.create_app(env.cfg)) as client:
+        resp = client.post(
+            "/v1/jobs",
+            headers=AUTH,
+            json={"kind": "ask", "id": "job-d1", "instruction": "Draft something"},
+        )
+        assert resp.status_code == 202
+        _wait_status(client, "job-d1", {"review"})
+
+        remembered: list[str] = []
+        agent = SimpleNamespace(remember=lambda text, **_k: remembered.append(text))
+
+        async def get_or_create(*_a: Any) -> Any:
+            return SimpleNamespace(_agent=agent)
+
+        original = api_server.get_sallm_registry()
+        api_server.set_sallm_registry(SimpleNamespace(get_or_create=get_or_create))
+        try:
+            dismissed = client.post("/v1/jobs/job-d1/dismiss", headers=AUTH, json={})
+        finally:
+            api_server.set_sallm_registry(original)
+
+        assert dismissed.status_code == 200
+        body = dismissed.json()
+        assert body["status"] == "done"
+        assert body["approved"] is False
+        assert remembered == []
+        note = parse_task_note(env.store.read("Pawn/Tasks/job-d1.md"))
+        assert note["status"] == "done"
+        assert note["approved"] is False
+
+        again = client.post("/v1/jobs/job-d1/dismiss", headers=AUTH, json={})
+        assert again.status_code == 200
+        assert again.json()["status"] == "done"
+
+        push = client.post(
+            "/v1/jobs",
+            headers=AUTH,
+            json={
+                "kind": "push_note",
+                "id": "job-d2",
+                "path": "Pawn/Notes/x",
+                "content": "hi",
+            },
+        )
+        assert push.status_code == 202
+        _wait_status(client, "job-d2", {"done", "blocked"})
+        wrong_kind = client.post("/v1/jobs/job-d2/dismiss", headers=AUTH, json={})
+        assert wrong_kind.status_code == 409
+
+
 def test_push_note_job_respects_guards(env: SimpleNamespace) -> None:
     with TestClient(api_server.create_app(env.cfg)) as client:
         ok = client.post(

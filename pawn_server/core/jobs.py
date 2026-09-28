@@ -29,7 +29,7 @@ from pawn_agent.utils.db import (
 from pawn_core.vault import VaultError, VaultWriteDenied, normalize_vault_key
 from pawn_core.vault_config import vault_store_from_config
 from pawn_server.core.job_events import publish_job_event
-from pawn_server.core.vault_protocol import instruction_hash, render_task_note
+from pawn_server.core.vault_protocol import instruction_hash, parse_task_note, render_task_note
 from pawn_server.core.vault_tasks import (
     effective_conversation,
     execute_vault_task,
@@ -518,6 +518,66 @@ async def cancel_job(cfg: Any, job_id: str) -> dict[str, Any]:
                 await asyncio.to_thread(store.write, row.key, note)
             except Exception as exc:
                 logger.debug("Could not mark task note cancelled: %s", exc)
+    out = get_job(cfg, job_id)
+    assert out is not None
+    return out
+
+
+async def dismiss_job(cfg: Any, job_id: str) -> dict[str, Any]:
+    """Close a review job without indexing into agent memory.
+
+    Sets ``status=done`` and leaves ``indexed_at`` unset. Rewrites the ask
+    task note so Sync Engine and the Jobs UI stay aligned.
+    """
+    row = get_vault_task(cfg.db_dsn, job_id)
+    if row is None:
+        raise JobError("job not found", status_code=404)
+    if (row.kind or "ask") != "ask":
+        raise JobError("Only ask jobs can be dismissed", status_code=409)
+    if row.indexed_at is not None:
+        if row.status != "done":
+            update_vault_task(cfg.db_dsn, job_id, status="done")
+        out = get_job(cfg, job_id)
+        assert out is not None
+        return out
+    if row.status == "done":
+        out = get_job(cfg, job_id)
+        assert out is not None
+        return out
+    if row.status != "review":
+        raise JobError(f"job is {row.status}, not ready to dismiss", status_code=409)
+
+    update_vault_task(cfg.db_dsn, job_id, status="done")
+    publish_job_event(job_id, "done", kind="ask", conversation=row.conversation_id)
+
+    store = _vault_store_or_none(cfg)
+    if store is not None:
+        instruction = row.instruction_text or ""
+        context = str((row.payload or {}).get("context") or "")
+        result = row.result_text or ""
+        try:
+            body = await asyncio.to_thread(store.read, row.key)
+            parsed = parse_task_note(body)
+            instruction = parsed.get("instruction") or instruction
+            context = parsed.get("context") or context
+            result = parsed.get("result") or result
+        except Exception:
+            pass
+        try:
+            note = render_task_note(
+                task_id=job_id,
+                status="done",
+                instruction=instruction,
+                context=context,
+                result=result,
+                conversation=row.conversation_id,
+                note_path=row.note_path,
+                approved=False,
+            )
+            await asyncio.to_thread(store.write, row.key, note)
+        except Exception as exc:
+            logger.debug("Could not mark task note dismissed: %s", exc)
+
     out = get_job(cfg, job_id)
     assert out is not None
     return out

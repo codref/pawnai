@@ -148,7 +148,7 @@ always attached as structured context.
 | Health | `GET /health` |
 | Chat (SSE) | `POST /v1/pawn/chat` |
 | Jobs | `POST /v1/jobs`, `POST /v1/jobs/upload`, `GET /v1/jobs`, `GET /v1/jobs/{id}` |
-| Job actions | `POST /v1/jobs/{id}/approve`, `POST /v1/jobs/{id}/cancel` |
+| Job actions | `POST /v1/jobs/{id}/approve`, `POST /v1/jobs/{id}/cancel`, `POST /v1/jobs/{id}/dismiss` |
 | Live job updates | `GET /v1/jobs/events` (desktop; mobile polls) |
 
 Desktop streams with `fetch`, so the server must allow the `app://obsidian.md`

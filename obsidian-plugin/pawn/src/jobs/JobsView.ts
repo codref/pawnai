@@ -71,6 +71,11 @@ export function renderJobCard(
       label: "Approve (index into Pawn memory)",
       onClick: () => void plugin.jobs.approve(job),
     });
+    extra.push({
+      icon: "circle-x",
+      label: "Dismiss (close without indexing)",
+      onClick: () => void plugin.jobs.dismiss(job),
+    });
   }
   if (isActive(job) && !job.offline) {
     extra.push({ icon: "square", label: "Cancel job", onClick: () => void plugin.jobs.cancel(job) });

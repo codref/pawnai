@@ -28,10 +28,18 @@ logger = logging.getLogger(__name__)
 _STATUSES_SKIP_ETAG = frozenset({"running", "review", "done", "blocked", "claimed"})
 
 
-def _needs_action(note_status: str, approved: bool) -> bool:
+def _needs_action(
+    note_status: str,
+    approved: bool,
+    *,
+    db_status: str | None = None,
+    indexed: bool = False,
+) -> bool:
     if note_status == "todo":
         return True
     if note_status == "review" and approved:
+        return True
+    if note_status == "done" and db_status == "review" and not indexed:
         return True
     return False
 
@@ -41,7 +49,7 @@ async def run_vault_watcher_tick(
     *,
     registry: Optional[SallmSessionRegistry] = None,
 ) -> dict[str, int]:
-    """One watcher tick: scan task notes, execute todo, approve review."""
+    """One watcher tick: scan task notes, execute todo, approve review, dismiss done."""
     active = registry or SallmSessionRegistry()
     store = vault_store_from_config(cfg)
     agent_root = normalize_vault_key(cfg.vault.agent_root).rstrip("/") or "Pawn"
@@ -51,14 +59,15 @@ async def run_vault_watcher_tick(
         keys = await asyncio.to_thread(store.list, tasks_prefix)
     except Exception as exc:
         logger.error("vault_watcher list failed: %s", exc, exc_info=True)
-        return {"executed": 0, "approved": 0}
+        return {"executed": 0, "approved": 0, "dismissed": 0}
 
     executed = 0
     approved = 0
+    dismissed = 0
     max_claims = max(1, int(cfg.vault_watcher.max_claims_per_tick))
 
     for task_key in keys:
-        if executed + approved >= max_claims:
+        if executed + approved + dismissed >= max_claims:
             break
         try:
             stat = await asyncio.to_thread(store.stat, task_key)
@@ -85,7 +94,12 @@ async def run_vault_watcher_tick(
             existing
             and etag
             and existing.etag == etag
-            and not _needs_action(note_status, bool(parsed.get("approved")))
+            and not _needs_action(
+                note_status,
+                bool(parsed.get("approved")),
+                db_status=existing.status,
+                indexed=existing.indexed_at is not None,
+            )
             and existing.status in _STATUSES_SKIP_ETAG
         ):
             continue
@@ -113,6 +127,21 @@ async def run_vault_watcher_tick(
                 result_text=parsed.get("result"),
             )
             approved += 1
+            continue
+
+        if note_status == "done":
+            if (
+                existing
+                and existing.status == "review"
+                and existing.indexed_at is None
+            ):
+                from pawn_server.core.jobs import dismiss_job  # noqa: PLC0415
+
+                try:
+                    await dismiss_job(cfg, existing.id)
+                    dismissed += 1
+                except Exception as exc:
+                    logger.debug("vault_watcher dismiss %s: %s", existing.id, exc)
             continue
 
         if note_status != "todo":
@@ -147,7 +176,12 @@ async def run_vault_watcher_tick(
         executed += 1
 
     acted = await _apply_item_actions(cfg, store, registry=active)
-    return {"executed": executed, "approved": approved, "items": acted}
+    return {
+        "executed": executed,
+        "approved": approved,
+        "dismissed": dismissed,
+        "items": acted,
+    }
 
 
 async def _apply_item_actions(cfg: Any, store: Any, *, registry: Any) -> int:

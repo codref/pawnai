@@ -291,6 +291,11 @@ export class PawnClient {
     return resp.json as Job;
   }
 
+  async dismissJob(id: string): Promise<Job> {
+    const resp = await this.request("POST", `/v1/jobs/${encodeURIComponent(id)}/dismiss`, {});
+    return resp.json as Job;
+  }
+
   /** Long-poll vault writes. Empty ``events`` means the timeout elapsed. */
   async waitForVaultEvents(since: number, timeout = 25): Promise<VaultEventsPage> {
     const q = new URLSearchParams({ since: String(since), timeout: String(timeout) });

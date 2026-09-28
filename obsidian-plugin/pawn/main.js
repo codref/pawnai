@@ -361,6 +361,10 @@ var PawnClient = class {
     const resp = await this.request("POST", `/v1/jobs/${encodeURIComponent(id)}/cancel`, {});
     return resp.json;
   }
+  async dismissJob(id) {
+    const resp = await this.request("POST", `/v1/jobs/${encodeURIComponent(id)}/dismiss`, {});
+    return resp.json;
+  }
   /** Long-poll vault writes. Empty ``events`` means the timeout elapsed. */
   async waitForVaultEvents(since, timeout = 25) {
     var _a;
@@ -1167,6 +1171,15 @@ async function setApproved(app, taskPath) {
     fm.approved = true;
   });
 }
+async function setDismissed(app, taskPath) {
+  const file = app.vault.getAbstractFileByPath(taskPath);
+  if (!(file instanceof import_obsidian7.TFile))
+    return;
+  await app.fileManager.processFrontMatter(file, (fm) => {
+    fm.status = "done";
+    fm.approved = false;
+  });
+}
 async function listTaskNotes(app, agentRoot) {
   const prefix = `${tasksFolder(agentRoot)}/`;
   const out = [];
@@ -1324,7 +1337,10 @@ var JobStore = class {
     const prev = this.jobs.get(job.id);
     if (prev && !prev.offline && job.offline)
       return;
-    this.jobs.set(job.id, { ...prev, ...job });
+    const merged = { ...prev, ...job };
+    if (!job.offline)
+      merged.offline = false;
+    this.jobs.set(job.id, merged);
     if (!opts.quiet && prev && isActive(prev) && !isActive(job))
       this.notifyDone(job);
     this.emit();
@@ -1452,6 +1468,23 @@ var JobStore = class {
     }
     this.plugin.updateStatusBar();
   }
+  async dismiss(job) {
+    try {
+      if (job.offline)
+        throw new ServerUnreachable("offline job");
+      this.upsert(await this.client.dismissJob(job.id));
+      new import_obsidian8.Notice("Dismissed: closed without indexing.");
+    } catch (e) {
+      if (!(e instanceof ServerUnreachable) || !job.task_key) {
+        new import_obsidian8.Notice(`Dismiss failed: ${e instanceof Error ? e.message : e}`);
+        return;
+      }
+      await setDismissed(this.plugin.app, job.task_key);
+      this.upsert({ ...job, approved: false, status: "done" });
+      new import_obsidian8.Notice("Marked done in the task note; Pawn closes it after sync.");
+    }
+    this.plugin.updateStatusBar();
+  }
   async cancel(job) {
     try {
       this.upsert(await this.client.cancelJob(job.id));
@@ -1519,6 +1552,11 @@ function renderJobCard(parent, job, plugin, component, opts = {}) {
       icon: "check-circle",
       label: "Approve (index into Pawn memory)",
       onClick: () => void plugin.jobs.approve(job)
+    });
+    extra.push({
+      icon: "circle-x",
+      label: "Dismiss (close without indexing)",
+      onClick: () => void plugin.jobs.dismiss(job)
     });
   }
   if (isActive(job) && !job.offline) {
