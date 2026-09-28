@@ -23,7 +23,12 @@ release: add `codref/pawnai` and select the `obsidian-plugin-v…` tag.
 That release also attaches `main.js`, `manifest.json`, and `styles.css`
 on their own, which is what BRAT downloads.
 
-To publish a release, set `version` in `manifest.json`, then:
+`npm run build` bumps the patch version in `manifest.json` (and keeps
+`package.json` / `versions.json` in step). Obsidian shows that version under
+Community plugins. CI does not bump, so a release tag still matches the
+committed manifest.
+
+To publish a release, build (or set `version` in `manifest.json`), commit it, then:
 
 ```bash
 git tag obsidian-plugin-v0.2.0   # must match manifest.json
@@ -34,7 +39,7 @@ git push origin obsidian-plugin-v0.2.0
 
 ```bash
 npm install
-npm run build          # type-check + bundle to main.js
+npm run build          # bump patch version, type-check, bundle to main.js
 make dist              # optional: write pawn.zip (same layout as the release)
 ```
 
