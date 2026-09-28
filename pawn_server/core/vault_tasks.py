@@ -16,6 +16,7 @@ from pawn_agent.tools.push_queue_message import push_queue_message_impl
 from pawn_agent.utils.db import get_vault_task, update_vault_task
 from pawn_core.vault import VaultNotFound, resolve_path_template
 from pawn_server.core.job_events import publish_job_event
+from pawn_server.core.vault_events import publish_vault_event
 from pawn_server.core.vault_protocol import (
     build_agent_prompt,
     build_obsidian_open_url,
@@ -253,6 +254,7 @@ async def execute_vault_task(
                 )
                 st = await asyncio.to_thread(store.write, task_key, updated)
                 etag = st.etag
+                publish_vault_event([task_key], source="vault", run_id=task_id)
             except Exception:
                 pass
         return VaultTaskResult(
@@ -295,6 +297,7 @@ async def execute_vault_task(
             )
             st = await asyncio.to_thread(store.write, task_key, updated)
             update_vault_task(cfg.db_dsn, task_id, etag=st.etag)
+            publish_vault_event([task_key], source="vault", run_id=task_id)
         except Exception as exc:
             logger.error("Failed writing vault result for %s: %s", task_id, exc)
 

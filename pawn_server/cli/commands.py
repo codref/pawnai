@@ -885,12 +885,14 @@ def serve(
 
         shared_registry = get_sallm_registry()
         from pawn_server.core.job_events import job_events  # noqa: PLC0415
+        from pawn_server.core.vault_events import vault_events  # noqa: PLC0415
 
         class _Server(uvicorn.Server):
-            # Long-lived SSE streams (e.g. /v1/jobs/events) otherwise keep
-            # uvicorn in "Waiting for connections to close" forever.
+            # Long-lived SSE streams (e.g. /v1/jobs/events) and vault long-polls
+            # otherwise keep uvicorn in "Waiting for connections to close".
             def handle_exit(self, sig: int, frame: Any) -> None:
                 job_events.close()
+                vault_events.close()
                 super().handle_exit(sig, frame)
 
         uv_config = uvicorn.Config(

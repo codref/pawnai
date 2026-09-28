@@ -27,7 +27,7 @@ __export(main_exports, {
   default: () => PawnPlugin
 });
 module.exports = __toCommonJS(main_exports);
-var import_obsidian15 = require("obsidian");
+var import_obsidian16 = require("obsidian");
 
 // src/active.ts
 var import_obsidian = require("obsidian");
@@ -359,6 +359,18 @@ var PawnClient = class {
   async cancelJob(id) {
     const resp = await this.request("POST", `/v1/jobs/${encodeURIComponent(id)}/cancel`, {});
     return resp.json;
+  }
+  /** Long-poll vault writes. Empty ``events`` means the timeout elapsed. */
+  async waitForVaultEvents(since, timeout = 25) {
+    var _a;
+    const q = new URLSearchParams({ since: String(since), timeout: String(timeout) });
+    const resp = await this.request("GET", `/v1/vault/events?${q.toString()}`);
+    const body = resp.json;
+    return {
+      seq: Number((_a = body.seq) != null ? _a : since),
+      resync: Boolean(body.resync),
+      events: Array.isArray(body.events) ? body.events : []
+    };
   }
   /** Desktop only: follow /v1/jobs/events until aborted. Resolves when the stream ends. */
   async followJobEvents(onJob, signal) {
@@ -2829,7 +2841,8 @@ var DEFAULT_SETTINGS = {
   sendLocalNoteContent: true,
   commandsFolder: "Pawn/Commands",
   notifyOnJobDone: true,
-  insertCalloutForJobs: false
+  insertCalloutForJobs: false,
+  resyncOnAgentVaultWrite: true
 };
 var PawnSettingTab = class extends import_obsidian14.PluginSettingTab {
   constructor(app, plugin) {
@@ -2901,6 +2914,14 @@ var PawnSettingTab = class extends import_obsidian14.PluginSettingTab {
         await this.plugin.saveSettings();
       })
     );
+    new import_obsidian14.Setting(containerEl).setName("Resync when the agent writes").setDesc(
+      "After an agent turn changes vault notes, ask Sync Engine to sync immediately. Interval sync still applies when this is off or Sync Engine is disabled."
+    ).addToggle(
+      (t) => t.setValue(s.resyncOnAgentVaultWrite).onChange(async (v) => {
+        s.resyncOnAgentVaultWrite = v;
+        await this.plugin.saveSettings();
+      })
+    );
     new import_obsidian14.Setting(containerEl).setName("Insert callout for background jobs").setDesc("Add a > [!pawn] link to the task note at the cursor when you send a job.").addToggle(
       (t) => t.setValue(s.insertCalloutForJobs).onChange(async (v) => {
         s.insertCalloutForJobs = v;
@@ -2910,16 +2931,90 @@ var PawnSettingTab = class extends import_obsidian14.PluginSettingTab {
   }
 };
 
+// src/vaultSync.ts
+var import_obsidian15 = require("obsidian");
+var SYNC_COMMAND = "sync-engine:start-non-interactive-sync";
+var DEBOUNCE_MS = 1500;
+var RETRY_MS = 5e3;
+var MAX_BACKOFF_MS2 = 6e4;
+function sleep2(ms) {
+  return new Promise((resolve) => window.setTimeout(resolve, ms));
+}
+var VaultSync = class {
+  constructor(plugin, client) {
+    this.plugin = plugin;
+    this.client = client;
+    this.stopped = true;
+    this.retry = null;
+    this.kick = (0, import_obsidian15.debounce)(() => this.runSync(), DEBOUNCE_MS, true);
+  }
+  start() {
+    if (!this.stopped)
+      return;
+    this.stopped = false;
+    void this.loop();
+  }
+  stop() {
+    this.stopped = true;
+    this.kick.cancel();
+    if (this.retry != null)
+      window.clearTimeout(this.retry);
+    this.retry = null;
+  }
+  async loop() {
+    let since = 0;
+    let backoff = 2e3;
+    while (!this.stopped) {
+      if (!this.plugin.settings.resyncOnAgentVaultWrite) {
+        await sleep2(1e3);
+        continue;
+      }
+      const started = Date.now();
+      try {
+        const page = await this.client.waitForVaultEvents(since);
+        since = page.seq;
+        if (page.resync || page.events.length > 0)
+          this.kick();
+        if (Date.now() - started > 5e3)
+          backoff = 2e3;
+      } catch (e) {
+        if (this.stopped)
+          return;
+        await sleep2(backoff);
+        backoff = Math.min(backoff * 2, MAX_BACKOFF_MS2);
+      }
+    }
+  }
+  runSync() {
+    var _a;
+    if (this.stopped || !this.plugin.settings.resyncOnAgentVaultWrite)
+      return;
+    const mgr = this.plugin.app.commands;
+    if (!((_a = mgr == null ? void 0 : mgr.commands) == null ? void 0 : _a[SYNC_COMMAND]))
+      return;
+    if (mgr.executeCommandById(SYNC_COMMAND))
+      return;
+    if (this.retry != null)
+      window.clearTimeout(this.retry);
+    this.retry = window.setTimeout(() => {
+      this.retry = null;
+      if (this.stopped || !this.plugin.settings.resyncOnAgentVaultWrite)
+        return;
+      mgr.executeCommandById(SYNC_COMMAND);
+    }, RETRY_MS);
+  }
+};
+
 // src/main.ts
 var LEGACY_PANEL_VIEW = "pawn-panel";
 var TEXT_UPLOAD = /\.(md|markdown|txt)$/i;
-var PawnPlugin = class extends import_obsidian15.Plugin {
+var PawnPlugin = class extends import_obsidian16.Plugin {
   constructor() {
     super(...arguments);
     this.settings = { ...DEFAULT_SETTINGS };
     this.data = { settings: this.settings, conversations: {}, lastGlobalConversation: "" };
     this.statusEl = null;
-    this.persistSoon = (0, import_obsidian15.debounce)(() => void this.persist(), 1e3, true);
+    this.persistSoon = (0, import_obsidian16.debounce)(() => void this.persist(), 1e3, true);
   }
   async onload() {
     await this.loadPluginData();
@@ -2927,6 +3022,7 @@ var PawnPlugin = class extends import_obsidian15.Plugin {
     this.conversations = new ConversationStore(this.data.conversations, () => this.persistSoon());
     this.jobs = new JobStore(this, this.client);
     this.inbox = new InboxStore(this, this.client);
+    this.vaultSync = new VaultSync(this, this.client);
     this.prompts = new PromptCommandRegistry(this);
     this.addSettingTab(new PawnSettingTab(this.app, this));
     this.registerView(PAWN_CHAT_VIEW, (leaf) => new PawnChatView(leaf, this));
@@ -2941,9 +3037,10 @@ var PawnPlugin = class extends import_obsidian15.Plugin {
       void this.prompts.reload();
       this.jobs.start();
       this.inbox.start();
+      this.vaultSync.start();
       this.updateStatusBar();
     });
-    const reloadPrompts = (0, import_obsidian15.debounce)(() => void this.prompts.reload(), 500, true);
+    const reloadPrompts = (0, import_obsidian16.debounce)(() => void this.prompts.reload(), 500, true);
     const onVaultChange = (file) => {
       if (this.prompts.isCommandFile(file.path))
         reloadPrompts();
@@ -2959,9 +3056,10 @@ var PawnPlugin = class extends import_obsidian15.Plugin {
     );
   }
   onunload() {
-    var _a, _b;
+    var _a, _b, _c;
     (_a = this.jobs) == null ? void 0 : _a.stop();
     (_b = this.inbox) == null ? void 0 : _b.stop();
+    (_c = this.vaultSync) == null ? void 0 : _c.stop();
     void this.persist();
   }
   // ── persistence ──────────────────────────────────────────────────────────
@@ -3052,7 +3150,7 @@ tags: [idea]
 ${title.trim()}
 `;
           await this.app.vault.create(path, body);
-          new import_obsidian15.Notice(`Saved ${path}`);
+          new import_obsidian16.Notice(`Saved ${path}`);
         }).open();
       }
     });
@@ -3094,7 +3192,7 @@ ${title.trim()}
   registerMenus() {
     this.registerEvent(
       this.app.workspace.on("editor-menu", (menu, editor, view) => {
-        if (!(view instanceof import_obsidian15.MarkdownView))
+        if (!(view instanceof import_obsidian16.MarkdownView))
           return;
         menu.addSeparator();
         menu.addItem(
@@ -3115,7 +3213,7 @@ ${title.trim()}
     );
     this.registerEvent(
       this.app.workspace.on("file-menu", (menu, file) => {
-        if (!(file instanceof import_obsidian15.TFile))
+        if (!(file instanceof import_obsidian16.TFile))
           return;
         if (file.extension === "md") {
           menu.addItem(
@@ -3176,18 +3274,18 @@ ${title.trim()}
         selection: selection || void 0
       });
       this.maybeInsertCallout(job, editor);
-      new import_obsidian15.Notice(
+      new import_obsidian16.Notice(
         job.offline ? "Saved as task note (offline)." : "Pawn is working on it in the background."
       );
     } catch (e) {
-      new import_obsidian15.Notice(`Could not start job: ${e instanceof Error ? e.message : e}`);
+      new import_obsidian16.Notice(`Could not start job: ${e instanceof Error ? e.message : e}`);
     }
   }
   maybeInsertCallout(job, editor) {
     var _a;
     if (!this.settings.insertCalloutForJobs || !job.task_key)
       return;
-    const ed = editor != null ? editor : (_a = this.app.workspace.getActiveViewOfType(import_obsidian15.MarkdownView)) == null ? void 0 : _a.editor;
+    const ed = editor != null ? editor : (_a = this.app.workspace.getActiveViewOfType(import_obsidian16.MarkdownView)) == null ? void 0 : _a.editor;
     if (ed)
       insertCallout(ed, job.task_key, shortTitle(job.instruction));
   }
@@ -3206,10 +3304,10 @@ ${title.trim()}
         index: TEXT_UPLOAD.test(filename)
       });
       this.jobs.track(job);
-      new import_obsidian15.Notice(`Uploading ${filename} to Pawn\u2026`);
+      new import_obsidian16.Notice(`Uploading ${filename} to Pawn\u2026`);
       return job;
     } catch (e) {
-      new import_obsidian15.Notice(`Upload failed: ${e instanceof Error ? e.message : e}`);
+      new import_obsidian16.Notice(`Upload failed: ${e instanceof Error ? e.message : e}`);
       return null;
     }
   }

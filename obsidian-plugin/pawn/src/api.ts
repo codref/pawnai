@@ -12,6 +12,19 @@ export type JobStatus =
   | "done"
   | "blocked";
 
+export interface VaultEvent {
+  seq: number;
+  paths: string[];
+  source: string;
+  run_id?: string | null;
+}
+
+export interface VaultEventsPage {
+  seq: number;
+  resync: boolean;
+  events: VaultEvent[];
+}
+
 export interface Job {
   id: string;
   kind: JobKind;
@@ -276,6 +289,18 @@ export class PawnClient {
   async cancelJob(id: string): Promise<Job> {
     const resp = await this.request("POST", `/v1/jobs/${encodeURIComponent(id)}/cancel`, {});
     return resp.json as Job;
+  }
+
+  /** Long-poll vault writes. Empty ``events`` means the timeout elapsed. */
+  async waitForVaultEvents(since: number, timeout = 25): Promise<VaultEventsPage> {
+    const q = new URLSearchParams({ since: String(since), timeout: String(timeout) });
+    const resp = await this.request("GET", `/v1/vault/events?${q.toString()}`);
+    const body = resp.json as Partial<VaultEventsPage>;
+    return {
+      seq: Number(body.seq ?? since),
+      resync: Boolean(body.resync),
+      events: Array.isArray(body.events) ? body.events : [],
+    };
   }
 
   /** Desktop only: follow /v1/jobs/events until aborted. Resolves when the stream ends. */

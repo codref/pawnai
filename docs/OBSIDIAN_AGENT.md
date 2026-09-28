@@ -116,7 +116,17 @@ Required settings on every device:
 | Prefix | Same as `vault.s3.prefix` |
 | Sync strategy | Bidirectional |
 | Conflict strategy | Smart merge or keep both |
-| Interval / startup sync | **On** (this is how devices see Pawn's S3 writes) |
+| Interval / startup sync | **On** (fallback when the plugin is closed) |
+
+When the Pawn plugin is open and **Resync when the agent writes** is on
+(the default), it long-polls `GET /v1/vault/events`. After an agent turn
+writes notes (`note_write`, `note_append`, `task_update`, or
+`session_analyze --save`), or an ask job updates its task note, the plugin
+runs Sync Engine's **Start non-interactive sync** command so this device
+pulls those keys without waiting for the interval. Interval and startup sync
+stay on: they cover a closed plugin, Sync Engine disabled, and writes that
+are not part of an agent turn (diarize `push-vault`, coworker notes written
+outside a tool). The long-poll is process-local, same as job events.
 
 Pawn writes ordinary vault paths (`Pawn/Tasks/…`, diary notes, analyses). Sync
 Engine **asymmetric storage** flattens remotes to keys like `00000~Welcome.md`
@@ -262,6 +272,7 @@ Behaviour notes:
 | POST | `/v1/jobs/{id}/approve` | Index an `ask` result into memory |
 | POST | `/v1/jobs/{id}/cancel` | Cancel a running job |
 | GET | `/v1/jobs/events` | SSE `job` events (this server process only) |
+| GET | `/v1/vault/events?since=&timeout=` | Long-poll vault writes from agent turns (this process only) |
 | POST/GET | `/v1/vault/tasks…` | Deprecated aliases (always 202 now) |
 
 All require the same Bearer token.

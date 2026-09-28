@@ -1034,6 +1034,26 @@ async def job_events_stream(request: Request, cfg: Any = Depends(_get_cfg)) -> S
     return StreamingResponse(_gen(), media_type="text/event-stream")
 
 
+_VAULT_POLL_MAX_SECONDS = 25.0
+
+
+@app.get("/v1/vault/events", dependencies=[Depends(_require_token)])
+async def vault_events_poll(
+    since: int = Query(default=0, ge=0),
+    timeout: float = Query(default=_VAULT_POLL_MAX_SECONDS, ge=0, le=_VAULT_POLL_MAX_SECONDS),
+) -> dict:
+    """Long-poll vault writes from agent turns in this process.
+
+    Returns immediately when an event newer than ``since`` is buffered.
+    Otherwise waits up to ``timeout`` seconds (max 25). An empty ``events``
+    list means the client should poll again. ``resync`` is set when the ring
+    dropped events behind ``since``.
+    """
+    from pawn_server.core.vault_events import vault_events  # noqa: PLC0415
+
+    return await vault_events.wait(since, timeout)
+
+
 @app.get("/v1/jobs/{job_id}", dependencies=[Depends(_require_token)])
 async def job_get(job_id: str, cfg: Any = Depends(_get_cfg)) -> dict:
     from pawn_server.core import jobs  # noqa: PLC0415
@@ -1111,8 +1131,8 @@ async def item_action(
     cfg: Any = Depends(_get_cfg),
 ) -> dict:
     """Apply file, task, later, ignore, approve, or reject to one item."""
-    from pawn_agent.core.coworker.actions import apply_action  # noqa: PLC0415
     from pawn_agent.core.coworker import db as itemdb  # noqa: PLC0415
+    from pawn_agent.core.coworker.actions import apply_action  # noqa: PLC0415
 
     receipt = await apply_action(cfg, item_id, body.action, body.arg, registry=_sallm_registry)
     item = await asyncio.to_thread(itemdb.get_item, cfg.db_dsn, item_id)

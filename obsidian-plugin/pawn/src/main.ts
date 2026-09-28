@@ -15,6 +15,7 @@ import { InboxStore } from "./inbox/InboxView";
 import { QuickCaptureModal } from "./inbox/QuickCapture";
 import { JobStore } from "./jobs/JobStore";
 import { DEFAULT_SETTINGS, PawnSettings, PawnSettingTab } from "./settings";
+import { VaultSync } from "./vaultSync";
 
 const LEGACY_PANEL_VIEW = "pawn-panel";
 const TEXT_UPLOAD = /\.(md|markdown|txt)$/i;
@@ -31,6 +32,7 @@ export default class PawnPlugin extends Plugin {
   client!: PawnClient;
   jobs!: JobStore;
   inbox!: InboxStore;
+  vaultSync!: VaultSync;
   prompts!: PromptCommandRegistry;
   conversations!: ConversationStore;
   private statusEl: HTMLElement | null = null;
@@ -43,6 +45,7 @@ export default class PawnPlugin extends Plugin {
     this.conversations = new ConversationStore(this.data.conversations, () => this.persistSoon());
     this.jobs = new JobStore(this, this.client);
     this.inbox = new InboxStore(this, this.client);
+    this.vaultSync = new VaultSync(this, this.client);
     this.prompts = new PromptCommandRegistry(this);
 
     this.addSettingTab(new PawnSettingTab(this.app, this));
@@ -60,6 +63,7 @@ export default class PawnPlugin extends Plugin {
       void this.prompts.reload();
       this.jobs.start();
       this.inbox.start();
+      this.vaultSync.start();
       this.updateStatusBar();
     });
 
@@ -81,6 +85,7 @@ export default class PawnPlugin extends Plugin {
   onunload(): void {
     this.jobs?.stop();
     this.inbox?.stop();
+    this.vaultSync?.stop();
     void this.persist();
   }
 

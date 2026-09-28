@@ -13,6 +13,7 @@ export interface PawnSettings {
   commandsFolder: string;
   notifyOnJobDone: boolean;
   insertCalloutForJobs: boolean;
+  resyncOnAgentVaultWrite: boolean;
 }
 
 export const DEFAULT_SETTINGS: PawnSettings = {
@@ -25,6 +26,7 @@ export const DEFAULT_SETTINGS: PawnSettings = {
   commandsFolder: "Pawn/Commands",
   notifyOnJobDone: true,
   insertCalloutForJobs: false,
+  resyncOnAgentVaultWrite: true,
 };
 
 export class PawnSettingTab extends PluginSettingTab {
@@ -144,6 +146,19 @@ export class PawnSettingTab extends PluginSettingTab {
       .addToggle((t) =>
         t.setValue(s.notifyOnJobDone).onChange(async (v) => {
           s.notifyOnJobDone = v;
+          await this.plugin.saveSettings();
+        }),
+      );
+
+    new Setting(containerEl)
+      .setName("Resync when the agent writes")
+      .setDesc(
+        "After an agent turn changes vault notes, ask Sync Engine to sync immediately. " +
+          "Interval sync still applies when this is off or Sync Engine is disabled.",
+      )
+      .addToggle((t) =>
+        t.setValue(s.resyncOnAgentVaultWrite).onChange(async (v) => {
+          s.resyncOnAgentVaultWrite = v;
           await this.plugin.saveSettings();
         }),
       );

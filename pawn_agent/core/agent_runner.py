@@ -7,11 +7,14 @@ Does not own: queue ack/nack or schedule-fire status (callers handle that).
 from __future__ import annotations
 
 import copy
+import logging
 from dataclasses import dataclass
 from typing import Any, Callable, Optional
 
 from pawn_agent.utils.db import create_agent_run, update_agent_run
 from pawn_agent.utils.model_utils import _apply_model_override
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -85,6 +88,7 @@ async def run_agent_turn(
                 "it must be the diarization session name used by agent tools"
             )
 
+        vault_paths: list[str] = []
         with lineage_env(run_id, depth=depth, event_id=event_id or run_id):
             reply = await registry.handle_turn(
                 session_id,
@@ -92,9 +96,22 @@ async def run_agent_turn(
                 effective_cfg,
                 cfg.db_dsn,
                 on_progress=on_progress,
+                vault_paths_out=vault_paths,
             )
         update_agent_run(cfg.db_dsn, run_id, "completed", response=reply)
+        if vault_paths:
+            _publish_vault_writes(vault_paths, source=source, run_id=run_id)
         return AgentRunResult(run_id=run_id, response=reply)
     except Exception as exc:
         update_agent_run(cfg.db_dsn, run_id, "failed", error=str(exc))
         raise
+
+
+def _publish_vault_writes(paths: list[str], *, source: str, run_id: str) -> None:
+    """Tell connected Obsidian clients to resync. Never fails the turn."""
+    try:
+        from pawn_server.core.vault_events import publish_vault_event  # noqa: PLC0415
+
+        publish_vault_event(paths, source=source, run_id=run_id)
+    except Exception:
+        logger.exception("vault resync publish failed run_id=%s", run_id)

@@ -13,6 +13,7 @@ from typing import Any, Callable, Optional
 from sallm import Agent
 
 from pawn_agent.core.sallm_factory import build_sallm_agent, rebuild_agent_for_config
+from pawn_agent.core.vault_paths import vault_paths_from_steps
 from pawn_agent.utils.config import AgentConfig
 
 logger = logging.getLogger(__name__)
@@ -31,9 +32,7 @@ def format_session_stats(snap: dict[str, Any]) -> str:
         lines.append(f"- **goal**: {goal}")
     stack = snap.get("stack") or []
     if len(stack) > 1:
-        stack_s = " → ".join(
-            f.get("skill", "?") if isinstance(f, dict) else str(f) for f in stack
-        )
+        stack_s = " → ".join(f.get("skill", "?") if isinstance(f, dict) else str(f) for f in stack)
         lines.append(f"- **skill stack**: {stack_s}")
     lines.append(f"- **messages**: {snap.get('message_count', 0)}")
     lines.append(f"- **memory chunks**: {snap.get('chunk_count', 0)}")
@@ -75,6 +74,7 @@ class SallmChatSession:
         self._cfg = cfg
         self.conversation_id = agent.session_id
         self.last_metrics: dict[str, Any] = {}
+        self.last_vault_paths: list[str] = []
 
     @classmethod
     def create(
@@ -191,8 +191,10 @@ class SallmChatSession:
         # Offload: ask() blocks on LLM + CliTool subprocesses.
         result = await asyncio.to_thread(self._ask_sync, text, on_progress)
         if not isinstance(result, dict):
+            self.last_vault_paths = []
             return str(result or "")
 
+        self.last_vault_paths = vault_paths_from_steps(result.get("steps"))
         metrics = result.get("metrics")
         if isinstance(metrics, dict):
             self.last_metrics = dict(metrics)
@@ -215,6 +217,7 @@ class SallmChatSession:
     async def reset(self) -> None:
         """Wipe durable memory for this conversation id (SQLite + vectors)."""
         self.last_metrics = {}
+        self.last_vault_paths = []
         await asyncio.to_thread(self._agent.clear)
 
 
