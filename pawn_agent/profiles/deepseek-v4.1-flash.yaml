@@ -1,9 +1,10 @@
 # DeepSeek V4.1 Flash on OpenRouter (deepseek/deepseek-v4.1-flash).
 #
-# 1,048,576-token context, 384,000-token output cap. Thinking is on by
-# default and shares max_output_tokens with the visible reply, so the
-# output budget is larger than large.yaml and the prompt stays at 256k
-# rather than the full window (a greeting should not send 1M tokens).
+# 1,048,576-token context. Thinking is on by default and shares the output
+# cap with the visible reply, so a non-streaming agent turn looks stuck
+# until the whole trace finishes. think: low keeps a short trace (about a
+# fifth of the output cap) so the reply is better without a multi-minute wait.
+# The composer can raise it to medium or high, or turn it off.
 #
 #   openrouter:
 #     base_url: https://openrouter.ai/api/v1
@@ -33,18 +34,17 @@ demonstrations:
 budgets:
   # 256k of the 1M window: long transcripts and notes, not the whole context.
   prompt_budget: 262144
-  # Room for the default thinking trace plus the reply. Cap is 384000.
-  max_output_tokens: 32768
+  max_output_tokens: 8192
   recent_history_tokens: 65536
   retrieval_tokens: 32768
-  # JSON control and extract calls disable thinking.
   control_max_tokens: 1024
   extract_max_tokens: 4096
   instruction_tokens: 4000
   demo_tokens: 2000
   temperature: 0.4
+  think: low
 metadata:
-  note: "OpenRouter DeepSeek V4.1 Flash. 256k prompt, 32k output shared with the thinking trace."
+  note: "OpenRouter DeepSeek V4.1 Flash. Reasoning on at low effort; the composer can change it."
   version: deepseek-v4.1-flash-v1
   context_window: 1048576
   max_output: 384000

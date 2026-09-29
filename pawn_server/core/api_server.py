@@ -259,6 +259,10 @@ class JobCreateRequest(BaseModel):
     context: Optional[str] = None
     # Catalog id (provider@model). Omitted turns use the background default.
     model: Optional[str] = None
+    # OpenRouter reasoning effort: none, low, medium, high.
+    reasoning: Optional[str] = None
+    # OpenRouter route: balanced, nitro, floor, exacto.
+    route: Optional[str] = None
     # push_note
     path: Optional[str] = None
     content: Optional[str] = None
@@ -302,6 +306,10 @@ class PawnChatRequest(BaseModel):
     background: bool = False
     # Catalog id (provider@model). Omitted turns use the background default.
     model: Optional[str] = None
+    # OpenRouter reasoning effort: none, low, medium, high.
+    reasoning: Optional[str] = None
+    # OpenRouter route: balanced, nitro, floor, exacto.
+    route: Optional[str] = None
 
 
 class VaultTaskCreateRequest(BaseModel):
@@ -975,6 +983,8 @@ async def _create_job(cfg: Any, body: JobCreateRequest) -> dict:
             context=body.context,
             conversation=body.conversation,
             model=(body.model or "").strip() or None,
+            reasoning=(body.reasoning or "").strip() or None,
+            route=(body.route or "").strip() or None,
         )
     elif body.kind == "push_note":
         row = await jobs.create_push_note_job(
@@ -1316,6 +1326,8 @@ async def pawn_chat(body: PawnChatRequest, cfg: Any = Depends(_get_cfg)) -> Stre
                         selection=body.selection,
                         context_paths=context_paths,
                         model=(body.model or "").strip() or None,
+                        reasoning=(body.reasoning or "").strip() or None,
+                        route=(body.route or "").strip() or None,
                     ),
                 )
             except Exception as exc:
@@ -1353,6 +1365,8 @@ async def pawn_chat(body: PawnChatRequest, cfg: Any = Depends(_get_cfg)) -> Stre
                 source="obsidian",
                 command="run",
                 model=(body.model or "").strip() or None,
+                reasoning=(body.reasoning or "").strip() or None,
+                route=(body.route or "").strip() or None,
                 on_progress=on_progress,
             )
 

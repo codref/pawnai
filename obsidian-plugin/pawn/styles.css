@@ -327,9 +327,13 @@ body:not(.is-mobile) .mod-left-split .pawn-composer {
   opacity: 0.7;
 }
 
-.pawn-model-btn-chevron svg {
-  width: 14px;
-  height: 14px;
+.pawn-tune-btn {
+  max-width: none;
+  flex: 0 0 auto;
+}
+
+.pawn-tune-btn.is-hidden {
+  display: none;
 }
 
 .pawn-context-bar {

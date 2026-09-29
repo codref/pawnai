@@ -143,6 +143,11 @@ class LlmProviderConfig(BaseModel):
     # Sent as the HTTP User-Agent. OpenCode asks outside clients to use their
     # own name, for example ``pawn/1.0``, instead of a library default.
     user_agent: Optional[str] = None
+    # OpenRouter reasoning effort: none, low, medium, or high. Empty keeps the
+    # profile default (low for DeepSeek V4.1 Flash).
+    reasoning: Optional[str] = None
+    # OpenRouter provider route: balanced, nitro, floor, or exacto.
+    route: Optional[str] = None
     models: list[ProviderModelConfig] = Field(default_factory=list)
 
 

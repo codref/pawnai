@@ -27,6 +27,8 @@ def _agent_fingerprint(cfg: AgentConfig) -> tuple:
         selection.api_base,
         selection.api_key,
         selection.user_agent,
+        selection.reasoning,
+        selection.route,
         selection.profile,
         cfg.sallm.model_dump(),
     )

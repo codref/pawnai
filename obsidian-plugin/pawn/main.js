@@ -1049,6 +1049,15 @@ var ConversationStore = class {
     conv.updatedAt = Date.now();
     this.persist();
   }
+  setTuning(id, patch) {
+    const conv = this.get(id);
+    if (patch.reasoning !== void 0)
+      conv.reasoning = patch.reasoning;
+    if (patch.route !== void 0)
+      conv.route = patch.route;
+    conv.updatedAt = Date.now();
+    this.persist();
+  }
   clear(id) {
     const conv = this.items[id];
     if (!conv)
@@ -1945,6 +1954,8 @@ var PawnChatView = class extends import_obsidian11.ItemView {
     this.backgroundModel = "";
     this.modelButton = null;
     this.modelButtonLabel = null;
+    this.reasoningButton = null;
+    this.routeButton = null;
     // ── rendering ────────────────────────────────────────────────────────────
     this.tabsEl = null;
     this.renderScope = null;
@@ -2011,6 +2022,79 @@ var PawnChatView = class extends import_obsidian11.ItemView {
     label.setText(text);
     button.title = current || "Model";
     button.setAttr("aria-label", current ? `Model ${current}` : "Model");
+    this.refreshTuneButtons();
+  }
+  currentChoice() {
+    const id = this.selectedModel();
+    return this.modelChoices.find((choice) => choice.id === id);
+  }
+  effectiveReasoning() {
+    var _a;
+    const stored = this.plugin.conversations.get(this.conversationId).reasoning;
+    return stored || ((_a = this.currentChoice()) == null ? void 0 : _a.reasoning_default) || "low";
+  }
+  effectiveRoute() {
+    var _a;
+    const stored = this.plugin.conversations.get(this.conversationId).route;
+    return stored || ((_a = this.currentChoice()) == null ? void 0 : _a.route_default) || "balanced";
+  }
+  refreshTuneButtons() {
+    var _a, _b, _c, _d;
+    const choice = this.currentChoice();
+    this.paintTuneButton(
+      this.reasoningButton,
+      Boolean((_a = choice == null ? void 0 : choice.reasoning) == null ? void 0 : _a.length),
+      (_b = REASONING_LABEL[this.effectiveReasoning()]) != null ? _b : "Low",
+      `Reasoning ${this.effectiveReasoning()}`
+    );
+    this.paintTuneButton(
+      this.routeButton,
+      Boolean((_c = choice == null ? void 0 : choice.routes) == null ? void 0 : _c.length),
+      (_d = ROUTE_LABEL[this.effectiveRoute()]) != null ? _d : "Balanced",
+      `Route ${this.effectiveRoute()}`
+    );
+  }
+  paintTuneButton(button, show, text, aria) {
+    if (!button)
+      return;
+    button.toggleClass("is-hidden", !show);
+    const label = button.querySelector(".pawn-model-btn-label");
+    if (label)
+      label.textContent = text;
+    button.title = aria;
+    button.setAttr("aria-label", aria);
+  }
+  openTuneMenu(event, options, labels, current, apply) {
+    const menu = new import_obsidian11.Menu();
+    for (const value of options) {
+      menu.addItem((item) => {
+        var _a;
+        item.setTitle((_a = labels[value]) != null ? _a : value).setChecked(value === current).onClick(() => {
+          apply(value);
+          this.refreshTuneButtons();
+        });
+      });
+    }
+    menu.showAtMouseEvent(event);
+  }
+  tuningFields() {
+    var _a, _b;
+    const choice = this.currentChoice();
+    return {
+      reasoning: ((_a = choice == null ? void 0 : choice.reasoning) == null ? void 0 : _a.length) ? this.effectiveReasoning() : void 0,
+      route: ((_b = choice == null ? void 0 : choice.routes) == null ? void 0 : _b.length) ? this.effectiveRoute() : void 0
+    };
+  }
+  tuneButton(row, aria, onClick) {
+    const button = row.createEl("button", {
+      cls: "pawn-model-btn pawn-tune-btn is-hidden",
+      attr: { type: "button", "aria-haspopup": "listbox", "aria-label": aria }
+    });
+    button.createSpan({ cls: "pawn-model-btn-label", text: aria });
+    const chevron = button.createSpan({ cls: "pawn-model-btn-chevron" });
+    (0, import_obsidian11.setIcon)(chevron, "chevron-down");
+    button.onclick = (event) => onClick(event);
+    return button;
   }
   openModelMenu(event) {
     const menu = new import_obsidian11.Menu();
@@ -2566,6 +2650,29 @@ ${(_a = e.stack) != null ? _a : ""}` : String(e)
     this.modelButtonLabel = modelLabel;
     this.refreshModelButton();
     modelButton.onclick = (event) => this.openModelMenu(event);
+    this.reasoningButton = this.tuneButton(row, "Reasoning", (event) => {
+      var _a;
+      const choice = this.currentChoice();
+      this.openTuneMenu(
+        event,
+        (_a = choice == null ? void 0 : choice.reasoning) != null ? _a : [],
+        REASONING_LABEL,
+        this.effectiveReasoning(),
+        (value) => this.plugin.conversations.setTuning(this.conversationId, { reasoning: value })
+      );
+    });
+    this.routeButton = this.tuneButton(row, "Route", (event) => {
+      var _a;
+      const choice = this.currentChoice();
+      this.openTuneMenu(
+        event,
+        (_a = choice == null ? void 0 : choice.routes) != null ? _a : [],
+        ROUTE_LABEL,
+        this.effectiveRoute(),
+        (value) => this.plugin.conversations.setTuning(this.conversationId, { route: value })
+      );
+    });
+    this.refreshTuneButtons();
     const attach = row.createEl("button", {
       cls: "clickable-icon",
       attr: { "aria-label": "Upload a file to Pawn" }
@@ -2944,7 +3051,8 @@ ${(_a = e.stack) != null ? _a : ""}` : String(e)
           active_note: activeNote,
           selection: selection == null ? void 0 : selection.text,
           context,
-          model: model || void 0
+          model: model || void 0,
+          ...this.tuningFields()
         },
         {
           onProgress: (line) => {
@@ -3020,7 +3128,8 @@ ${(_a = e.stack) != null ? _a : ""}` : String(e)
         note_path: (_c = (_a = snap.activeNote) == null ? void 0 : _a.path) != null ? _c : (_b = snap.selection) == null ? void 0 : _b.path,
         selection: (_d = snap.selection) == null ? void 0 : _d.text,
         context_paths: snap.extra.map((f) => f.path),
-        model: model || void 0
+        model: model || void 0,
+        ...this.tuningFields()
       });
       this.plugin.maybeInsertCallout(job);
       this.addJobMessage(job.id);
@@ -3064,6 +3173,18 @@ function modelMenuLabel(id) {
     return tail;
   return `${tail} \xB7 ${provider}`;
 }
+var REASONING_LABEL = {
+  none: "Off",
+  low: "Low",
+  medium: "Medium",
+  high: "High"
+};
+var ROUTE_LABEL = {
+  balanced: "Balanced",
+  nitro: "Nitro",
+  floor: "Floor",
+  exacto: "Exacto"
+};
 function readKeyboardHeight(doc) {
   for (const el of [doc.documentElement, doc.body]) {
     if (!el)

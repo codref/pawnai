@@ -59,12 +59,20 @@ export interface ChatRequest {
   background?: boolean;
   /** Catalog id ``provider@model``. Omitted uses the server background default. */
   model?: string;
+  /** OpenRouter reasoning effort: none, low, medium, high. */
+  reasoning?: string;
+  /** OpenRouter route: balanced, nitro, floor, exacto. */
+  route?: string;
 }
 
 export interface ModelChoice {
   id: string;
   provider: string;
   model: string;
+  reasoning?: string[];
+  reasoning_default?: string;
+  routes?: string[];
+  route_default?: string;
 }
 
 export interface ModelCatalog {
@@ -90,6 +98,8 @@ export interface AskJobRequest {
   context?: string;
   /** Catalog id inherited from the chat composer. */
   model?: string;
+  reasoning?: string;
+  route?: string;
 }
 
 export interface InboxItem {

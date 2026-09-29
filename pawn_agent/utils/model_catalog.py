@@ -46,6 +46,10 @@ class ModelSelection:
     user_agent: Optional[str]
     profile: Optional[str]
     provider: str
+    # OpenRouter only. ``none`` | ``low`` | ``medium`` | ``high``.
+    reasoning: Optional[str] = None
+    # OpenRouter only. ``balanced`` | ``nitro`` | ``floor`` | ``exacto``.
+    route: Optional[str] = None
 
 
 @dataclass(frozen=True)
@@ -59,6 +63,8 @@ class CatalogEntry:
     api_base: Optional[str]
     api_key: Optional[str]
     user_agent: Optional[str]
+    reasoning: Optional[str] = None
+    route: Optional[str] = None
 
     def selection(self) -> ModelSelection:
         return ModelSelection(
@@ -69,6 +75,8 @@ class CatalogEntry:
             user_agent=self.user_agent,
             profile=self.profile,
             provider=self.provider,
+            reasoning=self.reasoning,
+            route=self.route,
         )
 
 
@@ -133,6 +141,71 @@ def completion_headers(selection: ModelSelection, session_id: Optional[str]) -> 
     if session and (host == "opencode.ai" or host.endswith(".opencode.ai")):
         headers["x-opencode-session"] = session
     return headers
+
+
+_ROUTE_SUFFIXES = {"nitro", "floor", "exacto"}
+_ROUTES = {"balanced", *_ROUTE_SUFFIXES}
+_REASONING = {"none", "low", "medium", "high"}
+
+
+def _hostname(api_base: Optional[str]) -> str:
+    base = api_base or ""
+    if "://" not in base:
+        return ""
+    return base.split("://", 1)[1].split("/", 1)[0].split("@")[-1].split(":")[0].lower()
+
+
+def _is_openrouter(api_base: Optional[str]) -> bool:
+    host = _hostname(api_base)
+    return host == "openrouter.ai" or host.endswith(".openrouter.ai")
+
+
+def routed_litellm_model(selection: ModelSelection) -> str:
+    """LiteLLM id, with an OpenRouter routing suffix when one is selected."""
+    model = selection.litellm_model
+    route = (selection.route or "").strip().lower()
+    if route in _ROUTE_SUFFIXES and _is_openrouter(selection.api_base):
+        return f"{model}:{route}"
+    return model
+
+
+def think_override(selection: ModelSelection) -> Optional[str | bool]:
+    """Profile ``think`` override for an OpenRouter reasoning effort."""
+    if not _is_openrouter(selection.api_base):
+        return None
+    effort = (selection.reasoning or "").strip().lower()
+    if effort == "none":
+        return False
+    if effort in {"low", "medium", "high"}:
+        return effort
+    return None
+
+
+def apply_turn_options(
+    cfg: Any,
+    *,
+    reasoning: Optional[str] = None,
+    route: Optional[str] = None,
+) -> ModelSelection:
+    """Override reasoning effort and OpenRouter route on the active selection."""
+    selection = active_selection(cfg)
+    updates: dict[str, str] = {}
+    if reasoning and reasoning.strip():
+        effort = reasoning.strip().lower()
+        if effort not in _REASONING:
+            known = ", ".join(sorted(_REASONING))
+            raise ValueError(f"Unknown reasoning {reasoning!r}. Choose one of: {known}")
+        updates["reasoning"] = effort
+    if route and route.strip():
+        chosen = route.strip().lower()
+        if chosen not in _ROUTES:
+            known = ", ".join(("balanced", "nitro", "floor", "exacto"))
+            raise ValueError(f"Unknown route {route!r}. Choose one of: {known}")
+        updates["route"] = chosen
+    if updates:
+        selection = replace(selection, **updates)
+        cfg._selection_override = selection
+    return selection
 
 
 def openai_litellm_id(model_name: str) -> str:
@@ -208,10 +281,22 @@ def public_catalog(cfg: Any) -> dict[str, Any]:
     return {
         "default": default_id,
         "background": background,
-        "models": [
-            {"id": entry.id, "provider": entry.provider, "model": entry.model} for entry in entries
-        ],
+        "models": [_public_model(entry) for entry in entries],
     }
+
+
+def _public_model(entry: CatalogEntry) -> dict[str, Any]:
+    item: dict[str, Any] = {
+        "id": entry.id,
+        "provider": entry.provider,
+        "model": entry.model,
+    }
+    if _is_openrouter(entry.api_base):
+        item["reasoning"] = ["none", "low", "medium", "high"]
+        item["reasoning_default"] = entry.reasoning or "low"
+        item["routes"] = ["balanced", "nitro", "floor", "exacto"]
+        item["route_default"] = entry.route or "balanced"
+    return item
 
 
 def apply_model_selection(cfg: Any, raw: str) -> ModelSelection:
@@ -400,6 +485,12 @@ def _catalog_from_providers(cfg: Any, providers: dict[str, Any]) -> list[Catalog
                     api_base=normalize_openai_base_url(getattr(provider, "base_url", None)),
                     api_key=getattr(provider, "api_key", None),
                     user_agent=(getattr(provider, "user_agent", None) or "").strip() or None,
+                    reasoning=_choice(
+                        getattr(provider, "reasoning", None),
+                        _REASONING,
+                        "reasoning",
+                    ),
+                    route=_choice(getattr(provider, "route", None), _ROUTES, "route"),
                 )
             )
     if not entries:
@@ -448,6 +539,16 @@ def _resolve_required(cfg: Any, raw: str) -> Path:
 def _target_model(path: Path) -> str:
     compiled = load_compiled_profile(path)
     return (compiled.target_model or "").strip()
+
+
+def _choice(raw: Optional[str], allowed: set[str], label: str) -> Optional[str]:
+    text = (raw or "").strip().lower()
+    if not text:
+        return None
+    if text not in allowed:
+        known = ", ".join(sorted(allowed))
+        raise ValueError(f"Unknown {label} {raw!r}. Choose one of: {known}")
+    return text
 
 
 def _legacy_litellm(raw: str, current: str) -> str:

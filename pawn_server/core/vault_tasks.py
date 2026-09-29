@@ -44,18 +44,22 @@ class VaultTaskResult:
     error_code: Optional[str] = None
 
 
-def _selected_model(row: Any, parsed: dict[str, Any]) -> Optional[str]:
-    """Catalog id stored on the job, or on the task note frontmatter."""
+def _payload_text(row: Any, parsed: dict[str, Any], key: str) -> Optional[str]:
     payload = row.payload if isinstance(getattr(row, "payload", None), dict) else {}
-    raw = payload.get("model")
+    raw = payload.get(key)
     if isinstance(raw, str) and raw.strip():
         return raw.strip()
     meta = parsed.get("meta") if isinstance(parsed, dict) else None
     if isinstance(meta, dict):
-        note_model = meta.get("model")
-        if isinstance(note_model, str) and note_model.strip():
-            return note_model.strip()
+        note_value = meta.get(key)
+        if isinstance(note_value, str) and note_value.strip():
+            return note_value.strip()
     return None
+
+
+def _selected_model(row: Any, parsed: dict[str, Any]) -> Optional[str]:
+    """Catalog id stored on the job, or on the task note frontmatter."""
+    return _payload_text(row, parsed, "model")
 
 
 def task_key_for(cfg: Any, *, task_id: str, note_path: str | None = None) -> str:
@@ -237,6 +241,8 @@ async def execute_vault_task(
             prompt=prompt,
             session_id=row.conversation_id,
             model=_selected_model(row, parsed),
+            reasoning=_payload_text(row, parsed, "reasoning"),
+            route=_payload_text(row, parsed, "route"),
             source="vault",
             command="vault_run",
         )

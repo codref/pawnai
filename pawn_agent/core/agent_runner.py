@@ -32,6 +32,8 @@ async def run_agent_turn(
     prompt: Optional[str],
     session_id: Optional[str],
     model: Optional[str] = None,
+    reasoning: Optional[str] = None,
+    route: Optional[str] = None,
     message_id: Optional[str] = None,
     source: str,
     command: str = "run",
@@ -60,6 +62,12 @@ async def run_agent_turn(
     if chosen:
         effective_cfg = copy.copy(cfg)
         _apply_model_override(effective_cfg, chosen)
+    if (reasoning or "").strip() or (route or "").strip():
+        from pawn_agent.utils.model_catalog import apply_turn_options  # noqa: PLC0415
+
+        if effective_cfg is cfg:
+            effective_cfg = copy.copy(cfg)
+        apply_turn_options(effective_cfg, reasoning=reasoning, route=route)
 
     raw_recorded = getattr(effective_cfg, "chat_model_id", None) or chosen or ""
     recorded = raw_recorded if isinstance(raw_recorded, str) else ""

@@ -118,6 +118,21 @@ def build_job_context(
     return "\n\n".join(parts)
 
 
+def _task_extra(
+    model: Optional[str],
+    reasoning: Optional[str],
+    route: Optional[str],
+) -> Optional[dict[str, str]]:
+    extra: dict[str, str] = {}
+    if model and model.strip():
+        extra["model"] = model.strip()
+    if reasoning and reasoning.strip():
+        extra["reasoning"] = reasoning.strip()
+    if route and route.strip():
+        extra["route"] = route.strip()
+    return extra or None
+
+
 def _spawn(job_id: str, coro: Any) -> None:
     task = asyncio.create_task(coro, name=f"pawn-job-{job_id}")
     track_background_task(job_id, task)
@@ -138,6 +153,8 @@ async def create_ask_job(
     context: Optional[str] = None,
     conversation: Optional[str] = None,
     model: Optional[str] = None,
+    reasoning: Optional[str] = None,
+    route: Optional[str] = None,
 ) -> VaultTask:
     """Accept an agent job and start it in the background."""
     if not instruction.strip():
@@ -160,6 +177,8 @@ async def create_ask_job(
             "context": ctx,
             "context_paths": list(context_paths),
             **({"model": model.strip()} if model and model.strip() else {}),
+            **({"reasoning": reasoning.strip()} if reasoning and reasoning.strip() else {}),
+            **({"route": route.strip()} if route and route.strip() else {}),
         },
     )
     if not claim_vault_task(cfg.db_dsn, effective_id):
@@ -177,7 +196,7 @@ async def create_ask_job(
             context=ctx,
             conversation=conv,
             note_path=note_path,
-            extra_meta={"model": model.strip()} if model and model.strip() else None,
+            extra_meta=_task_extra(model, reasoning, route),
         )
         try:
             st = await asyncio.to_thread(store.write, key, note)

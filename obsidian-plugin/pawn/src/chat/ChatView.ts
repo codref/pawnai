@@ -81,6 +81,8 @@ export class PawnChatView extends ItemView {
   private backgroundModel = "";
   private modelButton: HTMLButtonElement | null = null;
   private modelButtonLabel: HTMLElement | null = null;
+  private reasoningButton: HTMLButtonElement | null = null;
+  private routeButton: HTMLButtonElement | null = null;
 
   constructor(
     leaf: WorkspaceLeaf,
@@ -153,6 +155,98 @@ export class PawnChatView extends ItemView {
     label.setText(text);
     button.title = current || "Model";
     button.setAttr("aria-label", current ? `Model ${current}` : "Model");
+    this.refreshTuneButtons();
+  }
+
+  private currentChoice(): ModelChoice | undefined {
+    const id = this.selectedModel();
+    return this.modelChoices.find((choice) => choice.id === id);
+  }
+
+  private effectiveReasoning(): string {
+    const stored = this.plugin.conversations.get(this.conversationId).reasoning;
+    return stored || this.currentChoice()?.reasoning_default || "low";
+  }
+
+  private effectiveRoute(): string {
+    const stored = this.plugin.conversations.get(this.conversationId).route;
+    return stored || this.currentChoice()?.route_default || "balanced";
+  }
+
+  private refreshTuneButtons(): void {
+    const choice = this.currentChoice();
+    this.paintTuneButton(
+      this.reasoningButton,
+      Boolean(choice?.reasoning?.length),
+      REASONING_LABEL[this.effectiveReasoning()] ?? "Low",
+      `Reasoning ${this.effectiveReasoning()}`,
+    );
+    this.paintTuneButton(
+      this.routeButton,
+      Boolean(choice?.routes?.length),
+      ROUTE_LABEL[this.effectiveRoute()] ?? "Balanced",
+      `Route ${this.effectiveRoute()}`,
+    );
+  }
+
+  private paintTuneButton(
+    button: HTMLButtonElement | null,
+    show: boolean,
+    text: string,
+    aria: string,
+  ): void {
+    if (!button) return;
+    button.toggleClass("is-hidden", !show);
+    const label = button.querySelector(".pawn-model-btn-label");
+    if (label) label.textContent = text;
+    button.title = aria;
+    button.setAttr("aria-label", aria);
+  }
+
+  private openTuneMenu(
+    event: MouseEvent,
+    options: string[],
+    labels: Record<string, string>,
+    current: string,
+    apply: (value: string) => void,
+  ): void {
+    const menu = new Menu();
+    for (const value of options) {
+      menu.addItem((item) => {
+        item
+          .setTitle(labels[value] ?? value)
+          .setChecked(value === current)
+          .onClick(() => {
+            apply(value);
+            this.refreshTuneButtons();
+          });
+      });
+    }
+    menu.showAtMouseEvent(event);
+  }
+
+  private tuningFields(): { reasoning?: string; route?: string } {
+    const choice = this.currentChoice();
+    return {
+      reasoning: choice?.reasoning?.length ? this.effectiveReasoning() : undefined,
+      route: choice?.routes?.length ? this.effectiveRoute() : undefined,
+    };
+  }
+
+  private tuneButton(
+    row: HTMLElement,
+    aria: string,
+    onClick: (event: MouseEvent) => void,
+  ): HTMLButtonElement {
+    const button = row.createEl("button", {
+      cls: "pawn-model-btn pawn-tune-btn is-hidden",
+      attr: { type: "button", "aria-haspopup": "listbox", "aria-label": aria },
+    });
+    button.createSpan({ cls: "pawn-model-btn-label", text: aria });
+    const chevron = button.createSpan({ cls: "pawn-model-btn-chevron" });
+    setIcon(chevron, "chevron-down");
+    button.onclick = (event) => onClick(event);
+    return button;
   }
 
   private openModelMenu(event: MouseEvent): void {
@@ -706,6 +800,28 @@ export class PawnChatView extends ItemView {
     this.refreshModelButton();
     modelButton.onclick = (event) => this.openModelMenu(event);
 
+    this.reasoningButton = this.tuneButton(row, "Reasoning", (event) => {
+      const choice = this.currentChoice();
+      this.openTuneMenu(
+        event,
+        choice?.reasoning ?? [],
+        REASONING_LABEL,
+        this.effectiveReasoning(),
+        (value) => this.plugin.conversations.setTuning(this.conversationId, { reasoning: value }),
+      );
+    });
+    this.routeButton = this.tuneButton(row, "Route", (event) => {
+      const choice = this.currentChoice();
+      this.openTuneMenu(
+        event,
+        choice?.routes ?? [],
+        ROUTE_LABEL,
+        this.effectiveRoute(),
+        (value) => this.plugin.conversations.setTuning(this.conversationId, { route: value }),
+      );
+    });
+    this.refreshTuneButtons();
+
     const attach = row.createEl("button", {
       cls: "clickable-icon",
       attr: { "aria-label": "Upload a file to Pawn" },
@@ -1081,6 +1197,7 @@ export class PawnChatView extends ItemView {
           selection: selection?.text,
           context,
           model: model || undefined,
+          ...this.tuningFields(),
         },
         {
           onProgress: (line) => {
@@ -1159,6 +1276,7 @@ export class PawnChatView extends ItemView {
         selection: snap.selection?.text,
         context_paths: snap.extra.map((f) => f.path),
         model: model || undefined,
+        ...this.tuningFields(),
       });
       this.plugin.maybeInsertCallout(job);
       this.addJobMessage(job.id);
@@ -1206,6 +1324,20 @@ function modelMenuLabel(id: string): string {
   if (!provider || provider === tail) return tail;
   return `${tail} · ${provider}`;
 }
+
+const REASONING_LABEL: Record<string, string> = {
+  none: "Off",
+  low: "Low",
+  medium: "Medium",
+  high: "High",
+};
+
+const ROUTE_LABEL: Record<string, string> = {
+  balanced: "Balanced",
+  nitro: "Nitro",
+  floor: "Floor",
+  exacto: "Exacto",
+};
 
 function readKeyboardHeight(doc: Document): number {
   for (const el of [doc.documentElement, doc.body]) {

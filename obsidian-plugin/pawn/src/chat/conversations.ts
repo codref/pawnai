@@ -33,6 +33,10 @@ export interface Conversation {
   updatedAt: number;
   /** Catalog id selected in the composer. Empty uses the server background default. */
   model?: string;
+  /** OpenRouter reasoning effort chosen in the composer. */
+  reasoning?: string;
+  /** OpenRouter route chosen in the composer. */
+  route?: string;
 }
 
 const MAX_MESSAGES = 60;
@@ -121,6 +125,14 @@ export class ConversationStore {
   setModel(id: string, modelId: string): void {
     const conv = this.get(id);
     conv.model = modelId;
+    conv.updatedAt = Date.now();
+    this.persist();
+  }
+
+  setTuning(id: string, patch: { reasoning?: string; route?: string }): void {
+    const conv = this.get(id);
+    if (patch.reasoning !== undefined) conv.reasoning = patch.reasoning;
+    if (patch.route !== undefined) conv.route = patch.route;
     conv.updatedAt = Date.now();
     this.persist();
   }
