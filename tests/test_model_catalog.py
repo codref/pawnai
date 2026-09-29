@@ -11,8 +11,11 @@ import pytest
 from pawn_agent.core.coworker.slash import resolve_chat_message
 from pawn_agent.utils.config import AgentConfig
 from pawn_agent.utils.model_catalog import (
+    ModelSelection,
     apply_model_selection,
+    completion_headers,
     get_background_model,
+    normalize_openai_base_url,
     reset_background_model,
     set_background_model,
 )
@@ -38,6 +41,47 @@ def _cfg(tmp_path: Path, **agent: object) -> AgentConfig:
     }
     base.update(agent)
     return AgentConfig(agent=base)
+
+
+def test_full_endpoint_url_is_trimmed_to_v1_root() -> None:
+    assert (
+        normalize_openai_base_url("https://opencode.ai/zen/v1/chat/completions")
+        == "https://opencode.ai/zen/v1"
+    )
+    assert (
+        normalize_openai_base_url("https://opencode.ai/zen/go/v1/responses/")
+        == "https://opencode.ai/zen/go/v1"
+    )
+    assert normalize_openai_base_url("https://opencode.ai/zen/go/v1") == (
+        "https://opencode.ai/zen/go/v1"
+    )
+    assert normalize_openai_base_url("http://localhost:11434/v1") == "http://localhost:11434/v1"
+
+
+def test_opencode_calls_send_user_agent_and_session() -> None:
+    selection = ModelSelection(
+        catalog_id="opencode@glm-5.3-flash",
+        litellm_model="openai/glm-5.3-flash",
+        api_base="https://opencode.ai/zen/v1",
+        api_key="sk-test",
+        user_agent="pawn/1.0",
+        profile=None,
+        provider="opencode",
+    )
+    headers = completion_headers(selection, "note:Pawn/Today.md")
+    assert headers["User-Agent"] == "pawn/1.0"
+    assert headers["x-opencode-session"] == "note:Pawn/Today.md"
+
+    local = ModelSelection(
+        catalog_id="ollama@gemma4:4b",
+        litellm_model="openai/gemma4:4b",
+        api_base="http://localhost:11434/v1",
+        api_key=None,
+        user_agent="pawn/1.0",
+        profile=None,
+        provider="ollama",
+    )
+    assert "x-opencode-session" not in completion_headers(local, "cli")
 
 
 def test_legacy_openai_block_becomes_one_catalog_entry(tmp_path: Path) -> None:

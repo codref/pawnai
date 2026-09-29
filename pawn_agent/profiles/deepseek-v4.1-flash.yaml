@@ -1,0 +1,50 @@
+# DeepSeek V4.1 Flash on OpenRouter (deepseek/deepseek-v4.1-flash).
+#
+# 1,048,576-token context, 384,000-token output cap. Thinking is on by
+# default and shares max_output_tokens with the visible reply, so the
+# output budget is larger than large.yaml and the prompt stays at 256k
+# rather than the full window (a greeting should not send 1M tokens).
+#
+#   openrouter:
+#     base_url: https://openrouter.ai/api/v1
+#     api_key: sk-or-...
+#     user_agent: pawn/1.0
+#     models:
+#       - profile: deepseek-v4.1-flash.yaml
+#
+# Selectable id: openrouter@deepseek/deepseek-v4.1-flash
+schema_version: 1
+target_model: deepseek/deepseek-v4.1-flash
+instructions:
+  controller: ""
+  extractor: ""
+  ingest: ""
+  converse: |
+    Reasoning stays internal. The visible reply is plain text, or one
+    ```run block when a tool is required. Do not explain the command
+    before the block, and do not wrap the tool call in prose.
+  rewriter: ""
+demonstrations:
+  controller: ""
+  extractor: ""
+  ingest: ""
+  converse: ""
+  rewriter: ""
+budgets:
+  # 256k of the 1M window: long transcripts and notes, not the whole context.
+  prompt_budget: 262144
+  # Room for the default thinking trace plus the reply. Cap is 384000.
+  max_output_tokens: 32768
+  recent_history_tokens: 65536
+  retrieval_tokens: 32768
+  # JSON control and extract calls disable thinking.
+  control_max_tokens: 1024
+  extract_max_tokens: 4096
+  instruction_tokens: 4000
+  demo_tokens: 2000
+  temperature: 0.4
+metadata:
+  note: "OpenRouter DeepSeek V4.1 Flash. 256k prompt, 32k output shared with the thinking trace."
+  version: deepseek-v4.1-flash-v1
+  context_window: 1048576
+  max_output: 384000

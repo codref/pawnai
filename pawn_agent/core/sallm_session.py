@@ -26,6 +26,7 @@ def _agent_fingerprint(cfg: AgentConfig) -> tuple:
         selection.litellm_model,
         selection.api_base,
         selection.api_key,
+        selection.user_agent,
         selection.profile,
         cfg.sallm.model_dump(),
     )

@@ -1943,7 +1943,8 @@ var PawnChatView = class extends import_obsidian11.ItemView {
     this.switchBannerEl = null;
     this.modelChoices = [];
     this.backgroundModel = "";
-    this.modelSelect = null;
+    this.modelButton = null;
+    this.modelButtonLabel = null;
     // ── rendering ────────────────────────────────────────────────────────────
     this.tabsEl = null;
     this.renderScope = null;
@@ -1993,32 +1994,40 @@ var PawnChatView = class extends import_obsidian11.ItemView {
     } catch (e) {
       return;
     }
-    this.fillModelSelect();
+    this.refreshModelButton();
   }
   selectedModel() {
     var _a;
     const stored = this.plugin.conversations.get(this.conversationId).model;
     return stored || this.backgroundModel || ((_a = this.modelChoices[0]) == null ? void 0 : _a.id) || "";
   }
-  fillModelSelect() {
-    const select = this.modelSelect;
-    if (!select)
+  refreshModelButton() {
+    const label = this.modelButtonLabel;
+    const button = this.modelButton;
+    if (!label || !button)
       return;
     const current = this.selectedModel();
-    select.replaceChildren();
-    for (const choice of this.modelChoices) {
-      const opt = document.createElement("option");
-      opt.value = choice.id;
-      opt.textContent = choice.id;
-      opt.selected = choice.id === current;
-      select.appendChild(opt);
+    const text = current ? modelChipLabel(current, this.modelChoices.map((c) => c.id)) : "Model";
+    label.setText(text);
+    button.title = current || "Model";
+    button.setAttr("aria-label", current ? `Model ${current}` : "Model");
+  }
+  openModelMenu(event) {
+    const menu = new import_obsidian11.Menu();
+    const current = this.selectedModel();
+    const ids = this.modelChoices.map((c) => c.id);
+    if (!ids.length) {
+      menu.addItem((item) => item.setTitle("No models configured").setDisabled(true));
     }
-    if (!this.modelChoices.length) {
-      const opt = document.createElement("option");
-      opt.value = "";
-      opt.textContent = "Default";
-      select.appendChild(opt);
+    for (const id of ids) {
+      menu.addItem((item) => {
+        item.setTitle(modelMenuLabel(id)).setChecked(id === current).onClick(() => {
+          this.plugin.conversations.setModel(this.conversationId, id);
+          this.refreshModelButton();
+        });
+      });
     }
+    menu.showAtMouseEvent(event);
   }
   async onClose() {
     var _a, _b, _c;
@@ -2546,13 +2555,17 @@ ${(_a = e.stack) != null ? _a : ""}` : String(e)
     bg.onchange = () => this.background = bg.checked;
     bgLabel.appendText(" Background");
     bgLabel.setAttr("aria-label", "Run as a background job; the result shows up here and in Jobs");
-    const modelSelect = row.createEl("select", { cls: "pawn-model-select" });
-    modelSelect.setAttr("aria-label", "Model");
-    this.modelSelect = modelSelect;
-    this.fillModelSelect();
-    modelSelect.onchange = () => {
-      this.plugin.conversations.setModel(this.conversationId, modelSelect.value);
-    };
+    const modelButton = row.createEl("button", {
+      cls: "pawn-model-btn",
+      attr: { type: "button", "aria-haspopup": "listbox" }
+    });
+    const modelLabel = modelButton.createSpan({ cls: "pawn-model-btn-label", text: "Model" });
+    const chevron = modelButton.createSpan({ cls: "pawn-model-btn-chevron" });
+    (0, import_obsidian11.setIcon)(chevron, "chevron-down");
+    this.modelButton = modelButton;
+    this.modelButtonLabel = modelLabel;
+    this.refreshModelButton();
+    modelButton.onclick = (event) => this.openModelMenu(event);
     const attach = row.createEl("button", {
       cls: "clickable-icon",
       attr: { "aria-label": "Upload a file to Pawn" }
@@ -3026,6 +3039,31 @@ ${(_a = e.stack) != null ? _a : ""}` : String(e)
     (_a = this.pending) == null ? void 0 : _a.abort.abort();
   }
 };
+function modelTail(id) {
+  const at = id.indexOf("@");
+  const model = (at >= 0 ? id.slice(at + 1) : id).trim();
+  const slash = model.lastIndexOf("/");
+  return (slash >= 0 ? model.slice(slash + 1) : model) || id;
+}
+function modelProvider(id) {
+  const at = id.indexOf("@");
+  return at >= 0 ? id.slice(0, at) : "";
+}
+function modelChipLabel(id, ids) {
+  const tail = modelTail(id);
+  const clash = ids.some((other) => other !== id && modelTail(other) === tail);
+  if (!clash)
+    return tail;
+  const provider = modelProvider(id);
+  return provider ? `${provider} \xB7 ${tail}` : id;
+}
+function modelMenuLabel(id) {
+  const provider = modelProvider(id);
+  const tail = modelTail(id);
+  if (!provider || provider === tail)
+    return tail;
+  return `${tail} \xB7 ${provider}`;
+}
 function readKeyboardHeight(doc) {
   for (const el of [doc.documentElement, doc.body]) {
     if (!el)

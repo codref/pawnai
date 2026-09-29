@@ -27,6 +27,19 @@ def test_bundled_large_profile_is_10x_defaults() -> None:
     assert overlay.prompt_budget == 40_960
 
 
+def test_deepseek_v4_1_flash_profile_fits_the_model() -> None:
+    path = bundled_profiles_dir() / "deepseek-v4.1-flash.yaml"
+    compiled = load_compiled_profile(path)
+    assert compiled.target_model == "deepseek/deepseek-v4.1-flash"
+    overlay = compiled.apply_budgets(ModelProfile())
+    assert overlay.prompt_budget == 262_144
+    assert overlay.prompt_budget < compiled.metadata["context_window"]
+    assert overlay.max_output_tokens == 32_768
+    assert overlay.max_output_tokens < compiled.metadata["max_output"]
+    assert overlay.temperature == 0.4
+    assert "```run" in compiled.instructions["converse"]
+
+
 def test_resolve_profile_path_bundled() -> None:
     path = resolve_profile_path("large.yaml")
     assert path is not None

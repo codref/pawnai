@@ -26,6 +26,12 @@ Config file schema (all keys optional)::
           api_key: ollama
           models:
             - profile: gemma4-4b.yaml
+        opencode:
+          base_url: https://opencode.ai/zen/v1
+          api_key: sk-...
+          user_agent: pawn/1.0
+          models:
+            - profile: nemotron.yaml
 
       # Legacy single provider. Used only when ``providers`` is omitted.
       # The first of openai, anthropic, google, groq, mistral wins.
@@ -134,6 +140,9 @@ class LlmProviderConfig(BaseModel):
 
     base_url: Optional[str] = None
     api_key: Optional[str] = None
+    # Sent as the HTTP User-Agent. OpenCode asks outside clients to use their
+    # own name, for example ``pawn/1.0``, instead of a library default.
+    user_agent: Optional[str] = None
     models: list[ProviderModelConfig] = Field(default_factory=list)
 
 

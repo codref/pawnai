@@ -2,6 +2,7 @@ import {
   Component,
   ItemView,
   MarkdownRenderer,
+  Menu,
   Notice,
   Platform,
   TFile,
@@ -78,7 +79,8 @@ export class PawnChatView extends ItemView {
   private switchBannerEl: HTMLElement | null = null;
   private modelChoices: ModelChoice[] = [];
   private backgroundModel = "";
-  private modelSelect: HTMLSelectElement | null = null;
+  private modelButton: HTMLButtonElement | null = null;
+  private modelButtonLabel: HTMLElement | null = null;
 
   constructor(
     leaf: WorkspaceLeaf,
@@ -134,7 +136,7 @@ export class PawnChatView extends ItemView {
     } catch {
       return;
     }
-    this.fillModelSelect();
+    this.refreshModelButton();
   }
 
   private selectedModel(): string {
@@ -142,24 +144,36 @@ export class PawnChatView extends ItemView {
     return stored || this.backgroundModel || this.modelChoices[0]?.id || "";
   }
 
-  private fillModelSelect(): void {
-    const select = this.modelSelect;
-    if (!select) return;
+  private refreshModelButton(): void {
+    const label = this.modelButtonLabel;
+    const button = this.modelButton;
+    if (!label || !button) return;
     const current = this.selectedModel();
-    select.replaceChildren();
-    for (const choice of this.modelChoices) {
-      const opt = document.createElement("option");
-      opt.value = choice.id;
-      opt.textContent = choice.id;
-      opt.selected = choice.id === current;
-      select.appendChild(opt);
+    const text = current ? modelChipLabel(current, this.modelChoices.map((c) => c.id)) : "Model";
+    label.setText(text);
+    button.title = current || "Model";
+    button.setAttr("aria-label", current ? `Model ${current}` : "Model");
+  }
+
+  private openModelMenu(event: MouseEvent): void {
+    const menu = new Menu();
+    const current = this.selectedModel();
+    const ids = this.modelChoices.map((c) => c.id);
+    if (!ids.length) {
+      menu.addItem((item) => item.setTitle("No models configured").setDisabled(true));
     }
-    if (!this.modelChoices.length) {
-      const opt = document.createElement("option");
-      opt.value = "";
-      opt.textContent = "Default";
-      select.appendChild(opt);
+    for (const id of ids) {
+      menu.addItem((item) => {
+        item
+          .setTitle(modelMenuLabel(id))
+          .setChecked(id === current)
+          .onClick(() => {
+            this.plugin.conversations.setModel(this.conversationId, id);
+            this.refreshModelButton();
+          });
+      });
     }
+    menu.showAtMouseEvent(event);
   }
 
   async onClose(): Promise<void> {
@@ -680,13 +694,17 @@ export class PawnChatView extends ItemView {
     bgLabel.appendText(" Background");
     bgLabel.setAttr("aria-label", "Run as a background job; the result shows up here and in Jobs");
 
-    const modelSelect = row.createEl("select", { cls: "pawn-model-select" });
-    modelSelect.setAttr("aria-label", "Model");
-    this.modelSelect = modelSelect;
-    this.fillModelSelect();
-    modelSelect.onchange = () => {
-      this.plugin.conversations.setModel(this.conversationId, modelSelect.value);
-    };
+    const modelButton = row.createEl("button", {
+      cls: "pawn-model-btn",
+      attr: { type: "button", "aria-haspopup": "listbox" },
+    });
+    const modelLabel = modelButton.createSpan({ cls: "pawn-model-btn-label", text: "Model" });
+    const chevron = modelButton.createSpan({ cls: "pawn-model-btn-chevron" });
+    setIcon(chevron, "chevron-down");
+    this.modelButton = modelButton;
+    this.modelButtonLabel = modelLabel;
+    this.refreshModelButton();
+    modelButton.onclick = (event) => this.openModelMenu(event);
 
     const attach = row.createEl("button", {
       cls: "clickable-icon",
@@ -1158,6 +1176,35 @@ export class PawnChatView extends ItemView {
   private stop(): void {
     this.pending?.abort.abort();
   }
+}
+
+function modelTail(id: string): string {
+  const at = id.indexOf("@");
+  const model = (at >= 0 ? id.slice(at + 1) : id).trim();
+  const slash = model.lastIndexOf("/");
+  return (slash >= 0 ? model.slice(slash + 1) : model) || id;
+}
+
+function modelProvider(id: string): string {
+  const at = id.indexOf("@");
+  return at >= 0 ? id.slice(0, at) : "";
+}
+
+/** Closed chip: model name only, plus the provider when two models share it. */
+function modelChipLabel(id: string, ids: string[]): string {
+  const tail = modelTail(id);
+  const clash = ids.some((other) => other !== id && modelTail(other) === tail);
+  if (!clash) return tail;
+  const provider = modelProvider(id);
+  return provider ? `${provider} · ${tail}` : id;
+}
+
+/** Menu row: model name, then the provider, so the full catalog id stays out of the row. */
+function modelMenuLabel(id: string): string {
+  const provider = modelProvider(id);
+  const tail = modelTail(id);
+  if (!provider || provider === tail) return tail;
+  return `${tail} · ${provider}`;
 }
 
 function readKeyboardHeight(doc: Document): number {

@@ -11,6 +11,7 @@ import asyncio
 from typing import Optional
 
 from pawn_agent.utils.config import AgentConfig
+from pawn_agent.utils.model_catalog import completion_headers
 
 
 async def run(
@@ -32,6 +33,9 @@ async def run(
         extra: dict = {}
         if selection.api_key:
             extra["api_key"] = selection.api_key
+        headers = completion_headers(selection, "pawn")
+        if headers:
+            extra["extra_headers"] = headers
         result = complete(
             model=selection.litellm_model,
             messages=messages,

@@ -21,6 +21,7 @@ from pawn_agent.core.sallm_skills import build_pawn_skills
 from pawn_agent.core.sallm_tools import build_pawn_clitools
 from pawn_agent.profiles import load_profile_from_config
 from pawn_agent.utils.config import AgentConfig
+from pawn_agent.utils.model_catalog import completion_headers
 
 logger = logging.getLogger(__name__)
 
@@ -86,17 +87,21 @@ def build_sallm_agent(
     compiled = load_profile_from_config(selection.profile)
 
     logger.debug(
-        "Building sallm Agent conversation_id=%r model=%s state_dir=%s profile=%s",
+        "Building sallm Agent conversation_id=%r model=%s api_base=%s state_dir=%s profile=%s",
         conversation_id,
         selection.litellm_model,
+        selection.api_base,
         state_dir,
         selection.profile,
     )
+
+    headers = completion_headers(selection, conversation_id)
 
     return Agent(
         model=selection.litellm_model,
         api_base=selection.api_base,
         api_key=selection.api_key,
+        extra_headers=headers or None,
         tools=build_pawn_clitools(),
         skills=build_pawn_skills(),
         state_path=state_dir / "state.db",

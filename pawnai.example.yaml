@@ -148,10 +148,17 @@ agent:
         - model: gemma4:4b
           profile: large.yaml
     opencode:
-      base_url: https://opencode.ai/v1
+      # API root, not the docs page and not the full .../chat/completions URL.
+      # Go models: https://opencode.ai/zen/go/v1
+      # Zen models (nemotron-3-ultra-free and the other free models):
+      # https://opencode.ai/zen/v1
+      # user_agent is this client's own name. OpenCode also requires
+      # x-opencode-session, which Pawn fills with the conversation id.
+      base_url: https://opencode.ai/zen/go/v1
       api_key: ""
+      user_agent: pawn/1.0
       models:
-        - model: gpt-5.6-sol
+        - model: glm-5.3-flash
           profile: large.yaml
   # Legacy single block, used only when providers is omitted:
   # openai:

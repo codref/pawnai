@@ -43,6 +43,7 @@ class ModelSelection:
     litellm_model: str
     api_base: Optional[str]
     api_key: Optional[str]
+    user_agent: Optional[str]
     profile: Optional[str]
     provider: str
 
@@ -57,6 +58,7 @@ class CatalogEntry:
     profile: Optional[str]
     api_base: Optional[str]
     api_key: Optional[str]
+    user_agent: Optional[str]
 
     def selection(self) -> ModelSelection:
         return ModelSelection(
@@ -64,9 +66,73 @@ class CatalogEntry:
             litellm_model=openai_litellm_id(self.model),
             api_base=self.api_base,
             api_key=self.api_key,
+            user_agent=self.user_agent,
             profile=self.profile,
             provider=self.provider,
         )
+
+
+_API_ROUTE_SUFFIXES = (
+    "/chat/completions",
+    "/completions",
+    "/responses",
+    "/messages",
+)
+
+
+def normalize_openai_base_url(raw: Optional[str]) -> Optional[str]:
+    """Return the OpenAI-compatible root LiteLLM should call.
+
+    The OpenCode docs list full routes such as
+    ``https://opencode.ai/zen/v1/chat/completions``. LiteLLM appends
+    ``/chat/completions`` itself, so a pasted route becomes
+    ``.../chat/completions/chat/completions`` and the site returns HTML 404.
+    Keep the ``/v1`` root. A ``/models/<id>`` suffix is stripped the same way.
+    """
+    text = (raw or "").strip().rstrip("/")
+    if not text:
+        return None
+    lower = text.lower()
+    for suffix in _API_ROUTE_SUFFIXES:
+        if lower.endswith(suffix):
+            text = text[: -len(suffix)].rstrip("/")
+            lower = text.lower()
+            break
+    marker = "/models/"
+    index = lower.rfind(marker)
+    if index != -1:
+        text = text[:index].rstrip("/")
+    if text and not text.lower().endswith("/v1"):
+        logger.warning(
+            "provider base_url %s does not end with /v1; "
+            "chat calls go to %s/chat/completions",
+            raw,
+            text,
+        )
+    return text or None
+
+
+def completion_headers(selection: ModelSelection, session_id: Optional[str]) -> dict[str, str]:
+    """Headers for one chat call.
+
+    ``user_agent`` is sent as ``User-Agent`` when the provider sets it.
+    OpenCode Zen and Go refuse to route a call that omits
+    ``x-opencode-session``, so that header carries the conversation id
+    whenever the base URL is an ``opencode.ai`` host.
+    """
+    headers: dict[str, str] = {}
+    agent = (selection.user_agent or "").strip()
+    if agent:
+        headers["User-Agent"] = agent
+    host = ""
+    base = selection.api_base or ""
+    if "://" in base:
+        host = base.split("://", 1)[1].split("/", 1)[0].split("@")[-1].split(":")[0]
+    host = host.lower()
+    session = " ".join((session_id or "").split())
+    if session and (host == "opencode.ai" or host.endswith(".opencode.ai")):
+        headers["x-opencode-session"] = session
+    return headers
 
 
 def openai_litellm_id(model_name: str) -> str:
@@ -293,6 +359,7 @@ def _build_catalog(cfg: Any) -> list[CatalogEntry]:
             profile=profile,
             api_base=None,
             api_key=None,
+            user_agent=None,
         )
     ]
 
@@ -330,8 +397,9 @@ def _catalog_from_providers(cfg: Any, providers: dict[str, Any]) -> list[Catalog
                     provider=name,
                     model=model_name,
                     profile=str(resolved),
-                    api_base=getattr(provider, "base_url", None),
+                    api_base=normalize_openai_base_url(getattr(provider, "base_url", None)),
                     api_key=getattr(provider, "api_key", None),
+                    user_agent=(getattr(provider, "user_agent", None) or "").strip() or None,
                 )
             )
     if not entries:
@@ -352,8 +420,9 @@ def _legacy_entry(cfg: Any) -> Optional[CatalogEntry]:
             provider=name,
             model=model_name,
             profile=profile,
-            api_base=getattr(block, "base_url", None),
+            api_base=normalize_openai_base_url(getattr(block, "base_url", None)),
             api_key=getattr(block, "api_key", None),
+            user_agent=None,
         )
     return None
 
