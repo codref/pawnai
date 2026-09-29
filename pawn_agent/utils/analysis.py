@@ -1,6 +1,5 @@
 """Core structured-analysis logic used by ``analyze_summary_impl``."""
 
-
 from __future__ import annotations
 
 import re
@@ -117,7 +116,7 @@ async def run_analysis(cfg: AgentConfig, session_id: str) -> str:
     save_session_analysis(
         session_id=session_id,
         source=f"session:{session_id}",
-        model=cfg.model,
+        model=cfg.chat_model_id,
         title=sections.get("title"),
         summary=sections.get("summary"),
         key_topics=sections.get("key_topics"),

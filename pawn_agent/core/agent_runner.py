@@ -52,10 +52,17 @@ async def run_agent_turn(
     the ask() worker thread (e.g. Matrix status edits).
     """
     effective_cfg = cfg
-    if model:
-        effective_cfg = copy.copy(cfg)
-        _apply_model_override(effective_cfg, model)
+    chosen = (model or "").strip()
+    if not chosen:
+        from pawn_agent.utils.model_catalog import get_background_model  # noqa: PLC0415
 
+        chosen = get_background_model(cfg) or ""
+    if chosen:
+        effective_cfg = copy.copy(cfg)
+        _apply_model_override(effective_cfg, chosen)
+
+    raw_recorded = getattr(effective_cfg, "chat_model_id", None) or chosen or ""
+    recorded = raw_recorded if isinstance(raw_recorded, str) else ""
     run_id = create_agent_run(
         cfg.db_dsn,
         message_id=message_id,
@@ -65,7 +72,7 @@ async def run_agent_turn(
         command=command,
         prompt=prompt,
         session_id=session_id,
-        model=effective_cfg.pydantic_model,
+        model=recorded,
         parent_run_id=parent_run_id,
         depth=depth,
         event_id=event_id,

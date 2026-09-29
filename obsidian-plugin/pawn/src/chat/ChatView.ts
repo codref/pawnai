@@ -9,7 +9,7 @@ import {
   setIcon,
 } from "obsidian";
 import { resolveActiveMarkdownFile } from "../active";
-import { NoteContext, ServerUnreachable } from "../api";
+import { ModelChoice, NoteContext, ServerUnreachable } from "../api";
 import { PromptCommand, renderPrompt } from "../commands/PromptCommands";
 import { renderInbox } from "../inbox/InboxView";
 import { JobFilter, renderJobCard, renderJobsList } from "../jobs/JobsView";
@@ -76,6 +76,9 @@ export class PawnChatView extends ItemView {
   /** Composer text restored across full re-renders. */
   private draftText = "";
   private switchBannerEl: HTMLElement | null = null;
+  private modelChoices: ModelChoice[] = [];
+  private backgroundModel = "";
+  private modelSelect: HTMLSelectElement | null = null;
 
   constructor(
     leaf: WorkspaceLeaf,
@@ -120,6 +123,43 @@ export class PawnChatView extends ItemView {
     });
     this.bindMobileKeyboard();
     this.render();
+    void this.loadModels();
+  }
+
+  private async loadModels(): Promise<void> {
+    try {
+      const page = await this.plugin.client.listModels();
+      this.modelChoices = page.models ?? [];
+      this.backgroundModel = page.background || page.default || "";
+    } catch {
+      return;
+    }
+    this.fillModelSelect();
+  }
+
+  private selectedModel(): string {
+    const stored = this.plugin.conversations.get(this.conversationId).model;
+    return stored || this.backgroundModel || this.modelChoices[0]?.id || "";
+  }
+
+  private fillModelSelect(): void {
+    const select = this.modelSelect;
+    if (!select) return;
+    const current = this.selectedModel();
+    select.replaceChildren();
+    for (const choice of this.modelChoices) {
+      const opt = document.createElement("option");
+      opt.value = choice.id;
+      opt.textContent = choice.id;
+      opt.selected = choice.id === current;
+      select.appendChild(opt);
+    }
+    if (!this.modelChoices.length) {
+      const opt = document.createElement("option");
+      opt.value = "";
+      opt.textContent = "Default";
+      select.appendChild(opt);
+    }
   }
 
   async onClose(): Promise<void> {
@@ -640,6 +680,14 @@ export class PawnChatView extends ItemView {
     bgLabel.appendText(" Background");
     bgLabel.setAttr("aria-label", "Run as a background job; the result shows up here and in Jobs");
 
+    const modelSelect = row.createEl("select", { cls: "pawn-model-select" });
+    modelSelect.setAttr("aria-label", "Model");
+    this.modelSelect = modelSelect;
+    this.fillModelSelect();
+    modelSelect.onchange = () => {
+      this.plugin.conversations.setModel(this.conversationId, modelSelect.value);
+    };
+
     const attach = row.createEl("button", {
       cls: "clickable-icon",
       attr: { "aria-label": "Upload a file to Pawn" },
@@ -753,6 +801,12 @@ export class PawnChatView extends ItemView {
         run: () => void this.send("/inbox"),
       },
       { slug: "reset", label: "/reset", hint: "Clear this conversation", run: () => void this.send("/reset") },
+      {
+        slug: "model",
+        label: "/model",
+        hint: "Show or set the background model",
+        run: () => this.prefillSlash("/model "),
+      },
       {
         slug: "new",
         label: "/new",
@@ -1000,6 +1054,7 @@ export class PawnChatView extends ItemView {
     try {
       const activeNote = snap.activeNote ? await this.noteContext(snap.activeNote) : undefined;
       const context = await Promise.all(snap.extra.map((f) => this.noteContext(f)));
+      const model = this.selectedModel();
       await this.plugin.client.chat(
         {
           conversation,
@@ -1007,6 +1062,7 @@ export class PawnChatView extends ItemView {
           active_note: activeNote,
           selection: selection?.text,
           context,
+          model: model || undefined,
         },
         {
           onProgress: (line) => {
@@ -1077,12 +1133,14 @@ export class PawnChatView extends ItemView {
     snap: ContextSnapshot,
   ): Promise<void> {
     try {
+      const model = this.selectedModel();
       const job = await this.plugin.jobs.submitAsk({
         instruction: text,
         conversation,
         note_path: snap.activeNote?.path ?? snap.selection?.path,
         selection: snap.selection?.text,
         context_paths: snap.extra.map((f) => f.path),
+        model: model || undefined,
       });
       this.plugin.maybeInsertCallout(job);
       this.addJobMessage(job.id);

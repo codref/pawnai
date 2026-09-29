@@ -94,6 +94,7 @@ def chat(
         "[dim]Durable ReAct + skills/CliTools. "
         "Type /exit or /quit to end. /stats shows session metrics; "
         "/reset clears sallm session memory. "
+        "/model sets the background model. "
         "/idea captures an idea; /goal writes Goals.md.[/dim]\n"
     )
     try:

@@ -10,7 +10,7 @@ from pawn_agent.core.agent_runner import run_agent_turn
 
 
 def _cfg() -> SimpleNamespace:
-    return SimpleNamespace(db_dsn="sqlite://", pydantic_model="openai:gpt-4o")
+    return SimpleNamespace(db_dsn="sqlite://")
 
 
 def _patch_db(monkeypatch) -> None:

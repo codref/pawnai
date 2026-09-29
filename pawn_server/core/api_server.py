@@ -66,8 +66,10 @@ rely on ``api.whitelist_ips`` / auto-blacklist (see ``pawn-server blacklist``).
 
 Model selection
 ---------------
-The server always routes through the sallm agent.  The ``model`` field
-is accepted for OpenAI client compatibility but its value is ignored.
+The server always routes through the sallm agent.  ``/v1/chat/completions``
+honors a catalog id (``provider@model``) and ignores any other ``model``
+value, including ``pawn-agent``.  ``POST /v1/pawn/chat`` and ask jobs take
+the same id and fall back to the background default when it is omitted.
 
 Session management
 ------------------
@@ -255,6 +257,8 @@ class JobCreateRequest(BaseModel):
     selection: Optional[str] = None
     context_paths: List[str] = Field(default_factory=list)
     context: Optional[str] = None
+    # Catalog id (provider@model). Omitted turns use the background default.
+    model: Optional[str] = None
     # push_note
     path: Optional[str] = None
     content: Optional[str] = None
@@ -296,6 +300,8 @@ class PawnChatRequest(BaseModel):
     selection: Optional[str] = None
     context: List[ContextNote] = Field(default_factory=list)
     background: bool = False
+    # Catalog id (provider@model). Omitted turns use the background default.
+    model: Optional[str] = None
 
 
 class VaultTaskCreateRequest(BaseModel):
@@ -478,7 +484,12 @@ def _chunk(completion_id: str, created: int, model: str, delta: dict, finish: An
 
 
 async def _stream_agent_turn_openai(
-    cfg: Any, *, prompt: str, session_id: str, model: str
+    cfg: Any,
+    *,
+    prompt: str,
+    session_id: str,
+    model: str,
+    agent_model: Optional[str] = None,
 ) -> AsyncIterator[str]:
     """OpenAI SSE while the agent runs: keep-alives, progress as reasoning, answer."""
     from pawn_server.core.progress import stream_turn  # noqa: PLC0415
@@ -496,6 +507,7 @@ async def _stream_agent_turn_openai(
             session_id=session_id,
             source="api",
             command="run",
+            model=agent_model,
             on_progress=on_progress,
         )
 
@@ -617,7 +629,9 @@ async def chat_completions(
     """OpenAI-compatible chat completions endpoint.
 
     All requests are handled by the sallm agent.  The ``model`` field is
-    accepted for OpenAI client compatibility but ignored.  sallm owns the
+    A catalog id (``provider@model``) selects that profile and provider.
+    Any other value, including ``pawn-agent``, is ignored and the background
+    default is used.  sallm owns the
     conversation history, so only the last user message is sent to the agent
     (plus the client system prompt when ``api.include_system_prompt`` is on).
 
@@ -667,9 +681,18 @@ async def chat_completions(
     if not prompt:
         raise HTTPException(status_code=422, detail="No user message found in messages")
 
+    from pawn_agent.utils.model_catalog import catalog_model_or_none  # noqa: PLC0415
+
+    agent_model = catalog_model_or_none(cfg, req.model)
     if req.stream:
         return StreamingResponse(
-            _stream_agent_turn_openai(cfg, prompt=prompt, session_id=session_id, model=req.model),
+            _stream_agent_turn_openai(
+                cfg,
+                prompt=prompt,
+                session_id=session_id,
+                model=req.model,
+                agent_model=agent_model,
+            ),
             media_type="text/event-stream",
         )
 
@@ -681,6 +704,7 @@ async def chat_completions(
             session_id=session_id,
             source="api",
             command="run",
+            model=agent_model,
         )
         reply = result.response
     except Exception as exc:
@@ -688,6 +712,14 @@ async def chat_completions(
         reply = f"Agent error: {exc}"
 
     return _build_openai_response(reply, req.model)
+
+
+@app.get("/v1/pawn/models", dependencies=[Depends(_require_token)])
+async def list_pawn_models(cfg: Any = Depends(_get_cfg)) -> dict:
+    """Selectable catalog ids for the Pawn plugin. No credentials."""
+    from pawn_agent.utils.model_catalog import public_catalog  # noqa: PLC0415
+
+    return public_catalog(cfg)
 
 
 @app.get("/v1/models", dependencies=[Depends(_require_token)])
@@ -942,6 +974,7 @@ async def _create_job(cfg: Any, body: JobCreateRequest) -> dict:
             context_paths=body.context_paths,
             context=body.context,
             conversation=body.conversation,
+            model=(body.model or "").strip() or None,
         )
     elif body.kind == "push_note":
         row = await jobs.create_push_note_job(
@@ -1282,6 +1315,7 @@ async def pawn_chat(body: PawnChatRequest, cfg: Any = Depends(_get_cfg)) -> Stre
                         note_path=body.active_note.path if body.active_note else None,
                         selection=body.selection,
                         context_paths=context_paths,
+                        model=(body.model or "").strip() or None,
                     ),
                 )
             except Exception as exc:
@@ -1318,6 +1352,7 @@ async def pawn_chat(body: PawnChatRequest, cfg: Any = Depends(_get_cfg)) -> Stre
                 session_id=conversation,
                 source="obsidian",
                 command="run",
+                model=(body.model or "").strip() or None,
                 on_progress=on_progress,
             )
 

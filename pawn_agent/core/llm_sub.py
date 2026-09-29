@@ -1,12 +1,13 @@
-"""Single-turn completion via the primary OpenAI-compatible LLM.
+"""Single-turn OpenAI-compatible completion on the active model selection.
 
-Used by structured analysis (`utils/analysis.py` → `analyze_summary_impl`).
-Routes through the PydanticAI model configured in ``agent.openai`` (or an
-equivalent provider section).
+Used by structured analysis and coworker extract/score. The conversational
+agent is sallm; this helper is a one-shot LiteLLM call on the same catalog
+selection (background default unless the caller already overrode ``cfg``).
 """
 
 from __future__ import annotations
 
+import asyncio
 from typing import Optional
 
 from pawn_agent.utils.config import AgentConfig
@@ -17,40 +18,26 @@ async def run(
     prompt: str,
     system_prompt: Optional[str] = None,
 ) -> str:
-    """Run a single-turn completion and return the response string.
+    """Run a single-turn completion and return the response string."""
+    from sallm.llm import complete  # noqa: PLC0415
+    from sallm.messages import system, user  # noqa: PLC0415
 
-    Args:
-        cfg: Agent configuration.  Uses ``cfg.pydantic_model``,
-            ``cfg.pydantic_api_key``, and ``cfg.pydantic_base_url``.
-        prompt: User prompt to send.
-        system_prompt: Optional system prompt.
+    selection = cfg.model_selection
+    messages = []
+    if system_prompt:
+        messages.append(system(system_prompt))
+    messages.append(user(prompt))
 
-    Returns:
-        The model's response as a plain string.
-    """
-    import os
+    def _call() -> str:
+        extra: dict = {}
+        if selection.api_key:
+            extra["api_key"] = selection.api_key
+        result = complete(
+            model=selection.litellm_model,
+            messages=messages,
+            api_base=selection.api_base,
+            **extra,
+        )
+        return str(result.get("content") or "")
 
-    from pydantic_ai import Agent
-
-    model_str = cfg.pydantic_model
-    api_key = cfg.pydantic_api_key
-    base_url = cfg.pydantic_base_url
-
-    if base_url and model_str.startswith("openai:"):
-        from pydantic_ai.models.openai import OpenAIChatModel
-        from pydantic_ai.providers.openai import OpenAIProvider
-
-        model_name = model_str[len("openai:") :]
-        provider = OpenAIProvider(base_url=base_url, api_key=api_key or "no-key")
-        model = OpenAIChatModel(model_name, provider=provider)
-    else:
-        if api_key:
-            if model_str.startswith("openai:"):
-                os.environ.setdefault("OPENAI_API_KEY", api_key)
-            elif model_str.startswith("anthropic:"):
-                os.environ.setdefault("ANTHROPIC_API_KEY", api_key)
-        model = model_str
-
-    agent: Agent = Agent(model, system_prompt=system_prompt or ())
-    result = await agent.run(prompt)
-    return result.output
+    return await asyncio.to_thread(_call)

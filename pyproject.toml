@@ -40,7 +40,6 @@ dependencies = [
     "PyYAML>=6.0",
     "boto3>=1.26.0",
     "github-copilot-sdk",
-    "pydantic-ai>=0.1.0",
     "requests>=2.28.0",
     "alembic>=1.13.0",
     "sentence-transformers>=2.7.0",

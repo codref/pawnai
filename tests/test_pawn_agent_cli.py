@@ -17,7 +17,7 @@ def _cfg() -> SimpleNamespace:
     return SimpleNamespace(
         db_dsn="postgresql://dummy",
         agent_name="Bob",
-        pydantic_model="openai:gpt-4o",
+        chat_model_id="openai@gpt-4o",
         litellm_model="openai/gpt-4o",
         agent=SimpleNamespace(sallm=SallmSection()),
     )

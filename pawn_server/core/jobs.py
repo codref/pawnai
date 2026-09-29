@@ -137,6 +137,7 @@ async def create_ask_job(
     context_paths: Sequence[str] = (),
     context: Optional[str] = None,
     conversation: Optional[str] = None,
+    model: Optional[str] = None,
 ) -> VaultTask:
     """Accept an agent job and start it in the background."""
     if not instruction.strip():
@@ -155,7 +156,11 @@ async def create_ask_job(
         via="http",
         status="queued",
         kind="ask",
-        payload={"context": ctx, "context_paths": list(context_paths)},
+        payload={
+            "context": ctx,
+            "context_paths": list(context_paths),
+            **({"model": model.strip()} if model and model.strip() else {}),
+        },
     )
     if not claim_vault_task(cfg.db_dsn, effective_id):
         row = get_vault_task(cfg.db_dsn, effective_id)
@@ -172,6 +177,7 @@ async def create_ask_job(
             context=ctx,
             conversation=conv,
             note_path=note_path,
+            extra_meta={"model": model.strip()} if model and model.strip() else None,
         )
         try:
             st = await asyncio.to_thread(store.write, key, note)

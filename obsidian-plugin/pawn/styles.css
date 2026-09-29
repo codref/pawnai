@@ -290,6 +290,14 @@ body:not(.is-mobile) .mod-left-split .pawn-composer {
   cursor: pointer;
 }
 
+.pawn-model-select {
+  max-width: 11rem;
+  font-size: var(--font-ui-small);
+  color: var(--text-muted);
+  background: transparent;
+  border: none;
+}
+
 .pawn-context-bar {
   display: flex;
   flex-wrap: wrap;

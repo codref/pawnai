@@ -16,18 +16,31 @@ Config file schema (all keys optional)::
       name: Bob
       anima: anima.md
 
+      # User-owned compiled profiles (outside the repo). Optional.
+      profiles_dir: ~/.config/pawn/profiles
+      # Catalog id used when a turn does not name a model.
+      default: ollama@gemma4:4b
+      providers:
+        ollama:
+          base_url: http://localhost:11434/v1
+          api_key: ollama
+          models:
+            - profile: gemma4-4b.yaml
+
+      # Legacy single provider. Used only when ``providers`` is omitted.
+      # The first of openai, anthropic, google, groq, mistral wins.
       openai:
         model: gpt-4o
         api_key: sk-...
         base_url: http://localhost:11434/v1
 
-      # Durable sallm harness (SQLite + Lance memory). Chat model still comes
-      # from the provider block above; this section owns memory paths + profile.
+      # Durable sallm harness (SQLite + Lance memory). Chat model and profile
+      # come from the catalog above; this section owns memory paths.
       sallm:
         state_dir: .sallm
         max_steps: 8
-        # CompiledProfile YAML/JSON (budgets overlay). Default: packaged large
-        # (10× token budgets). Set "" to use stock sallm ModelProfile limits.
+        # Legacy profile when ``providers`` is omitted. Packaged large.yaml
+        # is 10× token budgets. Set "" to use stock sallm ModelProfile limits.
         profile: large.yaml
 
       copilot:
@@ -79,7 +92,7 @@ from __future__ import annotations
 import logging
 import os
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 import yaml
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field, PrivateAttr
@@ -97,12 +110,31 @@ from pawn_core.config import (  # noqa: F401
 
 
 class AgentProviderConfig(BaseModel):
-    """LLM provider settings (one per provider key under ``agent:``)."""
+    """Legacy single-provider block (``agent.openai`` and the other named keys).
+
+    Ignored when ``agent.providers`` is set. ``fast_model`` is not a field;
+    leftover yaml keys are dropped.
+    """
 
     model: str = "gpt-4o"
-    fast_model: Optional[str] = None
     api_key: Optional[str] = None
     base_url: Optional[str] = None
+
+
+class ProviderModelConfig(BaseModel):
+    """One compiled profile offered by a provider."""
+
+    profile: str
+    # Wins over the profile ``target_model`` when set.
+    model: Optional[str] = None
+
+
+class LlmProviderConfig(BaseModel):
+    """OpenAI-compatible endpoint plus the profiles served there."""
+
+    base_url: Optional[str] = None
+    api_key: Optional[str] = None
+    models: list[ProviderModelConfig] = Field(default_factory=list)
 
 
 class CopilotConfig(BaseModel):
@@ -117,9 +149,10 @@ class CopilotConfig(BaseModel):
 class SallmSection(BaseModel):
     """``agent.sallm:`` — durable ReAct harness settings (not the chat model).
 
-    Chat model / api_key / base_url still come from ``agent.openai`` (etc.).
-    This section controls session memory files, the CompiledProfile overlay,
-    and optional Tempo metrics.
+    The chat model, credentials, and compiled profile come from the model
+    catalog (``agent.providers``). ``profile`` is only the legacy overlay
+    used when that catalog is absent. This section owns memory paths and
+    optional Tempo metrics.
     """
 
     # Directory for state.db + vectors/ (relative paths resolve from cwd).
@@ -143,6 +176,11 @@ class AgentSection(BaseModel):
     name: str = "Bob"
     anima: Optional[str] = None
     strip_thinking: bool = True
+    # Directory of user-owned compiled profiles. Relative paths resolve from cwd.
+    profiles_dir: Optional[str] = None
+    # Catalog id (``provider@model``) for turns that do not name a model.
+    default: Optional[str] = None
+    providers: dict[str, LlmProviderConfig] = Field(default_factory=dict)
     openai: Optional[AgentProviderConfig] = None
     anthropic: Optional[AgentProviderConfig] = None
     google: Optional[AgentProviderConfig] = None
@@ -359,24 +397,6 @@ class CoworkerConfig(BaseModel):
 
 # ── AgentConfig ───────────────────────────────────────────────────────────────
 
-# PydanticAI-style prefixes (colon) → LiteLLM-style prefixes (slash).
-_PROVIDER_PREFIXES = {
-    "openai": "openai",
-    "anthropic": "anthropic",
-    "google": "google-gla",
-    "groq": "groq",
-    "mistral": "mistral",
-}
-
-_LITELLM_PREFIXES = {
-    "openai": "openai",
-    "anthropic": "anthropic",
-    "google-gla": "gemini",
-    "google": "gemini",
-    "groq": "groq",
-    "mistral": "mistral",
-}
-
 
 class AgentConfig(PawnConfig):
     """Full configuration for the pawn-agent application.
@@ -397,7 +417,8 @@ class AgentConfig(PawnConfig):
         populate_by_name=True,
     )
 
-    _model_override: Optional[str] = PrivateAttr(default=None)
+    _selection_override: Optional[Any] = PrivateAttr(default=None)
+    _catalog_cache: Optional[list] = PrivateAttr(default=None)
 
     agent: AgentSection = Field(default_factory=AgentSection)
     api: ApiSection = Field(default_factory=ApiSection)
@@ -499,36 +520,17 @@ class AgentConfig(PawnConfig):
     def tts_idle_timeout_minutes(self) -> float:
         return self.models.tts_idle_timeout_minutes
 
-    # Primary PydanticAI provider — resolved from first non-None provider section
     @property
-    def pydantic_model(self) -> str:
-        if self._model_override is not None:
-            return self._model_override
-        for provider, prefix in _PROVIDER_PREFIXES.items():
-            p = getattr(self.agent, provider)
-            if p is not None:
-                return f"{prefix}:{p.model}"
-        return "openai:gpt-4o"
+    def model_selection(self) -> Any:
+        """Active chat selection (catalog id, LiteLLM model, credentials, profile)."""
+        from pawn_agent.utils.model_catalog import active_selection  # noqa: PLC0415
 
-    @pydantic_model.setter
-    def pydantic_model(self, value: str) -> None:
-        self._model_override = value
+        return active_selection(self)
 
     @property
-    def pydantic_api_key(self) -> Optional[str]:
-        for provider in _PROVIDER_PREFIXES:
-            p = getattr(self.agent, provider)
-            if p is not None:
-                return p.api_key
-        return None
-
-    @property
-    def pydantic_base_url(self) -> Optional[str]:
-        for provider in _PROVIDER_PREFIXES:
-            p = getattr(self.agent, provider)
-            if p is not None:
-                return p.base_url
-        return None
+    def chat_model_id(self) -> str:
+        """Catalog id recorded on agent runs, or a legacy override string."""
+        return str(self.model_selection.catalog_id)
 
     @property
     def sallm(self) -> SallmSection:
@@ -537,15 +539,8 @@ class AgentConfig(PawnConfig):
 
     @property
     def litellm_model(self) -> str:
-        """Map ``openai:gpt-4o`` (PydanticAI) → ``openai/gpt-4o`` (LiteLLM/sallm)."""
-        raw = self.pydantic_model
-        if "/" in raw and ":" not in raw.split("/", 1)[0]:
-            return raw
-        if ":" not in raw:
-            return f"openai/{raw}"
-        prefix, rest = raw.split(":", 1)
-        litellm_prefix = _LITELLM_PREFIXES.get(prefix, prefix)
-        return f"{litellm_prefix}/{rest}"
+        """LiteLLM model id for the active selection (``openai/{model}``)."""
+        return str(self.model_selection.litellm_model)
 
     # Copilot sub-agent flat attrs
     @property
@@ -615,6 +610,9 @@ def load_config(config_path: Optional[str] = None) -> AgentConfig:
         cfg = ExplicitAgentConfig(**raw)
     else:
         cfg = AgentConfig()
+    from pawn_agent.utils.model_catalog import catalog_entries  # noqa: PLC0415
+
+    catalog_entries(cfg)
     logging.basicConfig(
         level=cfg.logging.level.upper(),
         format="%(levelname)s %(name)s: %(message)s",

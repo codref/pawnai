@@ -95,6 +95,7 @@ function renderTaskNote(p: {
   context: string;
   conversation: string;
   notePath?: string;
+  model?: string;
 }): string {
   const meta = [
     "pawn: task",
@@ -103,6 +104,7 @@ function renderTaskNote(p: {
     "approved: false",
     `conversation: ${p.conversation}`,
   ];
+  if (p.model) meta.push(`model: ${JSON.stringify(p.model)}`);
   if (p.notePath) {
     const link = `[[${p.notePath.replace(/\.md$/i, "")}]]`;
     meta.push(`note: ${p.notePath.includes(" ") ? `"${link}"` : link}`);
@@ -116,7 +118,14 @@ function renderTaskNote(p: {
 export async function createTaskNote(
   app: App,
   agentRoot: string,
-  p: { id: string; instruction: string; context?: string; notePath?: string; conversation?: string },
+  p: {
+    id: string;
+    instruction: string;
+    context?: string;
+    notePath?: string;
+    conversation?: string;
+    model?: string;
+  },
 ): Promise<string> {
   const path = taskPathForId(agentRoot, p.id);
   const folder = tasksFolder(agentRoot);
@@ -130,6 +139,7 @@ export async function createTaskNote(
     conversation:
       p.conversation ?? (p.notePath ? noteConversationId(p.notePath) : noteConversationId(path)),
     notePath: p.notePath,
+    model: p.model,
   });
   const existing = app.vault.getAbstractFileByPath(path);
   if (existing instanceof TFile) await app.vault.modify(existing, content);

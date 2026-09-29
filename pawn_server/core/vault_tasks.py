@@ -44,6 +44,20 @@ class VaultTaskResult:
     error_code: Optional[str] = None
 
 
+def _selected_model(row: Any, parsed: dict[str, Any]) -> Optional[str]:
+    """Catalog id stored on the job, or on the task note frontmatter."""
+    payload = row.payload if isinstance(getattr(row, "payload", None), dict) else {}
+    raw = payload.get("model")
+    if isinstance(raw, str) and raw.strip():
+        return raw.strip()
+    meta = parsed.get("meta") if isinstance(parsed, dict) else None
+    if isinstance(meta, dict):
+        note_model = meta.get("model")
+        if isinstance(note_model, str) and note_model.strip():
+            return note_model.strip()
+    return None
+
+
 def task_key_for(cfg: Any, *, task_id: str, note_path: str | None = None) -> str:
     """Resolve the vault object key for a task note (always under Tasks/)."""
     del note_path  # linked source note — not the task file path
@@ -222,6 +236,7 @@ async def execute_vault_task(
             registry=registry,
             prompt=prompt,
             session_id=row.conversation_id,
+            model=_selected_model(row, parsed),
             source="vault",
             command="vault_run",
         )

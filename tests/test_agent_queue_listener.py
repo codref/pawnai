@@ -18,7 +18,6 @@ def _make_cfg(**kwargs):
 
     return AgentConfig(
         db_dsn="postgresql+psycopg://dummy/dummy",
-        pydantic_model="openai:test-model",
         **kwargs,
     )
 
@@ -227,6 +226,4 @@ class TestDispatch:
         ) as mock_run:
             asyncio.run(dispatch("run", params, cfg, message_id="m1"))
 
-        mock_run.assert_awaited_once_with(
-            params, cfg, "m1", command="run", source="queue"
-        )
+        mock_run.assert_awaited_once_with(params, cfg, "m1", command="run", source="queue")

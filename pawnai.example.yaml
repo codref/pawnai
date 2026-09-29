@@ -133,37 +133,31 @@ agent:
   # Strip model "thinking" blocks from final chat output when supported.
   strip_thinking: true
 
-  # The first configured provider in this order is used by pawn-agent:
-  # openai, anthropic, google, groq, mistral.
-  openai:
-    model: gpt-4o
-    fast_model: gpt-4o-mini
-    api_key: ""
-    base_url: https://api.openai.com/v1
-
-  anthropic:
-    model: claude-sonnet-4-5
-    fast_model: claude-haiku-4-5
-    api_key: ""
-    base_url: null
-
-  google:
-    model: gemini-2.5-pro
-    fast_model: gemini-2.5-flash
-    api_key: ""
-    base_url: null
-
-  groq:
-    model: llama-3.3-70b-versatile
-    fast_model: llama-3.1-8b-instant
-    api_key: ""
-    base_url: null
-
-  mistral:
-    model: mistral-large-latest
-    fast_model: mistral-small-latest
-    api_key: ""
-    base_url: null
+  # User-owned sallm profiles. Relative paths resolve from the working directory.
+  # profiles_dir: ~/.config/pawn/profiles
+  # Catalog id used by autonomous jobs, Matrix, and chat turns that omit a model.
+  # Change it at runtime with /model <id> (persisted under agent.sallm.state_dir).
+  default: ollama@gemma4:4b
+  providers:
+    ollama:
+      base_url: http://localhost:11434/v1
+      api_key: ollama
+      models:
+        # model: overrides target_model inside the profile file.
+        # large.yaml is the packaged fallback; point profile at a tuned file.
+        - model: gemma4:4b
+          profile: large.yaml
+    opencode:
+      base_url: https://opencode.ai/v1
+      api_key: ""
+      models:
+        - model: gpt-5.6-sol
+          profile: large.yaml
+  # Legacy single block, used only when providers is omitted:
+  # openai:
+  #   model: gpt-4o
+  #   api_key: ""
+  #   base_url: https://api.openai.com/v1
 
   copilot:
     # Sub-agent settings used by copilot-backed helper flows.

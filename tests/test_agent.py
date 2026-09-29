@@ -38,7 +38,9 @@ class TestAgentConfig:
         )
         cfg = load_config(str(cfg_file))
         assert cfg.litellm_model == "openai/gemma4:26b"
-        assert cfg.pydantic_base_url == "http://localhost:11434/v1"
+        assert cfg.chat_model_id == "openai@gemma4:26b"
+        assert cfg.model_selection.api_base == "http://localhost:11434/v1"
+        assert cfg.model_selection.api_key == "ollama"
         assert cfg.sallm.max_steps == 5
         assert cfg.sallm.state_dir == ".sallm-test"
         assert cfg.sallm.profile == "large.yaml"

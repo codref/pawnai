@@ -162,8 +162,7 @@ Precedence is CLI/explicit overrides, YAML, env vars, defaults. Env vars use `PA
   (queue_producers name for audio uploads), `api.enable_docs`, `api.whitelist_ips`,
   `api.bruteforce_*` / thresholds — see `ApiSection` in `pawn_agent/utils/config.py`
 
-Chat model comes from `agent.openai` (etc.) and is mapped to LiteLLM via `cfg.litellm_model` (`openai:gpt-4o` → `openai/gpt-4o`). Optional Tempo: `agent.sallm.otlp_endpoint` / `metrics_port` (off by default for the server).
-`agent.sallm.profile` is a sallm CompiledProfile YAML/JSON path (default `large.yaml` in `pawn_agent/profiles/`, 10× token budgets). Empty string uses stock sallm limits.
+Chat models are a catalog under `agent.providers`. Each entry pairs an OpenAI-compatible provider (`base_url`, `api_key`) with a sallm compiled profile. The selectable id is `provider@model` (for example `ollama@gemma4:4b`). LiteLLM always sees `openai/{model}` plus that provider’s URL and key. `agent.profiles_dir` is a folder outside the repo; relative profile names also fall back to `pawn_agent/profiles/` (`large.yaml`, 10× token budgets). `agent.default` is the background model. `/model <id>` changes it at runtime and writes `{state_dir}/background_model`; `/model reset` restores the yaml default. Interactive chat and UI jobs send the composer’s id; autonomous work (scheduler, coworker, Matrix, vault watcher, queue without `model`) uses the background default. A legacy `agent.openai` (or anthropic/google/groq/mistral) block still boots when `providers` is omitted. `agent.sallm` is harness settings only (`state_dir`, `max_steps`, embeddings). Optional Tempo: `agent.sallm.otlp_endpoint` / `metrics_port` (off by default for the server).
 
 Default DB uses PostgreSQL on port `5433` and requires `pgvector`.
 

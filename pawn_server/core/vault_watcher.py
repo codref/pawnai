@@ -130,11 +130,7 @@ async def run_vault_watcher_tick(
             continue
 
         if note_status == "done":
-            if (
-                existing
-                and existing.status == "review"
-                and existing.indexed_at is None
-            ):
+            if existing and existing.status == "review" and existing.indexed_at is None:
                 from pawn_server.core.jobs import dismiss_job  # noqa: PLC0415
 
                 try:
@@ -150,6 +146,7 @@ async def run_vault_watcher_tick(
         instruction = parsed.get("instruction") or ""
         ih = instruction_hash(instruction)
         conv = parsed.get("conversation") or conversation_id_for_note(task_key)
+        note_model = str((parsed.get("meta") or {}).get("model") or "").strip()
         effective_id = upsert_vault_task(
             cfg.db_dsn,
             task_id=task_id,
@@ -161,6 +158,7 @@ async def run_vault_watcher_tick(
             etag=etag,
             via="vault",
             status="queued",
+            payload={"model": note_model} if note_model else None,
         )
         if not claim_vault_task(cfg.db_dsn, effective_id):
             continue

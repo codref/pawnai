@@ -57,6 +57,20 @@ export interface ChatRequest {
   selection?: string;
   context?: NoteContext[];
   background?: boolean;
+  /** Catalog id ``provider@model``. Omitted uses the server background default. */
+  model?: string;
+}
+
+export interface ModelChoice {
+  id: string;
+  provider: string;
+  model: string;
+}
+
+export interface ModelCatalog {
+  default: string;
+  background: string;
+  models: ModelChoice[];
 }
 
 export interface ChatHandlers {
@@ -74,6 +88,8 @@ export interface AskJobRequest {
   selection?: string;
   context_paths?: string[];
   context?: string;
+  /** Catalog id inherited from the chat composer. */
+  model?: string;
 }
 
 export interface InboxItem {
@@ -136,6 +152,11 @@ export class PawnClient {
       throw new HttpError(resp.status, errorDetail(resp));
     }
     return resp;
+  }
+
+  async listModels(): Promise<ModelCatalog> {
+    const resp = await this.request("GET", "/v1/pawn/models");
+    return resp.json as ModelCatalog;
   }
 
   async health(): Promise<boolean> {

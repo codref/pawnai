@@ -41,6 +41,7 @@ export async function queueOffline(app: App, agentRoot: string, req: AskJobReque
     context: contextParts.join("\n\n"),
     notePath: req.note_path,
     conversation: req.conversation,
+    model: req.model,
   });
   return {
     id,

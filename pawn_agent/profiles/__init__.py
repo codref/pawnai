@@ -21,11 +21,15 @@ def bundled_profiles_dir() -> Path:
     return _PROFILES_DIR
 
 
-def resolve_profile_path(raw: Optional[str]) -> Optional[Path]:
+def resolve_profile_path(
+    raw: Optional[str],
+    *,
+    profiles_dir: Optional[Path] = None,
+) -> Optional[Path]:
     """Resolve a profile path from config.
 
-    Search order for relative paths: cwd, then ``pawn_agent/profiles/``.
-    Empty / None disables the compiled profile overlay.
+    Search order for relative paths: ``profiles_dir`` (when set), cwd, then
+    ``pawn_agent/profiles/``. Empty / None disables the compiled profile overlay.
     """
     text = (raw or "").strip()
     if not text:
@@ -35,16 +39,22 @@ def resolve_profile_path(raw: Optional[str]) -> Optional[Path]:
         if not path.is_file():
             raise FileNotFoundError(f"sallm profile not found: {path}")
         return path.resolve()
+    tried: list[Path] = []
+    if profiles_dir is not None:
+        named = (profiles_dir / path).resolve()
+        tried.append(named)
+        if named.is_file():
+            return named
     cwd_candidate = (Path.cwd() / path).resolve()
+    tried.append(cwd_candidate)
     if cwd_candidate.is_file():
         return cwd_candidate
     bundled = (_PROFILES_DIR / path.name).resolve()
+    tried.append(bundled)
     if bundled.is_file():
         return bundled
-    raise FileNotFoundError(
-        f"sallm profile not found: {text!r} "
-        f"(tried {cwd_candidate} and {bundled})"
-    )
+    tried_text = ", ".join(str(item) for item in tried)
+    raise FileNotFoundError(f"sallm profile not found: {text!r} (tried {tried_text})")
 
 
 def load_compiled_profile(path: Path | str) -> CompiledProfile:
@@ -73,9 +83,13 @@ def load_compiled_profile(path: Path | str) -> CompiledProfile:
     )
 
 
-def load_profile_from_config(raw: Optional[str]) -> Optional[CompiledProfile]:
-    """Resolve + load ``agent.sallm.profile``, or None when unset."""
-    path = resolve_profile_path(raw)
+def load_profile_from_config(
+    raw: Optional[str],
+    *,
+    profiles_dir: Optional[Path] = None,
+) -> Optional[CompiledProfile]:
+    """Resolve + load a compiled profile, or None when unset."""
+    path = resolve_profile_path(raw, profiles_dir=profiles_dir)
     if path is None:
         return None
     logger.debug("Loading sallm compiled profile from %s", path)

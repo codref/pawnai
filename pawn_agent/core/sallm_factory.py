@@ -10,7 +10,6 @@ async turn façade (see sallm_session.py).
 from __future__ import annotations
 
 import logging
-import os
 from pathlib import Path
 from typing import Optional
 
@@ -32,25 +31,6 @@ def resolve_state_dir(cfg: AgentConfig) -> Path:
     if not raw.is_absolute():
         raw = (Path.cwd() / raw).resolve()
     return raw
-
-
-def _ensure_api_key_env(cfg: AgentConfig) -> None:
-    """LiteLLM reads provider keys from the environment.
-
-    If pawnai.yaml supplied an api_key but the matching env var is empty,
-    export it so CliTool-less chat completions still authenticate.
-    """
-    key = cfg.pydantic_api_key
-    if not key:
-        return
-    # Prefer OpenAI-compatible env; LiteLLM also honors provider-specific vars.
-    if not os.environ.get("OPENAI_API_KEY"):
-        os.environ["OPENAI_API_KEY"] = key
-    model = cfg.litellm_model
-    if model.startswith("anthropic/") and not os.environ.get("ANTHROPIC_API_KEY"):
-        os.environ["ANTHROPIC_API_KEY"] = key
-    if model.startswith(("gemini/", "google/")) and not os.environ.get("GOOGLE_API_KEY"):
-        os.environ["GOOGLE_API_KEY"] = key
 
 
 def build_optional_tracer(
@@ -97,30 +77,26 @@ def build_sallm_agent(
     state_dir = resolve_state_dir(cfg)
     state_dir.mkdir(parents=True, exist_ok=True)
 
-    _ensure_api_key_env(cfg)
-
+    selection = cfg.model_selection
     embedding = EmbeddingProfile(
         model=cfg.sallm.embedding_model,
         api_base=cfg.sallm.embedding_api_base,
     )
 
-    # api_base: OpenAI-compatible providers need the custom base (e.g. Ollama
-    # /v1). Pure cloud OpenAI can leave this None and LiteLLM uses defaults.
-    api_base = cfg.pydantic_base_url
-
-    compiled = load_profile_from_config(cfg.sallm.profile)
+    compiled = load_profile_from_config(selection.profile)
 
     logger.debug(
         "Building sallm Agent conversation_id=%r model=%s state_dir=%s profile=%s",
         conversation_id,
-        cfg.litellm_model,
+        selection.litellm_model,
         state_dir,
-        cfg.sallm.profile,
+        selection.profile,
     )
 
     return Agent(
-        model=cfg.litellm_model,
-        api_base=api_base,
+        model=selection.litellm_model,
+        api_base=selection.api_base,
+        api_key=selection.api_key,
         tools=build_pawn_clitools(),
         skills=build_pawn_skills(),
         state_path=state_dir / "state.db",

@@ -19,6 +19,35 @@ from pawn_agent.utils.config import AgentConfig
 logger = logging.getLogger(__name__)
 
 
+def _agent_fingerprint(cfg: AgentConfig) -> tuple:
+    """Fields that require a new sallm Agent when they change."""
+    selection = cfg.model_selection
+    return (
+        selection.litellm_model,
+        selection.api_base,
+        selection.api_key,
+        selection.profile,
+        cfg.sallm.model_dump(),
+    )
+
+
+def _apply_background_to_session(cfg: AgentConfig, session: "SallmChatSession") -> None:
+    """Rebuild the REPL agent after ``/model`` changes the background default."""
+    import copy  # noqa: PLC0415
+
+    from pawn_agent.utils.model_catalog import (  # noqa: PLC0415
+        apply_model_selection,
+        get_background_model,
+    )
+
+    chosen = get_background_model(cfg)
+    if not chosen:
+        return
+    effective = copy.copy(cfg)
+    apply_model_selection(effective, chosen)
+    session.apply_config(effective)
+
+
 def format_session_stats(snap: dict[str, Any]) -> str:
     """Render a stats snapshot as short Markdown for chat / Matrix."""
     lines = [
@@ -94,7 +123,7 @@ class SallmChatSession:
 
     def apply_config(self, cfg: AgentConfig) -> None:
         """Replace the underlying Agent when model/settings change mid-session."""
-        if cfg.litellm_model == self._cfg.litellm_model and cfg.sallm == self._cfg.sallm:
+        if _agent_fingerprint(cfg) == _agent_fingerprint(self._cfg):
             self._cfg = cfg
             return
         self._agent = rebuild_agent_for_config(self._agent, cfg)
@@ -120,8 +149,8 @@ class SallmChatSession:
         ]
         return {
             "conversation_id": sid,
-            "model": getattr(self._cfg, "litellm_model", None)
-            or getattr(self._cfg, "pydantic_model", "?"),
+            "model": getattr(self._cfg, "chat_model_id", None)
+            or getattr(self._cfg, "litellm_model", "?"),
             "active_skill": active_skill,
             "goal": getattr(agent, "goal", "") or "",
             "stack": stack,
@@ -278,6 +307,8 @@ async def run_sallm_chat(
             emit(f"Error: {exc}")
             continue
         if resolved.mode == "reply":
+            if text.split()[0].lower() == "/model":
+                _apply_background_to_session(cfg, session)
             emit(resolved.text)
             continue
         if text.startswith("/") and not resolved.rewritten:

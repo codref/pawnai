@@ -219,6 +219,10 @@ var PawnClient = class {
     }
     return resp;
   }
+  async listModels() {
+    const resp = await this.request("GET", "/v1/pawn/models");
+    return resp.json;
+  }
   async health() {
     try {
       const resp = await (0, import_obsidian2.requestUrl)({ url: `${this.base}/health`, method: "GET", throw: false });
@@ -1039,6 +1043,12 @@ var ConversationStore = class {
   touch() {
     this.persist();
   }
+  setModel(id, modelId) {
+    const conv = this.get(id);
+    conv.model = modelId;
+    conv.updatedAt = Date.now();
+    this.persist();
+  }
   clear(id) {
     const conv = this.items[id];
     if (!conv)
@@ -1144,6 +1154,8 @@ function renderTaskNote(p) {
     "approved: false",
     `conversation: ${p.conversation}`
   ];
+  if (p.model)
+    meta.push(`model: ${JSON.stringify(p.model)}`);
   if (p.notePath) {
     const link = `[[${p.notePath.replace(/\.md$/i, "")}]]`;
     meta.push(`note: ${p.notePath.includes(" ") ? `"${link}"` : link}`);
@@ -1174,7 +1186,8 @@ async function createTaskNote(app, agentRoot, p) {
     instruction: p.instruction,
     context: (_a = p.context) != null ? _a : "",
     conversation: (_b = p.conversation) != null ? _b : p.notePath ? noteConversationId(p.notePath) : noteConversationId(path),
-    notePath: p.notePath
+    notePath: p.notePath,
+    model: p.model
   });
   const existing = app.vault.getAbstractFileByPath(path);
   if (existing instanceof import_obsidian7.TFile)
@@ -1253,7 +1266,8 @@ ${req.selection.trim()}`);
     instruction: req.instruction,
     context: contextParts.join("\n\n"),
     notePath: req.note_path,
-    conversation: req.conversation
+    conversation: req.conversation,
+    model: req.model
   });
   return {
     id,
@@ -1927,6 +1941,9 @@ var PawnChatView = class extends import_obsidian11.ItemView {
     /** Composer text restored across full re-renders. */
     this.draftText = "";
     this.switchBannerEl = null;
+    this.modelChoices = [];
+    this.backgroundModel = "";
+    this.modelSelect = null;
     // ── rendering ────────────────────────────────────────────────────────────
     this.tabsEl = null;
     this.renderScope = null;
@@ -1965,6 +1982,43 @@ var PawnChatView = class extends import_obsidian11.ItemView {
     });
     this.bindMobileKeyboard();
     this.render();
+    void this.loadModels();
+  }
+  async loadModels() {
+    var _a;
+    try {
+      const page = await this.plugin.client.listModels();
+      this.modelChoices = (_a = page.models) != null ? _a : [];
+      this.backgroundModel = page.background || page.default || "";
+    } catch (e) {
+      return;
+    }
+    this.fillModelSelect();
+  }
+  selectedModel() {
+    var _a;
+    const stored = this.plugin.conversations.get(this.conversationId).model;
+    return stored || this.backgroundModel || ((_a = this.modelChoices[0]) == null ? void 0 : _a.id) || "";
+  }
+  fillModelSelect() {
+    const select = this.modelSelect;
+    if (!select)
+      return;
+    const current = this.selectedModel();
+    select.replaceChildren();
+    for (const choice of this.modelChoices) {
+      const opt = document.createElement("option");
+      opt.value = choice.id;
+      opt.textContent = choice.id;
+      opt.selected = choice.id === current;
+      select.appendChild(opt);
+    }
+    if (!this.modelChoices.length) {
+      const opt = document.createElement("option");
+      opt.value = "";
+      opt.textContent = "Default";
+      select.appendChild(opt);
+    }
   }
   async onClose() {
     var _a, _b, _c;
@@ -2492,6 +2546,13 @@ ${(_a = e.stack) != null ? _a : ""}` : String(e)
     bg.onchange = () => this.background = bg.checked;
     bgLabel.appendText(" Background");
     bgLabel.setAttr("aria-label", "Run as a background job; the result shows up here and in Jobs");
+    const modelSelect = row.createEl("select", { cls: "pawn-model-select" });
+    modelSelect.setAttr("aria-label", "Model");
+    this.modelSelect = modelSelect;
+    this.fillModelSelect();
+    modelSelect.onchange = () => {
+      this.plugin.conversations.setModel(this.conversationId, modelSelect.value);
+    };
     const attach = row.createEl("button", {
       cls: "clickable-icon",
       attr: { "aria-label": "Upload a file to Pawn" }
@@ -2609,6 +2670,12 @@ ${(_a = e.stack) != null ? _a : ""}` : String(e)
         run: () => void this.send("/inbox")
       },
       { slug: "reset", label: "/reset", hint: "Clear this conversation", run: () => void this.send("/reset") },
+      {
+        slug: "model",
+        label: "/model",
+        hint: "Show or set the background model",
+        run: () => this.prefillSlash("/model ")
+      },
       {
         slug: "new",
         label: "/new",
@@ -2856,13 +2923,15 @@ ${(_a = e.stack) != null ? _a : ""}` : String(e)
     try {
       const activeNote = snap.activeNote ? await this.noteContext(snap.activeNote) : void 0;
       const context = await Promise.all(snap.extra.map((f) => this.noteContext(f)));
+      const model = this.selectedModel();
       await this.plugin.client.chat(
         {
           conversation,
           message: text,
           active_note: activeNote,
           selection: selection == null ? void 0 : selection.text,
-          context
+          context,
+          model: model || void 0
         },
         {
           onProgress: (line) => {
@@ -2931,12 +3000,14 @@ ${(_a = e.stack) != null ? _a : ""}` : String(e)
   async sendBackground(text, conversation, snap) {
     var _a, _b, _c, _d;
     try {
+      const model = this.selectedModel();
       const job = await this.plugin.jobs.submitAsk({
         instruction: text,
         conversation,
         note_path: (_c = (_a = snap.activeNote) == null ? void 0 : _a.path) != null ? _c : (_b = snap.selection) == null ? void 0 : _b.path,
         selection: (_d = snap.selection) == null ? void 0 : _d.text,
-        context_paths: snap.extra.map((f) => f.path)
+        context_paths: snap.extra.map((f) => f.path),
+        model: model || void 0
       });
       this.plugin.maybeInsertCallout(job);
       this.addJobMessage(job.id);

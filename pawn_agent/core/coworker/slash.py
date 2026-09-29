@@ -20,7 +20,7 @@ logger = logging.getLogger(__name__)
 
 SLASH_HELP = (
     "Supported slash commands: /idea <line>, /goal <line>, /goal apply, "
-    "/park <line>, /goals, /inbox, /stats, /reset, /exit, /quit. "
+    "/park <line>, /goals, /inbox, /model [id|reset], /stats, /reset, /exit, /quit. "
     "Triage an inbox item with file, task, later, or ignore plus its id."
 )
 
@@ -241,6 +241,12 @@ async def resolve_chat_message(
     Direct goal and inbox commands run here. ``/idea`` is rewritten into a
     capture prompt and left for the agent.
     """
+    from pawn_agent.utils.model_catalog import try_model_command  # noqa: PLC0415
+
+    model_reply = try_model_command(cfg, text)
+    if model_reply is not None:
+        return ChatResolution("reply", model_reply)
+
     triage = bool(getattr(getattr(cfg, "coworker", None), "enabled", False))
     classified = classify_chat_text(text, triage=triage)
     if classified.kind == "prompt":

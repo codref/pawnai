@@ -1,8 +1,13 @@
-"""Model override helpers shared between the CLI and the queue listener."""
+"""Model override helpers shared between the CLI and the queue listener.
+
+Selections resolve through :mod:`pawn_agent.utils.model_catalog`. A catalog
+id (``provider@model``) switches provider, credentials, and profile. A
+legacy string such as ``openai:gpt-4o`` only replaces the LiteLLM model.
+"""
 
 from __future__ import annotations
 
-# PydanticAI provider prefixes — anything else is treated as a bare model name.
+# Kept so older imports do not break. Catalog ids are not these prefixes.
 _PYDANTIC_PREFIXES = (
     "openai:",
     "anthropic:",
@@ -16,16 +21,7 @@ _PYDANTIC_PREFIXES = (
 
 
 def _apply_model_override(cfg, model: str) -> None:
-    """Set cfg.pydantic_model from a CLI --model value.
+    """Apply a CLI ``--model`` value or a queue/schedule model string."""
+    from pawn_agent.utils.model_catalog import apply_model_selection  # noqa: PLC0415
 
-    If the value already carries a PydanticAI provider prefix (e.g. 'openai:gpt-4o')
-    it is used as-is.  Otherwise the current provider prefix is preserved and only
-    the model name is replaced — so '--model qwen3.5:9b' keeps 'openai:' when the
-    config points at an Ollama/OpenAI-compatible endpoint.
-    """
-    if any(model.startswith(p) for p in _PYDANTIC_PREFIXES):
-        cfg.pydantic_model = model
-    else:
-        # Bare model name (e.g. "qwen3.5:9b") — keep the configured provider prefix
-        current_prefix = cfg.pydantic_model.split(":")[0] + ":"
-        cfg.pydantic_model = f"{current_prefix}{model}"
+    apply_model_selection(cfg, model)

@@ -31,6 +31,8 @@ export interface Conversation {
   title: string;
   messages: ChatMessage[];
   updatedAt: number;
+  /** Catalog id selected in the composer. Empty uses the server background default. */
+  model?: string;
 }
 
 const MAX_MESSAGES = 60;
@@ -113,6 +115,13 @@ export class ConversationStore {
   }
 
   touch(): void {
+    this.persist();
+  }
+
+  setModel(id: string, modelId: string): void {
+    const conv = this.get(id);
+    conv.model = modelId;
+    conv.updatedAt = Date.now();
     this.persist();
   }
 

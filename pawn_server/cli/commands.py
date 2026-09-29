@@ -832,12 +832,15 @@ def serve(
         f"/{cfg.api.bruteforce_window_seconds}s)"
     )
     ssl_line = f"enabled ({effective_cert})" if effective_cert else "disabled"
+    from pawn_agent.utils.model_catalog import get_background_model  # noqa: PLC0415
+
+    model_label = get_background_model(cfg) or cfg.chat_model_id
     console.print(
         f"[bold green]pawn-server serve starting[/bold green]\n"
         f"  host     : [cyan]{effective_host}[/cyan]\n"
         f"  port     : [cyan]{effective_port}[/cyan]\n"
         f"  ssl      : [dim]{ssl_line}[/dim]\n"
-        f"  model    : [dim]{cfg.pydantic_model}[/dim]\n"
+        f"  model    : [dim]{model_label}[/dim]\n"
         f"  idle     : [dim]{cfg.api_model_idle_timeout_minutes} min[/dim]\n"
         f"  auth     : [dim]{'token set' if cfg.api_token else 'NO TOKEN — open access'}[/dim]\n"
         f"  docs     : [dim]{'enabled' if cfg.api.enable_docs else 'disabled'}[/dim]\n"

@@ -55,7 +55,7 @@ async def run_briefing(cfg: Any, *, store: Any = None) -> None:
         command="briefing",
         prompt="morning briefing",
         session_id="coworker:daily",
-        model=getattr(cfg, "pydantic_model", None) or "coworker",
+        model=getattr(cfg, "chat_model_id", None) or "coworker",
     )
     update_agent_run(cfg.db_dsn, run_id, "running")
     try:

@@ -20,7 +20,7 @@ logger = logging.getLogger(__name__)
 
 
 def _model_name(cfg: AgentConfig) -> str:
-    return getattr(cfg, "pydantic_model", None) or "coworker"
+    return getattr(cfg, "chat_model_id", None) or "coworker"
 
 
 def _audit(cfg: AgentConfig, command: str, prompt: str, session_id: str) -> str:
