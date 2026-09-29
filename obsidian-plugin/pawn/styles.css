@@ -124,6 +124,18 @@
   white-space: pre-wrap;
 }
 
+.pawn-msg.is-user::selection,
+.pawn-msg.is-user *::selection {
+  background: var(--text-on-accent);
+  color: var(--interactive-accent);
+}
+
+.pawn-msg.is-user::-moz-selection,
+.pawn-msg.is-user *::-moz-selection {
+  background: var(--text-on-accent);
+  color: var(--interactive-accent);
+}
+
 .pawn-msg.is-assistant {
   background: var(--background-secondary);
 }
@@ -189,11 +201,52 @@
 }
 
 .pawn-msg:hover .pawn-msg-actions,
-.pawn-job-card:hover .pawn-msg-actions {
+.pawn-job-card:hover .pawn-msg-actions,
+.pawn-msg:focus-within .pawn-msg-actions {
   opacity: 1;
 }
 
+.pawn-msg.is-user .pawn-msg-actions {
+  opacity: 0;
+  justify-content: flex-end;
+}
+
+.pawn-msg.is-user:hover .pawn-msg-actions,
+.pawn-msg.is-user:focus-within .pawn-msg-actions {
+  opacity: 1;
+}
+
+.pawn-msg.is-user .pawn-msg-actions .clickable-icon {
+  color: var(--text-on-accent);
+}
+
+.pawn-msg.is-user .pawn-msg-actions .clickable-icon:hover {
+  background: color-mix(in srgb, var(--text-on-accent) 20%, transparent);
+}
+
 /* ── Composer ───────────────────────────────────────────────────────────── */
+
+.pawn-switch-banner {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--size-4-2);
+  padding: var(--size-4-1) var(--size-4-2);
+  border-radius: var(--radius-m);
+  background: var(--background-modifier-hover);
+  font-size: var(--font-ui-small);
+  color: var(--text-muted);
+}
+
+.pawn-switch-banner.is-hidden {
+  display: none;
+}
+
+.pawn-switch-banner-actions {
+  display: flex;
+  gap: var(--size-4-1);
+  margin-left: auto;
+}
 
 .pawn-composer {
   position: relative;

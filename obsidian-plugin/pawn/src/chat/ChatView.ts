@@ -15,7 +15,7 @@ import { renderInbox } from "../inbox/InboxView";
 import { JobFilter, renderJobCard, renderJobsList } from "../jobs/JobsView";
 import type PawnPlugin from "../main";
 import { ContextBar, ContextSnapshot, resolveDroppedNote } from "./ContextBar";
-import { renderMessageActions } from "./MessageActions";
+import { renderMessageActions, renderUserMessageActions } from "./MessageActions";
 import {
   ChatMessage,
   conversationLabel,
@@ -69,6 +69,13 @@ export class PawnChatView extends ItemView {
   private keyboardFrame = 0;
   private keyboardTimer = 0;
   private keyboardInsetApplied = false;
+  /** Keep the thread pinned to the bottom while the reply streams / paints. */
+  private stickToBottom = true;
+  /** Offer to switch when a draft blocks auto-follow of the open note. */
+  private pendingSwitch: { conversationId: string; label: string } | null = null;
+  /** Composer text restored across full re-renders. */
+  private draftText = "";
+  private switchBannerEl: HTMLElement | null = null;
 
   constructor(
     leaf: WorkspaceLeaf,
@@ -203,10 +210,7 @@ export class PawnChatView extends ItemView {
     root.style.maxHeight = `${height}px`;
     this.keyboardInsetApplied = true;
     this.containerEl.addClass("is-keyboard-open");
-    const thread = this.threadEl;
-    if (thread && thread.scrollHeight - thread.scrollTop - thread.clientHeight < 48) {
-      thread.scrollTop = thread.scrollHeight;
-    }
+    this.scrollThreadToBottom();
   }
 
   private clearKeyboardInset(): void {
@@ -231,11 +235,8 @@ export class PawnChatView extends ItemView {
       this.focusJob = opts.focusJob;
       this.jobsFilter = "all";
     }
+    if (opts.prefill != null) this.draftText = opts.prefill;
     this.render();
-    if (opts.prefill != null && this.composer) {
-      this.composer.value = opts.prefill;
-      this.autosize();
-    }
     if (this.tab === "chat") this.composer?.focus();
   }
 
@@ -276,10 +277,25 @@ export class PawnChatView extends ItemView {
   private switchConversation(id: string, pin: boolean): void {
     this.conversationId = id;
     this.pinned = pin && this.plugin.settings.conversationMode === "note";
+    this.pendingSwitch = null;
     if (!id.startsWith("note:")) {
       this.plugin.data.lastGlobalConversation = id;
       this.plugin.persistSoon();
     }
+  }
+
+  private composerDraft(): string {
+    return (this.composer?.value ?? this.draftText).trim();
+  }
+
+  private captureDraft(): void {
+    if (this.composer) this.draftText = this.composer.value;
+  }
+
+  private restoreDraft(): void {
+    if (!this.composer || !this.draftText) return;
+    this.composer.value = this.draftText;
+    this.autosize();
   }
 
   private onActiveNoteChanged(): void {
@@ -287,12 +303,45 @@ export class PawnChatView extends ItemView {
       const file = resolveActiveMarkdownFile(this.app);
       const next = file ? noteConversationId(file.path) : this.conversationId;
       if (next !== this.conversationId) {
+        if (this.composerDraft()) {
+          this.pendingSwitch = {
+            conversationId: next,
+            label: file?.basename ?? "note",
+          };
+          this.renderComposerBanner();
+          this.context.refresh();
+          return;
+        }
+        this.pendingSwitch = null;
         this.conversationId = next;
         this.render();
         return;
       }
     }
+    if (this.pendingSwitch) {
+      const file = resolveActiveMarkdownFile(this.app);
+      const current = file ? noteConversationId(file.path) : null;
+      if (!current || current === this.conversationId) {
+        this.pendingSwitch = null;
+        this.renderComposerBanner();
+      } else if (file && this.pendingSwitch.conversationId !== current) {
+        this.pendingSwitch = { conversationId: current, label: file.basename };
+        this.renderComposerBanner();
+      }
+    }
     this.context.refresh();
+  }
+
+  private acceptPendingSwitch(): void {
+    if (!this.pendingSwitch) return;
+    this.captureDraft();
+    this.switchConversation(this.pendingSwitch.conversationId, true);
+    this.render();
+  }
+
+  private dismissPendingSwitch(): void {
+    this.pendingSwitch = null;
+    this.renderComposerBanner();
   }
 
   private onJobsChanged(): void {
@@ -314,6 +363,7 @@ export class PawnChatView extends ItemView {
   }
 
   private render(): void {
+    this.captureDraft();
     const root = this.contentEl;
     root.empty();
     root.addClass("pawn-root");
@@ -417,6 +467,7 @@ export class PawnChatView extends ItemView {
   }
 
   private renderBody(): void {
+    this.captureDraft();
     const body = this.bodyEl;
     if (!body) return;
     body.empty();
@@ -443,15 +494,33 @@ export class PawnChatView extends ItemView {
       return;
     }
     this.threadEl = body.createDiv({ cls: "pawn-thread" });
+    this.registerDomEvent(this.threadEl, "scroll", () => {
+      const t = this.threadEl;
+      if (!t) return;
+      this.stickToBottom = t.scrollHeight - t.scrollTop - t.clientHeight < 40;
+    });
     this.renderThread();
     this.renderComposer(body.createDiv({ cls: "pawn-composer" }));
     this.registerDrop(body);
   }
 
+  private scrollThreadToBottom(force = false): void {
+    const thread = this.threadEl;
+    if (!thread) return;
+    if (!force && !this.stickToBottom && !this.pending) return;
+    thread.scrollTop = thread.scrollHeight;
+    const win = thread.win;
+    win.requestAnimationFrame(() => {
+      if (!this.threadEl) return;
+      if (!force && !this.stickToBottom && !this.pending) return;
+      this.threadEl.scrollTop = this.threadEl.scrollHeight;
+    });
+  }
+
   private renderThread(): void {
     const thread = this.threadEl;
     if (!thread || this.tab !== "chat") return;
-    const stick = thread.scrollHeight - thread.scrollTop - thread.clientHeight < 40;
+    if (this.pending) this.stickToBottom = true;
     thread.empty();
     const scope = this.freshScope();
     const conv = this.plugin.conversations.get(this.conversationId);
@@ -473,7 +542,7 @@ export class PawnChatView extends ItemView {
       this.pending.el = p;
       this.renderPending();
     }
-    if (stick || this.pending) thread.scrollTop = thread.scrollHeight;
+    this.scrollThreadToBottom();
   }
 
   private renderMessage(parent: HTMLElement, msg: ChatMessage, scope: Component): void {
@@ -492,6 +561,10 @@ export class PawnChatView extends ItemView {
         ...(msg.context ?? []).map((p) => p.replace(/\.md$/i, "").split("/").pop() ?? p),
       ];
       if (ctx.length) el.createDiv({ cls: "pawn-msg-context", text: ctx.join(" · ") });
+      renderUserMessageActions(el, {
+        text: msg.content,
+        onReuse: () => this.reuseInComposer(msg.content),
+      });
       return;
     }
     if (msg.progress?.length) {
@@ -504,7 +577,9 @@ export class PawnChatView extends ItemView {
       body.setText(msg.content);
       return;
     }
-    void MarkdownRenderer.render(this.app, msg.content, body, msg.notePath ?? "", scope);
+    void MarkdownRenderer.render(this.app, msg.content, body, msg.notePath ?? "", scope).then(
+      () => this.scrollThreadToBottom(),
+    );
     renderMessageActions(el, {
       app: this.app,
       text: msg.content,
@@ -514,6 +589,20 @@ export class PawnChatView extends ItemView {
     });
   }
 
+  private reuseInComposer(text: string): void {
+    this.draftText = text;
+    if (this.tab !== "chat" || !this.composer) {
+      this.tab = "chat";
+      this.render();
+      this.composer?.focus();
+      return;
+    }
+    this.composer.value = text;
+    this.autosize();
+    this.composer.focus();
+    this.composer.selectionStart = this.composer.selectionEnd = text.length;
+  }
+
   private renderPending(): void {
     const p = this.pending;
     if (!p?.el) return;
@@ -521,9 +610,12 @@ export class PawnChatView extends ItemView {
     const row = p.el.createDiv({ cls: "pawn-pending-row" });
     row.createSpan({ cls: "pawn-spinner" });
     row.createSpan({ text: p.progress[p.progress.length - 1] ?? "Thinking…" });
+    this.scrollThreadToBottom(true);
   }
 
   private renderComposer(wrap: HTMLElement): void {
+    this.switchBannerEl = wrap.createDiv({ cls: "pawn-switch-banner is-hidden" });
+    this.renderComposerBanner();
     this.context.mount(wrap);
     this.slashEl = wrap.createDiv({ cls: "pawn-slash is-hidden" });
     const ta = wrap.createEl("textarea", {
@@ -531,6 +623,7 @@ export class PawnChatView extends ItemView {
       attr: { rows: "2", placeholder: "Message Pawn…  (/ commands, @ notes)" },
     });
     this.composer = ta;
+    this.restoreDraft();
     ta.addEventListener("input", () => this.onComposerInput());
     ta.addEventListener("keydown", (ev) => this.onComposerKey(ev));
     ta.addEventListener("focus", () => {
@@ -571,6 +664,25 @@ export class PawnChatView extends ItemView {
     }
   }
 
+  private renderComposerBanner(): void {
+    const el = this.switchBannerEl;
+    if (!el) return;
+    el.empty();
+    if (!this.pendingSwitch) {
+      el.addClass("is-hidden");
+      return;
+    }
+    el.removeClass("is-hidden");
+    el.createSpan({
+      text: `Open note is “${this.pendingSwitch.label}” — Switch chat?`,
+    });
+    const actions = el.createDiv({ cls: "pawn-switch-banner-actions" });
+    const go = actions.createEl("button", { text: "Switch", cls: "mod-cta" });
+    go.onclick = () => this.acceptPendingSwitch();
+    const dismiss = actions.createEl("button", { text: "Dismiss" });
+    dismiss.onclick = () => this.dismissPendingSwitch();
+  }
+
   private autosize(): void {
     const ta = this.composer;
     if (!ta) return;
@@ -583,11 +695,17 @@ export class PawnChatView extends ItemView {
   private onComposerInput(): void {
     const ta = this.composer;
     if (!ta) return;
+    this.draftText = ta.value;
     this.autosize();
+    if (!ta.value.trim() && this.pendingSwitch) {
+      this.pendingSwitch = null;
+      this.renderComposerBanner();
+    }
     const pos = ta.selectionStart;
     if (pos > 0 && ta.value[pos - 1] === "@" && (pos === 1 || /\s/.test(ta.value[pos - 2]))) {
       ta.value = ta.value.slice(0, pos - 1) + ta.value.slice(pos);
       ta.selectionStart = ta.selectionEnd = pos - 1;
+      this.draftText = ta.value;
       this.context.openPicker();
       return;
     }
@@ -675,6 +793,7 @@ export class PawnChatView extends ItemView {
           selection: snap.selection?.text,
           noteTitle: snap.activeNote?.basename,
         });
+        this.draftText = ta.value;
         if (cmd.background) this.background = true;
         this.autosize();
         ta.focus();
@@ -717,7 +836,10 @@ export class PawnChatView extends ItemView {
   private pickSlash(idx: number): void {
     const item = this.slashItems[idx];
     if (!item) return;
-    if (this.composer) this.composer.value = "";
+    if (this.composer) {
+      this.composer.value = "";
+      this.draftText = "";
+    }
     this.hideSlash();
     item.run();
   }
@@ -726,6 +848,7 @@ export class PawnChatView extends ItemView {
     const ta = this.composer;
     if (!ta) return;
     ta.value = text;
+    this.draftText = text;
     this.autosize();
     ta.focus();
     ta.selectionStart = ta.selectionEnd = ta.value.length;
@@ -818,6 +941,8 @@ export class PawnChatView extends ItemView {
     const text = ta.value.trim();
     if (!text) return;
     ta.value = "";
+    this.draftText = "";
+    this.pendingSwitch = null;
     this.autosize();
     this.hideSlash();
     await this.send(text, { background: this.background });
@@ -833,6 +958,7 @@ export class PawnChatView extends ItemView {
       new Notice("Pawn is still answering; stop it first or wait.");
       return;
     }
+    this.stickToBottom = true;
     const conversation = this.conversationId;
     const convs = this.plugin.conversations;
 
