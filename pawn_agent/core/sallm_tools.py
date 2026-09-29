@@ -110,7 +110,9 @@ def build_pawn_clitools() -> dict[str, CliTool]:
                 "Create or overwrite a vault Markdown note. Required: --path. "
                 "Body: --content-file @note (preferred) or short --content. "
                 "Writes only under Pawn/ unless the note has pawn: editable. "
-                "Never touch .obsidian/."
+                "Never touch .obsidian/. Refuses a checklist standing in for "
+                "tasks (Pawn/Boards/..., or a page of boxes). Those belong to "
+                "tasknotes_commit and tasknotes_board."
             ),
         ),
         "note_append": CliTool(
@@ -218,6 +220,27 @@ def build_pawn_clitools() -> dict[str, CliTool]:
                 "--group-by status|assignee|priority --swimlane assignee|priority. "
                 "A board file the user customized (pawn marker removed) is left alone. "
                 "Open the .base file in Obsidian."
+            ),
+        ),
+        "idea_capture": CliTool(
+            name="idea_capture",
+            argv=_cli_argv("idea_capture.py"),
+            summary=(
+                "Write one idea skeleton under the coworker watch folder (default Ideas/). "
+                "Required: --seed (the user's line, unchanged), --title, --why, --sketch, "
+                "and at least one --question (or --open-questions, one per line). "
+                "Fills Why, Sketch, and Open questions from that line only. "
+                "Does not overwrite an existing note and does not write the Pawn/Ideas companion."
+            ),
+        ),
+        "goal_propose": CliTool(
+            name="goal_propose",
+            argv=_cli_argv("goal_propose.py"),
+            summary=(
+                "Draft one goal thread into Pawn/Reviews/goal-proposal.md. "
+                "Required: --name. Optional: --why --movement --interrupt --note --do "
+                "--status active|parked. Does NOT write Goals.md. "
+                "Tell the user to run /goal apply or use Apply goals proposal."
             ),
         ),
     }

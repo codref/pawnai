@@ -1,7 +1,8 @@
 """Parse the user-owned Goals.md note.
 
-The agent reads this note and never writes it. A missing or invalid note
-means there are no active threads: items are filed and nothing notifies.
+A missing or invalid note means there are no active threads: items are filed
+and nothing notifies. ``/goal``, ``/park``, and ``/goal apply`` are the chat
+commands that write this file. ``note_write`` stays denied.
 """
 
 from __future__ import annotations
@@ -176,3 +177,138 @@ def load_goals_text(text: Optional[str]) -> Goals:
     if not parsed.valid:
         return Goals(valid=False)
     return parsed
+
+
+class GoalInsertError(ValueError):
+    """Raised when a thread cannot be spliced into Goals.md."""
+
+
+_FM_RE = re.compile(r"\A---\s*\n.*?\n---\s*\n?", re.DOTALL)
+_H2_RE = re.compile(r"^##\s+(.+?)\s*$")
+
+
+def _split_frontmatter(text: str) -> tuple[str, str]:
+    """Return the raw frontmatter prefix and the body, preserving bytes."""
+    match = _FM_RE.match(text or "")
+    if match is None:
+        return "", text or ""
+    return text[: match.end()], text[match.end() :]
+
+
+def _one_line(value: str) -> str:
+    return " ".join((value or "").split())
+
+
+def _thread_block(
+    *,
+    name: str,
+    status: str,
+    why: str,
+    movement: str,
+    interrupt: str,
+    note: str,
+    do: str,
+) -> str:
+    lines = [f"### {name}"]
+    if status == "active":
+        lines.append(f"- why: {_one_line(why)}")
+        lines.append(f"- movement: {_one_line(movement)}")
+        lines.append(f"- interrupt: {_one_line(interrupt)}")
+    else:
+        lines.append(f"- note: {_one_line(note)}")
+        lines.append(f"- do: {_one_line(do)}")
+    return "\n".join(lines)
+
+
+def _splice_section(body: str, section: str, block: str) -> str:
+    """Insert *block* at the end of a ``##`` section, creating the section if needed."""
+    lines = body.splitlines(keepends=True)
+    target = section.lower()
+    start: Optional[int] = None
+    for index, line in enumerate(lines):
+        heading = _H2_RE.match(line.strip())
+        if heading and heading.group(1).strip().lower() == target:
+            start = index
+            break
+    chunk = block.strip() + "\n"
+    if start is None:
+        insert_at = len(lines)
+        if target == "active":
+            for index, line in enumerate(lines):
+                heading = _H2_RE.match(line.strip())
+                if heading is None:
+                    continue
+                title = heading.group(1).strip().lower()
+                if title == "parked" or title.startswith("done"):
+                    insert_at = index
+                    break
+        title = "Active" if target == "active" else "Parked"
+        head = "".join(lines[:insert_at]).rstrip()
+        tail = "".join(lines[insert_at:])
+        if tail.startswith("\n"):
+            tail = tail.lstrip("\n")
+        section_text = f"## {title}\n\n{chunk}\n"
+        if head:
+            section_text = "\n\n" + section_text
+        merged = head + section_text + tail
+        return merged if merged.endswith("\n") else merged + "\n"
+
+    end = len(lines)
+    for index in range(start + 1, len(lines)):
+        if _H2_RE.match(lines[index].strip()):
+            end = index
+            break
+    head = "".join(lines[:end]).rstrip() + "\n\n"
+    tail = "".join(lines[end:])
+    return head + chunk + "\n" + tail
+
+
+def insert_goal_thread(
+    text: Optional[str],
+    *,
+    name: str,
+    status: str,
+    why: str = "",
+    movement: str = "",
+    interrupt: str = "",
+    note: str = "",
+    do: str = "",
+) -> str:
+    """Splice one thread into Goals.md without rewriting the rest of the note.
+
+    A missing note becomes a valid ``pawn: goals`` file. An existing note whose
+    ``pawn`` value is something other than goals is refused.
+    """
+    title = _one_line(name)
+    if not title:
+        raise GoalInsertError("A goal thread needs a name.")
+    if len(title) > 120:
+        title = title[:120].rstrip()
+    kind = (status or "").strip().lower()
+    if kind not in {"active", "parked"}:
+        raise GoalInsertError("status must be active or parked.")
+
+    raw = text if text and text.strip() else None
+    if raw is None:
+        prefix = "---\npawn: goals\n---\n\n"
+        body = ""
+    else:
+        parsed = parse_goals(raw)
+        if not parsed.valid:
+            raise GoalInsertError("Goals.md is not a goals note, so it was left unchanged.")
+        if parsed.thread_named(title) is not None:
+            raise GoalInsertError(f"Goals.md already has a thread named '{title}'.")
+        prefix, body = _split_frontmatter(raw)
+
+    if kind == "parked" and not do.strip():
+        do = "Link related notes and develop the idea. Do not notify."
+    block = _thread_block(
+        name=title,
+        status=kind,
+        why=why,
+        movement=movement,
+        interrupt=interrupt,
+        note=note,
+        do=do,
+    )
+    return prefix + _splice_section(body, kind, block)

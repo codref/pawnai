@@ -32,8 +32,9 @@ Free-standing plugin chats use `chat:{uuid}`.
 | `Pawn/Today.md` | Pawn | What needs a tap, then what was filed quietly |
 | `Pawn/Daily/{date}.md` | Pawn | Morning briefing |
 | `Pawn/Ideas/…` | Pawn | Companion notes for ideas you captured. Your original note is not edited |
-| `Pawn/Reviews/{week}.md` | Pawn | Weekly review, including a proposed Goals.md |
-| `Goals.md` | You | Active threads and attention rules. Pawn reads this and does not write it |
+| `Pawn/Reviews/{week}.md` | Pawn | Weekly review, including a proposed Goals.md. Chat drafts land in `Pawn/Reviews/goal-proposal.md` |
+| `Ideas/…` | You | Idea notes. `/idea` asks Pawn to write the first skeleton |
+| `Goals.md` | You | Active threads and attention rules. `/goal`, `/park`, and `/goal apply` are the chat commands that write it |
 | `Pawn/Inbox/…` | Pawn | Non-audio files uploaded from the plugin |
 | `Pawn/Commands/*.md` | You | Prompt commands for the plugin (`/`, palette, editor menu) |
 | Everything else | You | Editable by Pawn only if frontmatter has `pawn: editable` |
@@ -315,6 +316,9 @@ sessions. Two ways:
 
 Each task is `Pawn/TaskNotes/Tasks/{title}.md` with the `task` tag, so it
 shows on the TaskNotes kanban and calendar after Sync Engine delivers it.
+"Edo's board" is that person's task notes plus `Pawn/TaskNotes/Views/Edo.base`,
+not a checklist page at `Pawn/Boards/Edo's Board.md`. A heading in the source
+becomes the project. The short action is the task title.
 `due` is a date. `scheduled` is that date, or a local time such as
 `2026-09-30T09:00` with no timezone suffix. Empty dates stay off the calendar.
 

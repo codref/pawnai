@@ -855,18 +855,14 @@ def _register_callbacks(client: Any, cfg: Any, registry: Any) -> None:
                 await _send_text(client, room.room_id, text)
                 return
 
-            from pawn_agent.core.coworker.actions import (  # noqa: PLC0415
-                parse_coworker_command,
-                apply_action,
-            )
+            from pawn_agent.core.coworker.slash import resolve_chat_message  # noqa: PLC0415
 
-            coworker_cmd = parse_coworker_command(prompt)
-            if coworker_cmd is not None and getattr(cfg.coworker, "enabled", False):
-                action, item_id, arg = coworker_cmd
+            resolved = await resolve_chat_message(cfg, prompt, registry=registry)
+            if resolved.mode == "reply":
                 await client.room_typing(room.room_id, typing_state=True)
-                receipt = await apply_action(cfg, item_id, action, arg, registry=registry)
-                await _send_text(client, room.room_id, receipt)
+                await _send_text(client, room.room_id, resolved.text)
                 return
+            prompt = resolved.text
 
             from pawn_agent.core.agent_runner import run_agent_turn
 

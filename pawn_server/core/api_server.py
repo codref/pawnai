@@ -649,7 +649,21 @@ async def chat_completions(
             return StreamingResponse(_stream_sse(reply, req.model), media_type="text/event-stream")
         return _build_openai_response(reply, req.model)
 
+    from pawn_agent.core.coworker.slash import resolve_chat_message  # noqa: PLC0415
+
+    resolved = await resolve_chat_message(
+        cfg, _last_user_message(messages), registry=_sallm_registry
+    )
+    if resolved.mode == "reply":
+        if req.stream:
+            return StreamingResponse(
+                _stream_sse(resolved.text, req.model), media_type="text/event-stream"
+            )
+        return _build_openai_response(resolved.text, req.model)
+
     prompt = _build_prompt(messages, bool(getattr(cfg.api, "include_system_prompt", False)))
+    if resolved.rewritten:
+        prompt = resolved.text
     if not prompt:
         raise HTTPException(status_code=422, detail="No user message found in messages")
 
@@ -1247,6 +1261,15 @@ async def pawn_chat(body: PawnChatRequest, cfg: Any = Depends(_get_cfg)) -> Stre
             yield _sse_event("done", {"conversation": conversation})
             return
 
+        from pawn_agent.core.coworker.slash import resolve_chat_message  # noqa: PLC0415
+
+        resolved = await resolve_chat_message(cfg, message, registry=_sallm_registry)
+        if resolved.mode == "reply":
+            yield _sse_event("answer", {"content": resolved.text})
+            yield _sse_event("done", {"conversation": conversation})
+            return
+        agent_message = resolved.text if resolved.rewritten else message
+
         if body.background:
             context_paths = [n.path for n in body.context]
             try:
@@ -1254,7 +1277,7 @@ async def pawn_chat(body: PawnChatRequest, cfg: Any = Depends(_get_cfg)) -> Stre
                     cfg,
                     JobCreateRequest(
                         kind="ask",
-                        instruction=message,
+                        instruction=agent_message,
                         conversation=conversation,
                         note_path=body.active_note.path if body.active_note else None,
                         selection=body.selection,
@@ -1280,9 +1303,12 @@ async def pawn_chat(body: PawnChatRequest, cfg: Any = Depends(_get_cfg)) -> Stre
         if active is not None:
             active = (await resolve_notes(store, [active]))[0]
         extra = await resolve_notes(store, [NoteRef(n.path, n.content) for n in body.context])
-        prompt = build_chat_prompt(
-            message, active_note=active, selection=body.selection, context=extra
-        )
+        if resolved.rewritten:
+            prompt = agent_message
+        else:
+            prompt = build_chat_prompt(
+                message, active_note=active, selection=body.selection, context=extra
+            )
 
         async def _run(on_progress: Any) -> Any:
             return await run_agent_turn(

@@ -16,6 +16,17 @@ from pawn_core.vault import (
 from pawn_core.vault_config import vault_store_from_config
 
 _WIKI_LINK_RE = re.compile(r"\[\[([^\]|#]+?)(?:#[^\]|]+)?(?:\|[^\]]+)?\]\]")
+_CHECKBOX_RE = re.compile(r"^\s*[-*] \[[ xX]\]\s+\S", re.MULTILINE)
+_FAKE_BOARD_MSG = (
+    "Error: this is a checklist page, not TaskNotes tasks. "
+    "Boxes on a note such as Pawn/Boards/Edo's Board.md do not show on the "
+    "kanban or calendar; someone would have to convert each line by hand. "
+    "Create one task note per action with tasknotes_commit --items-file @note "
+    "--boards assignee. "
+    '"Edo\'s board" means assignee Edo and a .base board named Edo, not a '
+    "Markdown page. A heading above a group is the project. The short action "
+    "is the title; the rest of the line is details. Do not write under Boards/."
+)
 _RESULT_SECTION_RE = re.compile(
     r"(?is)(^##\s*Result\s*\n)(.*?)(?=^##\s|\Z)",
     re.MULTILINE,
@@ -159,6 +170,30 @@ def note_search_impl(
     return "\n".join(f"- {k}" for k in matched) + "\n"
 
 
+def _is_board_path(key: str) -> bool:
+    parts = [part.casefold() for part in key.split("/") if part]
+    if not parts:
+        return False
+    if any(part in {"board", "boards"} for part in parts[:-1]):
+        return True
+    stem = parts[-1].removesuffix(".md").replace("’", "'")
+    return stem.endswith(" board") or stem.endswith("'s board")
+
+
+def reject_fake_task_board(path: str, content: str) -> str | None:
+    """Refuse a Markdown checklist standing in for TaskNotes tasks."""
+    key = normalize_vault_key(path)
+    if _is_board_path(key):
+        return _FAKE_BOARD_MSG
+    checks = _CHECKBOX_RE.findall(content or "")
+    if len(checks) < 3:
+        return None
+    nonempty = [line for line in (content or "").splitlines() if line.strip()]
+    if len(checks) >= 5 or len(checks) * 2 >= max(len(nonempty), 1):
+        return _FAKE_BOARD_MSG
+    return None
+
+
 def note_write_impl(
     cfg: AgentConfig,
     path: str,
@@ -167,6 +202,9 @@ def note_write_impl(
     create_only: bool = False,
 ) -> str:
     """Write *content* to *path* via :class:`VaultStore`."""
+    refused = reject_fake_task_board(path, content)
+    if refused:
+        return refused
     store = vault_store_from_config(cfg)
     key = normalize_vault_key(path)
     if not key:
@@ -184,6 +222,9 @@ def note_write_impl(
 
 def note_append_impl(cfg: AgentConfig, path: str, content: str) -> str:
     """Append *content* to an existing note (or create it)."""
+    refused = reject_fake_task_board(path, content)
+    if refused:
+        return refused
     store = vault_store_from_config(cfg)
     key = normalize_vault_key(path)
     if not key:

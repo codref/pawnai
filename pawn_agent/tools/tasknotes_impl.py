@@ -73,6 +73,7 @@ _STATUSES = {
 _BOARDS = {"", "none", "assignee", "project", "both"}
 _UNSAFE_STEM = re.compile(r'[\\/:*?"<>|\x00-\x1f]')
 _ME = {"me", "i", "myself", "mine"}
+_PERSON_BOARD_RE = re.compile(r"^(?P<who>.+?)['’]s\s+boards?$", re.IGNORECASE)
 
 _PENDING_INTRO = """\
 Nothing has been added to TaskNotes yet.
@@ -184,10 +185,22 @@ def _me_names(cfg: AgentConfig) -> list[str]:
     return [n.strip() for n in cfg.coworker.me if n and n.strip()]
 
 
+def person_from_board_name(name: str) -> str:
+    """``Edo's board`` is the person Edo, not a note titled Edo's Board."""
+    text = " ".join((name or "").replace("’", "'").split())
+    match = _PERSON_BOARD_RE.match(text)
+    if match is None:
+        return ""
+    return match.group("who").strip(" -")
+
+
 def _canonicalize_assignee(raw: str, cfg: AgentConfig) -> str:
     text = " ".join((raw or "").split())
     if not text:
         return ""
+    owner = person_from_board_name(text)
+    if owner:
+        text = owner
     folded = text.casefold()
     aliases = _ME | {n.casefold() for n in _me_names(cfg)}
     if folded in aliases:
@@ -1069,9 +1082,7 @@ def _write_board(
     except VaultError:
         existing = ""
     if existing and not existing.lstrip().startswith(_BOARD_MARKER):
-        return (
-            f"- {name} — left `{key}` as-is (the pawn marker was removed, so hand edits stay)"
-        )
+        return f"- {name} — left `{key}` as-is (the pawn marker was removed, so hand edits stay)"
     group = group_by if group_by in {"status", "assignee", "priority"} else "status"
     lane = swimlane if swimlane in {"assignee", "priority"} and swimlane != group else ""
     filters: list[Any] = [f'file.hasTag("{ident}")']
@@ -1168,6 +1179,10 @@ def tasknotes_board_impl(
         return "Error: board name is empty"
     try:
         person = _canonicalize_assignee(assignee, cfg) if assignee else ""
+        inferred = person_from_board_name(title)
+        if inferred:
+            person = person or _canonicalize_assignee(inferred, cfg)
+            title = person or inferred
         proj = " ".join(project.split())
         _ident_tag(cfg)
         store = vault_store_from_config(cfg)

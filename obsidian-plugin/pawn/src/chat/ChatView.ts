@@ -598,6 +598,42 @@ export class PawnChatView extends ItemView {
 
   private slashCandidates(): SlashItem[] {
     const builtins: SlashItem[] = [
+      {
+        slug: "idea",
+        label: "/idea",
+        hint: "Capture an idea skeleton",
+        run: () => this.prefillSlash("/idea "),
+      },
+      {
+        slug: "goal",
+        label: "/goal",
+        hint: "Add an active goal thread",
+        run: () => this.prefillSlash("/goal "),
+      },
+      {
+        slug: "park",
+        label: "/park",
+        hint: "Park a goal thread",
+        run: () => this.prefillSlash("/park "),
+      },
+      {
+        slug: "goal-apply",
+        label: "/goal apply",
+        hint: "Write Goals.md from the latest proposal",
+        run: () => void this.send("/goal apply"),
+      },
+      {
+        slug: "goals",
+        label: "/goals",
+        hint: "List active and parked threads",
+        run: () => void this.send("/goals"),
+      },
+      {
+        slug: "inbox",
+        label: "/inbox",
+        hint: "List items that need a tap",
+        run: () => void this.send("/inbox"),
+      },
       { slug: "reset", label: "/reset", hint: "Clear this conversation", run: () => void this.send("/reset") },
       {
         slug: "new",
@@ -684,6 +720,15 @@ export class PawnChatView extends ItemView {
     if (this.composer) this.composer.value = "";
     this.hideSlash();
     item.run();
+  }
+
+  private prefillSlash(text: string): void {
+    const ta = this.composer;
+    if (!ta) return;
+    ta.value = text;
+    this.autosize();
+    ta.focus();
+    ta.selectionStart = ta.selectionEnd = ta.value.length;
   }
 
   private onComposerKey(ev: KeyboardEvent): void {

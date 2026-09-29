@@ -349,3 +349,57 @@ def test_cli_propose_help() -> None:
     with pytest.raises(SystemExit) as exc:
         tasknotes_propose.main(["--help"])
     assert exc.value.code == 0
+
+
+EDO_PAGE = """# Edo's Board
+
+## Infrastructure & Process
+
+- [ ] **Implement a RACI Matrix:** Define a clear responsibility matrix.
+- [ ] **Develop training materials:** Write the SharePoint docs.
+- [ ] **Explore automation:** Look at a chatbot for requests.
+"""
+
+
+def test_checklist_page_is_not_accepted_as_tasks() -> None:
+    from pawn_agent.tools.notes_impl import note_write_impl, reject_fake_task_board
+
+    refused = note_write_impl(AgentConfig(), "Pawn/Boards/Edo's Board.md", EDO_PAGE)
+    assert refused.startswith("Error:")
+    assert "tasknotes_commit" in refused
+    assert (
+        reject_fake_task_board("Pawn/Notes/Meeting.md", "Met Edo.\n\n- [ ] Send the notes\n")
+        is None
+    )
+    heavy = "\n".join(f"- [ ] Task {i}: do the thing." for i in range(6))
+    assert reject_fake_task_board("Pawn/Notes/Actions.md", heavy)
+
+
+def test_edos_board_creates_a_person_board(store: VaultStore) -> None:
+    report = tasknotes_impl.tasknotes_board_impl(_cfg(), name="Edo's Board")
+    assert "`Pawn/TaskNotes/Views/Edo.base`" in report
+    text = store.read("Pawn/TaskNotes/Views/Edo.base")
+    assert 'assignee == "Edo"' in text
+    created = tasknotes_impl.tasknotes_commit_impl(
+        _cfg(),
+        document=json.dumps(
+            {
+                "items": [
+                    {
+                        "title": "Implement a RACI Matrix",
+                        "details": "Define a clear responsibility matrix.",
+                        "assignee": "Edo's board",
+                        "project": "Infrastructure & Process",
+                    }
+                ]
+            }
+        ),
+        boards="assignee",
+        now=NOW,
+    )
+    assert "Created 1." in created
+    meta, body = parse_frontmatter(store.read("Pawn/TaskNotes/Tasks/Implement a RACI Matrix.md"))
+    assert meta["assignee"] == "Edo"
+    assert meta["project"] == "Infrastructure & Process"
+    assert meta["tags"] == ["task"]
+    assert "Define a clear responsibility matrix." in body

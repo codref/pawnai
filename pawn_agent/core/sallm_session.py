@@ -266,13 +266,27 @@ async def run_sallm_chat(
         if text.lower() == "/stats":
             emit(await asyncio.to_thread(session.format_stats))
             continue
-        if text.startswith("/"):
-            emit("Supported slash commands: /stats, /reset, /exit, /quit.")
+        from pawn_agent.core.coworker.slash import (  # noqa: PLC0415
+            SLASH_HELP,
+            resolve_chat_message,
+        )
+
+        try:
+            resolved = await resolve_chat_message(cfg, text)
+        except Exception as exc:
+            logger.exception("slash command failed")
+            emit(f"Error: {exc}")
+            continue
+        if resolved.mode == "reply":
+            emit(resolved.text)
+            continue
+        if text.startswith("/") and not resolved.rewritten:
+            emit(SLASH_HELP)
             continue
         if on_thinking is not None:
             on_thinking()
         try:
-            reply = await session.handle_user_input(text)
+            reply = await session.handle_user_input(resolved.text)
         except Exception as exc:
             logger.exception("sallm chat turn failed")
             emit(f"Error: {exc}")

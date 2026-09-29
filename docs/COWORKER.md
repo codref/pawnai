@@ -48,7 +48,7 @@ pawn-server coworker status
 
 ## Write Goals.md
 
-`coworker.goals_path` (default `Goals.md`) lives at the vault root, outside `Pawn/`. Pawn reads it and does not write it. Put three to seven threads under `## Active`. Everything else stays quiet.
+`coworker.goals_path` (default `Goals.md`) lives at the vault root, outside `Pawn/`. Pawn reads it during the loop. Chat writes it from `/goal`, `/park`, and `/goal apply`. A normal prompt only drafts a proposal. Put three to seven threads under `## Active`. Everything else stays quiet.
 
 A missing note means “file everything, notify nothing.” Any `pawn:` value other than `goals` is treated the same way.
 
@@ -187,7 +187,7 @@ curl -X POST "$PAWN_URL/v1/items/a1b2c3d4/action" \
 
 ## Capture an idea
 
-Ideas are notes you write. Pawn does not edit them. A note is picked up when it lives under `coworker.watch_folders` (default `Ideas/`) or carries `coworker.watch_tags` (default `idea`), and only after it has been unchanged for `note_quiet_seconds` (default 120).
+Ideas are notes under `Ideas/`. `/idea` and **Quick capture** write the first note. Pawn does not edit it after that. A note is picked up when it lives under `coworker.watch_folders` (default `Ideas/`) or carries `coworker.watch_tags` (default `idea`), and only after it has been unchanged for `note_quiet_seconds` (default 120).
 
 Save this as `Ideas/Mobile inbox.md`. It matches the parked thread above.
 
@@ -206,6 +206,49 @@ Open question: does this live as `Pawn/Today.md`, or as a separate inbox note I 
 ```
 
 The plugin command **Quick capture** writes `Ideas/{date} {title}.md` with `tags: [idea]` for you.
+
+## From chat
+
+These commands work in `pawn-agent chat`, the plugin composer, Matrix (after `command_prefix`), and the HTTP chat endpoints. Triage words (`file`, `task`, `later`, `ignore`, `approve`, `reject`) work in those chats too when the loop is on.
+
+| Command | What it does |
+|---------|----------------|
+| `/idea implement multi-model in pawnai` | Asks the agent to write an idea skeleton under `Ideas/`. Why, Sketch, and Open questions come from that one line. The seed line is kept as you typed it. An existing file at that path is left in place. |
+| `/goal <line>` | Inserts an Active thread. The heading and `why` are that line. `movement` and `interrupt` stay empty. |
+| `/park <line>` | Inserts a Parked thread and does not notify. |
+| `/goals` | Lists active and parked threads. |
+| `/inbox` | Lists items that still need a tap. |
+| `/goal apply` | Writes `Goals.md` from `Pawn/Reviews/goal-proposal.md`. |
+
+A sentence such as "add multi-model to my goals" calls `goal_propose`. That writes `Pawn/Reviews/goal-proposal.md` with a `goals` fence and leaves `Goals.md` unchanged until `/goal apply` or **Apply goals proposal**.
+
+The skeleton looks like this:
+
+```markdown
+---
+tags: [idea]
+---
+
+# Implement multi-model in pawnai
+
+## Seed
+
+implement multi-model in pawnai
+
+## Why
+
+One or two sentences from that line.
+
+## Sketch
+
+A short outline from that line.
+
+## Open questions
+
+- One question the line leaves open.
+```
+
+The watcher still writes the `Pawn/Ideas/` companion after the quiet window. The capture command does not.
 
 After the quiet window, Pawn writes a companion at `Pawn/Ideas/mobile-inbox.md` that links back to your note, and it indexes the text. Because the matching thread is Parked, this does not notify. Promote the thread under `## Active` when you want interrupts.
 

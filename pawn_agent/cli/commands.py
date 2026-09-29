@@ -50,7 +50,8 @@ def chat(
 
     Type [bold]/exit[/bold] or [bold]/quit[/bold] to end, or press Ctrl-D / Ctrl-C.
     Type [bold]/stats[/bold] for session metrics, [bold]/reset[/bold] to clear
-    conversation state.
+    conversation state. [bold]/idea[/bold] captures an idea, [bold]/goal[/bold]
+    writes an active thread in Goals.md.
 
     \b
     Examples
@@ -92,7 +93,8 @@ def chat(
         f"[dim]model={cfg.litellm_model}  agent={name}  mode=sallm[/dim]\n"
         "[dim]Durable ReAct + skills/CliTools. "
         "Type /exit or /quit to end. /stats shows session metrics; "
-        "/reset clears sallm session memory.[/dim]\n"
+        "/reset clears sallm session memory. "
+        "/idea captures an idea; /goal writes Goals.md.[/dim]\n"
     )
     try:
         asyncio.run(

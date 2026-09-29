@@ -52,7 +52,10 @@ CONVERSE = Skill(
         "Action items, task lists, kanban boards, and calendar entries are "
         "TaskNotes notes. Use tasknotes_list, tasknotes_propose, tasknotes_commit, "
         "tasknotes_update, and tasknotes_board. Do not use note_write or task_update "
-        "for them. If the user has not asked you to create the tasks, propose and stop."
+        "for them. If the user has not asked you to create the tasks, propose and stop.\n"
+        '"Turn this into tasks, Edo\'s board" creates one task note per action '
+        "with assignee Edo and a .base board. It is not a Markdown checklist at "
+        "Pawn/Boards/Edo's Board.md. Headings in the source are projects."
     ),
     tools=None,
 )
@@ -109,13 +112,18 @@ SESSIONS = Skill(
 NOTES = Skill(
     name="notes",
     description=(
-        "User wants to save, write, or update vault Markdown notes "
-        "(including session analysis --save). Prefer this when the request "
-        "combines analysis with saving to the vault."
+        "User wants to save, write, or update a prose vault note "
+        "(including session analysis --save). Do not use this for action "
+        "items, task lists, or boards; those belong to the tasknotes skill."
     ),
     prompt=(
         "Active skill: notes.\n"
         "Tools MUST be called inside ```run fences — never print bare argv.\n"
+        "A task list or a board is not a prose note. If the user says turn "
+        "this into tasks, make a board, or Name's board, call tasknotes_commit "
+        "and tasknotes_board. Never note_write a checklist page under "
+        "Pawn/Boards/. Each action is its own task note; a heading is the "
+        "project; Name's board means assignee Name.\n"
         "session_analyze needs a real diarization session id "
         "(not the Matrix/API chat key). When the id is unclear, call "
         "sessions_list first; if still ambiguous, ask the user which session.\n"
@@ -148,6 +156,9 @@ NOTES = Skill(
         "note_write",
         "note_append",
         "knowledge_search",
+        "tasknotes_list",
+        "tasknotes_commit",
+        "tasknotes_board",
     ),
 )
 
@@ -190,7 +201,8 @@ TASKNOTES = Skill(
         "User wants action items, a todo or task list, a kanban board, or "
         "calendar entries extracted from this chat or from recent diarization "
         "sessions, including splitting work across people. Prefer this over "
-        "notes whenever they ask to capture, organize, schedule, or track tasks."
+        "notes when they say turn this into tasks, make a board, or Name's "
+        "board. A markdown checklist page is not a task list."
     ),
     prompt=(
         "Active skill: tasknotes.\n"
@@ -235,6 +247,19 @@ TASKNOTES = Skill(
         "the user to open that file in Obsidian. Tasks also appear on TaskNotes' "
         "own kanban and calendar because of the task tag. If a board was "
         "hand-edited, the tool leaves it alone; say so.\n"
+        '"Turn this into tasks, Edo\'s board" means CREATE the tasks now. '
+        "Do not note_write Pawn/Boards/Edo's Board.md or any checklist page. "
+        "Those boxes are not tasks; TaskNotes would leave the user to convert "
+        "each line by hand. Assignee is Edo. Each actionable line is one item. "
+        "A heading above a group is the project. The short action is title; "
+        "the rest of the sentence is details. Then:\n"
+        "```run\n"
+        "tasknotes_commit --items-file @note --boards assignee\n"
+        "```\n"
+        'with JSON {"items":[{"id":"1","title":"Implement a RACI Matrix",'
+        '"details":"Define the assignment matrix.","assignee":"Edo",'
+        '"project":"Infrastructure & Process"}]}. '
+        "That writes task notes plus Pawn/TaskNotes/Views/Edo.base.\n"
         "After creating tasks, answer with who has what, which items have no "
         "date, and the links. Mention that Google or Outlook updates only if "
         "TaskNotes export is already enabled (sync trigger: scheduled).\n"
@@ -257,6 +282,40 @@ TASKNOTES = Skill(
         "tasknotes_update",
         "tasknotes_board",
         "note_read",
+    ),
+)
+
+COWORKER = Skill(
+    name="coworker",
+    description=(
+        "User wants to capture an idea, draft a change to Goals.md, or ask "
+        "what is on the goals list. Prefer this over notes whenever they "
+        "mention an idea, a goal, a thread, or Goals.md."
+    ),
+    prompt=(
+        "Active skill: coworker.\n"
+        "Ideas are notes under the watch folder (default Ideas/), tagged idea. "
+        "Call idea_capture once. --seed is the user's line unchanged. --title "
+        "is a short noun phrase from that line. Fill --why, --sketch, and "
+        "--question from that line only: one or two sentences each for why and "
+        "the sketch, and one to three open questions. Do not research the repo. "
+        "Do not add tasks. Do not invent dates, owners, or commitments. "
+        "An existing note at that path is left in place.\n"
+        "Goals.md is the user's note. You must not write it. To contribute a "
+        "thread, call goal_propose with --name --why --movement --interrupt and "
+        "--status active or parked. That writes Pawn/Reviews/goal-proposal.md. "
+        "Tell the user the path and that /goal apply (or Apply goals proposal) "
+        "writes Goals.md. Do not claim Goals.md was updated.\n"
+        "Read Goals.md with note_read before proposing, and do not duplicate a "
+        "thread that is already there. knowledge_search finds related notes.\n"
+        "Stay inside the user's line. Do not develop a plan they did not ask for.\n"
+        "Do not call note_write. Do not dump tool errors into the vault."
+    ),
+    tools=(
+        "idea_capture",
+        "goal_propose",
+        "note_read",
+        "knowledge_search",
     ),
 )
 
@@ -300,4 +359,6 @@ VAULT_TASKS = Skill(
 
 def build_pawn_skills() -> SkillRegistry:
     """Return the pawn skill registry (converse is registered explicitly)."""
-    return SkillRegistry([CONVERSE, SESSIONS, NOTES, SCHEDULING, OPS, TASKNOTES, VAULT_TASKS])
+    return SkillRegistry(
+        [CONVERSE, SESSIONS, NOTES, SCHEDULING, OPS, TASKNOTES, COWORKER, VAULT_TASKS]
+    )
