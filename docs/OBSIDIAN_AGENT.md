@@ -300,6 +300,40 @@ stay `running`); the task note keeps the instruction, so resubmit if needed.
 
 `note_read`, `note_search`, `note_write`, `note_append`, `task_update`.
 Skill `vault_tasks` for watcher/HTTP vault runs; `notes` for save/analyze.
+Skill `tasknotes` for TaskNotes tasks, pick-lists, and boards.
+
+## TaskNotes
+
+Ask Pawn to pull action items out of a chat or the latest diarization
+sessions. Two ways:
+
+- "List the action items and let me pick." Pawn writes
+  `Pawn/TaskNotes/Proposals/{stamp}.md` and stops. Uncheck a line, or edit
+  the assignee, due, scheduled, or project on that line, then ask it to
+  create the checked tasks. You can also reply with the numbers.
+- "Turn this into tasks." Pawn creates the notes immediately.
+
+Each task is `Pawn/TaskNotes/Tasks/{title}.md` with the `task` tag, so it
+shows on the TaskNotes kanban and calendar after Sync Engine delivers it.
+`due` is a date. `scheduled` is that date, or a local time such as
+`2026-09-30T09:00` with no timezone suffix. Empty dates stay off the calendar.
+
+A person board is `Pawn/TaskNotes/Views/{Name}.base` (kanban and calendar).
+A project board is `{Project} project.base`. Open the `.base` file in
+Obsidian. Bases has to be enabled (Obsidian 1.10.1+), and TaskNotes has to
+be installed with task identification left on the `task` tag. Add a user
+field named `assignee` if you want that column in the task modal.
+
+Tasks you create from the TaskNotes UI stay in `TaskNotes/Tasks/`. Pawn
+lists them and will not rewrite them. The same title and assignee are
+treated as one task, so a later extraction does not clone the card.
+
+Google or Outlook updates only when TaskNotes export is already enabled,
+with the sync trigger set to `scheduled`. Pawn does not hold those tokens.
+
+`tasknotes.display_name` is how "me" is written. When it is empty, the
+first name in `tasknotes.me` or `coworker.me` is used. `tasknotes.timezone`
+empty means `coworker.timezone`.
 
 ## Diarize CLI
 

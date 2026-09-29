@@ -98,7 +98,13 @@ Annotations preserved). Opt-in auto-push after each `transcribe-diarize`
 chunk via `vault.auto_push_transcript`. Mapping table: `vault_notes`.
 
 Skills (modes): `converse`, `sessions`, `notes`, `scheduling`, `ops`,
-`vault_tasks` — see `sallm_skills.py`.
+`vault_tasks`, `tasknotes` — see `sallm_skills.py`.
+
+`tasknotes` writes TaskNotes-compatible notes under `{agent_root}/TaskNotes/`
+(tasks, project stubs, `.base` boards, and a checklist proposal). The user
+picks from the checklist, or asks Pawn to create the list directly. Same
+title and assignee are not duplicated. `task_update` remains the vault-job
+tool and is not used for these notes.
 
 Session memory is owned by sallm (SQLite + Lance + `Agent.remember`). Old memorize/recall/vectorize tools were removed.
 

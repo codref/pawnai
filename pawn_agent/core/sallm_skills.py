@@ -48,7 +48,11 @@ CONVERSE = Skill(
         "Never paste Markdown into tool args; never invent session ids; "
         "never print tool argv as prose.\n"
         "If session_analyze cannot run (no diarization id), ask which session "
-        "to use — do not invent meta-notes about tooling problems."
+        "to use — do not invent meta-notes about tooling problems.\n"
+        "Action items, task lists, kanban boards, and calendar entries are "
+        "TaskNotes notes. Use tasknotes_list, tasknotes_propose, tasknotes_commit, "
+        "tasknotes_update, and tasknotes_board. Do not use note_write or task_update "
+        "for them. If the user has not asked you to create the tasks, propose and stop."
     ),
     tools=None,
 )
@@ -180,6 +184,82 @@ OPS = Skill(
     tools=("queue_push",),
 )
 
+TASKNOTES = Skill(
+    name="tasknotes",
+    description=(
+        "User wants action items, a todo or task list, a kanban board, or "
+        "calendar entries extracted from this chat or from recent diarization "
+        "sessions, including splitting work across people. Prefer this over "
+        "notes whenever they ask to capture, organize, schedule, or track tasks."
+    ),
+    prompt=(
+        "Active skill: tasknotes.\n"
+        "These are TaskNotes tasks: one Markdown note per action, tagged task, "
+        "shown on the TaskNotes kanban and calendar. They are not vault_tasks "
+        "jobs. Never call note_write or task_update for them.\n"
+        "Call tasknotes_list before you propose or create, and do not re-file "
+        "a commitment that is already open. The same title and assignee are one "
+        "task across sessions. Say when an existing card was left in place. "
+        "Use --force only when the user wants a second copy.\n"
+        "If they have not clearly asked you to create, add, or schedule the "
+        "tasks, call tasknotes_propose and STOP. Show the list grouped by "
+        "person, the pick-list path, and that they can reply with numbers or "
+        "edit the note (uncheck a line, or change assignee, due, scheduled, "
+        "project, priority on that line). The indented sentence is the note body.\n"
+        "If they asked you to create the tasks, call tasknotes_commit. "
+        "From a pick-list pass --proposal, or omit it to use the latest open one. "
+        "A commit with no --pick creates only checked lines. --pick 1,3 creates "
+        "those numbers even if they are unchecked. --all also creates unchecked "
+        "lines. Direct create (no pick-list) uses --items-file @note with JSON "
+        '{"items":[...]}. The same JSON shape is used for tasknotes_propose.\n'
+        "Item fields: id, title, details (one or two sentences), assignee, due, "
+        "scheduled, project, priority (low|normal|high), status "
+        "(open|in-progress|done), time_estimate (minutes), source (session id or "
+        "a short origin), source_note (transcript vault path when you have it), "
+        "blocked_by (other item ids in this batch), contexts.\n"
+        "Dates are ISO only. due is YYYY-MM-DD. scheduled is YYYY-MM-DD or "
+        "YYYY-MM-DDTHH:MM with no timezone suffix: that clock time is local and "
+        "is what the calendar shows. Leave both empty when nobody named a day. "
+        "Never invent a time of day. A date-only scheduled value is all-day.\n"
+        "Pass assignee me for the user. The tool rewrites me and configured "
+        "aliases to one display name. Do not file SPEAKER_XX. Use the speaker's "
+        "display name, or ask.\n"
+        "Only real commitments: someone is going to do something. Skip chatter. "
+        "Prefer under 15 items. If a transcript has more, propose the clearest "
+        "ones and say what you left out.\n"
+        "Sessions: sessions_list, then session_transcript for the ones you will "
+        "read. Never invent session ids. For the latest sessions, list first.\n"
+        "Boards: --boards assignee (one per person), project, or both, on propose "
+        "(saved on the note) or on commit. Do not make a board for a single "
+        "ad-hoc task. A board is a .base file with a kanban and a calendar. Tell "
+        "the user to open that file in Obsidian. Tasks also appear on TaskNotes' "
+        "own kanban and calendar because of the task tag. If a board was "
+        "hand-edited, the tool leaves it alone; say so.\n"
+        "After creating tasks, answer with who has what, which items have no "
+        "date, and the links. Mention that Google or Outlook updates only if "
+        "TaskNotes export is already enabled (sync trigger: scheduled).\n"
+        "To change a date, owner, project, or status, call tasknotes_update "
+        "--id (path, pawn id, or unique title). --status done sets the completed "
+        "date. --clear-scheduled takes it off the calendar. Do not pass --details "
+        "unless they asked to rewrite the note text.\n"
+        "tasknotes_list hides done tasks. --mine is the user. --undated means "
+        "no due and no scheduled.\n"
+        "Do not invent RRULE recurrences. If they describe a repeat, put the "
+        "cadence in details and say the TaskNotes repeat is still unset.\n"
+        "Do not dump tool errors into the vault."
+    ),
+    tools=(
+        "sessions_list",
+        "session_transcript",
+        "tasknotes_list",
+        "tasknotes_propose",
+        "tasknotes_commit",
+        "tasknotes_update",
+        "tasknotes_board",
+        "note_read",
+    ),
+)
+
 VAULT_TASKS = Skill(
     name="vault_tasks",
     description=(
@@ -220,4 +300,4 @@ VAULT_TASKS = Skill(
 
 def build_pawn_skills() -> SkillRegistry:
     """Return the pawn skill registry (converse is registered explicitly)."""
-    return SkillRegistry([CONVERSE, SESSIONS, NOTES, SCHEDULING, OPS, VAULT_TASKS])
+    return SkillRegistry([CONVERSE, SESSIONS, NOTES, SCHEDULING, OPS, TASKNOTES, VAULT_TASKS])

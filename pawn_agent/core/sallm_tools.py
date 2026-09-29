@@ -160,4 +160,64 @@ def build_pawn_clitools() -> dict[str, CliTool]:
                 "Payload must be a JSON object and must not include 'command'."
             ),
         ),
+        "tasknotes_list": CliTool(
+            name="tasknotes_list",
+            argv=_cli_argv("tasknotes_list.py"),
+            summary=(
+                "List TaskNotes tasks grouped by person. Done tasks are hidden. "
+                "Flags: --assignee NAME --mine --project NAME --status open|in-progress|done "
+                "--include-done --undated --scheduled-from YYYY-MM-DD --scheduled-to YYYY-MM-DD "
+                "--limit N. Call this before proposing or creating tasks. "
+                "Notes under TaskNotes/Tasks are read-only."
+            ),
+        ),
+        "tasknotes_propose": CliTool(
+            name="tasknotes_propose",
+            argv=_cli_argv("tasknotes_propose.py"),
+            summary=(
+                "Write a TaskNotes pick-list and do NOT create tasks. "
+                "Required: --items JSON or --items-file @note. "
+                "Optional: --title TEXT --boards none|assignee|project|both. "
+                "JSON items use id, title, details, assignee, due, scheduled, project, "
+                "priority, status, time_estimate, source, source_note, blocked_by, contexts. "
+                "Stop after this unless the user already asked to create the tasks."
+            ),
+        ),
+        "tasknotes_commit": CliTool(
+            name="tasknotes_commit",
+            argv=_cli_argv("tasknotes_commit.py"),
+            summary=(
+                "Create TaskNotes tasks from a pick-list or from JSON. "
+                "Flags: --proposal PATH (omit to use the latest open pick-list) "
+                "--items JSON / --items-file @note --pick 1,3 --all --force "
+                "--boards none|assignee|project|both. "
+                "Checked lines are created. --pick overrides checkboxes. "
+                "--all includes unchecked lines. Same title+assignee is skipped "
+                "unless --force. Does not call the TaskNotes HTTP API."
+            ),
+        ),
+        "tasknotes_update": CliTool(
+            name="tasknotes_update",
+            argv=_cli_argv("tasknotes_update.py"),
+            summary=(
+                "Update one TaskNotes task. The file name stays so links keep working. "
+                "Required: --id PATH|PAWN_ID|UNIQUE_TITLE. "
+                "Optional: --title --status open|in-progress|done --priority "
+                "--assignee --due YYYY-MM-DD --scheduled YYYY-MM-DD or YYYY-MM-DDTHH:MM "
+                "--project --details --estimate MINUTES "
+                "--clear-due --clear-scheduled --clear-assignee --clear-project --clear-estimate. "
+                "--status done sets completedDate. Refuses notes outside the agent root."
+            ),
+        ),
+        "tasknotes_board": CliTool(
+            name="tasknotes_board",
+            argv=_cli_argv("tasknotes_board.py"),
+            summary=(
+                "Write a TaskNotes .base board (kanban + calendar). "
+                "Required: --name. Optional: --assignee --project "
+                "--group-by status|assignee|priority --swimlane assignee|priority. "
+                "A board file the user customized (pawn marker removed) is left alone. "
+                "Open the .base file in Obsidian."
+            ),
+        ),
     }

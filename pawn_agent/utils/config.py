@@ -290,6 +290,36 @@ class CoworkerAutonomyConfig(BaseModel):
     auto_actions: list[str] = Field(default_factory=lambda: ["research"])
 
 
+class TaskNotesConfig(BaseModel):
+    """``tasknotes:`` — TaskNotes notes, pick-lists, and boards.
+
+    Empty directory fields resolve under ``vault.agent_root`` as
+    ``TaskNotes/Tasks``, ``TaskNotes/Views``, ``TaskNotes/Projects``, and
+    ``TaskNotes/Proposals``. Those paths must stay inside the agent root.
+
+    ``external_tasks_dir`` is read-only. It lets list/dedup see tasks the
+    TaskNotes UI created in its own folder. Set it to ``""`` to skip that scan.
+
+    ``display_name`` is how "me" is written on a task. When it is empty, the
+    first of ``me`` or ``coworker.me`` is used, then ``Me``.
+    ``timezone`` empty means ``coworker.timezone``.
+    """
+
+    tasks_dir: str = ""
+    views_dir: str = ""
+    projects_dir: str = ""
+    proposals_dir: str = ""
+    external_tasks_dir: str = "TaskNotes/Tasks"
+    ident_tag: str = "task"
+    default_status: str = "open"
+    default_priority: str = "normal"
+    timezone: str = ""
+    display_name: str = ""
+    me: list[str] = Field(default_factory=list)
+    week_starts_on: int = 1
+    max_items: int = 40
+
+
 class CoworkerNotifyConfig(BaseModel):
     """``coworker.notify:`` — optional extra push transport (ntfy)."""
 
@@ -379,6 +409,7 @@ class AgentConfig(PawnConfig):
     matrix_bot: MatrixBotConfig = Field(default_factory=MatrixBotConfig)
     vault_watcher: VaultWatcherConfig = Field(default_factory=VaultWatcherConfig)
     coworker: CoworkerConfig = Field(default_factory=CoworkerConfig)
+    tasknotes: TaskNotesConfig = Field(default_factory=TaskNotesConfig)
 
     # ── Flat property aliases (old flat-field names used throughout pawn_agent) ─
 
