@@ -308,14 +308,14 @@ body:not(.is-mobile) .mod-left-split .pawn-composer {
   display: inline-flex;
   align-items: center;
   gap: 2px;
-  max-width: min(100%, 14rem);
-  min-width: 5.5rem;
+  max-width: min(11rem, 46%);
+  min-width: 0;
   flex: 0 1 auto;
   margin: 0;
   padding: 2px 4px 2px 8px;
   border: none;
   border-radius: var(--radius-s);
-  background: var(--background-modifier-hover);
+  background: transparent;
   color: var(--text-muted);
   font-size: var(--font-ui-small);
   cursor: pointer;
@@ -341,14 +341,87 @@ body:not(.is-mobile) .mod-left-split .pawn-composer {
   opacity: 0.7;
 }
 
-.pawn-tune-btn {
-  max-width: none;
-  min-width: 0;
-  flex: 0 0 auto;
+.pawn-model-pop,
+.pawn-model-sub {
+  position: fixed;
+  z-index: 1000;
+  min-width: 220px;
+  padding: 4px;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--radius-m);
+  background: var(--background-primary);
+  box-shadow: var(--shadow-s);
 }
 
-.pawn-tune-btn.is-hidden {
-  display: none;
+.pawn-model-pop {
+  position: fixed;
+}
+
+.pawn-model-row,
+.pawn-model-sub-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  margin: 0;
+  padding: 6px 8px;
+  border: none;
+  border-radius: var(--radius-s);
+  background: transparent;
+  color: var(--text-normal);
+  font-size: var(--font-ui-small);
+  text-align: left;
+  cursor: pointer;
+}
+
+.pawn-model-row:hover,
+.pawn-model-row.is-open,
+.pawn-model-sub-item:hover,
+.pawn-model-sub-item.is-active {
+  background: var(--background-modifier-hover);
+}
+
+.pawn-model-row-key {
+  flex: 0 0 auto;
+  color: var(--text-muted);
+}
+
+.pawn-model-row-value {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-align: right;
+  color: var(--text-normal);
+}
+
+.pawn-model-row-chevron,
+.pawn-model-sub-check {
+  display: flex;
+  flex: 0 0 auto;
+  width: 14px;
+  height: 14px;
+  color: var(--text-muted);
+}
+
+.pawn-model-row-chevron svg,
+.pawn-model-sub-check svg,
+.pawn-model-btn-chevron svg {
+  width: 14px;
+  height: 14px;
+}
+
+.pawn-model-sub {
+  position: absolute;
+  left: calc(100% + 4px);
+  top: 4px;
+  min-width: 160px;
+}
+
+.pawn-model-sub.is-left {
+  left: auto;
+  right: calc(100% + 4px);
 }
 
 .pawn-context-bar {

@@ -2,7 +2,6 @@ import {
   Component,
   ItemView,
   MarkdownRenderer,
-  Menu,
   Notice,
   Platform,
   TFile,
@@ -81,8 +80,8 @@ export class PawnChatView extends ItemView {
   private backgroundModel = "";
   private modelButton: HTMLButtonElement | null = null;
   private modelButtonLabel: HTMLElement | null = null;
-  private reasoningButton: HTMLButtonElement | null = null;
-  private routeButton: HTMLButtonElement | null = null;
+  private modelPop: HTMLElement | null = null;
+  private modelPopCloser: (() => void) | null = null;
 
   constructor(
     leaf: WorkspaceLeaf,
@@ -151,11 +150,15 @@ export class PawnChatView extends ItemView {
     const button = this.modelButton;
     if (!label || !button) return;
     const current = this.selectedModel();
-    const text = current ? modelChipLabel(current, this.modelChoices.map((c) => c.id)) : "Model";
+    const ids = this.modelChoices.map((c) => c.id);
+    const name = current ? modelChipLabel(current, ids) : "Model";
+    const choice = this.currentChoice();
+    const effort = choice?.reasoning?.length ? REASONING_LABEL[this.effectiveReasoning()] : "";
+    const text = effort ? `${name} ${effort}` : name;
     label.setText(text);
-    button.title = current || "Model";
-    button.setAttr("aria-label", current ? `Model ${current}` : "Model");
-    this.refreshTuneButtons();
+    const route = choice?.routes?.length ? ROUTE_LABEL[this.effectiveRoute()] : "";
+    button.title = [current, effort, route].filter(Boolean).join(" · ") || "Model";
+    button.setAttr("aria-label", button.title);
   }
 
   private currentChoice(): ModelChoice | undefined {
@@ -173,58 +176,6 @@ export class PawnChatView extends ItemView {
     return stored || this.currentChoice()?.route_default || "balanced";
   }
 
-  private refreshTuneButtons(): void {
-    const choice = this.currentChoice();
-    this.paintTuneButton(
-      this.reasoningButton,
-      Boolean(choice?.reasoning?.length),
-      REASONING_LABEL[this.effectiveReasoning()] ?? "Low",
-      `Reasoning ${this.effectiveReasoning()}`,
-    );
-    this.paintTuneButton(
-      this.routeButton,
-      Boolean(choice?.routes?.length),
-      ROUTE_LABEL[this.effectiveRoute()] ?? "Balanced",
-      `Route ${this.effectiveRoute()}`,
-    );
-  }
-
-  private paintTuneButton(
-    button: HTMLButtonElement | null,
-    show: boolean,
-    text: string,
-    aria: string,
-  ): void {
-    if (!button) return;
-    button.toggleClass("is-hidden", !show);
-    const label = button.querySelector(".pawn-model-btn-label");
-    if (label) label.textContent = text;
-    button.title = aria;
-    button.setAttr("aria-label", aria);
-  }
-
-  private openTuneMenu(
-    event: MouseEvent,
-    options: string[],
-    labels: Record<string, string>,
-    current: string,
-    apply: (value: string) => void,
-  ): void {
-    const menu = new Menu();
-    for (const value of options) {
-      menu.addItem((item) => {
-        item
-          .setTitle(labels[value] ?? value)
-          .setChecked(value === current)
-          .onClick(() => {
-            apply(value);
-            this.refreshTuneButtons();
-          });
-      });
-    }
-    menu.showAtMouseEvent(event);
-  }
-
   private tuningFields(): { reasoning?: string; route?: string } {
     const choice = this.currentChoice();
     return {
@@ -233,46 +184,159 @@ export class PawnChatView extends ItemView {
     };
   }
 
-  private tuneButton(
-    row: HTMLElement,
-    aria: string,
-    onClick: (event: MouseEvent) => void,
-  ): HTMLButtonElement {
-    const button = row.createEl("button", {
-      cls: "pawn-model-btn pawn-tune-btn is-hidden",
-      attr: { type: "button", "aria-haspopup": "listbox", "aria-label": aria },
-    });
-    button.createSpan({ cls: "pawn-model-btn-label", text: aria });
-    const chevron = button.createSpan({ cls: "pawn-model-btn-chevron" });
-    setIcon(chevron, "chevron-down");
-    button.onclick = (event) => onClick(event);
-    return button;
+  private closeModelPop(): void {
+    this.modelPopCloser?.();
+    this.modelPopCloser = null;
+    this.modelPop?.remove();
+    this.modelPop = null;
   }
 
-  private openModelMenu(event: MouseEvent): void {
-    const menu = new Menu();
-    const current = this.selectedModel();
-    const ids = this.modelChoices.map((c) => c.id);
-    if (!ids.length) {
-      menu.addItem((item) => item.setTitle("No models configured").setDisabled(true));
+  private openModelPop(): void {
+    const anchor = this.modelButton;
+    if (!anchor) return;
+    if (this.modelPop) {
+      this.closeModelPop();
+      return;
     }
-    for (const id of ids) {
-      menu.addItem((item) => {
-        item
-          .setTitle(modelMenuLabel(id))
-          .setChecked(id === current)
-          .onClick(() => {
-            this.plugin.conversations.setModel(this.conversationId, id);
+    const pop = document.body.createDiv({ cls: "pawn-model-pop" });
+    this.modelPop = pop;
+    const choice = this.currentChoice();
+    const ids = this.modelChoices.map((c) => c.id);
+    const current = this.selectedModel();
+    this.addPopRow(pop, "Model", current ? modelChipLabel(current, ids) : "None", () => {
+      this.openSubmenu(
+        pop,
+        ids.length
+          ? ids.map((id) => ({ value: id, label: modelMenuLabel(id) }))
+          : [{ value: "", label: "No models configured", disabled: true }],
+        current,
+        (id) => {
+          if (!id) return;
+          this.plugin.conversations.setModel(this.conversationId, id);
+          this.refreshModelButton();
+          this.closeModelPop();
+        },
+      );
+    });
+    if (choice?.reasoning?.length) {
+      const effort = this.effectiveReasoning();
+      this.addPopRow(pop, "Effort", REASONING_LABEL[effort] ?? effort, () => {
+        this.openSubmenu(
+          pop,
+          (choice.reasoning ?? []).map((value) => ({
+            value,
+            label: REASONING_LABEL[value] ?? value,
+          })),
+          effort,
+          (value) => {
+            this.plugin.conversations.setTuning(this.conversationId, { reasoning: value });
             this.refreshModelButton();
-          });
+            this.closeModelPop();
+          },
+        );
       });
     }
-    menu.showAtMouseEvent(event);
+    if (choice?.routes?.length) {
+      const route = this.effectiveRoute();
+      this.addPopRow(pop, "Route", ROUTE_LABEL[route] ?? route, () => {
+        this.openSubmenu(
+          pop,
+          (choice.routes ?? []).map((value) => ({
+            value,
+            label: ROUTE_LABEL[value] ?? value,
+          })),
+          route,
+          (value) => {
+            this.plugin.conversations.setTuning(this.conversationId, { route: value });
+            this.refreshModelButton();
+            this.closeModelPop();
+          },
+        );
+      });
+    }
+
+    const rect = anchor.getBoundingClientRect();
+    pop.style.left = `${Math.max(8, Math.min(rect.left, window.innerWidth - 248))}px`;
+    pop.style.top = "0px";
+    window.requestAnimationFrame(() => {
+      if (this.modelPop !== pop) return;
+      const top = Math.max(8, rect.top - pop.offsetHeight - 6);
+      pop.style.top = `${top}px`;
+    });
+
+    const onDown = (ev: MouseEvent) => {
+      const target = ev.target;
+      if (!(target instanceof Node)) return;
+      if (pop.contains(target) || anchor.contains(target)) return;
+      this.closeModelPop();
+    };
+    const onKey = (ev: KeyboardEvent) => {
+      if (ev.key === "Escape") this.closeModelPop();
+    };
+    window.setTimeout(() => {
+      document.addEventListener("mousedown", onDown, true);
+      document.addEventListener("keydown", onKey);
+    }, 0);
+    this.modelPopCloser = () => {
+      document.removeEventListener("mousedown", onDown, true);
+      document.removeEventListener("keydown", onKey);
+    };
+  }
+
+  private addPopRow(pop: HTMLElement, key: string, value: string, onOpen: () => void): void {
+    const row = pop.createEl("button", {
+      cls: "pawn-model-row",
+      attr: { type: "button" },
+    });
+    row.createSpan({ cls: "pawn-model-row-key", text: key });
+    row.createSpan({ cls: "pawn-model-row-value", text: value });
+    const chevron = row.createSpan({ cls: "pawn-model-row-chevron" });
+    setIcon(chevron, "chevron-right");
+    row.onclick = (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      pop.querySelectorAll(".pawn-model-row.is-open").forEach((el) => el.removeClass("is-open"));
+      row.addClass("is-open");
+      onOpen();
+    };
+  }
+
+  private openSubmenu(
+    pop: HTMLElement,
+    options: { value: string; label: string; disabled?: boolean }[],
+    current: string,
+    apply: (value: string) => void,
+  ): void {
+    pop.querySelector(".pawn-model-sub")?.remove();
+    const sub = pop.createDiv({ cls: "pawn-model-sub" });
+    for (const option of options) {
+      const item = sub.createEl("button", {
+        cls: "pawn-model-sub-item" + (option.value === current ? " is-active" : ""),
+        attr: { type: "button" },
+      });
+      if (option.disabled) item.disabled = true;
+      item.createSpan({ text: option.label });
+      if (option.value === current) {
+        const mark = item.createSpan({ cls: "pawn-model-sub-check" });
+        setIcon(mark, "check");
+      }
+      item.onclick = (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        if (option.disabled) return;
+        apply(option.value);
+      };
+    }
+    const row = pop.querySelector(".pawn-model-row.is-open");
+    if (row instanceof HTMLElement) sub.style.top = `${row.offsetTop}px`;
+    const overflow = pop.getBoundingClientRect().right + sub.offsetWidth + 12 > window.innerWidth;
+    sub.toggleClass("is-left", overflow);
   }
 
   async onClose(): Promise<void> {
     this.unsubscribeInbox?.();
     this.unsubscribeJobs?.();
+    this.closeModelPop();
     this.pending?.abort.abort();
     this.clearKeyboardInset();
     this.containerEl.empty();
@@ -788,6 +852,18 @@ export class PawnChatView extends ItemView {
     bgLabel.appendText(" Background");
     bgLabel.setAttr("aria-label", "Run as a background job; the result shows up here and in Jobs");
 
+    const modelButton = row.createEl("button", {
+      cls: "pawn-model-btn",
+      attr: { type: "button", "aria-haspopup": "dialog" },
+    });
+    const modelLabel = modelButton.createSpan({ cls: "pawn-model-btn-label", text: "Model" });
+    const chevron = modelButton.createSpan({ cls: "pawn-model-btn-chevron" });
+    setIcon(chevron, "chevron-down");
+    this.modelButton = modelButton;
+    this.modelButtonLabel = modelLabel;
+    this.refreshModelButton();
+    modelButton.onclick = () => this.openModelPop();
+
     row.createDiv({ cls: "pawn-spacer" });
     const attach = row.createEl("button", {
       cls: "clickable-icon pawn-attach",
@@ -810,41 +886,6 @@ export class PawnChatView extends ItemView {
       const send = row.createEl("button", { text: "Send", cls: "mod-cta pawn-send" });
       send.onclick = () => void this.sendFromComposer();
     }
-
-    const tunes = wrap.createDiv({ cls: "pawn-composer-row pawn-composer-tunes" });
-    const modelButton = tunes.createEl("button", {
-      cls: "pawn-model-btn",
-      attr: { type: "button", "aria-haspopup": "listbox" },
-    });
-    const modelLabel = modelButton.createSpan({ cls: "pawn-model-btn-label", text: "Model" });
-    const chevron = modelButton.createSpan({ cls: "pawn-model-btn-chevron" });
-    setIcon(chevron, "chevron-down");
-    this.modelButton = modelButton;
-    this.modelButtonLabel = modelLabel;
-    this.refreshModelButton();
-    modelButton.onclick = (event) => this.openModelMenu(event);
-
-    this.reasoningButton = this.tuneButton(tunes, "Reasoning", (event) => {
-      const choice = this.currentChoice();
-      this.openTuneMenu(
-        event,
-        choice?.reasoning ?? [],
-        REASONING_LABEL,
-        this.effectiveReasoning(),
-        (value) => this.plugin.conversations.setTuning(this.conversationId, { reasoning: value }),
-      );
-    });
-    this.routeButton = this.tuneButton(tunes, "Route", (event) => {
-      const choice = this.currentChoice();
-      this.openTuneMenu(
-        event,
-        choice?.routes ?? [],
-        ROUTE_LABEL,
-        this.effectiveRoute(),
-        (value) => this.plugin.conversations.setTuning(this.conversationId, { route: value }),
-      );
-    });
-    this.refreshTuneButtons();
   }
 
   private renderComposerBanner(): void {

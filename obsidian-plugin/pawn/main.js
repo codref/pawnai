@@ -1954,8 +1954,8 @@ var PawnChatView = class extends import_obsidian11.ItemView {
     this.backgroundModel = "";
     this.modelButton = null;
     this.modelButtonLabel = null;
-    this.reasoningButton = null;
-    this.routeButton = null;
+    this.modelPop = null;
+    this.modelPopCloser = null;
     // ── rendering ────────────────────────────────────────────────────────────
     this.tabsEl = null;
     this.renderScope = null;
@@ -2013,16 +2013,21 @@ var PawnChatView = class extends import_obsidian11.ItemView {
     return stored || this.backgroundModel || ((_a = this.modelChoices[0]) == null ? void 0 : _a.id) || "";
   }
   refreshModelButton() {
+    var _a, _b;
     const label = this.modelButtonLabel;
     const button = this.modelButton;
     if (!label || !button)
       return;
     const current = this.selectedModel();
-    const text = current ? modelChipLabel(current, this.modelChoices.map((c) => c.id)) : "Model";
+    const ids = this.modelChoices.map((c) => c.id);
+    const name = current ? modelChipLabel(current, ids) : "Model";
+    const choice = this.currentChoice();
+    const effort = ((_a = choice == null ? void 0 : choice.reasoning) == null ? void 0 : _a.length) ? REASONING_LABEL[this.effectiveReasoning()] : "";
+    const text = effort ? `${name} ${effort}` : name;
     label.setText(text);
-    button.title = current || "Model";
-    button.setAttr("aria-label", current ? `Model ${current}` : "Model");
-    this.refreshTuneButtons();
+    const route = ((_b = choice == null ? void 0 : choice.routes) == null ? void 0 : _b.length) ? ROUTE_LABEL[this.effectiveRoute()] : "";
+    button.title = [current, effort, route].filter(Boolean).join(" \xB7 ") || "Model";
+    button.setAttr("aria-label", button.title);
   }
   currentChoice() {
     const id = this.selectedModel();
@@ -2038,45 +2043,6 @@ var PawnChatView = class extends import_obsidian11.ItemView {
     const stored = this.plugin.conversations.get(this.conversationId).route;
     return stored || ((_a = this.currentChoice()) == null ? void 0 : _a.route_default) || "balanced";
   }
-  refreshTuneButtons() {
-    var _a, _b, _c, _d;
-    const choice = this.currentChoice();
-    this.paintTuneButton(
-      this.reasoningButton,
-      Boolean((_a = choice == null ? void 0 : choice.reasoning) == null ? void 0 : _a.length),
-      (_b = REASONING_LABEL[this.effectiveReasoning()]) != null ? _b : "Low",
-      `Reasoning ${this.effectiveReasoning()}`
-    );
-    this.paintTuneButton(
-      this.routeButton,
-      Boolean((_c = choice == null ? void 0 : choice.routes) == null ? void 0 : _c.length),
-      (_d = ROUTE_LABEL[this.effectiveRoute()]) != null ? _d : "Balanced",
-      `Route ${this.effectiveRoute()}`
-    );
-  }
-  paintTuneButton(button, show, text, aria) {
-    if (!button)
-      return;
-    button.toggleClass("is-hidden", !show);
-    const label = button.querySelector(".pawn-model-btn-label");
-    if (label)
-      label.textContent = text;
-    button.title = aria;
-    button.setAttr("aria-label", aria);
-  }
-  openTuneMenu(event, options, labels, current, apply) {
-    const menu = new import_obsidian11.Menu();
-    for (const value of options) {
-      menu.addItem((item) => {
-        var _a;
-        item.setTitle((_a = labels[value]) != null ? _a : value).setChecked(value === current).onClick(() => {
-          apply(value);
-          this.refreshTuneButtons();
-        });
-      });
-    }
-    menu.showAtMouseEvent(event);
-  }
   tuningFields() {
     var _a, _b;
     const choice = this.currentChoice();
@@ -2085,38 +2051,167 @@ var PawnChatView = class extends import_obsidian11.ItemView {
       route: ((_b = choice == null ? void 0 : choice.routes) == null ? void 0 : _b.length) ? this.effectiveRoute() : void 0
     };
   }
-  tuneButton(row, aria, onClick) {
-    const button = row.createEl("button", {
-      cls: "pawn-model-btn pawn-tune-btn is-hidden",
-      attr: { type: "button", "aria-haspopup": "listbox", "aria-label": aria }
-    });
-    button.createSpan({ cls: "pawn-model-btn-label", text: aria });
-    const chevron = button.createSpan({ cls: "pawn-model-btn-chevron" });
-    (0, import_obsidian11.setIcon)(chevron, "chevron-down");
-    button.onclick = (event) => onClick(event);
-    return button;
+  closeModelPop() {
+    var _a, _b;
+    (_a = this.modelPopCloser) == null ? void 0 : _a.call(this);
+    this.modelPopCloser = null;
+    (_b = this.modelPop) == null ? void 0 : _b.remove();
+    this.modelPop = null;
   }
-  openModelMenu(event) {
-    const menu = new import_obsidian11.Menu();
-    const current = this.selectedModel();
-    const ids = this.modelChoices.map((c) => c.id);
-    if (!ids.length) {
-      menu.addItem((item) => item.setTitle("No models configured").setDisabled(true));
+  openModelPop() {
+    var _a, _b, _c, _d;
+    const anchor = this.modelButton;
+    if (!anchor)
+      return;
+    if (this.modelPop) {
+      this.closeModelPop();
+      return;
     }
-    for (const id of ids) {
-      menu.addItem((item) => {
-        item.setTitle(modelMenuLabel(id)).setChecked(id === current).onClick(() => {
+    const pop = document.body.createDiv({ cls: "pawn-model-pop" });
+    this.modelPop = pop;
+    const choice = this.currentChoice();
+    const ids = this.modelChoices.map((c) => c.id);
+    const current = this.selectedModel();
+    this.addPopRow(pop, "Model", current ? modelChipLabel(current, ids) : "None", () => {
+      this.openSubmenu(
+        pop,
+        ids.length ? ids.map((id) => ({ value: id, label: modelMenuLabel(id) })) : [{ value: "", label: "No models configured", disabled: true }],
+        current,
+        (id) => {
+          if (!id)
+            return;
           this.plugin.conversations.setModel(this.conversationId, id);
           this.refreshModelButton();
-        });
+          this.closeModelPop();
+        }
+      );
+    });
+    if ((_a = choice == null ? void 0 : choice.reasoning) == null ? void 0 : _a.length) {
+      const effort = this.effectiveReasoning();
+      this.addPopRow(pop, "Effort", (_b = REASONING_LABEL[effort]) != null ? _b : effort, () => {
+        var _a2;
+        this.openSubmenu(
+          pop,
+          ((_a2 = choice.reasoning) != null ? _a2 : []).map((value) => {
+            var _a3;
+            return {
+              value,
+              label: (_a3 = REASONING_LABEL[value]) != null ? _a3 : value
+            };
+          }),
+          effort,
+          (value) => {
+            this.plugin.conversations.setTuning(this.conversationId, { reasoning: value });
+            this.refreshModelButton();
+            this.closeModelPop();
+          }
+        );
       });
     }
-    menu.showAtMouseEvent(event);
+    if ((_c = choice == null ? void 0 : choice.routes) == null ? void 0 : _c.length) {
+      const route = this.effectiveRoute();
+      this.addPopRow(pop, "Route", (_d = ROUTE_LABEL[route]) != null ? _d : route, () => {
+        var _a2;
+        this.openSubmenu(
+          pop,
+          ((_a2 = choice.routes) != null ? _a2 : []).map((value) => {
+            var _a3;
+            return {
+              value,
+              label: (_a3 = ROUTE_LABEL[value]) != null ? _a3 : value
+            };
+          }),
+          route,
+          (value) => {
+            this.plugin.conversations.setTuning(this.conversationId, { route: value });
+            this.refreshModelButton();
+            this.closeModelPop();
+          }
+        );
+      });
+    }
+    const rect = anchor.getBoundingClientRect();
+    pop.style.left = `${Math.max(8, Math.min(rect.left, window.innerWidth - 248))}px`;
+    pop.style.top = "0px";
+    window.requestAnimationFrame(() => {
+      if (this.modelPop !== pop)
+        return;
+      const top = Math.max(8, rect.top - pop.offsetHeight - 6);
+      pop.style.top = `${top}px`;
+    });
+    const onDown = (ev) => {
+      const target = ev.target;
+      if (!(target instanceof Node))
+        return;
+      if (pop.contains(target) || anchor.contains(target))
+        return;
+      this.closeModelPop();
+    };
+    const onKey = (ev) => {
+      if (ev.key === "Escape")
+        this.closeModelPop();
+    };
+    window.setTimeout(() => {
+      document.addEventListener("mousedown", onDown, true);
+      document.addEventListener("keydown", onKey);
+    }, 0);
+    this.modelPopCloser = () => {
+      document.removeEventListener("mousedown", onDown, true);
+      document.removeEventListener("keydown", onKey);
+    };
+  }
+  addPopRow(pop, key, value, onOpen) {
+    const row = pop.createEl("button", {
+      cls: "pawn-model-row",
+      attr: { type: "button" }
+    });
+    row.createSpan({ cls: "pawn-model-row-key", text: key });
+    row.createSpan({ cls: "pawn-model-row-value", text: value });
+    const chevron = row.createSpan({ cls: "pawn-model-row-chevron" });
+    (0, import_obsidian11.setIcon)(chevron, "chevron-right");
+    row.onclick = (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      pop.querySelectorAll(".pawn-model-row.is-open").forEach((el) => el.removeClass("is-open"));
+      row.addClass("is-open");
+      onOpen();
+    };
+  }
+  openSubmenu(pop, options, current, apply) {
+    var _a;
+    (_a = pop.querySelector(".pawn-model-sub")) == null ? void 0 : _a.remove();
+    const sub = pop.createDiv({ cls: "pawn-model-sub" });
+    for (const option of options) {
+      const item = sub.createEl("button", {
+        cls: "pawn-model-sub-item" + (option.value === current ? " is-active" : ""),
+        attr: { type: "button" }
+      });
+      if (option.disabled)
+        item.disabled = true;
+      item.createSpan({ text: option.label });
+      if (option.value === current) {
+        const mark = item.createSpan({ cls: "pawn-model-sub-check" });
+        (0, import_obsidian11.setIcon)(mark, "check");
+      }
+      item.onclick = (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        if (option.disabled)
+          return;
+        apply(option.value);
+      };
+    }
+    const row = pop.querySelector(".pawn-model-row.is-open");
+    if (row instanceof HTMLElement)
+      sub.style.top = `${row.offsetTop}px`;
+    const overflow = pop.getBoundingClientRect().right + sub.offsetWidth + 12 > window.innerWidth;
+    sub.toggleClass("is-left", overflow);
   }
   async onClose() {
     var _a, _b, _c;
     (_a = this.unsubscribeInbox) == null ? void 0 : _a.call(this);
     (_b = this.unsubscribeJobs) == null ? void 0 : _b.call(this);
+    this.closeModelPop();
     (_c = this.pending) == null ? void 0 : _c.abort.abort();
     this.clearKeyboardInset();
     this.containerEl.empty();
@@ -2639,6 +2734,17 @@ ${(_a = e.stack) != null ? _a : ""}` : String(e)
     bg.onchange = () => this.background = bg.checked;
     bgLabel.appendText(" Background");
     bgLabel.setAttr("aria-label", "Run as a background job; the result shows up here and in Jobs");
+    const modelButton = row.createEl("button", {
+      cls: "pawn-model-btn",
+      attr: { type: "button", "aria-haspopup": "dialog" }
+    });
+    const modelLabel = modelButton.createSpan({ cls: "pawn-model-btn-label", text: "Model" });
+    const chevron = modelButton.createSpan({ cls: "pawn-model-btn-chevron" });
+    (0, import_obsidian11.setIcon)(chevron, "chevron-down");
+    this.modelButton = modelButton;
+    this.modelButtonLabel = modelLabel;
+    this.refreshModelButton();
+    modelButton.onclick = () => this.openModelPop();
     row.createDiv({ cls: "pawn-spacer" });
     const attach = row.createEl("button", {
       cls: "clickable-icon pawn-attach",
@@ -2665,41 +2771,6 @@ ${(_a = e.stack) != null ? _a : ""}` : String(e)
       const send = row.createEl("button", { text: "Send", cls: "mod-cta pawn-send" });
       send.onclick = () => void this.sendFromComposer();
     }
-    const tunes = wrap.createDiv({ cls: "pawn-composer-row pawn-composer-tunes" });
-    const modelButton = tunes.createEl("button", {
-      cls: "pawn-model-btn",
-      attr: { type: "button", "aria-haspopup": "listbox" }
-    });
-    const modelLabel = modelButton.createSpan({ cls: "pawn-model-btn-label", text: "Model" });
-    const chevron = modelButton.createSpan({ cls: "pawn-model-btn-chevron" });
-    (0, import_obsidian11.setIcon)(chevron, "chevron-down");
-    this.modelButton = modelButton;
-    this.modelButtonLabel = modelLabel;
-    this.refreshModelButton();
-    modelButton.onclick = (event) => this.openModelMenu(event);
-    this.reasoningButton = this.tuneButton(tunes, "Reasoning", (event) => {
-      var _a;
-      const choice = this.currentChoice();
-      this.openTuneMenu(
-        event,
-        (_a = choice == null ? void 0 : choice.reasoning) != null ? _a : [],
-        REASONING_LABEL,
-        this.effectiveReasoning(),
-        (value) => this.plugin.conversations.setTuning(this.conversationId, { reasoning: value })
-      );
-    });
-    this.routeButton = this.tuneButton(tunes, "Route", (event) => {
-      var _a;
-      const choice = this.currentChoice();
-      this.openTuneMenu(
-        event,
-        (_a = choice == null ? void 0 : choice.routes) != null ? _a : [],
-        ROUTE_LABEL,
-        this.effectiveRoute(),
-        (value) => this.plugin.conversations.setTuning(this.conversationId, { route: value })
-      );
-    });
-    this.refreshTuneButtons();
   }
   renderComposerBanner() {
     const el = this.switchBannerEl;
