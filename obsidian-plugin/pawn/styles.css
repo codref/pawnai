@@ -275,16 +275,30 @@ body:not(.is-mobile) .mod-left-split .pawn-composer {
   display: flex;
   align-items: center;
   gap: var(--size-4-2);
+  min-width: 0;
+}
+
+.pawn-composer-tunes {
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.pawn-send,
+.pawn-attach {
+  flex: 0 0 auto;
 }
 
 .pawn-spacer {
-  flex: 1;
+  flex: 1 1 auto;
+  min-width: 0;
 }
 
 .pawn-bg-toggle {
   display: flex;
   align-items: center;
   gap: 4px;
+  flex: 0 1 auto;
+  min-width: 0;
   font-size: var(--font-ui-small);
   color: var(--text-muted);
   cursor: pointer;
@@ -294,8 +308,8 @@ body:not(.is-mobile) .mod-left-split .pawn-composer {
   display: inline-flex;
   align-items: center;
   gap: 2px;
-  max-width: 8.5rem;
-  min-width: 0;
+  max-width: min(100%, 14rem);
+  min-width: 5.5rem;
   flex: 0 1 auto;
   margin: 0;
   padding: 2px 4px 2px 8px;
@@ -329,6 +343,7 @@ body:not(.is-mobile) .mod-left-split .pawn-composer {
 
 .pawn-tune-btn {
   max-width: none;
+  min-width: 0;
   flex: 0 0 auto;
 }
 

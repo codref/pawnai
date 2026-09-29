@@ -788,42 +788,9 @@ export class PawnChatView extends ItemView {
     bgLabel.appendText(" Background");
     bgLabel.setAttr("aria-label", "Run as a background job; the result shows up here and in Jobs");
 
-    const modelButton = row.createEl("button", {
-      cls: "pawn-model-btn",
-      attr: { type: "button", "aria-haspopup": "listbox" },
-    });
-    const modelLabel = modelButton.createSpan({ cls: "pawn-model-btn-label", text: "Model" });
-    const chevron = modelButton.createSpan({ cls: "pawn-model-btn-chevron" });
-    setIcon(chevron, "chevron-down");
-    this.modelButton = modelButton;
-    this.modelButtonLabel = modelLabel;
-    this.refreshModelButton();
-    modelButton.onclick = (event) => this.openModelMenu(event);
-
-    this.reasoningButton = this.tuneButton(row, "Reasoning", (event) => {
-      const choice = this.currentChoice();
-      this.openTuneMenu(
-        event,
-        choice?.reasoning ?? [],
-        REASONING_LABEL,
-        this.effectiveReasoning(),
-        (value) => this.plugin.conversations.setTuning(this.conversationId, { reasoning: value }),
-      );
-    });
-    this.routeButton = this.tuneButton(row, "Route", (event) => {
-      const choice = this.currentChoice();
-      this.openTuneMenu(
-        event,
-        choice?.routes ?? [],
-        ROUTE_LABEL,
-        this.effectiveRoute(),
-        (value) => this.plugin.conversations.setTuning(this.conversationId, { route: value }),
-      );
-    });
-    this.refreshTuneButtons();
-
+    row.createDiv({ cls: "pawn-spacer" });
     const attach = row.createEl("button", {
-      cls: "clickable-icon",
+      cls: "clickable-icon pawn-attach",
       attr: { "aria-label": "Upload a file to Pawn" },
     });
     setIcon(attach, "paperclip");
@@ -836,14 +803,48 @@ export class PawnChatView extends ItemView {
       if (this.fileInput) this.fileInput.value = "";
     };
 
-    row.createDiv({ cls: "pawn-spacer" });
     if (this.pending) {
-      const stop = row.createEl("button", { text: "Stop", cls: "mod-warning" });
+      const stop = row.createEl("button", { text: "Stop", cls: "mod-warning pawn-send" });
       stop.onclick = () => this.stop();
     } else {
-      const send = row.createEl("button", { text: "Send", cls: "mod-cta" });
+      const send = row.createEl("button", { text: "Send", cls: "mod-cta pawn-send" });
       send.onclick = () => void this.sendFromComposer();
     }
+
+    const tunes = wrap.createDiv({ cls: "pawn-composer-row pawn-composer-tunes" });
+    const modelButton = tunes.createEl("button", {
+      cls: "pawn-model-btn",
+      attr: { type: "button", "aria-haspopup": "listbox" },
+    });
+    const modelLabel = modelButton.createSpan({ cls: "pawn-model-btn-label", text: "Model" });
+    const chevron = modelButton.createSpan({ cls: "pawn-model-btn-chevron" });
+    setIcon(chevron, "chevron-down");
+    this.modelButton = modelButton;
+    this.modelButtonLabel = modelLabel;
+    this.refreshModelButton();
+    modelButton.onclick = (event) => this.openModelMenu(event);
+
+    this.reasoningButton = this.tuneButton(tunes, "Reasoning", (event) => {
+      const choice = this.currentChoice();
+      this.openTuneMenu(
+        event,
+        choice?.reasoning ?? [],
+        REASONING_LABEL,
+        this.effectiveReasoning(),
+        (value) => this.plugin.conversations.setTuning(this.conversationId, { reasoning: value }),
+      );
+    });
+    this.routeButton = this.tuneButton(tunes, "Route", (event) => {
+      const choice = this.currentChoice();
+      this.openTuneMenu(
+        event,
+        choice?.routes ?? [],
+        ROUTE_LABEL,
+        this.effectiveRoute(),
+        (value) => this.plugin.conversations.setTuning(this.conversationId, { route: value }),
+      );
+    });
+    this.refreshTuneButtons();
   }
 
   private renderComposerBanner(): void {
