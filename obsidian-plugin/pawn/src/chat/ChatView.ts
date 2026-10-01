@@ -15,7 +15,8 @@ import { renderInbox } from "../inbox/InboxView";
 import { JobFilter, renderJobCard, renderJobsList } from "../jobs/JobsView";
 import type PawnPlugin from "../main";
 import { ContextBar, ContextSnapshot, resolveDroppedNote } from "./ContextBar";
-import { bytesToBase64, isImageName, mimeForName, noteImageTargets } from "./noteImages";
+import { exportExcalidrawImage, fileIsExcalidraw } from "./excalidraw";
+import { bytesToBase64, isImageName, mimeForName, noteExcalidrawTargets, noteImageTargets } from "./noteImages";
 import { renderMessageActions, renderUserMessageActions } from "./MessageActions";
 import {
   ChatMessage,
@@ -67,6 +68,7 @@ export class PawnChatView extends ItemView {
   private unsubscribeJobs: (() => void) | null = null;
   private unsubscribeInbox: (() => void) | null = null;
   private fileInput: HTMLInputElement | null = null;
+  private rereadButton: HTMLButtonElement | null = null;
   private keyboardFrame = 0;
   private keyboardTimer = 0;
   private keyboardInsetApplied = false;
@@ -165,6 +167,7 @@ export class PawnChatView extends ItemView {
     const vision = choice?.vision ? "Vision" : "";
     button.title = [current, effort, route, vision].filter(Boolean).join(" · ") || "Model";
     button.setAttr("aria-label", button.title);
+    this.paintRereadButton();
   }
 
   private currentChoice(): ModelChoice | undefined {
@@ -875,6 +878,18 @@ export class PawnChatView extends ItemView {
     modelButton.onclick = () => this.openModelPop();
 
     row.createDiv({ cls: "pawn-spacer" });
+    const reread = row.createEl("button", {
+      cls: "clickable-icon pawn-attach pawn-reread-btn",
+      attr: {
+        type: "button",
+        "aria-label": "Read images in attached notes again",
+        "aria-pressed": "false",
+      },
+    });
+    setIcon(reread, "refresh-cw");
+    this.rereadButton = reread;
+    reread.onclick = () => this.toggleReread();
+    this.paintRereadButton();
     const attach = row.createEl("button", {
       cls: "clickable-icon pawn-attach",
       attr: { "aria-label": "Upload a file to Pawn" },
@@ -1164,36 +1179,50 @@ export class PawnChatView extends ItemView {
     return Boolean(this.currentChoice()?.vision);
   }
 
+  private toggleReread(): void {
+    if (!this.modelIsVision()) {
+      new Notice("This model can't see images. Pick a vision model in the model menu.");
+      return;
+    }
+    this.rereadImages = !this.rereadImages;
+    this.paintRereadButton();
+  }
+
   private armReread(): void {
     if (!this.modelIsVision()) {
       new Notice("This model can't see images. Pick a vision model in the model menu.");
       return;
     }
     this.rereadImages = true;
-    new Notice("Images on the next message will be read again.");
-    this.syncImageChips();
+    this.paintRereadButton();
+  }
+
+  private paintRereadButton(): void {
+    const button = this.rereadButton;
+    if (!button) return;
+    const vision = this.modelIsVision();
+    button.toggleClass("is-hidden", !vision);
+    button.toggleClass("is-active", vision && this.rereadImages);
+    button.setAttr("aria-pressed", this.rereadImages ? "true" : "false");
+    button.setAttr(
+      "aria-label",
+      this.rereadImages
+        ? "Images on the next message will be read again"
+        : "Read images in attached notes again",
+    );
   }
 
   private syncImageChips(): void {
-    const chips = this.pendingImages.map((image, index) => ({
-      label: image.filename,
-      title: image.filename,
-      onRemove: () => {
-        this.pendingImages.splice(index, 1);
-        this.syncImageChips();
-      },
-    }));
-    if (this.rereadImages) {
-      chips.push({
-        label: "Re-read",
-        title: "Images on the next message will be read again",
+    this.context.setImageChips(
+      this.pendingImages.map((image, index) => ({
+        label: image.filename,
+        title: image.filename,
         onRemove: () => {
-          this.rereadImages = false;
+          this.pendingImages.splice(index, 1);
           this.syncImageChips();
         },
-      });
-    }
-    this.context.setImageChips(chips);
+      })),
+    );
   }
 
   private async acceptDroppedFiles(files: File[]): Promise<void> {
@@ -1280,8 +1309,17 @@ export class PawnChatView extends ItemView {
   private async contextImages(files: TFile[]): Promise<ChatImage[]> {
     const out: ChatImage[] = [];
     const seen = new Set<string>();
+    const diagrams: { file: TFile; fragment: string }[] = [];
+    const seenDiagrams = new Set<string>();
     const maxBytes = 4 * 1024 * 1024;
+    const queueDiagram = (file: TFile, fragment: string) => {
+      const key = `${file.path}\0${fragment}`;
+      if (seenDiagrams.has(key)) return;
+      seenDiagrams.add(key);
+      diagrams.push({ file, fragment });
+    };
     for (const file of files) {
+      if (fileIsExcalidraw(this.app, file)) queueDiagram(file, "");
       let body = "";
       try {
         body = await this.app.vault.cachedRead(file);
@@ -1289,7 +1327,7 @@ export class PawnChatView extends ItemView {
         continue;
       }
       for (const target of noteImageTargets(body)) {
-        if (out.length >= 12) return out;
+        if (out.length >= 12) break;
         const dest =
           this.app.metadataCache.getFirstLinkpathDest(target, file.path) ??
           this.app.vault.getAbstractFileByPath(target);
@@ -1307,6 +1345,37 @@ export class PawnChatView extends ItemView {
           role: "context",
         });
       }
+      for (const embed of noteExcalidrawTargets(body)) {
+        const dest =
+          this.app.metadataCache.getFirstLinkpathDest(embed.target, file.path) ??
+          this.app.vault.getAbstractFileByPath(embed.target);
+        if (!(dest instanceof TFile) || !fileIsExcalidraw(this.app, dest)) continue;
+        queueDiagram(dest, embed.fragment);
+      }
+    }
+    let missing = false;
+    let failed = false;
+    for (const item of diagrams) {
+      if (out.length >= 12) break;
+      const exported = await exportExcalidrawImage(this.app, item.file, item.fragment);
+      if (exported.status === "ok") {
+        out.push({
+          filename: exported.filename,
+          media_type: "image/png",
+          data_base64: exported.dataBase64,
+          role: "context",
+        });
+        continue;
+      }
+      if (exported.status === "missing") missing = true;
+      else if (exported.status === "too-large") {
+        new Notice(`${exported.name} is larger than 4MB and was skipped.`);
+      } else if (exported.status === "failed") failed = true;
+    }
+    if (missing) {
+      new Notice("Excalidraw is not enabled, so diagrams were not included.");
+    } else if (failed) {
+      new Notice("A diagram could not be exported and was skipped.");
     }
     return out;
   }
@@ -1379,10 +1448,7 @@ export class PawnChatView extends ItemView {
       const model = this.selectedModel();
       const includeNotes = this.plugin.settings.includeNoteImages && this.modelIsVision();
       const noteFiles = [...(snap.activeNote ? [snap.activeNote] : []), ...snap.extra];
-      const contextImages =
-        includeNotes && this.plugin.settings.sendLocalNoteContent
-          ? await this.contextImages(noteFiles)
-          : [];
+      const contextImages = includeNotes ? await this.contextImages(noteFiles) : [];
       const images: ChatImage[] = [
         ...questionImages.map((image) => ({
           filename: image.filename,

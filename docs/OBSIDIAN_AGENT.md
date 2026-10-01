@@ -176,12 +176,18 @@ the release tag, BRAT, and the full feature list.
   edits); otherwise the server reads the vault.
 - When the selected model is flagged `vision: true`, dropping a png, jpeg,
   gif, or webp attaches it to the next message. Images embedded in attached
-  notes are sent too (**Include images from attached notes**, on by default).
-  Each picture is captioned once in that conversation. `/vision refresh`
-  reads them again on the next message. Other files still go to the Inbox
+  notes are sent too (**Include images from attached notes**, on by default),
+  including an Excalidraw drawing (`![[name.excalidraw]]`) and an open
+  Excalidraw note. The plugin exports the current drawing as a PNG on this
+  device, so the diagram is included even when note text is read from the
+  vault bucket. Each picture is captioned once in that conversation. A
+  changed drawing is exported and captioned again. The refresh button
+  beside the paperclip (or `/vision refresh`) reads the same bytes again
+  on the next message. Other files still go to the Inbox
   upload job. A page with several images captions up to four per message, in
   document order, and later messages pick up the ones not captioned yet. The
   model sees pixels for one of them; the others stay searchable by caption.
+  Drawings are sent after the other pictures so the model sees the diagram.
 - Replies stream: tool steps show live ("Ran note_read"), then the answer
   renders as Markdown with **Copy / Insert at cursor / Replace selection
   (diff preview) / Append to note / Save as new note**.

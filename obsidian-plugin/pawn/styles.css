@@ -288,6 +288,14 @@ body:not(.is-mobile) .mod-left-split .pawn-composer {
   flex: 0 0 auto;
 }
 
+.pawn-reread-btn.is-hidden {
+  display: none;
+}
+
+.pawn-reread-btn.is-active {
+  color: var(--text-accent);
+}
+
 .pawn-spacer {
   flex: 1 1 auto;
   min-width: 0;

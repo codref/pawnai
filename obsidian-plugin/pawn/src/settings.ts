@@ -112,8 +112,9 @@ export class PawnSettingTab extends PluginSettingTab {
     new Setting(containerEl)
       .setName("Include images from attached notes")
       .setDesc(
-        "When the selected model can see images, send pictures embedded in attached notes. " +
-          "Each picture is read once per conversation. /vision refresh reads them again.",
+        "When the selected model can see images, send pictures embedded in attached notes, " +
+          "including Excalidraw drawings. Each picture is read once per conversation. " +
+          "A changed drawing is read again. The refresh button beside the paperclip reads them again.",
       )
       .addToggle((t) =>
         t.setValue(s.includeNoteImages).onChange(async (v) => {

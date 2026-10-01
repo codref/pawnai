@@ -1936,8 +1936,14 @@ var ContextBar = class {
 // src/chat/noteImages.ts
 var IMAGE_EXT = /* @__PURE__ */ new Set(["png", "jpg", "jpeg", "gif", "webp"]);
 var WIKI_EMBED = /!\[\[([^\]|#|]+)(?:#[^\]|]*)?(?:\|[^\]]*)?\]\]/g;
+var WIKI_EXCALIDRAW = /!\[\[([^\]|#|]+)(#[^\]|]+)?(?:\|[^\]]*)?\]\]/g;
 var MD_EMBED = /!\[[^\]]*\]\(([^)]+)\)/g;
 var MD_TITLE = /\s+["'].*["']\s*$/;
+function isExcalidrawName(name) {
+  var _a, _b;
+  const base = (_b = (_a = name.split(/[/\\]/).pop()) == null ? void 0 : _a.toLowerCase()) != null ? _b : "";
+  return base.endsWith(".excalidraw") || base.endsWith(".excalidraw.md");
+}
 function isImageName(name, mediaType = "") {
   var _a, _b;
   const mime = mediaType.split(";", 1)[0].trim().toLowerCase();
@@ -1973,28 +1979,48 @@ function noteImageTargets(markdown) {
   }
   located.sort((a, b) => a.index - b.index);
   const add = (raw) => {
-    let target = raw.trim();
-    if (target.startsWith("<") && target.endsWith(">") && target.length > 2) {
-      target = target.slice(1, -1).trim();
-    }
-    target = target.replace(MD_TITLE, "").trim().replace(/^\.\//, "");
-    if (!target || /^(https?:|data:|mailto:|#)/i.test(target))
+    const target = cleanEmbedTarget(raw);
+    if (!target || !isImageName(target))
       return;
-    try {
-      target = decodeURIComponent(target);
-    } catch (e) {
-    }
-    if (!isImageName(target))
+    if (seen.has(target))
       return;
-    const key = target.replace(/\\/g, "/");
-    if (seen.has(key))
-      return;
-    seen.add(key);
-    found.push(key);
+    seen.add(target);
+    found.push(target);
   };
   for (const item of located)
     add(item.raw);
   return found;
+}
+function noteExcalidrawTargets(markdown) {
+  var _a, _b;
+  const found = [];
+  const seen = /* @__PURE__ */ new Set();
+  for (const match of markdown.matchAll(WIKI_EXCALIDRAW)) {
+    const cleaned = cleanEmbedTarget((_a = match[1]) != null ? _a : "");
+    if (!cleaned || !isExcalidrawName(cleaned))
+      continue;
+    const fragment = ((_b = match[2]) != null ? _b : "").trim();
+    const key = `${cleaned}\0${fragment}`;
+    if (seen.has(key))
+      continue;
+    seen.add(key);
+    found.push({ target: cleaned, fragment });
+  }
+  return found;
+}
+function cleanEmbedTarget(raw) {
+  let target = raw.trim();
+  if (target.startsWith("<") && target.endsWith(">") && target.length > 2) {
+    target = target.slice(1, -1).trim();
+  }
+  target = target.replace(MD_TITLE, "").trim().replace(/^\.\//, "");
+  if (!target || /^(https?:|data:|mailto:|#)/i.test(target))
+    return "";
+  try {
+    target = decodeURIComponent(target);
+  } catch (e) {
+  }
+  return target.replace(/\\/g, "/");
 }
 function bytesToBase64(data) {
   const bytes = new Uint8Array(data);
@@ -2004,6 +2030,117 @@ function bytesToBase64(data) {
     binary += String.fromCharCode(...bytes.subarray(i, i + chunk));
   }
   return btoa(binary);
+}
+
+// src/chat/excalidraw.ts
+var PLUGIN_ID = "obsidian-excalidraw-plugin";
+var MAX_BYTES = 4 * 1024 * 1024;
+var cache = /* @__PURE__ */ new Map();
+function drawingFingerprint(markdown) {
+  const at = markdown.indexOf("## Drawing");
+  const scene = at >= 0 ? markdown.slice(at) : markdown;
+  let h1 = 2166136261;
+  let h2 = 2166136261 ^ scene.length;
+  for (let i = 0; i < scene.length; i++) {
+    const code = scene.charCodeAt(i);
+    h1 = Math.imul(h1 ^ code, 16777619);
+    h2 = Math.imul(h2 ^ code, 16777619);
+  }
+  return `${h1 >>> 0}-${h2 >>> 0}`;
+}
+function exportFilename(file) {
+  const stem = file.name.replace(/\.md$/i, "");
+  return isExcalidrawName(stem) || isExcalidrawName(file.name) ? `${stem}.png` : `${file.basename}.png`;
+}
+function excalidrawHost(app) {
+  var _a, _b;
+  const host = (_b = (_a = app.plugins) == null ? void 0 : _a.plugins) == null ? void 0 : _b[PLUGIN_ID];
+  return (host == null ? void 0 : host.ea) ? host : null;
+}
+function excalidrawApi(app) {
+  var _a, _b;
+  const getAPI = (_b = (_a = excalidrawHost(app)) == null ? void 0 : _a.ea) == null ? void 0 : _b.getAPI;
+  if (!getAPI)
+    return null;
+  try {
+    return getAPI();
+  } catch (e) {
+    return null;
+  }
+}
+function fileIsExcalidraw(app, file) {
+  var _a;
+  if (isExcalidrawName(file.name))
+    return true;
+  const ea = (_a = excalidrawHost(app)) == null ? void 0 : _a.ea;
+  if (!ea)
+    return false;
+  try {
+    return ea.isExcalidrawFile(file);
+  } catch (e) {
+    return false;
+  }
+}
+async function exportExcalidrawImage(app, file, fragment = "") {
+  const api = excalidrawApi(app);
+  const name = exportFilename(file);
+  if (!api)
+    return { status: "missing" };
+  const key = `${file.path}\0${fragment}`;
+  const fingerprint = await sceneFingerprint(app, file, fragment);
+  if (fingerprint) {
+    const cached = cache.get(key);
+    if (cached && cached.fingerprint === fingerprint) {
+      return { status: "ok", filename: name, dataBase64: cached.dataBase64 };
+    }
+  }
+  const template = fragment ? `${file.path}${fragment.startsWith("#") ? fragment : `#${fragment}`}` : file.path;
+  try {
+    let encoded = await renderPng(api, template, 2);
+    if (base64ByteLength(encoded) > MAX_BYTES) {
+      encoded = await renderPng(api, template, 1);
+    }
+    if (!encoded || base64ByteLength(encoded) > MAX_BYTES) {
+      return { status: "too-large", name };
+    }
+    if (fingerprint)
+      cache.set(key, { fingerprint, dataBase64: encoded });
+    return { status: "ok", filename: name, dataBase64: encoded };
+  } catch (e) {
+    return { status: "failed", name };
+  }
+}
+async function sceneFingerprint(app, file, fragment) {
+  try {
+    const body = await app.vault.cachedRead(file);
+    return `${fragment}
+${drawingFingerprint(body)}`;
+  } catch (e) {
+    return null;
+  }
+}
+async function renderPng(api, template, scale) {
+  api.reset();
+  const data = await api.createPNGBase64(
+    template,
+    scale,
+    api.getExportSettings(true, false),
+    api.getEmbeddedFilesLoader(false),
+    "light"
+  );
+  return pngBase64(data);
+}
+function pngBase64(value) {
+  const text = (value || "").trim();
+  const comma = text.indexOf(",");
+  const payload = text.startsWith("data:") && comma >= 0 ? text.slice(comma + 1) : text;
+  return payload.replace(/\s/g, "");
+}
+function base64ByteLength(data) {
+  if (!data)
+    return 0;
+  const padding = data.endsWith("==") ? 2 : data.endsWith("=") ? 1 : 0;
+  return Math.floor(data.length * 3 / 4) - padding;
 }
 
 // src/chat/ChatView.ts
@@ -2028,6 +2165,7 @@ var PawnChatView = class extends import_obsidian11.ItemView {
     this.unsubscribeJobs = null;
     this.unsubscribeInbox = null;
     this.fileInput = null;
+    this.rereadButton = null;
     this.keyboardFrame = 0;
     this.keyboardTimer = 0;
     this.keyboardInsetApplied = false;
@@ -2121,6 +2259,7 @@ var PawnChatView = class extends import_obsidian11.ItemView {
     const vision = (choice == null ? void 0 : choice.vision) ? "Vision" : "";
     button.title = [current, effort, route, vision].filter(Boolean).join(" \xB7 ") || "Model";
     button.setAttr("aria-label", button.title);
+    this.paintRereadButton();
   }
   currentChoice() {
     const id = this.selectedModel();
@@ -2843,6 +2982,18 @@ ${(_a = e.stack) != null ? _a : ""}` : String(e)
     this.refreshModelButton();
     modelButton.onclick = () => this.openModelPop();
     row.createDiv({ cls: "pawn-spacer" });
+    const reread = row.createEl("button", {
+      cls: "clickable-icon pawn-attach pawn-reread-btn",
+      attr: {
+        type: "button",
+        "aria-label": "Read images in attached notes again",
+        "aria-pressed": "false"
+      }
+    });
+    (0, import_obsidian11.setIcon)(reread, "refresh-cw");
+    this.rereadButton = reread;
+    reread.onclick = () => this.toggleReread();
+    this.paintRereadButton();
     const attach = row.createEl("button", {
       cls: "clickable-icon pawn-attach",
       attr: { "aria-label": "Upload a file to Pawn" }
@@ -3138,35 +3289,46 @@ ${(_a = e.stack) != null ? _a : ""}` : String(e)
     var _a;
     return Boolean((_a = this.currentChoice()) == null ? void 0 : _a.vision);
   }
+  toggleReread() {
+    if (!this.modelIsVision()) {
+      new import_obsidian11.Notice("This model can't see images. Pick a vision model in the model menu.");
+      return;
+    }
+    this.rereadImages = !this.rereadImages;
+    this.paintRereadButton();
+  }
   armReread() {
     if (!this.modelIsVision()) {
       new import_obsidian11.Notice("This model can't see images. Pick a vision model in the model menu.");
       return;
     }
     this.rereadImages = true;
-    new import_obsidian11.Notice("Images on the next message will be read again.");
-    this.syncImageChips();
+    this.paintRereadButton();
+  }
+  paintRereadButton() {
+    const button = this.rereadButton;
+    if (!button)
+      return;
+    const vision = this.modelIsVision();
+    button.toggleClass("is-hidden", !vision);
+    button.toggleClass("is-active", vision && this.rereadImages);
+    button.setAttr("aria-pressed", this.rereadImages ? "true" : "false");
+    button.setAttr(
+      "aria-label",
+      this.rereadImages ? "Images on the next message will be read again" : "Read images in attached notes again"
+    );
   }
   syncImageChips() {
-    const chips = this.pendingImages.map((image, index) => ({
-      label: image.filename,
-      title: image.filename,
-      onRemove: () => {
-        this.pendingImages.splice(index, 1);
-        this.syncImageChips();
-      }
-    }));
-    if (this.rereadImages) {
-      chips.push({
-        label: "Re-read",
-        title: "Images on the next message will be read again",
+    this.context.setImageChips(
+      this.pendingImages.map((image, index) => ({
+        label: image.filename,
+        title: image.filename,
         onRemove: () => {
-          this.rereadImages = false;
+          this.pendingImages.splice(index, 1);
           this.syncImageChips();
         }
-      });
-    }
-    this.context.setImageChips(chips);
+      }))
+    );
   }
   async acceptDroppedFiles(files) {
     const images = [];
@@ -3251,11 +3413,22 @@ ${(_a = e.stack) != null ? _a : ""}` : String(e)
     await this.send(text, { background: this.background });
   }
   async contextImages(files) {
-    var _a;
+    var _a, _b;
     const out = [];
     const seen = /* @__PURE__ */ new Set();
+    const diagrams = [];
+    const seenDiagrams = /* @__PURE__ */ new Set();
     const maxBytes = 4 * 1024 * 1024;
+    const queueDiagram = (file, fragment) => {
+      const key = `${file.path}\0${fragment}`;
+      if (seenDiagrams.has(key))
+        return;
+      seenDiagrams.add(key);
+      diagrams.push({ file, fragment });
+    };
     for (const file of files) {
+      if (fileIsExcalidraw(this.app, file))
+        queueDiagram(file, "");
       let body = "";
       try {
         body = await this.app.vault.cachedRead(file);
@@ -3264,7 +3437,7 @@ ${(_a = e.stack) != null ? _a : ""}` : String(e)
       }
       for (const target of noteImageTargets(body)) {
         if (out.length >= 12)
-          return out;
+          break;
         const dest = (_a = this.app.metadataCache.getFirstLinkpathDest(target, file.path)) != null ? _a : this.app.vault.getAbstractFileByPath(target);
         if (!(dest instanceof import_obsidian11.TFile) || seen.has(dest.path) || !isImageName(dest.name))
           continue;
@@ -3281,6 +3454,39 @@ ${(_a = e.stack) != null ? _a : ""}` : String(e)
           role: "context"
         });
       }
+      for (const embed of noteExcalidrawTargets(body)) {
+        const dest = (_b = this.app.metadataCache.getFirstLinkpathDest(embed.target, file.path)) != null ? _b : this.app.vault.getAbstractFileByPath(embed.target);
+        if (!(dest instanceof import_obsidian11.TFile) || !fileIsExcalidraw(this.app, dest))
+          continue;
+        queueDiagram(dest, embed.fragment);
+      }
+    }
+    let missing = false;
+    let failed = false;
+    for (const item of diagrams) {
+      if (out.length >= 12)
+        break;
+      const exported = await exportExcalidrawImage(this.app, item.file, item.fragment);
+      if (exported.status === "ok") {
+        out.push({
+          filename: exported.filename,
+          media_type: "image/png",
+          data_base64: exported.dataBase64,
+          role: "context"
+        });
+        continue;
+      }
+      if (exported.status === "missing")
+        missing = true;
+      else if (exported.status === "too-large") {
+        new import_obsidian11.Notice(`${exported.name} is larger than 4MB and was skipped.`);
+      } else if (exported.status === "failed")
+        failed = true;
+    }
+    if (missing) {
+      new import_obsidian11.Notice("Excalidraw is not enabled, so diagrams were not included.");
+    } else if (failed) {
+      new import_obsidian11.Notice("A diagram could not be exported and was skipped.");
     }
     return out;
   }
@@ -3351,7 +3557,7 @@ ${(_a = e.stack) != null ? _a : ""}` : String(e)
       const model = this.selectedModel();
       const includeNotes = this.plugin.settings.includeNoteImages && this.modelIsVision();
       const noteFiles = [...snap.activeNote ? [snap.activeNote] : [], ...snap.extra];
-      const contextImages = includeNotes && this.plugin.settings.sendLocalNoteContent ? await this.contextImages(noteFiles) : [];
+      const contextImages = includeNotes ? await this.contextImages(noteFiles) : [];
       const images = [
         ...questionImages.map((image) => ({
           filename: image.filename,
@@ -3675,7 +3881,7 @@ var PawnSettingTab = class extends import_obsidian14.PluginSettingTab {
       })
     );
     new import_obsidian14.Setting(containerEl).setName("Include images from attached notes").setDesc(
-      "When the selected model can see images, send pictures embedded in attached notes. Each picture is read once per conversation. /vision refresh reads them again."
+      "When the selected model can see images, send pictures embedded in attached notes, including Excalidraw drawings. Each picture is read once per conversation. A changed drawing is read again. The refresh button beside the paperclip reads them again."
     ).addToggle(
       (t) => t.setValue(s.includeNoteImages).onChange(async (v) => {
         s.includeNoteImages = v;
