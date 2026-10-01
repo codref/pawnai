@@ -17,6 +17,9 @@ _SYSTEM_PROMPT = (
 
 _PROMPT_TEMPLATE = """\
 You are an expert conversation analyst. Below is a speaker-diarized transcript. \
+Lines tagged [note] are notes taken during the session. Lines tagged [screen] \
+describe what changed on a display. A final line may say screenshots were captured \
+but not summarized. Treat those lines as part of what happened. \
 Please provide a structured analysis with the following sections:
 
 ## Title

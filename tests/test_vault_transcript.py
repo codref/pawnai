@@ -9,6 +9,7 @@ from unittest.mock import patch
 from botocore.exceptions import ClientError
 
 from pawn_core.vault import VaultStore
+from pawn_diarize.core.session_captures import Capture
 from pawn_diarize.core.vault_transcript import (
     build_document_markdown,
     content_hash,
@@ -219,6 +220,10 @@ def test_push_preserves_annotations_on_update():
             "pawn_diarize.core.vault_transcript.upsert_vault_note",
             side_effect=fake_upsert,
         ),
+        patch(
+            "pawn_diarize.core.vault_transcript.load_captures",
+            return_value=[],
+        ),
     ):
         status1 = push_session_transcript(
             "sess-1",
@@ -257,3 +262,144 @@ def test_push_preserves_annotations_on_update():
         updated = store.read(key)
         assert "USER ANNOTATION LINE" in updated
         assert "Hello there (edited)" in updated
+
+
+def _capture_note() -> Capture:
+    return Capture(
+        session_id="sess-1",
+        item_id="ab12",
+        kind="note",
+        at=datetime.fromisoformat("2026-10-01T22:10:00+02:00"),
+        at_offset_minutes=120,
+        text="decision: ship v2",
+    )
+
+
+def _capture_shot() -> Capture:
+    return Capture(
+        session_id="sess-1",
+        item_id="cd34",
+        kind="screenshot",
+        at=datetime.fromisoformat("2026-10-01T22:10:05+02:00"),
+        at_offset_minutes=120,
+        s3_uri="s3://bucket/session/session_shot_01.png",
+        output="DP-1",
+    )
+
+
+def test_format_transcript_inserts_a_timed_marker():
+    note = _capture_note()
+    note.audio_offset_s = 5.0
+    md = format_transcript_section(_segs(), {}, [note])
+    assert "_[22:10 note] decision: ship v2_" in md
+    assert md.index("Hello there") < md.index("_[22:10 note]")
+    assert md.index("_[22:10 note]") < md.index("00:12.50")
+
+
+def test_push_rewrites_on_hash_match_when_a_note_arrives():
+    fake = _FakeS3Client()
+    store = VaultStore(bucket="test-bucket", client=fake)
+    segs = _segs()
+    name_lookup = {
+        ("a.wav", "SPEAKER_00"): "Alice",
+        ("a.wav", "SPEAKER_01"): "Bob",
+    }
+    holder: dict = {"items": []}
+
+    def fake_load(_engine, _session_id):
+        return list(holder["items"])
+
+    mapping_state: dict = {}
+
+    def fake_get_note(dsn, session_id):
+        return mapping_state.get(session_id)
+
+    def fake_upsert(dsn, *, session_id, key, content_hash):
+        from types import SimpleNamespace
+
+        mapping_state[session_id] = SimpleNamespace(
+            session_id=session_id, key=key, content_hash=content_hash
+        )
+
+    fixed_when = datetime(2026, 9, 25, 12, 0, tzinfo=timezone.utc)
+    with (
+        patch(
+            "pawn_diarize.core.vault_transcript.load_session_segments",
+            return_value=(segs, name_lookup),
+        ),
+        patch(
+            "pawn_diarize.core.vault_transcript._load_session_meta",
+            return_value=(1, 35.0),
+        ),
+        patch(
+            "pawn_diarize.core.vault_transcript._session_when",
+            return_value=fixed_when,
+        ),
+        patch("pawn_diarize.core.vault_transcript.get_engine"),
+        patch("pawn_diarize.core.vault_transcript.init_db"),
+        patch(
+            "pawn_diarize.core.vault_transcript.get_vault_note",
+            side_effect=fake_get_note,
+        ),
+        patch(
+            "pawn_diarize.core.vault_transcript.upsert_vault_note",
+            side_effect=fake_upsert,
+        ),
+        patch(
+            "pawn_diarize.core.vault_transcript.load_captures",
+            side_effect=fake_load,
+        ),
+        patch(
+            "pawn_diarize.core.vault_transcript.copy_screenshots_to_vault",
+        ),
+    ):
+        created = push_session_transcript(
+            "sess-1",
+            db_dsn="postgresql://local/test",
+            store=store,
+            cfg=_Cfg(),
+        )
+        assert created.startswith("created:")
+        key = "Pawn/Transcripts/sess-1.md"
+        body = store.read(key).replace(
+            "_(Add notes and tags here.)_",
+            "USER ANNOTATION LINE",
+        )
+        fake.objects[key] = body.encode("utf-8")
+
+        holder["items"] = [_capture_note()]
+        updated = push_session_transcript(
+            "sess-1",
+            db_dsn="postgresql://local/test",
+            store=store,
+            cfg=_Cfg(),
+        )
+        assert updated.startswith("updated:")
+        rewritten = store.read(key)
+        assert "USER ANNOTATION LINE" in rewritten
+        assert "<!-- pawn:note:ab12 -->" in rewritten
+        assert "- 22:10 — decision: ship v2" in rewritten
+
+        again = push_session_transcript(
+            "sess-1",
+            db_dsn="postgresql://local/test",
+            store=store,
+            cfg=_Cfg(),
+        )
+        assert again.startswith("unchanged:")
+
+        holder["items"] = [_capture_note(), _capture_shot()]
+        with_shot = push_session_transcript(
+            "sess-1",
+            db_dsn="postgresql://local/test",
+            store=store,
+            cfg=_Cfg(),
+        )
+        assert with_shot.startswith("updated:")
+        shot_note = store.read(key)
+        assert "USER ANNOTATION LINE" in shot_note
+        assert "## Screenshots" in shot_note
+        assert shot_note.index("## Annotations") < shot_note.index("## Screenshots")
+        assert shot_note.index("## Screenshots") < shot_note.index("## Transcript")
+        assert "s3://bucket/session/session_shot_01.png" in shot_note
+        assert "![[" not in shot_note

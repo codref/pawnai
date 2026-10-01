@@ -17,6 +17,8 @@ graph_triples
     Knowledge-graph triples extracted from session transcripts.
 vault_notes
     Mapping from diarization session_id to vault object key + content hash.
+session_captures
+    Notes and screenshots attached to a diarization session, keyed by item id.
 """
 
 from __future__ import annotations
@@ -124,6 +126,35 @@ class VaultNote(Base):
     updated_at: Mapped[Optional[datetime]] = mapped_column(
         DateTime, nullable=True, default=lambda: datetime.now(timezone.utc)
     )
+
+
+class SessionCapture(Base):
+    """One recorder note or screenshot for a diarization session.
+
+    ``(session_id, item_id)`` is the identity. A retried queue message inserts
+    nothing when that pair already exists. ``at`` is stored in UTC;
+    ``at_offset_minutes`` keeps the clock offset the recorder sent so the vault
+    line can still show 22:10 instead of the UTC equivalent. ``received_at`` and
+    ``chunk_audio_start`` are the accept-time snapshot used to place the item
+    on the transcript timeline, and they are not updated on conflict.
+    """
+
+    __tablename__ = "session_captures"
+
+    session_id: Mapped[str] = mapped_column(String, primary_key=True)
+    item_id: Mapped[str] = mapped_column(String, primary_key=True)
+    kind: Mapped[str] = mapped_column(String, nullable=False)
+    at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    at_offset_minutes: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    text: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    s3_uri: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    output: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    region: Mapped[Optional[Any]] = mapped_column(JSONB, nullable=True)
+    vault_key: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    summary: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    audio_offset_s: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    chunk_audio_start: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    received_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
 # ──────────────────────────────────────────────────────────────────────────────

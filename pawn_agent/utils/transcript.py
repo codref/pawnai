@@ -10,6 +10,7 @@ from sqlalchemy import select
 
 from pawn_agent.utils.config import AgentConfig
 from pawn_agent.utils.db import SpeakerName, TranscriptionSegment, make_db_session
+from pawn_core.database import get_engine
 
 logger = logging.getLogger(__name__)
 
@@ -113,23 +114,27 @@ def fetch_transcript(cfg: AgentConfig, session_id: str) -> str:
             name_lookup = {(r.audio_file, r.local_speaker_label): r.speaker_name for r in rows}
         db.close()
 
-        lines: list[str] = []
-        current_speaker: Optional[str] = None
-        for seg in segments:
-            txt = (seg.text or "").strip()
-            if not txt:
-                continue
-            mm = int(seg.start_time // 60)
-            ss = seg.start_time % 60
-            raw_label = seg.original_speaker_label
-            display = name_lookup.get((seg.audio_file, raw_label), raw_label or "Speaker")
-            if display != current_speaker:
-                if current_speaker is not None:
-                    lines.append("")
-                lines.append(f"[{mm:02d}:{ss:05.2f}] {display}:")
-                current_speaker = display
-            lines.append(f"  {txt}")
+        rendered = [
+            {
+                "display": name_lookup.get(
+                    (seg.audio_file, seg.original_speaker_label),
+                    seg.original_speaker_label or "Speaker",
+                ),
+                "start_time": seg.start_time,
+                "text": seg.text or "",
+            }
+            for seg in segments
+        ]
+        from pawn_diarize.core.session_captures import (  # noqa: PLC0415
+            load_captures,
+            render_analysis_transcript,
+        )
 
-        return "\n".join(lines)
+        captures = []
+        try:
+            captures = load_captures(get_engine(cfg.db_dsn), session_id)
+        except Exception:
+            logger.warning("session captures unavailable for %r", session_id, exc_info=True)
+        return render_analysis_transcript(rendered, captures)
     except Exception as exc:
         return f"Error retrieving transcript: {exc}"

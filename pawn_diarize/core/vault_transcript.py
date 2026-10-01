@@ -1,7 +1,8 @@
 """Project diarization session transcripts into the S3 Obsidian vault.
 
 Postgres remains the source of truth. The vault holds a human-readable
-projection with Speakers + Transcript (managed) and Annotations (user-owned).
+projection with Speakers, Transcript, and Screenshots (managed) and
+Annotations (user-owned).
 """
 
 from __future__ import annotations
@@ -21,6 +22,15 @@ from pawn_core.vault_config import vault_store_from_config
 from pawn_core.vault_db import get_vault_note, upsert_vault_note
 
 from .database import SessionState, get_engine, get_session, init_db
+from .session_captures import (
+    Capture,
+    captures_need_rewrite,
+    copy_screenshots_to_vault,
+    format_screenshots_body,
+    load_captures,
+    merge_note_annotations,
+    vault_marker,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -32,7 +42,7 @@ _ANNOTATIONS_RE = re.compile(
 _DEFAULT_ANNOTATIONS = "_(Add notes and tags here.)_\n"
 
 _MANAGED_NOTICE = (
-    "> Managed by Pawn. Speakers and Transcript are overwritten on sync.\n"
+    "> Managed by Pawn. Speakers, Transcript, and Screenshots are overwritten on sync.\n"
     "> Edit only the Annotations section."
 )
 
@@ -165,21 +175,49 @@ def format_speakers_section(
 def format_transcript_section(
     segments: List[Dict[str, Any]],
     name_lookup: Dict[Tuple[str, str], str],
+    captures: Optional[List[Capture]] = None,
 ) -> str:
-    """Human-readable transcript: `**Name** · MM:SS.ss` then body lines."""
+    """Human-readable transcript: `**Name** · MM:SS.ss` then body lines.
+
+    Notes and screenshot changes are inserted at their audio offset so the
+    timed script shows when they happened. Captures without an offset stay
+    out of this section (they still appear under Annotations or Screenshots).
+    """
+    pending: List[tuple[float, str]] = []
+    for cap in captures or []:
+        marker = vault_marker(cap)
+        if marker and cap.audio_offset_s is not None:
+            pending.append((float(cap.audio_offset_s), marker))
+    pending.sort(key=lambda item: item[0])
+
     lines: List[str] = []
     current: Optional[str] = None
+
+    def take_markers(up_to: Optional[float]) -> None:
+        nonlocal current
+        while pending and (up_to is None or pending[0][0] <= up_to):
+            _, marker = pending.pop(0)
+            if current is not None:
+                lines.append("")
+            lines.append(marker)
+            if up_to is not None:
+                lines.append("")
+            current = None
+
     for seg in segments:
         text = (seg.get("text") or "").strip()
         if not text:
             continue
+        start = float(seg["start_time"])
+        take_markers(start)
         name = _display_name(seg, name_lookup)
         if name != current:
             if current is not None:
                 lines.append("")
-            lines.append(f"**{name}** · {_format_ts(seg['start_time'])}")
+            lines.append(f"**{name}** · {_format_ts(start)}")
             current = name
         lines.append(text)
+    take_markers(None)
     return "\n".join(lines) if lines else "_No transcript available._"
 
 
@@ -202,6 +240,7 @@ def build_document_markdown(
     speaker_names: List[str],
     duration: str,
     related_analysis_wiki: Optional[str] = None,
+    screenshots_md: str = "",
 ) -> str:
     """Assemble the full session note with Obsidian YAML frontmatter."""
     ann = annotations_body.strip() or _DEFAULT_ANNOTATIONS.strip()
@@ -229,6 +268,13 @@ def build_document_markdown(
             "## Annotations",
             ann,
             "",
+        ]
+    )
+    shots = (screenshots_md or "").strip()
+    if shots:
+        body_parts.extend(["## Screenshots", shots, ""])
+    body_parts.extend(
+        [
             "## Transcript",
             transcript_md,
         ]
@@ -424,33 +470,18 @@ def push_session_transcript(
     if not segments:
         return f"skipped: no segments for session {session_id!r}"
 
-    file_count, time_cursor = _load_session_meta(session_id, engine)
-    speakers_md = format_speakers_section(
-        segments,
-        name_lookup,
-        file_count=file_count,
-        time_cursor=time_cursor,
-    )
-    transcript_md = format_transcript_section(segments, name_lookup)
-    digest = content_hash(speakers_md, transcript_md)
-
-    mapping = get_vault_note(db_dsn, session_id)
-    if mapping and mapping.content_hash == digest:
-        return f"unchanged: {session_id} (hash match)"
+    captures: List[Capture] = []
+    try:
+        captures = load_captures(engine, session_id)
+    except Exception as exc:
+        logger.warning("session captures load failed for %r: %s", session_id, exc)
 
     when = _session_when(session_id, engine)
     agent_root = getattr(vault, "agent_root", "Pawn") or "Pawn"
     path_template = getattr(vault, "transcript_path_template", "") or (
         "{agent_root}/Transcripts/{date} {session_id}.md"
     )
-
-    speaker_names = sorted(
-        {_display_name(s, name_lookup) for s in segments if (s.get("text") or "").strip()}
-    )
-    duration = _session_duration(segments, time_cursor)
-    date_str = when.strftime("%Y-%m-%d")
-    related = _analysis_wiki_link(cfg, session_id, when)
-
+    mapping = get_vault_note(db_dsn, session_id)
     if mapping is None:
         note_key = resolve_path_template(
             path_template,
@@ -459,19 +490,53 @@ def push_session_transcript(
             title=session_id,
             now=when,
         )
-        annotations = _DEFAULT_ANNOTATIONS
     else:
         note_key = mapping.key
-        if dry_run:
+
+    if not dry_run and store is not None and captures:
+        copy_screenshots_to_vault(engine, store, cfg, session_id, note_key, captures)
+
+    file_count, time_cursor = _load_session_meta(session_id, engine)
+    speakers_md = format_speakers_section(
+        segments,
+        name_lookup,
+        file_count=file_count,
+        time_cursor=time_cursor,
+    )
+    transcript_md = format_transcript_section(segments, name_lookup, captures)
+    digest = content_hash(speakers_md, transcript_md)
+
+    existing_markdown = ""
+    readable = mapping is None or store is None
+    if mapping is not None and store is not None:
+        try:
+            existing_markdown = store.read(note_key)
+            readable = True
+        except Exception:
+            readable = False
+            existing_markdown = ""
+
+    if mapping and mapping.content_hash == digest:
+        if readable and not captures_need_rewrite(existing_markdown, captures):
+            return f"unchanged: {session_id} (hash match)"
+
+    speaker_names = sorted(
+        {_display_name(s, name_lookup) for s in segments if (s.get("text") or "").strip()}
+    )
+    duration = _session_duration(segments, time_cursor)
+    date_str = when.strftime("%Y-%m-%d")
+    related = _analysis_wiki_link(cfg, session_id, when)
+
+    if mapping is None or not existing_markdown:
+        annotations = _DEFAULT_ANNOTATIONS
+    else:
+        try:
+            _, body = parse_frontmatter(existing_markdown)
+            annotations = extract_annotations(body)
+        except Exception:
             annotations = _DEFAULT_ANNOTATIONS
-        else:
-            assert store is not None
-            try:
-                existing = store.read(note_key)
-                _, body = parse_frontmatter(existing)
-                annotations = extract_annotations(body)
-            except Exception:
-                annotations = _DEFAULT_ANNOTATIONS
+    annotations = merge_note_annotations(annotations, captures)
+    screenshots_md = format_screenshots_body(captures)
 
     markdown = build_document_markdown(
         session_id,
@@ -482,6 +547,7 @@ def push_session_transcript(
         speaker_names=speaker_names,
         duration=duration,
         related_analysis_wiki=related,
+        screenshots_md=screenshots_md,
     )
 
     if dry_run:

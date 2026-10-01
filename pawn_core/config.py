@@ -32,7 +32,6 @@ from typing import Literal, Optional
 from pydantic import AliasChoices, BaseModel, Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict, YamlConfigSettingsSource
 
-
 # ── Section models ─────────────────────────────────────────────────────────────
 
 
@@ -47,9 +46,11 @@ class ModelsConfig(BaseModel):
     hf_token: Optional[str] = None
     hf_cache_dir: Optional[str] = None  # override HF_HUB_CACHE; applies to all HF model downloads
     model_idle_timeout_minutes: float = 10.0
-    tts_language: str = "en"           # BCP-47 code, e.g. "en", "it", "fr"
-    tts_voice: str = "af_heart"        # Kokoro voice ID or OpenAI alias
-    tts_device: Optional[str] = None  # None → fall back to global device.type; use "cpu" if CUDA unavailable
+    tts_language: str = "en"  # BCP-47 code, e.g. "en", "it", "fr"
+    tts_voice: str = "af_heart"  # Kokoro voice ID or OpenAI alias
+    tts_device: Optional[str] = (
+        None  # None → fall back to global device.type; use "cpu" if CUDA unavailable
+    )
     tts_idle_timeout_minutes: float = 10.0
 
     @model_validator(mode="after")
@@ -79,6 +80,7 @@ class DeviceConfig(BaseModel):
             return self.type
         try:
             import torch  # noqa: PLC0415
+
             return "cuda" if torch.cuda.is_available() else "cpu"
         except ImportError:
             return "cpu"
@@ -125,6 +127,10 @@ class VaultConfig(BaseModel):
     notes_path_template: str = "{agent_root}/Notes/{title}.md"
     daily_note_path: Optional[str] = None
     auto_push_transcript: bool = False
+    # When true, transcribe-diarize asks the background model to describe
+    # screenshot changes. Set false (PAWN_VAULT__SCREENSHOT_VISION=false) to
+    # keep the files and summarize later with session_screenshots --summarize.
+    screenshot_vision: bool = True
     obsidian_vault_name: str = ""
 
     @property

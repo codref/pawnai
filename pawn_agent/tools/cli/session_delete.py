@@ -13,7 +13,7 @@ def main(argv: list[str] | None = None) -> int:
         prog="session_delete",
         description=(
             "Permanently delete diarization DB data for one session "
-            "(segments, analyses, session_state, graph triples). "
+            "(segments, analyses, session_state, graph triples, captures). "
             "Requires --confirm to exactly match --session-id. "
             "Ask the user to confirm the exact session name in chat first. "
             "Never invent session ids."
@@ -34,9 +34,7 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         cfg = load_agent_config(args.config)
-        print_out(
-            delete_session_impl(cfg, session_id=args.session_id, confirm=args.confirm)
-        )
+        print_out(delete_session_impl(cfg, session_id=args.session_id, confirm=args.confirm))
         return 0
     except Exception as exc:
         return fail(str(exc))

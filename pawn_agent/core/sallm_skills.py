@@ -64,14 +64,15 @@ SESSIONS = Skill(
     name="sessions",
     description=(
         "User wants to list, discover, inspect, quote, summarize, relabel "
-        "speakers on, or delete diarization conversation sessions / "
-        "transcripts. Prefer this (push/replace) whenever the request "
-        "mentions sessions, transcripts, speaker rename, or session analysis."
+        "speakers on, delete, or review screenshots from diarization "
+        "conversation sessions / transcripts. Prefer this (push/replace) "
+        "whenever the request mentions sessions, transcripts, speaker rename, "
+        "screenshots, or session analysis."
     ),
     prompt=(
         "Active skill: sessions.\n"
         "Use sessions_list / session_transcript / session_analyze / "
-        "session_relabel / session_delete via ```run blocks.\n"
+        "session_screenshots / session_relabel / session_delete via ```run blocks.\n"
         "Never invent session ids — list first when the id is unclear.\n"
         "Do NOT pass --save unless the user explicitly asks for vault notes. "
         "When they want analysis AND vault, prefer a single "
@@ -95,6 +96,12 @@ SESSIONS = Skill(
         "```\n"
         "(--confirm must exactly equal --session-id). Never delete without "
         "that confirmation.\n"
+        "Screenshots taken during a session are listed with:\n"
+        "```run\n"
+        "session_screenshots --session-id <id>\n"
+        "```\n"
+        "If the user asks to process them (or one image), add --summarize, "
+        "and --id <shot-id> for a single screenshot.\n"
         "When the conversation key itself is a diarization session name "
         "(typical for queue/scheduler runs), prefer that id for transcript tools.\n"
         "Keep answers short; prefer summaries over dumping full transcripts."
@@ -103,6 +110,7 @@ SESSIONS = Skill(
         "sessions_list",
         "session_transcript",
         "session_analyze",
+        "session_screenshots",
         "session_relabel",
         "session_delete",
         "knowledge_search",

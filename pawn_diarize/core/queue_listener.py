@@ -237,9 +237,10 @@ async def dispatch(
 
 def _resolve_audio_paths(paths: List[str], cfg: Any) -> tuple[List[str], List[str]]:
     """Download any s3:// paths and return (resolved_local, temp_dirs)."""
-    from .s3 import is_s3_path, S3Client, parse_s3_uri, expand_s3_glob
     import tempfile
     from pathlib import Path
+
+    from .s3 import S3Client, expand_s3_glob, is_s3_path, parse_s3_uri
 
     if not any(is_s3_path(p) for p in paths):
         return paths, []
@@ -297,7 +298,8 @@ def _run_transcribe_diarize(
 ) -> None:
     import json as _json
     from pathlib import Path as _Path
-    from .combined import transcribe_with_diarization, format_transcript_with_speakers
+
+    from .combined import format_transcript_with_speakers, transcribe_with_diarization
     from .config import DEFAULT_DB_DSN
     from .database import (
         get_engine,
@@ -339,6 +341,26 @@ def _run_transcribe_diarize(
             prior_embeddings, time_cursor, processed_files, prior_segment_count = (
                 load_session_state(session, engine)
             )
+            # Persist notes/screenshots before transcription so a retry of this
+            # message cannot duplicate them, and a later vault push still sees them.
+            try:
+                from datetime import datetime, timezone
+
+                from .session_captures import ingest_session_captures
+
+                ingest_session_captures(
+                    engine,
+                    session,
+                    params,
+                    chunk_audio_start=float(time_cursor),
+                    received_at=datetime.now(timezone.utc),
+                )
+            except Exception as exc:
+                logger.warning(
+                    "session captures ingest failed for %r (non-fatal): %s",
+                    session,
+                    exc,
+                )
 
         result = transcribe_with_diarization(
             audio_path=resolved if len(resolved) > 1 else resolved[0],
@@ -393,6 +415,34 @@ def _run_transcribe_diarize(
             logger.info("Transcript:\n%s", text)
 
         if session:
+            try:
+                from .session_captures import assign_audio_offsets
+
+                raw_end = result.get("new_time_cursor") if result else None
+                audio_end = float(time_cursor if raw_end is None else raw_end)
+                assign_audio_offsets(
+                    engine,
+                    session,
+                    audio_start=float(time_cursor),
+                    audio_end=audio_end,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "session capture offsets failed for %r (non-fatal): %s",
+                    session,
+                    exc,
+                )
+            try:
+                from pawn_agent.core.screenshot_vision import maybe_summarize_screenshots
+
+                maybe_summarize_screenshots(cfg, session, db_dsn)
+            except Exception as exc:
+                logger.warning(
+                    "screenshot vision failed for %r (non-fatal): %s",
+                    session,
+                    exc,
+                )
+
             from .vault_transcript import maybe_push_transcript_to_vault
 
             maybe_push_transcript_to_vault(session, cfg, db_dsn=db_dsn)

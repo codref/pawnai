@@ -59,12 +59,25 @@ def build_pawn_clitools() -> dict[str, CliTool]:
                 "Analyze one session per invocation."
             ),
         ),
+        "session_screenshots": CliTool(
+            name="session_screenshots",
+            argv=_cli_argv("session_screenshots.py"),
+            summary=(
+                "List screenshots captured during a diarization session "
+                "(time, display output, summary state, vault embed). "
+                "Required: --session-id ID (or bare ID). "
+                "Pass --summarize to describe changes with the background "
+                "vision model. Pass --id ITEM with --summarize for one shot. "
+                "Use when the user asks to process screenshots after the "
+                "session, or to refer to a single screenshot."
+            ),
+        ),
         "session_delete": CliTool(
             name="session_delete",
             argv=_cli_argv("session_delete.py"),
             summary=(
                 "Permanently delete one diarization session from PostgreSQL "
-                "(segments, analyses, session_state, graph triples). "
+                "(segments, analyses, session_state, graph triples, captures). "
                 "Required: --session-id ID --confirm ID where both values "
                 "match exactly. ALWAYS ask the user to confirm the exact "
                 "session name in chat before calling. Never invent ids. "

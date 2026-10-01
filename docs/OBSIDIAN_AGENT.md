@@ -23,7 +23,7 @@ Free-standing plugin chats use `chat:{uuid}`.
 
 | Path | Owner | Purpose |
 |------|-------|---------|
-| `Pawn/Transcripts/{date} {session_id}.md` | Pawn | Speakers + Transcript rewritten on push; Annotations preserved |
+| `Pawn/Transcripts/{date} {session_id}.md` | Pawn | Speakers, Transcript, and Screenshots rewritten on push; Annotations preserved. Recorder notes are appended by id; screenshot PNGs sit in `screenshots/{session_id}/` beside the note |
 | `Pawn/Analyses/{session_id}.md` | Pawn | `session_analyze --save` |
 | `Pawn/Tasks/{id}.md` | Shared | Mirror of one `ask` job (status decides who may write) |
 | `Pawn/Notes/…` | Pawn | Free-form agent notes / scheduled output / "Save as new note" |

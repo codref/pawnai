@@ -67,7 +67,7 @@ Notes: pytest defaults to `--cov=pawn_diarize --cov-report=term-missing`; pass `
 Domain logic stays in `pawn_agent/tools/*_impl`. Production path uses **CliTools** under `pawn_agent/tools/cli/` registered in `sallm_tools.py`.
 
 Migrated CliTools: `sessions_list`, `session_transcript`, `session_analyze`,
-`session_delete`, `session_relabel`, `note_read`, `note_search`,
+`session_screenshots`, `session_delete`, `session_relabel`, `note_read`, `note_search`,
 `note_write`, `note_append`, `task_update`, `schedule_propose`, `queue_push`,
 `idea_capture`, `goal_propose`.
 
@@ -82,7 +82,7 @@ never dump tool errors into vault notes.
 root only with `pawn: editable`; never `.obsidian/`.
 
 `session_delete` permanently wipes diarization DB rows (segments, analyses,
-`session_state`, graph triples) for one session name. It always requires
+`session_state`, graph triples, `session_captures`) for one session name. It always requires
 `--confirm` to exactly match `--session-id`; the agent must ask the user
 in chat before calling. It does not clear sallm chat memory or vault notes.
 
@@ -94,9 +94,13 @@ Existing vault Speakers+Transcript notes refresh automatically after
 relabel; pass `--push-vault` to create/update even without a prior mapping.
 
 Vault diary transcripts (diarize, not agent): `pawn-diarize push-vault`
-creates/updates a stable session note (Speakers + Transcript managed;
-Annotations preserved). Opt-in auto-push after each `transcribe-diarize`
-chunk via `vault.auto_push_transcript`. Mapping table: `vault_notes`.
+creates/updates a stable session note (Speakers, Transcript, and Screenshots
+managed; Annotations preserved). Optional `annotations` and `screenshots` on
+`transcribe-diarize` are stored in `session_captures` before transcription.
+Opt-in auto-push after each chunk via `vault.auto_push_transcript`.
+`vault.screenshot_vision` (default true) describes screenshot changes with the
+background vision model; `session_screenshots --summarize` can do that later.
+Mapping table: `vault_notes`.
 
 Skills (modes): `converse`, `sessions`, `notes`, `scheduling`, `ops`,
 `vault_tasks`, `tasknotes`, `coworker` — see `sallm_skills.py`.

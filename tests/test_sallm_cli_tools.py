@@ -8,7 +8,13 @@ import pytest
 
 from pawn_agent.core.sallm_skills import build_pawn_skills
 from pawn_agent.core.sallm_tools import build_pawn_clitools
-from pawn_agent.tools.cli import session_delete, session_relabel, session_transcript, sessions_list
+from pawn_agent.tools.cli import (
+    session_delete,
+    session_relabel,
+    session_screenshots,
+    session_transcript,
+    sessions_list,
+)
 from pawn_agent.tools.delete_session import delete_session_impl
 
 
@@ -18,6 +24,7 @@ def test_build_pawn_clitools_names() -> None:
         "sessions_list",
         "session_transcript",
         "session_analyze",
+        "session_screenshots",
         "session_delete",
         "session_relabel",
         "note_read",
@@ -48,6 +55,7 @@ def test_build_pawn_skills_includes_sessions() -> None:
     assert "sessions_list" in sessions.tools
     assert "session_delete" in sessions.tools
     assert "session_relabel" in sessions.tools
+    assert "session_screenshots" in sessions.tools
 
 
 def test_tasknotes_skill_hides_generic_note_writes() -> None:
@@ -112,6 +120,13 @@ def test_sessions_list_help() -> None:
 def test_session_transcript_help() -> None:
     try:
         session_transcript.main(["--help"])
+    except SystemExit as exc:
+        assert exc.code == 0
+
+
+def test_session_screenshots_help() -> None:
+    try:
+        session_screenshots.main(["--help"])
     except SystemExit as exc:
         assert exc.code == 0
 
@@ -268,6 +283,7 @@ def test_delete_session_impl_deletes_and_returns_receipt() -> None:
         MagicMock(rowcount=1),
         MagicMock(rowcount=1),
         MagicMock(rowcount=2),
+        MagicMock(rowcount=4),
     ]
     mock_db.execute.side_effect = results
     mock_session_cm = MagicMock()
@@ -290,7 +306,8 @@ def test_delete_session_impl_deletes_and_returns_receipt() -> None:
     assert "1 analysis row(s)" in receipt
     assert "1 session_state row(s)" in receipt
     assert "2 graph triple(s)" in receipt
+    assert "4 capture(s)" in receipt
     mock_db.commit.assert_called_once()
-    assert mock_db.execute.call_count == 4
+    assert mock_db.execute.call_count == 5
     mock_engine_fn.assert_called_once_with(cfg.db_dsn)
     engine.dispose.assert_not_called()

@@ -50,10 +50,10 @@ from typing import Any, Dict, Generator, List, Optional, Tuple
 import boto3
 from botocore.config import Config
 
-
 # ──────────────────────────────────────────────────────────────────────────────
 # URI helpers
 # ──────────────────────────────────────────────────────────────────────────────
+
 
 def is_s3_path(path: str) -> bool:
     """Return *True* when *path* starts with the ``s3://`` scheme.
@@ -97,7 +97,7 @@ def parse_s3_uri(
         raise ValueError(f"Not a valid S3 URI: {uri!r}")
 
     # Strip scheme and split on the first '/'
-    remainder = uri[len("s3://"):]
+    remainder = uri[len("s3://") :]
     if "/" in remainder:
         first_segment, rest = remainder.split("/", 1)
     else:
@@ -106,9 +106,7 @@ def parse_s3_uri(
 
     # If the first segment matches the configured bucket (or there is no
     # configured bucket), treat this as the standard s3://<bucket>/<key> form.
-    if first_segment and (
-        configured_bucket is None or first_segment == configured_bucket
-    ):
+    if first_segment and (configured_bucket is None or first_segment == configured_bucket):
         bucket = first_segment
         object_key = rest
     else:
@@ -130,6 +128,7 @@ def parse_s3_uri(
 # ──────────────────────────────────────────────────────────────────────────────
 # S3Config dataclass
 # ──────────────────────────────────────────────────────────────────────────────
+
 
 @dataclass
 class S3Config:
@@ -165,9 +164,7 @@ class S3Config:
         required_fields = ("bucket", "endpoint_url", "access_key", "secret_key")
         missing = [f for f in required_fields if not data.get(f)]
         if missing:
-            raise ValueError(
-                f"Missing required S3 configuration fields: {', '.join(missing)}"
-            )
+            raise ValueError(f"Missing required S3 configuration fields: {', '.join(missing)}")
 
         return cls(
             bucket=str(data["bucket"]),
@@ -184,6 +181,7 @@ class S3Config:
 # ──────────────────────────────────────────────────────────────────────────────
 # S3Client
 # ──────────────────────────────────────────────────────────────────────────────
+
 
 class S3Client:
     """Client for S3-compatible object storage.
@@ -263,10 +261,23 @@ class S3Client:
         target_bucket = bucket if bucket is not None else self._config.bucket
         self._client.download_file(target_bucket, object_key, local_path)
 
+    def get_object_bytes(self, object_key: str, bucket: Optional[str] = None) -> bytes:
+        """Return the object body for *object_key*."""
+        target_bucket = bucket if bucket is not None else self._config.bucket
+        obj = self._client.get_object(Bucket=target_bucket, Key=object_key)
+        body = obj["Body"]
+        try:
+            return bytes(body.read())
+        finally:
+            close = getattr(body, "close", None)
+            if close is not None:
+                close()
+
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Context manager: resolve s3:// paths to temporary local files
 # ──────────────────────────────────────────────────────────────────────────────
+
 
 def expand_s3_glob(uri: str, client: "S3Client") -> List[str]:
     """Expand an S3 URI that contains shell-style wildcards.

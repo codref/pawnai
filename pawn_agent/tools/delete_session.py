@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 
 from pawn_agent.utils.config import AgentConfig
 from pawn_agent.utils.db import GraphTriple, SessionAnalysis, TranscriptionSegment, get_engine
+from pawn_core.database import SessionCapture
 from pawn_diarize.core.database import SessionState
 
 
@@ -14,9 +15,9 @@ def delete_session_impl(cfg: AgentConfig, session_id: str, confirm: str) -> str:
     """Permanently delete PostgreSQL diarization data for *session_id*.
 
     Requires *confirm* to equal *session_id* exactly (in-chat confirmation gate).
-    Deletes segments, analyses, session_state, and graph triples in one
-    transaction. Does not touch sallm chat memory, agent_runs, schedules,
-    speaker_names, or embeddings.
+    Deletes segments, analyses, session_state, graph triples, and session
+    captures in one transaction. Does not touch sallm chat memory, agent_runs,
+    schedules, speaker_names, or embeddings.
     """
     session_id_clean = session_id.strip()
     confirm_clean = confirm.strip()
@@ -41,6 +42,9 @@ def delete_session_impl(cfg: AgentConfig, session_id: str, confirm: str) -> str:
         triples_result = db.execute(
             delete(GraphTriple).where(GraphTriple.session_id == session_id_clean)
         )
+        capture_result = db.execute(
+            delete(SessionCapture).where(SessionCapture.session_id == session_id_clean)
+        )
         db.commit()
 
     try:
@@ -50,12 +54,13 @@ def delete_session_impl(cfg: AgentConfig, session_id: str, confirm: str) -> str:
     except Exception:
         pass
 
-    segments = int(seg_result.rowcount or 0)
-    analyses = int(analysis_result.rowcount or 0)
-    states = int(state_result.rowcount or 0)
-    triples = int(triples_result.rowcount or 0)
+    segments = int(getattr(seg_result, "rowcount", 0) or 0)
+    analyses = int(getattr(analysis_result, "rowcount", 0) or 0)
+    states = int(getattr(state_result, "rowcount", 0) or 0)
+    triples = int(getattr(triples_result, "rowcount", 0) or 0)
+    captures = int(getattr(capture_result, "rowcount", 0) or 0)
 
-    total = segments + analyses + states + triples
+    total = segments + analyses + states + triples + captures
     if total == 0:
         return (
             f"No matching rows for session '{session_id_clean}' " "(already gone or never stored)."
@@ -63,5 +68,6 @@ def delete_session_impl(cfg: AgentConfig, session_id: str, confirm: str) -> str:
     return (
         f"Deleted session '{session_id_clean}': "
         f"{segments} segment(s), {analyses} analysis row(s), "
-        f"{states} session_state row(s), {triples} graph triple(s)."
+        f"{states} session_state row(s), {triples} graph triple(s), "
+        f"{captures} capture(s)."
     )
