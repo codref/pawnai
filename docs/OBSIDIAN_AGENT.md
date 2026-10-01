@@ -174,8 +174,9 @@ the release tag, BRAT, and the full feature list.
   `@`, the `+` chip, or drag-and-drop from the file explorer. With **Send
   local note content** on, the plugin sends note bodies (including unsynced
   edits); otherwise the server reads the vault.
-- When the selected model is flagged `vision: true`, dropping a png, jpeg,
-  gif, or webp attaches it to the next message. Images embedded in attached
+- When the selected model is flagged `vision: true`, dropping or pasting a
+  png, jpeg, gif, or webp into the composer attaches it to the next message.
+  Images embedded in attached
   notes are sent too (**Include images from attached notes**, on by default),
   including an Excalidraw drawing (`![[name.excalidraw]]`) and an open
   Excalidraw note. The plugin exports the current drawing as a PNG on this
@@ -207,7 +208,7 @@ Every job is accepted immediately (202) and runs as an asyncio task inside
 |------|--------------|--------------|
 | `ask` | "Background" toggle in chat, **Send to Pawn (background)** | Agent turn with note/selection/context; result → job + `Pawn/Tasks/{id}.md` |
 | `push_note` | API (`POST /v1/jobs`) | Write/append a vault note (vault guards apply) |
-| `upload` | Paperclip or drag of non-image files, file menu **Upload to Pawn** | Audio → staged in `s3:` + `transcribe-diarize` on `api.upload_audio_target`; other files → `Pawn/Inbox/` (text files indexed into memory). png/jpeg/gif/webp dropped on a vision model stay on the chat message |
+| `upload` | Paperclip or drag of non-image files, file menu **Upload to Pawn** | Audio → staged in `s3:` + `transcribe-diarize` on `api.upload_audio_target`; other files → `Pawn/Inbox/` (text files indexed into memory). png/jpeg/gif/webp dropped or pasted on a vision model stay on the chat message |
 
 The plugin follows `GET /v1/jobs/events` (SSE) on desktop and polls
 `GET /v1/jobs` on mobile. Finished jobs raise a notice, update their card in

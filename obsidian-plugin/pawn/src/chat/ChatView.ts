@@ -851,6 +851,7 @@ export class PawnChatView extends ItemView {
     this.restoreDraft();
     ta.addEventListener("input", () => this.onComposerInput());
     ta.addEventListener("keydown", (ev) => this.onComposerKey(ev));
+    ta.addEventListener("paste", (ev) => this.onComposerPaste(ev));
     ta.addEventListener("focus", () => {
       this.context.refresh();
       this.scheduleKeyboardInset();
@@ -1225,6 +1226,16 @@ export class PawnChatView extends ItemView {
     );
   }
 
+  private onComposerPaste(ev: ClipboardEvent): void {
+    const files = clipboardImageFiles(
+      ev.clipboardData,
+      this.pendingImages.map((image) => image.filename),
+    );
+    if (!files.length) return;
+    ev.preventDefault();
+    void this.attachImages(files).then(() => this.composer?.focus());
+  }
+
   private async acceptDroppedFiles(files: File[]): Promise<void> {
     const images: File[] = [];
     const rest: File[] = [];
@@ -1566,6 +1577,50 @@ export class PawnChatView extends ItemView {
   private stop(): void {
     this.pending?.abort.abort();
   }
+}
+
+/** Image files on a paste. Text pastes are left for the textarea. */
+function clipboardImageFiles(data: DataTransfer | null, taken: string[]): File[] {
+  if (!data) return [];
+  const found: File[] = [];
+  for (const item of Array.from(data.items ?? [])) {
+    if (item.kind !== "file" || !item.type.toLowerCase().startsWith("image/")) continue;
+    const file = item.getAsFile();
+    if (file) found.push(file);
+  }
+  if (!found.length) {
+    for (const file of Array.from(data.files ?? [])) {
+      if (isImageName(file.name, file.type)) found.push(file);
+    }
+  }
+  const names = new Set(taken);
+  return found.map((file) => namePastedImage(file, names));
+}
+
+function namePastedImage(file: File, names: Set<string>): File {
+  const raw = file.name.trim();
+  const generic = !raw || /^image\.(png|jpe?g|gif|webp)$/i.test(raw);
+  let name = generic ? `pasted.${extensionForImage(file)}` : raw;
+  if (!isImageName(name, file.type)) name = `pasted.${extensionForImage(file)}`;
+  if (names.has(name)) {
+    const dot = name.lastIndexOf(".");
+    const stem = dot > 0 ? name.slice(0, dot) : name;
+    const ext = dot > 0 ? name.slice(dot) : "";
+    let n = 2;
+    while (names.has(`${stem}-${n}${ext}`)) n += 1;
+    name = `${stem}-${n}${ext}`;
+  }
+  names.add(name);
+  if (name === file.name) return file;
+  return new File([file], name, { type: file.type || mimeForName(name) });
+}
+
+function extensionForImage(file: File): string {
+  const type = file.type.split(";", 1)[0].trim().toLowerCase();
+  if (type === "image/jpeg") return "jpg";
+  if (type === "image/gif") return "gif";
+  if (type === "image/webp") return "webp";
+  return "png";
 }
 
 function modelTail(id: string): string {

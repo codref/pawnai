@@ -2961,6 +2961,7 @@ ${(_a = e.stack) != null ? _a : ""}` : String(e)
     this.restoreDraft();
     ta.addEventListener("input", () => this.onComposerInput());
     ta.addEventListener("keydown", (ev) => this.onComposerKey(ev));
+    ta.addEventListener("paste", (ev) => this.onComposerPaste(ev));
     ta.addEventListener("focus", () => {
       this.context.refresh();
       this.scheduleKeyboardInset();
@@ -3333,6 +3334,19 @@ ${(_a = e.stack) != null ? _a : ""}` : String(e)
       }))
     );
   }
+  onComposerPaste(ev) {
+    const files = clipboardImageFiles(
+      ev.clipboardData,
+      this.pendingImages.map((image) => image.filename)
+    );
+    if (!files.length)
+      return;
+    ev.preventDefault();
+    void this.attachImages(files).then(() => {
+      var _a;
+      return (_a = this.composer) == null ? void 0 : _a.focus();
+    });
+  }
   async acceptDroppedFiles(files) {
     const images = [];
     const rest = [];
@@ -3677,6 +3691,57 @@ ${(_a = e.stack) != null ? _a : ""}` : String(e)
     (_a = this.pending) == null ? void 0 : _a.abort.abort();
   }
 };
+function clipboardImageFiles(data, taken) {
+  var _a, _b;
+  if (!data)
+    return [];
+  const found = [];
+  for (const item of Array.from((_a = data.items) != null ? _a : [])) {
+    if (item.kind !== "file" || !item.type.toLowerCase().startsWith("image/"))
+      continue;
+    const file = item.getAsFile();
+    if (file)
+      found.push(file);
+  }
+  if (!found.length) {
+    for (const file of Array.from((_b = data.files) != null ? _b : [])) {
+      if (isImageName(file.name, file.type))
+        found.push(file);
+    }
+  }
+  const names = new Set(taken);
+  return found.map((file) => namePastedImage(file, names));
+}
+function namePastedImage(file, names) {
+  const raw = file.name.trim();
+  const generic = !raw || /^image\.(png|jpe?g|gif|webp)$/i.test(raw);
+  let name = generic ? `pasted.${extensionForImage(file)}` : raw;
+  if (!isImageName(name, file.type))
+    name = `pasted.${extensionForImage(file)}`;
+  if (names.has(name)) {
+    const dot = name.lastIndexOf(".");
+    const stem = dot > 0 ? name.slice(0, dot) : name;
+    const ext = dot > 0 ? name.slice(dot) : "";
+    let n = 2;
+    while (names.has(`${stem}-${n}${ext}`))
+      n += 1;
+    name = `${stem}-${n}${ext}`;
+  }
+  names.add(name);
+  if (name === file.name)
+    return file;
+  return new File([file], name, { type: file.type || mimeForName(name) });
+}
+function extensionForImage(file) {
+  const type = file.type.split(";", 1)[0].trim().toLowerCase();
+  if (type === "image/jpeg")
+    return "jpg";
+  if (type === "image/gif")
+    return "gif";
+  if (type === "image/webp")
+    return "webp";
+  return "png";
+}
 function modelTail(id) {
   const at = id.indexOf("@");
   const model = (at >= 0 ? id.slice(at + 1) : id).trim();
