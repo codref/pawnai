@@ -2053,17 +2053,18 @@ function exportFilename(file) {
   return isExcalidrawName(stem) || isExcalidrawName(file.name) ? `${stem}.png` : `${file.basename}.png`;
 }
 function excalidrawHost(app) {
-  var _a, _b;
-  const host = (_b = (_a = app.plugins) == null ? void 0 : _a.plugins) == null ? void 0 : _b[PLUGIN_ID];
+  var _a, _b, _c, _d;
+  const manager = app.plugins;
+  const host = (_d = (_c = (_a = manager == null ? void 0 : manager.plugins) == null ? void 0 : _a[PLUGIN_ID]) != null ? _c : (_b = manager == null ? void 0 : manager.getPlugin) == null ? void 0 : _b.call(manager, PLUGIN_ID)) != null ? _d : null;
   return (host == null ? void 0 : host.ea) ? host : null;
 }
 function excalidrawApi(app) {
-  var _a, _b;
-  const getAPI = (_b = (_a = excalidrawHost(app)) == null ? void 0 : _a.ea) == null ? void 0 : _b.getAPI;
-  if (!getAPI)
+  var _a;
+  const ea = (_a = excalidrawHost(app)) == null ? void 0 : _a.ea;
+  if (!(ea == null ? void 0 : ea.getAPI))
     return null;
   try {
-    return getAPI();
+    return ea.getAPI();
   } catch (e) {
     return null;
   }
@@ -2082,10 +2083,12 @@ function fileIsExcalidraw(app, file) {
   }
 }
 async function exportExcalidrawImage(app, file, fragment = "") {
-  const api = excalidrawApi(app);
   const name = exportFilename(file);
-  if (!api)
+  if (!excalidrawHost(app))
     return { status: "missing" };
+  const api = excalidrawApi(app);
+  if (!api)
+    return { status: "failed", name };
   const key = `${file.path}\0${fragment}`;
   const fingerprint = await sceneFingerprint(app, file, fragment);
   if (fingerprint) {

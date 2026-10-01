@@ -58,17 +58,24 @@ export function exportFilename(file: TFile): string {
 }
 
 function excalidrawHost(app: App): ExcalidrawHost | null {
-  const host = (
-    app as unknown as { plugins?: { plugins?: Record<string, ExcalidrawHost> } }
-  ).plugins?.plugins?.[PLUGIN_ID];
+  const manager = (
+    app as unknown as {
+      plugins?: {
+        plugins?: Record<string, ExcalidrawHost>;
+        getPlugin?: (id: string) => ExcalidrawHost | null;
+      };
+    }
+  ).plugins;
+  const host = manager?.plugins?.[PLUGIN_ID] ?? manager?.getPlugin?.(PLUGIN_ID) ?? null;
   return host?.ea ? host : null;
 }
 
 export function excalidrawApi(app: App): ExportApi | null {
-  const getAPI = excalidrawHost(app)?.ea?.getAPI;
-  if (!getAPI) return null;
+  const ea = excalidrawHost(app)?.ea;
+  if (!ea?.getAPI) return null;
   try {
-    return getAPI();
+    // getAPI uses `this.plugin`. A detached call throws and looks like a missing plugin.
+    return ea.getAPI();
   } catch {
     return null;
   }
@@ -94,9 +101,10 @@ export async function exportExcalidrawImage(
   file: TFile,
   fragment = "",
 ): Promise<DiagramExport> {
-  const api = excalidrawApi(app);
   const name = exportFilename(file);
-  if (!api) return { status: "missing" };
+  if (!excalidrawHost(app)) return { status: "missing" };
+  const api = excalidrawApi(app);
+  if (!api) return { status: "failed", name };
   const key = `${file.path}\0${fragment}`;
   const fingerprint = await sceneFingerprint(app, file, fragment);
   if (fingerprint) {
