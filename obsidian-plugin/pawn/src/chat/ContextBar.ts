@@ -78,6 +78,7 @@ export class ContextBar {
   private includeSelection = true;
   private extra: TFile[] = [];
   private el: HTMLElement | null = null;
+  private imageChips: { label: string; title: string; onRemove: () => void }[] = [];
 
   constructor(
     private app: App,
@@ -88,6 +89,12 @@ export class ContextBar {
 
   mount(container: HTMLElement): void {
     this.el = container.createDiv({ cls: "pawn-context-bar" });
+    this.render();
+  }
+
+  /** Dropped pictures, and a one-shot re-read chip after `/vision refresh`. */
+  setImageChips(chips: { label: string; title: string; onRemove: () => void }[]): void {
+    this.imageChips = chips;
     this.render();
   }
 
@@ -195,6 +202,15 @@ export class ContextBar {
           this.includeSelection = !this.includeSelection;
           this.render();
         },
+      });
+    }
+    for (const image of this.imageChips) {
+      this.chip(el, {
+        icon: "image",
+        label: image.label,
+        title: image.title,
+        removeLabel: `Remove ${image.label}`,
+        onRemove: image.onRemove,
       });
     }
     for (const file of this.extra) {

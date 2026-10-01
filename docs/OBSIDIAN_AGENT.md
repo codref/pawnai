@@ -177,8 +177,8 @@ the release tag, BRAT, and the full feature list.
 - When the selected model is flagged `vision: true`, dropping a png, jpeg,
   gif, or webp attaches it to the next message. Images embedded in attached
   notes are sent too (**Include images from attached notes**, on by default).
-  Each picture is captioned once in that conversation. **Re-read images**
-  forces a fresh caption on the next send. Other files still go to the Inbox
+  Each picture is captioned once in that conversation. `/vision refresh`
+  reads them again on the next message. Other files still go to the Inbox
   upload job. A page with several images captions up to four per message, in
   document order, and later messages pick up the ones not captioned yet. The
   model sees pixels for one of them; the others stay searchable by caption.

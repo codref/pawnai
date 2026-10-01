@@ -1751,11 +1751,17 @@ var ContextBar = class {
     this.includeSelection = true;
     this.extra = [];
     this.el = null;
+    this.imageChips = [];
     this.lastKey = "";
     this.defaultIncludeActive = defaultIncludeActive;
   }
   mount(container) {
     this.el = container.createDiv({ cls: "pawn-context-bar" });
+    this.render();
+  }
+  /** Dropped pictures, and a one-shot re-read chip after `/vision refresh`. */
+  setImageChips(chips) {
+    this.imageChips = chips;
     this.render();
   }
   addFile(file) {
@@ -1860,6 +1866,15 @@ var ContextBar = class {
           this.includeSelection = !this.includeSelection;
           this.render();
         }
+      });
+    }
+    for (const image of this.imageChips) {
+      this.chip(el, {
+        icon: "image",
+        label: image.label,
+        title: image.title,
+        removeLabel: `Remove ${image.label}`,
+        onRemove: image.onRemove
       });
     }
     for (const file of this.extra) {
@@ -2100,10 +2115,10 @@ var PawnChatView = class extends import_obsidian11.ItemView {
     const name = current ? modelChipLabel(current, ids) : "Model";
     const choice = this.currentChoice();
     const effort = ((_a = choice == null ? void 0 : choice.reasoning) == null ? void 0 : _a.length) ? REASONING_LABEL[this.effectiveReasoning()] : "";
-    const vision = (choice == null ? void 0 : choice.vision) ? "Vision" : "";
-    const text = [name, effort, vision].filter(Boolean).join(" ");
+    const text = [name, effort].filter(Boolean).join(" ");
     label.setText(text);
     const route = ((_b = choice == null ? void 0 : choice.routes) == null ? void 0 : _b.length) ? ROUTE_LABEL[this.effectiveRoute()] : "";
+    const vision = (choice == null ? void 0 : choice.vision) ? "Vision" : "";
     button.title = [current, effort, route, vision].filter(Boolean).join(" \xB7 ") || "Model";
     button.setAttr("aria-label", button.title);
   }
@@ -2794,7 +2809,7 @@ ${(_a = e.stack) != null ? _a : ""}` : String(e)
     this.switchBannerEl = wrap.createDiv({ cls: "pawn-switch-banner is-hidden" });
     this.renderComposerBanner();
     this.context.mount(wrap);
-    this.renderImageBar(wrap);
+    this.syncImageChips();
     this.slashEl = wrap.createDiv({ cls: "pawn-slash is-hidden" });
     const ta = wrap.createEl("textarea", {
       cls: "pawn-input",
@@ -2944,6 +2959,14 @@ ${(_a = e.stack) != null ? _a : ""}` : String(e)
         run: () => void this.send("/inbox")
       },
       { slug: "reset", label: "/reset", hint: "Clear this conversation", run: () => void this.send("/reset") },
+      ...this.modelIsVision() ? [
+        {
+          slug: "vision-refresh",
+          label: "/vision refresh",
+          hint: "Read attached images again on the next message",
+          run: () => this.armReread()
+        }
+      ] : [],
       {
         slug: "model",
         label: "/model",
@@ -3115,35 +3138,35 @@ ${(_a = e.stack) != null ? _a : ""}` : String(e)
     var _a;
     return Boolean((_a = this.currentChoice()) == null ? void 0 : _a.vision);
   }
-  renderImageBar(wrap) {
-    const showReread = this.modelIsVision() && this.plugin.settings.includeNoteImages;
-    if (!this.pendingImages.length && !showReread)
+  armReread() {
+    if (!this.modelIsVision()) {
+      new import_obsidian11.Notice("This model can't see images. Pick a vision model in the model menu.");
       return;
-    const bar = wrap.createDiv({ cls: "pawn-image-bar" });
-    this.pendingImages.forEach((image, index) => {
-      const chip = bar.createDiv({ cls: "pawn-chip" });
-      chip.createSpan({ cls: "pawn-chip-label", text: image.filename });
-      const close = chip.createEl("button", {
-        cls: "pawn-chip-remove",
-        attr: { type: "button", "aria-label": `Remove ${image.filename}` }
-      });
-      close.textContent = "\xD7";
-      close.onclick = () => {
-        this.pendingImages.splice(index, 1);
-        this.render();
-      };
-    });
-    if (showReread) {
-      const toggle = bar.createEl("button", {
-        cls: "pawn-chip pawn-reread" + (this.rereadImages ? " is-on" : ""),
-        attr: { type: "button" },
-        text: "Re-read images"
-      });
-      toggle.onclick = () => {
-        this.rereadImages = !this.rereadImages;
-        this.render();
-      };
     }
+    this.rereadImages = true;
+    new import_obsidian11.Notice("Images on the next message will be read again.");
+    this.syncImageChips();
+  }
+  syncImageChips() {
+    const chips = this.pendingImages.map((image, index) => ({
+      label: image.filename,
+      title: image.filename,
+      onRemove: () => {
+        this.pendingImages.splice(index, 1);
+        this.syncImageChips();
+      }
+    }));
+    if (this.rereadImages) {
+      chips.push({
+        label: "Re-read",
+        title: "Images on the next message will be read again",
+        onRemove: () => {
+          this.rereadImages = false;
+          this.syncImageChips();
+        }
+      });
+    }
+    this.context.setImageChips(chips);
   }
   async acceptDroppedFiles(files) {
     const images = [];
@@ -3275,6 +3298,13 @@ ${(_a = e.stack) != null ? _a : ""}` : String(e)
     this.stickToBottom = true;
     const conversation = this.conversationId;
     const convs = this.plugin.conversations;
+    if (text === "/vision refresh") {
+      this.armReread();
+      if (this.composer)
+        this.composer.value = "";
+      this.draftText = "";
+      return;
+    }
     if (text === "/reset") {
       try {
         await this.plugin.client.chat({ conversation, message: "/reset" }, {});
@@ -3645,7 +3675,7 @@ var PawnSettingTab = class extends import_obsidian14.PluginSettingTab {
       })
     );
     new import_obsidian14.Setting(containerEl).setName("Include images from attached notes").setDesc(
-      "When the selected model can see images, send pictures embedded in attached notes. Each picture is read once per conversation unless you use Re-read images."
+      "When the selected model can see images, send pictures embedded in attached notes. Each picture is read once per conversation. /vision refresh reads them again."
     ).addToggle(
       (t) => t.setValue(s.includeNoteImages).onChange(async (v) => {
         s.includeNoteImages = v;

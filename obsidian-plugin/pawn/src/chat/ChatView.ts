@@ -159,10 +159,10 @@ export class PawnChatView extends ItemView {
     const name = current ? modelChipLabel(current, ids) : "Model";
     const choice = this.currentChoice();
     const effort = choice?.reasoning?.length ? REASONING_LABEL[this.effectiveReasoning()] : "";
-    const vision = choice?.vision ? "Vision" : "";
-    const text = [name, effort, vision].filter(Boolean).join(" ");
+    const text = [name, effort].filter(Boolean).join(" ");
     label.setText(text);
     const route = choice?.routes?.length ? ROUTE_LABEL[this.effectiveRoute()] : "";
+    const vision = choice?.vision ? "Vision" : "";
     button.title = [current, effort, route, vision].filter(Boolean).join(" · ") || "Model";
     button.setAttr("aria-label", button.title);
   }
@@ -838,7 +838,7 @@ export class PawnChatView extends ItemView {
     this.switchBannerEl = wrap.createDiv({ cls: "pawn-switch-banner is-hidden" });
     this.renderComposerBanner();
     this.context.mount(wrap);
-    this.renderImageBar(wrap);
+    this.syncImageChips();
     this.slashEl = wrap.createDiv({ cls: "pawn-slash is-hidden" });
     const ta = wrap.createEl("textarea", {
       cls: "pawn-input",
@@ -987,6 +987,16 @@ export class PawnChatView extends ItemView {
         run: () => void this.send("/inbox"),
       },
       { slug: "reset", label: "/reset", hint: "Clear this conversation", run: () => void this.send("/reset") },
+      ...(this.modelIsVision()
+        ? [
+            {
+              slug: "vision-refresh",
+              label: "/vision refresh",
+              hint: "Read attached images again on the next message",
+              run: () => this.armReread(),
+            },
+          ]
+        : []),
       {
         slug: "model",
         label: "/model",
@@ -1154,34 +1164,36 @@ export class PawnChatView extends ItemView {
     return Boolean(this.currentChoice()?.vision);
   }
 
-  private renderImageBar(wrap: HTMLElement): void {
-    const showReread = this.modelIsVision() && this.plugin.settings.includeNoteImages;
-    if (!this.pendingImages.length && !showReread) return;
-    const bar = wrap.createDiv({ cls: "pawn-image-bar" });
-    this.pendingImages.forEach((image, index) => {
-      const chip = bar.createDiv({ cls: "pawn-chip" });
-      chip.createSpan({ cls: "pawn-chip-label", text: image.filename });
-      const close = chip.createEl("button", {
-        cls: "pawn-chip-remove",
-        attr: { type: "button", "aria-label": `Remove ${image.filename}` },
-      });
-      close.textContent = "×";
-      close.onclick = () => {
-        this.pendingImages.splice(index, 1);
-        this.render();
-      };
-    });
-    if (showReread) {
-      const toggle = bar.createEl("button", {
-        cls: "pawn-chip pawn-reread" + (this.rereadImages ? " is-on" : ""),
-        attr: { type: "button" },
-        text: "Re-read images",
-      });
-      toggle.onclick = () => {
-        this.rereadImages = !this.rereadImages;
-        this.render();
-      };
+  private armReread(): void {
+    if (!this.modelIsVision()) {
+      new Notice("This model can't see images. Pick a vision model in the model menu.");
+      return;
     }
+    this.rereadImages = true;
+    new Notice("Images on the next message will be read again.");
+    this.syncImageChips();
+  }
+
+  private syncImageChips(): void {
+    const chips = this.pendingImages.map((image, index) => ({
+      label: image.filename,
+      title: image.filename,
+      onRemove: () => {
+        this.pendingImages.splice(index, 1);
+        this.syncImageChips();
+      },
+    }));
+    if (this.rereadImages) {
+      chips.push({
+        label: "Re-read",
+        title: "Images on the next message will be read again",
+        onRemove: () => {
+          this.rereadImages = false;
+          this.syncImageChips();
+        },
+      });
+    }
+    this.context.setImageChips(chips);
   }
 
   private async acceptDroppedFiles(files: File[]): Promise<void> {
@@ -1312,6 +1324,13 @@ export class PawnChatView extends ItemView {
     this.stickToBottom = true;
     const conversation = this.conversationId;
     const convs = this.plugin.conversations;
+
+    if (text === "/vision refresh") {
+      this.armReread();
+      if (this.composer) this.composer.value = "";
+      this.draftText = "";
+      return;
+    }
 
     if (text === "/reset") {
       try {
