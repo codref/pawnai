@@ -293,13 +293,24 @@ class ContextNote(BaseModel):
     content: Optional[str] = None
 
 
+class ChatImage(BaseModel):
+    """One image on a native chat turn (dropped file or a note embed)."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    filename: str
+    media_type: str = ""
+    data_base64: str
+    role: str = "question"
+
+
 class PawnChatRequest(BaseModel):
     """POST /v1/pawn/chat — native streaming chat for the Pawn Obsidian plugin."""
 
     model_config = ConfigDict(extra="ignore")
 
     conversation: str
-    message: str
+    message: str = ""
     active_note: Optional[ContextNote] = None
     selection: Optional[str] = None
     context: List[ContextNote] = Field(default_factory=list)
@@ -310,6 +321,11 @@ class PawnChatRequest(BaseModel):
     reasoning: Optional[str] = None
     # OpenRouter route: balanced, nitro, floor, exacto.
     route: Optional[str] = None
+    images: List[ChatImage] = Field(default_factory=list)
+    # Recaption images this session has already seen.
+    force_caption: bool = False
+    # When false, note embeds are not read from the vault.
+    include_note_images: bool = True
 
 
 class VaultTaskCreateRequest(BaseModel):
@@ -1291,8 +1307,10 @@ async def pawn_chat(body: PawnChatRequest, cfg: Any = Depends(_get_cfg)) -> Stre
 
     conversation = body.conversation.strip()
     message = body.message.strip()
-    if not conversation or not message:
+    if not conversation or (not message and not body.images):
         raise HTTPException(status_code=422, detail="conversation and message are required")
+    if not message and body.images:
+        message = "Look at this image."
     loop = asyncio.get_running_loop()
     _schedule_idle_reset(loop, cfg.api_model_idle_timeout_minutes * 60)
     keepalive = float(getattr(cfg.api, "stream_keepalive_seconds", 10.0))
@@ -1356,6 +1374,38 @@ async def pawn_chat(body: PawnChatRequest, cfg: Any = Depends(_get_cfg)) -> Stre
                 message, active_note=active, selection=body.selection, context=extra
             )
 
+        from pawn_agent.core.vision import (  # noqa: PLC0415
+            MAX_CANDIDATE_IMAGES,
+            ImageRejected,
+            decode_chat_image,
+            load_note_images,
+        )
+
+        try:
+            decoded = [
+                decode_chat_image(
+                    filename=image.filename,
+                    media_type=image.media_type,
+                    data_base64=image.data_base64,
+                    role=image.role,
+                )
+                for image in body.images[:MAX_CANDIDATE_IMAGES]
+            ]
+        except ImageRejected as exc:
+            yield _sse_event("error", {"message": str(exc)})
+            yield _sse_event("done", {"conversation": conversation})
+            return
+        questions = [image for image in decoded if image.role == "question"]
+        supplied_context = [image for image in decoded if image.role == "context"]
+        note_images: list = []
+        if body.include_note_images and not supplied_context:
+            note_pairs = []
+            if active is not None:
+                note_pairs.append((active.path, active.content))
+            note_pairs.extend((note.path, note.content) for note in extra)
+            note_images = await asyncio.to_thread(load_note_images, store, note_pairs)
+        turn_images = (questions + supplied_context + note_images)[:MAX_CANDIDATE_IMAGES]
+
         async def _run(on_progress: Any) -> Any:
             return await run_agent_turn(
                 cfg=cfg,
@@ -1368,6 +1418,8 @@ async def pawn_chat(body: PawnChatRequest, cfg: Any = Depends(_get_cfg)) -> Stre
                 reasoning=(body.reasoning or "").strip() or None,
                 route=(body.route or "").strip() or None,
                 on_progress=on_progress,
+                images=turn_images or None,
+                force_caption=bool(body.force_caption),
             )
 
         run_id: Optional[str] = None

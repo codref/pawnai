@@ -145,8 +145,10 @@ agent:
       models:
         # model: overrides target_model inside the profile file.
         # large.yaml is the packaged fallback; point profile at a tuned file.
+        # vision: true lets Matrix and Obsidian chat attach images to this model.
         - model: gemma4:4b
           profile: large.yaml
+          # vision: true
     opencode:
       # API root, not the docs page and not the full .../chat/completions URL.
       # Go models: https://opencode.ai/zen/go/v1

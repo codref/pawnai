@@ -63,6 +63,18 @@ export interface ChatRequest {
   reasoning?: string;
   /** OpenRouter route: balanced, nitro, floor, exacto. */
   route?: string;
+  images?: ChatImage[];
+  /** Recaption images this conversation has already seen. */
+  force_caption?: boolean;
+  /** When false, the server does not read images embedded in notes. */
+  include_note_images?: boolean;
+}
+
+export interface ChatImage {
+  filename: string;
+  media_type: string;
+  data_base64: string;
+  role: "question" | "context";
 }
 
 export interface ModelChoice {
@@ -73,6 +85,8 @@ export interface ModelChoice {
   reasoning_default?: string;
   routes?: string[];
   route_default?: string;
+  /** True when pawnai.yaml flags this catalog model as vision-ready. */
+  vision?: boolean;
 }
 
 export interface ModelCatalog {

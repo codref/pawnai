@@ -424,10 +424,26 @@ body:not(.is-mobile) .mod-left-split .pawn-composer {
   right: calc(100% + 4px);
 }
 
-.pawn-context-bar {
+.pawn-context-bar,
+.pawn-image-bar {
   display: flex;
   flex-wrap: wrap;
   gap: 4px;
+}
+
+.pawn-image-bar {
+  margin-top: 4px;
+}
+
+button.pawn-reread {
+  cursor: pointer;
+  border: none;
+  color: var(--text-muted);
+}
+
+button.pawn-reread.is-on {
+  background: var(--interactive-accent);
+  color: var(--text-on-accent);
 }
 
 .pawn-chip {

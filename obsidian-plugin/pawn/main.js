@@ -1918,6 +1918,79 @@ var ContextBar = class {
   }
 };
 
+// src/chat/noteImages.ts
+var IMAGE_EXT = /* @__PURE__ */ new Set(["png", "jpg", "jpeg", "gif", "webp"]);
+var WIKI_EMBED = /!\[\[([^\]|#|]+)(?:#[^\]|]*)?(?:\|[^\]]*)?\]\]/g;
+var MD_EMBED = /!\[[^\]]*\]\(([^)]+)\)/g;
+var MD_TITLE = /\s+["'].*["']\s*$/;
+function isImageName(name, mediaType = "") {
+  var _a, _b;
+  const mime = mediaType.split(";", 1)[0].trim().toLowerCase();
+  if (mime === "image/png" || mime === "image/jpeg" || mime === "image/gif" || mime === "image/webp") {
+    return true;
+  }
+  const ext = (_b = (_a = name.split(".").pop()) == null ? void 0 : _a.toLowerCase()) != null ? _b : "";
+  return IMAGE_EXT.has(ext);
+}
+function mimeForName(name) {
+  var _a, _b;
+  const ext = (_b = (_a = name.split(".").pop()) == null ? void 0 : _a.toLowerCase()) != null ? _b : "";
+  if (ext === "png")
+    return "image/png";
+  if (ext === "gif")
+    return "image/gif";
+  if (ext === "webp")
+    return "image/webp";
+  if (ext === "jpg" || ext === "jpeg")
+    return "image/jpeg";
+  return "application/octet-stream";
+}
+function noteImageTargets(markdown) {
+  var _a, _b, _c, _d;
+  const found = [];
+  const seen = /* @__PURE__ */ new Set();
+  const located = [];
+  for (const match of markdown.matchAll(WIKI_EMBED)) {
+    located.push({ index: (_a = match.index) != null ? _a : 0, raw: (_b = match[1]) != null ? _b : "" });
+  }
+  for (const match of markdown.matchAll(MD_EMBED)) {
+    located.push({ index: (_c = match.index) != null ? _c : 0, raw: (_d = match[1]) != null ? _d : "" });
+  }
+  located.sort((a, b) => a.index - b.index);
+  const add = (raw) => {
+    let target = raw.trim();
+    if (target.startsWith("<") && target.endsWith(">") && target.length > 2) {
+      target = target.slice(1, -1).trim();
+    }
+    target = target.replace(MD_TITLE, "").trim().replace(/^\.\//, "");
+    if (!target || /^(https?:|data:|mailto:|#)/i.test(target))
+      return;
+    try {
+      target = decodeURIComponent(target);
+    } catch (e) {
+    }
+    if (!isImageName(target))
+      return;
+    const key = target.replace(/\\/g, "/");
+    if (seen.has(key))
+      return;
+    seen.add(key);
+    found.push(key);
+  };
+  for (const item of located)
+    add(item.raw);
+  return found;
+}
+function bytesToBase64(data) {
+  const bytes = new Uint8Array(data);
+  let binary = "";
+  const chunk = 32768;
+  for (let i = 0; i < bytes.length; i += chunk) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + chunk));
+  }
+  return btoa(binary);
+}
+
 // src/chat/ChatView.ts
 var PAWN_CHAT_VIEW = "pawn-chat";
 var PawnChatView = class extends import_obsidian11.ItemView {
@@ -1956,6 +2029,10 @@ var PawnChatView = class extends import_obsidian11.ItemView {
     this.modelButtonLabel = null;
     this.modelPop = null;
     this.modelPopCloser = null;
+    /** Pictures dropped on the composer; sent as question images. */
+    this.pendingImages = [];
+    /** One-shot: recaption images this conversation has already seen. */
+    this.rereadImages = false;
     // ── rendering ────────────────────────────────────────────────────────────
     this.tabsEl = null;
     this.renderScope = null;
@@ -2023,10 +2100,11 @@ var PawnChatView = class extends import_obsidian11.ItemView {
     const name = current ? modelChipLabel(current, ids) : "Model";
     const choice = this.currentChoice();
     const effort = ((_a = choice == null ? void 0 : choice.reasoning) == null ? void 0 : _a.length) ? REASONING_LABEL[this.effectiveReasoning()] : "";
-    const text = effort ? `${name} ${effort}` : name;
+    const vision = (choice == null ? void 0 : choice.vision) ? "Vision" : "";
+    const text = [name, effort, vision].filter(Boolean).join(" ");
     label.setText(text);
     const route = ((_b = choice == null ? void 0 : choice.routes) == null ? void 0 : _b.length) ? ROUTE_LABEL[this.effectiveRoute()] : "";
-    button.title = [current, effort, route].filter(Boolean).join(" \xB7 ") || "Model";
+    button.title = [current, effort, route, vision].filter(Boolean).join(" \xB7 ") || "Model";
     button.setAttr("aria-label", button.title);
   }
   currentChoice() {
@@ -2075,7 +2153,10 @@ var PawnChatView = class extends import_obsidian11.ItemView {
     this.addPopRow(pop, "Model", current ? modelChipLabel(current, ids) : "None", () => {
       this.openSubmenu(
         pop,
-        ids.length ? ids.map((id) => ({ value: id, label: modelMenuLabel(id) })) : [{ value: "", label: "No models configured", disabled: true }],
+        ids.length ? ids.map((id) => ({
+          value: id,
+          label: modelMenuLabel(id, this.modelChoices.some((c) => c.id === id && c.vision))
+        })) : [{ value: "", label: "No models configured", disabled: true }],
         current,
         (id) => {
           if (!id)
@@ -2713,6 +2794,7 @@ ${(_a = e.stack) != null ? _a : ""}` : String(e)
     this.switchBannerEl = wrap.createDiv({ cls: "pawn-switch-banner is-hidden" });
     this.renderComposerBanner();
     this.context.mount(wrap);
+    this.renderImageBar(wrap);
     this.slashEl = wrap.createDiv({ cls: "pawn-slash is-hidden" });
     const ta = wrap.createEl("textarea", {
       cls: "pawn-input",
@@ -2760,7 +2842,7 @@ ${(_a = e.stack) != null ? _a : ""}` : String(e)
     this.fileInput.onchange = () => {
       var _a, _b;
       const files = Array.from((_b = (_a = this.fileInput) == null ? void 0 : _a.files) != null ? _b : []);
-      void this.uploadFiles(files);
+      void this.acceptDroppedFiles(files);
       if (this.fileInput)
         this.fileInput.value = "";
     };
@@ -3010,7 +3092,7 @@ ${(_a = e.stack) != null ? _a : ""}` : String(e)
       if (!dt)
         return;
       if (dt.files && dt.files.length) {
-        void this.uploadFiles(Array.from(dt.files));
+        void this.acceptDroppedFiles(Array.from(dt.files));
         return;
       }
       const text = dt.getData("text/plain");
@@ -3028,6 +3110,77 @@ ${(_a = e.stack) != null ? _a : ""}` : String(e)
       if (!added && text.trim())
         new import_obsidian11.Notice("Drop notes from the file explorer, or files from disk.");
     });
+  }
+  modelIsVision() {
+    var _a;
+    return Boolean((_a = this.currentChoice()) == null ? void 0 : _a.vision);
+  }
+  renderImageBar(wrap) {
+    const showReread = this.modelIsVision() && this.plugin.settings.includeNoteImages;
+    if (!this.pendingImages.length && !showReread)
+      return;
+    const bar = wrap.createDiv({ cls: "pawn-image-bar" });
+    this.pendingImages.forEach((image, index) => {
+      const chip = bar.createDiv({ cls: "pawn-chip" });
+      chip.createSpan({ cls: "pawn-chip-label", text: image.filename });
+      const close = chip.createEl("button", {
+        cls: "pawn-chip-remove",
+        attr: { type: "button", "aria-label": `Remove ${image.filename}` }
+      });
+      close.textContent = "\xD7";
+      close.onclick = () => {
+        this.pendingImages.splice(index, 1);
+        this.render();
+      };
+    });
+    if (showReread) {
+      const toggle = bar.createEl("button", {
+        cls: "pawn-chip pawn-reread" + (this.rereadImages ? " is-on" : ""),
+        attr: { type: "button" },
+        text: "Re-read images"
+      });
+      toggle.onclick = () => {
+        this.rereadImages = !this.rereadImages;
+        this.render();
+      };
+    }
+  }
+  async acceptDroppedFiles(files) {
+    const images = [];
+    const rest = [];
+    for (const file of files) {
+      if (isImageName(file.name, file.type))
+        images.push(file);
+      else
+        rest.push(file);
+    }
+    if (images.length)
+      await this.attachImages(images);
+    if (rest.length)
+      await this.uploadFiles(rest);
+  }
+  async attachImages(files) {
+    if (!this.modelIsVision()) {
+      new import_obsidian11.Notice("This model can't see images. Pick a vision model in the model menu.");
+      return;
+    }
+    const maxBytes = 4 * 1024 * 1024;
+    for (const file of files) {
+      if (this.pendingImages.length >= 4) {
+        new import_obsidian11.Notice("Four images can be attached to one message.");
+        break;
+      }
+      if (file.size > maxBytes) {
+        new import_obsidian11.Notice(`${file.name} is larger than 4MB.`);
+        continue;
+      }
+      this.pendingImages.push({
+        filename: file.name,
+        mediaType: file.type || mimeForName(file.name),
+        data: await file.arrayBuffer()
+      });
+    }
+    this.render();
   }
   async uploadFiles(files) {
     for (const f of files) {
@@ -3057,14 +3210,56 @@ ${(_a = e.stack) != null ? _a : ""}` : String(e)
     if (!ta)
       return;
     const text = ta.value.trim();
-    if (!text)
+    if (!text && !this.pendingImages.length)
       return;
+    if (this.background && this.pendingImages.length) {
+      new import_obsidian11.Notice("Background jobs don't include images. Uncheck Background, or remove the images.");
+      return;
+    }
+    if (this.pendingImages.length && !this.modelIsVision()) {
+      new import_obsidian11.Notice("This model can't see images. Pick a vision model in the model menu.");
+      return;
+    }
     ta.value = "";
     this.draftText = "";
     this.pendingSwitch = null;
     this.autosize();
     this.hideSlash();
     await this.send(text, { background: this.background });
+  }
+  async contextImages(files) {
+    var _a;
+    const out = [];
+    const seen = /* @__PURE__ */ new Set();
+    const maxBytes = 4 * 1024 * 1024;
+    for (const file of files) {
+      let body = "";
+      try {
+        body = await this.app.vault.cachedRead(file);
+      } catch (e) {
+        continue;
+      }
+      for (const target of noteImageTargets(body)) {
+        if (out.length >= 12)
+          return out;
+        const dest = (_a = this.app.metadataCache.getFirstLinkpathDest(target, file.path)) != null ? _a : this.app.vault.getAbstractFileByPath(target);
+        if (!(dest instanceof import_obsidian11.TFile) || seen.has(dest.path) || !isImageName(dest.name))
+          continue;
+        seen.add(dest.path);
+        const data = await this.app.vault.readBinary(dest);
+        if (data.byteLength > maxBytes) {
+          new import_obsidian11.Notice(`${dest.name} is larger than 4MB and was skipped.`);
+          continue;
+        }
+        out.push({
+          filename: dest.name,
+          media_type: mimeForName(dest.name),
+          data_base64: bytesToBase64(data),
+          role: "context"
+        });
+      }
+    }
+    return out;
   }
   async noteContext(file) {
     if (!this.plugin.settings.sendLocalNoteContent)
@@ -3095,16 +3290,24 @@ ${(_a = e.stack) != null ? _a : ""}` : String(e)
     const selection = (_a = snap.selection) != null ? _a : void 0;
     const notePath = (_c = (_b = snap.activeNote) == null ? void 0 : _b.path) != null ? _c : selection == null ? void 0 : selection.path;
     const contextPaths = snap.extra.map((f) => f.path);
+    const questionImages = this.pendingImages.splice(0);
+    const reread = this.rereadImages;
+    this.rereadImages = false;
+    const imageNote = questionImages.map((image) => image.filename).join(", ");
+    const message = text || "Look at this image.";
     convs.add(conversation, {
       id: newId(),
       role: "user",
-      content: text,
+      content: imageNote ? text ? `${text}
+
+(images: ${imageNote})` : `(images: ${imageNote})` : text,
       createdAt: Date.now(),
       selection,
       notePath,
       context: [...snap.activeNote ? [snap.activeNote.path] : [], ...contextPaths]
     });
     if (opts.background) {
+      this.rereadImages = reread;
       await this.sendBackground(text, conversation, snap);
       return;
     }
@@ -3116,14 +3319,29 @@ ${(_a = e.stack) != null ? _a : ""}` : String(e)
       const activeNote = snap.activeNote ? await this.noteContext(snap.activeNote) : void 0;
       const context = await Promise.all(snap.extra.map((f) => this.noteContext(f)));
       const model = this.selectedModel();
+      const includeNotes = this.plugin.settings.includeNoteImages && this.modelIsVision();
+      const noteFiles = [...snap.activeNote ? [snap.activeNote] : [], ...snap.extra];
+      const contextImages = includeNotes && this.plugin.settings.sendLocalNoteContent ? await this.contextImages(noteFiles) : [];
+      const images = [
+        ...questionImages.map((image) => ({
+          filename: image.filename,
+          media_type: image.mediaType || mimeForName(image.filename),
+          data_base64: bytesToBase64(image.data),
+          role: "question"
+        })),
+        ...contextImages
+      ];
       await this.plugin.client.chat(
         {
           conversation,
-          message: text,
+          message,
           active_note: activeNote,
           selection: selection == null ? void 0 : selection.text,
           context,
           model: model || void 0,
+          images: images.length ? images : void 0,
+          force_caption: reread || void 0,
+          include_note_images: includeNotes,
           ...this.tuningFields()
         },
         {
@@ -3156,11 +3374,11 @@ ${(_a = e.stack) != null ? _a : ""}` : String(e)
               createdAt: Date.now()
             });
           },
-          onError: (message) => {
+          onError: (message2) => {
             convs.add(conversation, {
               id: newId(),
               role: "error",
-              content: `Pawn error: ${message}`,
+              content: `Pawn error: ${message2}`,
               createdAt: Date.now()
             });
           }
@@ -3238,12 +3456,11 @@ function modelChipLabel(id, ids) {
   const provider = modelProvider(id);
   return provider ? `${provider} \xB7 ${tail}` : id;
 }
-function modelMenuLabel(id) {
+function modelMenuLabel(id, vision = false) {
   const provider = modelProvider(id);
   const tail = modelTail(id);
-  if (!provider || provider === tail)
-    return tail;
-  return `${tail} \xB7 ${provider}`;
+  const base = !provider || provider === tail ? tail : `${tail} \xB7 ${provider}`;
+  return vision ? `${base} \xB7 Vision` : base;
 }
 var REASONING_LABEL = {
   none: "Off",
@@ -3375,6 +3592,7 @@ var DEFAULT_SETTINGS = {
   conversationMode: "note",
   autoIncludeActiveNote: true,
   sendLocalNoteContent: true,
+  includeNoteImages: true,
   commandsFolder: "Pawn/Commands",
   notifyOnJobDone: true,
   insertCalloutForJobs: false,
@@ -3423,6 +3641,14 @@ var PawnSettingTab = class extends import_obsidian14.PluginSettingTab {
     ).addToggle(
       (t) => t.setValue(s.sendLocalNoteContent).onChange(async (v) => {
         s.sendLocalNoteContent = v;
+        await this.plugin.saveSettings();
+      })
+    );
+    new import_obsidian14.Setting(containerEl).setName("Include images from attached notes").setDesc(
+      "When the selected model can see images, send pictures embedded in attached notes. Each picture is read once per conversation unless you use Re-read images."
+    ).addToggle(
+      (t) => t.setValue(s.includeNoteImages).onChange(async (v) => {
+        s.includeNoteImages = v;
         await this.plugin.saveSettings();
       })
     );

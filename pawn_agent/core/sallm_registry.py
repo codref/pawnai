@@ -77,6 +77,8 @@ class SallmSessionRegistry:
         *,
         on_progress: Optional[Callable[[str, dict[str, Any]], None]] = None,
         vault_paths_out: Optional[list[str]] = None,
+        images: Optional[list[Any]] = None,
+        force_caption: bool = False,
         **_kwargs: Any,
     ) -> str:
         """Process one user turn under the per-session lock.
@@ -90,7 +92,12 @@ class SallmSessionRegistry:
         """
         session = await self.get_or_create(session_id, cfg, db_dsn)
         async with self._session_lock(session_id):
-            reply = await session.handle_user_input(text, on_progress=on_progress)
+            reply = await session.handle_user_input(
+                text,
+                on_progress=on_progress,
+                images=images,
+                force_caption=force_caption,
+            )
             if vault_paths_out is not None:
                 vault_paths_out.extend(getattr(session, "last_vault_paths", None) or [])
             return reply

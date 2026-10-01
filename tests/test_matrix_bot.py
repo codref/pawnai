@@ -12,6 +12,7 @@ import yaml
 from pawn_agent.utils.config import MatrixBotConfig, load_config
 from pawn_server.core.matrix_bot import (
     MatrixTurnProgress,
+    arm_image_reread,
     build_edit_content,
     build_reaction_content,
     build_text_content,
@@ -19,17 +20,41 @@ from pawn_server.core.matrix_bot import (
     conversation_id,
     extract_prompt,
     format_progress_status,
+    image_turn_prompt,
     is_direct_room,
     matrix_reply_body,
     next_sync_backoff,
     normalize_body,
     run_sync_with_reconnect,
+    take_image_reread,
     verification_allowed,
 )
 
 
 def test_conversation_id() -> None:
     assert conversation_id("!abc:example.com") == "matrix:!abc:example.com"
+
+
+def test_image_turn_prompt_dm_and_room() -> None:
+    assert image_turn_prompt("shot.png", command_prefix="!pawn", is_dm=True) == (
+        "Look at this image."
+    )
+    assert image_turn_prompt("what is wrong here?", command_prefix="!pawn", is_dm=True) == (
+        "what is wrong here?"
+    )
+    assert image_turn_prompt("shot.png", command_prefix="!pawn", is_dm=False) is None
+    assert image_turn_prompt("!pawn what is this", command_prefix="!pawn", is_dm=False) == (
+        "what is this"
+    )
+    assert image_turn_prompt("!pawn", command_prefix="!pawn", is_dm=False) == "Look at this image."
+
+
+def test_image_reread_is_one_shot() -> None:
+    room = "!vision:example"
+    assert take_image_reread(room) is False
+    arm_image_reread(room)
+    assert take_image_reread(room) is True
+    assert take_image_reread(room) is False
 
 
 def test_is_direct_room() -> None:
@@ -44,21 +69,13 @@ def test_normalize_body_strips_reply_fallback() -> None:
 
 
 def test_normalize_body_edit() -> None:
-    assert (
-        normalize_body("* old", is_edit=True, new_body="fresh text")
-        == "fresh text"
-    )
+    assert normalize_body("* old", is_edit=True, new_body="fresh text") == "fresh text"
     assert normalize_body("* patched", is_edit=True) == "patched"
 
 
 def test_extract_prompt_prefix_and_dm() -> None:
-    assert (
-        extract_prompt("!pawn hello", command_prefix="!pawn", is_dm=False)
-        == "hello"
-    )
-    assert (
-        extract_prompt("hello", command_prefix="!pawn", is_dm=True) == "hello"
-    )
+    assert extract_prompt("!pawn hello", command_prefix="!pawn", is_dm=False) == "hello"
+    assert extract_prompt("hello", command_prefix="!pawn", is_dm=True) == "hello"
     assert extract_prompt("hello", command_prefix="!pawn", is_dm=False) is None
     assert extract_prompt("!pawn", command_prefix="!pawn", is_dm=False) is None
 
@@ -90,9 +107,7 @@ def test_matrix_reply_body_strips_tool_trail() -> None:
 def test_format_progress_status() -> None:
     assert format_progress_status("turn.start") == "Working…"
     assert (
-        format_progress_status(
-            "control", {"sallm.control.skill": "sessions"}
-        )
+        format_progress_status("control", {"sallm.control.skill": "sessions"})
         == "Skill: `sessions`…"
     )
     assert (
@@ -134,9 +149,7 @@ def test_run_sync_with_reconnect_sets_online_and_retries() -> None:
     client.add_response_callback = MagicMock()
     client.sync_forever = AsyncMock(side_effect=[RuntimeError("boom"), None])
 
-    asyncio.run(
-        run_sync_with_reconnect(client, timeout_ms=1000, max_backoff_s=0.01)
-    )
+    asyncio.run(run_sync_with_reconnect(client, timeout_ms=1000, max_backoff_s=0.01))
 
     assert client.set_presence.await_count >= 2
     client.sync_forever.assert_awaited()
@@ -240,15 +253,13 @@ def test_matrix_turn_progress_finish_edits_status() -> None:
             call.args[2].get("m.new_content", {}).get("body")
             for call in client.room_send.await_args_list
             if isinstance(call.args[2], dict)
-            and call.args[2].get("m.relates_to", {}).get("rel_type")
-            == "m.replace"
+            and call.args[2].get("m.relates_to", {}).get("rel_type") == "m.replace"
         ]
         assert "Final answer here." in edit_bodies
 
         await progress.close()
         assert any(
-            c.kwargs.get("typing_state") is False
-            for c in client.room_typing.await_args_list
+            c.kwargs.get("typing_state") is False for c in client.room_typing.await_args_list
         )
 
     asyncio.run(_run())
@@ -273,9 +284,7 @@ def test_matrix_turn_progress_on_progress_schedules_edit() -> None:
             typing_interval_s=60.0,
         )
         await progress.start()
-        progress.on_progress(
-            "tool", {"gen_ai.tool.name": "sessions_list"}
-        )
+        progress.on_progress("tool", {"gen_ai.tool.name": "sessions_list"})
         await asyncio.sleep(0.05)
         assert progress._tools_ran is True
         assert any(
@@ -298,7 +307,8 @@ def test_ask_sync_installs_temporary_tracer() -> None:
         session_id = "conv-test"
         trace = None
 
-        def ask(self, text: str):
+        def ask(self, text: str, images=None, *, force_caption: bool = False):
+            del images, force_caption
             assert self.trace is not None
             self.trace.turn_start(text, [])
             self.trace.tool(

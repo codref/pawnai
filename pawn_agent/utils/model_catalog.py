@@ -65,6 +65,7 @@ class CatalogEntry:
     user_agent: Optional[str]
     reasoning: Optional[str] = None
     route: Optional[str] = None
+    vision: bool = False
 
     def selection(self) -> ModelSelection:
         return ModelSelection(
@@ -112,8 +113,7 @@ def normalize_openai_base_url(raw: Optional[str]) -> Optional[str]:
         text = text[:index].rstrip("/")
     if text and not text.lower().endswith("/v1"):
         logger.warning(
-            "provider base_url %s does not end with /v1; "
-            "chat calls go to %s/chat/completions",
+            "provider base_url %s does not end with /v1; " "chat calls go to %s/chat/completions",
             raw,
             text,
         )
@@ -290,6 +290,7 @@ def _public_model(entry: CatalogEntry) -> dict[str, Any]:
         "id": entry.id,
         "provider": entry.provider,
         "model": entry.model,
+        "vision": bool(entry.vision),
     }
     if _is_openrouter(entry.api_base):
         item["reasoning"] = ["none", "low", "medium", "high"]
@@ -297,6 +298,14 @@ def _public_model(entry: CatalogEntry) -> dict[str, Any]:
         item["routes"] = ["balanced", "nitro", "floor", "exacto"]
         item["route_default"] = entry.route or "balanced"
     return item
+
+
+def model_is_vision(cfg: Any, catalog_id: Optional[str]) -> bool:
+    """True when *catalog_id* is a configured model flagged ``vision: true``."""
+    text = (catalog_id or "").strip()
+    if not text:
+        return False
+    return any(entry.id == text and entry.vision for entry in catalog_entries(cfg))
 
 
 def apply_model_selection(cfg: Any, raw: str) -> ModelSelection:
@@ -417,7 +426,7 @@ def format_model_status(cfg: Any) -> str:
         "Models:",
     ]
     if entries:
-        lines.extend(f"- {entry.id}" for entry in entries)
+        lines.extend(f"- {entry.id}" + (" (vision)" if entry.vision else "") for entry in entries)
     else:
         lines.append("- (none)")
     lines.append("")
@@ -491,6 +500,7 @@ def _catalog_from_providers(cfg: Any, providers: dict[str, Any]) -> list[Catalog
                         "reasoning",
                     ),
                     route=_choice(getattr(provider, "route", None), _ROUTES, "route"),
+                    vision=bool(getattr(item, "vision", False)),
                 )
             )
     if not entries:

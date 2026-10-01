@@ -10,6 +10,7 @@ export interface PawnSettings {
   conversationMode: ConversationMode;
   autoIncludeActiveNote: boolean;
   sendLocalNoteContent: boolean;
+  includeNoteImages: boolean;
   commandsFolder: string;
   notifyOnJobDone: boolean;
   insertCalloutForJobs: boolean;
@@ -23,6 +24,7 @@ export const DEFAULT_SETTINGS: PawnSettings = {
   conversationMode: "note",
   autoIncludeActiveNote: true,
   sendLocalNoteContent: true,
+  includeNoteImages: true,
   commandsFolder: "Pawn/Commands",
   notifyOnJobDone: true,
   insertCalloutForJobs: false,
@@ -103,6 +105,19 @@ export class PawnSettingTab extends PluginSettingTab {
       .addToggle((t) =>
         t.setValue(s.sendLocalNoteContent).onChange(async (v) => {
           s.sendLocalNoteContent = v;
+          await this.plugin.saveSettings();
+        }),
+      );
+
+    new Setting(containerEl)
+      .setName("Include images from attached notes")
+      .setDesc(
+        "When the selected model can see images, send pictures embedded in attached notes. " +
+          "Each picture is read once per conversation unless you use Re-read images.",
+      )
+      .addToggle((t) =>
+        t.setValue(s.includeNoteImages).onChange(async (v) => {
+          s.includeNoteImages = v;
           await this.plugin.saveSettings();
         }),
       );

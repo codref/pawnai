@@ -40,6 +40,8 @@ async def run_agent_turn(
     schedule_id: Optional[str] = None,
     scheduled_fire_id: Optional[str] = None,
     on_progress: Optional[Callable[[str, dict[str, Any]], None]] = None,
+    images: Optional[list[Any]] = None,
+    force_caption: bool = False,
     parent_run_id: Optional[str] = None,
     depth: int = 0,
     event_id: Optional[str] = None,
@@ -103,16 +105,31 @@ async def run_agent_turn(
                 "it must be the diarization session name used by agent tools"
             )
 
+        from pawn_agent.core.vision import ImageRejected, vision_refusal  # noqa: PLC0415
+        from pawn_agent.utils.model_catalog import model_is_vision  # noqa: PLC0415
+
+        if images and not model_is_vision(effective_cfg, recorded or chosen):
+            reply = vision_refusal(source)
+            update_agent_run(cfg.db_dsn, run_id, "completed", response=reply)
+            return AgentRunResult(run_id=run_id, response=reply)
+
         vault_paths: list[str] = []
         with lineage_env(run_id, depth=depth, event_id=event_id or run_id):
-            reply = await registry.handle_turn(
-                session_id,
-                prompt,
-                effective_cfg,
-                cfg.db_dsn,
-                on_progress=on_progress,
-                vault_paths_out=vault_paths,
-            )
+            try:
+                reply = await registry.handle_turn(
+                    session_id,
+                    prompt,
+                    effective_cfg,
+                    cfg.db_dsn,
+                    on_progress=on_progress,
+                    vault_paths_out=vault_paths,
+                    images=images,
+                    force_caption=force_caption,
+                )
+            except ImageRejected as exc:
+                reply = str(exc)
+                update_agent_run(cfg.db_dsn, run_id, "completed", response=reply)
+                return AgentRunResult(run_id=run_id, response=reply)
         update_agent_run(cfg.db_dsn, run_id, "completed", response=reply)
         if vault_paths:
             _publish_vault_writes(vault_paths, source=source, run_id=run_id)

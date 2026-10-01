@@ -26,6 +26,7 @@ Config file schema (all keys optional)::
           api_key: ollama
           models:
             - profile: gemma4-4b.yaml
+              vision: true
         opencode:
           base_url: https://opencode.ai/zen/v1
           api_key: sk-...
@@ -133,6 +134,8 @@ class ProviderModelConfig(BaseModel):
     profile: str
     # Wins over the profile ``target_model`` when set.
     model: Optional[str] = None
+    # Chat turns may attach images only when this is true.
+    vision: bool = False
 
 
 class LlmProviderConfig(BaseModel):

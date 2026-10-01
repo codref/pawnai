@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import Any, Callable, Optional
+from typing import Any, Callable, Optional, Sequence
 
 from sallm import Agent
 
@@ -172,10 +172,20 @@ class SallmChatSession:
         self,
         text: str,
         on_progress: Optional[Callable[[str, dict[str, Any]], None]] = None,
+        images: Optional[list[Any]] = None,
+        force_caption: bool = False,
     ) -> Any:
         """Run ``Agent.ask`` on the calling thread; optionally bridge Tracer events."""
+
+        def _ask() -> Any:
+            return self._agent.ask(
+                text,
+                images=images or None,
+                force_caption=force_caption,
+            )
+
         if on_progress is None:
-            return self._agent.ask(text)
+            return _ask()
 
         from sallm.trace import Tracer, multi_sink  # noqa: PLC0415
 
@@ -192,7 +202,7 @@ class SallmChatSession:
             previous_emit = old_trace.emit
             old_trace.emit = multi_sink(progress_emit, previous_emit)
             try:
-                return self._agent.ask(text)
+                return _ask()
             finally:
                 old_trace.emit = previous_emit
         else:
@@ -201,7 +211,7 @@ class SallmChatSession:
                 session_id=self.conversation_id,
             )
             try:
-                return self._agent.ask(text)
+                return _ask()
             finally:
                 self._agent.trace = old_trace
 
@@ -210,6 +220,8 @@ class SallmChatSession:
         text: str,
         *,
         on_progress: Optional[Callable[[str, dict[str, Any]], None]] = None,
+        images: Optional[Sequence[Any]] = None,
+        force_caption: bool = False,
     ) -> str:
         """Run one user turn; return the assistant answer string.
 
@@ -219,9 +231,28 @@ class SallmChatSession:
         ``on_progress(kind, attrs)`` is invoked synchronously from the ask()
         worker thread when a temporary Tracer sink is installed — keep it fast
         and thread-safe (schedule Matrix I/O onto the event loop).
+
+        ``images`` are :class:`TurnImage` values. Context images this session
+        has already captioned are omitted unless ``force_caption`` is set.
         """
-        # Offload: ask() blocks on LLM + CliTool subprocesses.
-        result = await asyncio.to_thread(self._ask_sync, text, on_progress)
+        from pawn_agent.core.vision import (  # noqa: PLC0415
+            cleanup_staged,
+            select_turn_images,
+            stage_images,
+        )
+
+        known: set[str] = set()
+        if images and not force_caption:
+            known = await asyncio.to_thread(self._agent.captioned_digests)
+        selected = select_turn_images(list(images or []), known=known, force=force_caption)
+        mentions, staged = stage_images(selected)
+        try:
+            # Offload: ask() blocks on LLM + CliTool subprocesses.
+            result = await asyncio.to_thread(
+                self._ask_sync, text, on_progress, mentions, force_caption
+            )
+        finally:
+            cleanup_staged(staged)
         if not isinstance(result, dict):
             self.last_vault_paths = []
             return str(result or "")

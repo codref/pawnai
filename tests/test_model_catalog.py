@@ -15,7 +15,9 @@ from pawn_agent.utils.model_catalog import (
     apply_model_selection,
     completion_headers,
     get_background_model,
+    model_is_vision,
     normalize_openai_base_url,
+    public_catalog,
     reset_background_model,
     set_background_model,
 )
@@ -134,6 +136,30 @@ def test_provider_profiles_use_target_model(tmp_path: Path) -> None:
     assert chosen.litellm_model == "openai/gpt-5.6-sol"
     assert chosen.api_base == "https://opencode.example/v1"
     assert chosen.api_key == "sk-test"
+
+
+def test_vision_flag_is_public_and_off_by_default(tmp_path: Path) -> None:
+    _write_profile(tmp_path / "profiles")
+    cfg = _cfg(
+        tmp_path,
+        default="ollama@gemma4:4b",
+        providers={
+            "ollama": {
+                "base_url": "http://127.0.0.1:11434/v1",
+                "api_key": "ollama",
+                "models": [
+                    {"profile": "gemma.yaml"},
+                    {"model": "gemma4:e4b", "profile": "gemma.yaml", "vision": True},
+                ],
+            }
+        },
+    )
+    listed = {item["id"]: item for item in public_catalog(cfg)["models"]}
+    assert listed["ollama@gemma4:4b"]["vision"] is False
+    assert listed["ollama@gemma4:e4b"]["vision"] is True
+    assert model_is_vision(cfg, "ollama@gemma4:e4b") is True
+    assert model_is_vision(cfg, "ollama@gemma4:4b") is False
+    assert "api_key" not in listed["ollama@gemma4:e4b"]
 
 
 def test_duplicate_catalog_ids_fail(tmp_path: Path) -> None:

@@ -241,7 +241,12 @@ async def resolve_chat_message(
     Direct goal and inbox commands run here. ``/idea`` is rewritten into a
     capture prompt and left for the agent.
     """
+    from pawn_agent.core.vision import try_vision_command  # noqa: PLC0415
     from pawn_agent.utils.model_catalog import try_model_command  # noqa: PLC0415
+
+    vision_reply = try_vision_command(cfg, text)
+    if vision_reply is not None:
+        return ChatResolution("reply", vision_reply)
 
     model_reply = try_model_command(cfg, text)
     if model_reply is not None:

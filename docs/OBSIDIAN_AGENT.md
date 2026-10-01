@@ -174,6 +174,14 @@ the release tag, BRAT, and the full feature list.
   `@`, the `+` chip, or drag-and-drop from the file explorer. With **Send
   local note content** on, the plugin sends note bodies (including unsynced
   edits); otherwise the server reads the vault.
+- When the selected model is flagged `vision: true`, dropping a png, jpeg,
+  gif, or webp attaches it to the next message. Images embedded in attached
+  notes are sent too (**Include images from attached notes**, on by default).
+  Each picture is captioned once in that conversation. **Re-read images**
+  forces a fresh caption on the next send. Other files still go to the Inbox
+  upload job. A page with several images captions up to four per message, in
+  document order, and later messages pick up the ones not captioned yet. The
+  model sees pixels for one of them; the others stay searchable by caption.
 - Replies stream: tool steps show live ("Ran note_read"), then the answer
   renders as Markdown with **Copy / Insert at cursor / Replace selection
   (diff preview) / Append to note / Save as new note**.
@@ -193,7 +201,7 @@ Every job is accepted immediately (202) and runs as an asyncio task inside
 |------|--------------|--------------|
 | `ask` | "Background" toggle in chat, **Send to Pawn (background)** | Agent turn with note/selection/context; result → job + `Pawn/Tasks/{id}.md` |
 | `push_note` | API (`POST /v1/jobs`) | Write/append a vault note (vault guards apply) |
-| `upload` | Paperclip, drag files into chat, file menu **Upload to Pawn** | Audio → staged in `s3:` + `transcribe-diarize` on `api.upload_audio_target`; other files → `Pawn/Inbox/` (text files indexed into memory) |
+| `upload` | Paperclip or drag of non-image files, file menu **Upload to Pawn** | Audio → staged in `s3:` + `transcribe-diarize` on `api.upload_audio_target`; other files → `Pawn/Inbox/` (text files indexed into memory). png/jpeg/gif/webp dropped on a vision model stay on the chat message |
 
 The plugin follows `GET /v1/jobs/events` (SSE) on desktop and polls
 `GET /v1/jobs` on mobile. Finished jobs raise a notice, update their card in

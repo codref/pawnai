@@ -74,6 +74,103 @@ def extract_prompt(
     return None
 
 
+_IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".gif", ".webp"}
+_reread_rooms: set[str] = set()
+
+
+def arm_image_reread(room_id: str) -> None:
+    """The next image in this room is captioned again."""
+    if room_id:
+        _reread_rooms.add(room_id)
+
+
+def take_image_reread(room_id: str) -> bool:
+    """Consume a one-shot re-read for this room."""
+    if room_id in _reread_rooms:
+        _reread_rooms.discard(room_id)
+        return True
+    return False
+
+
+def _filename_only(text: str) -> bool:
+    name = text.replace("\\", "/").rsplit("/", 1)[-1]
+    if name != text:
+        return False
+    return Path(name).suffix.lower() in _IMAGE_SUFFIXES
+
+
+def image_turn_prompt(
+    body: str,
+    *,
+    command_prefix: str,
+    is_dm: bool,
+) -> Optional[str]:
+    """Prompt for an image message, or None when the room should ignore it.
+
+    A filename-only body in a DM becomes "Look at this image." The same body
+    in a room is ignored unless it starts with the command prefix.
+    """
+    text = (body or "").strip()
+    prefix = command_prefix or ""
+    if prefix and text.startswith(prefix):
+        rest = text[len(prefix) :].lstrip()
+        return rest or "Look at this image."
+    if not is_dm:
+        return None
+    if not text or _filename_only(text):
+        return "Look at this image."
+    return text
+
+
+def _download_body(resp: Any) -> bytes:
+    body = getattr(resp, "body", b"")
+    if isinstance(body, (bytes, bytearray)):
+        return bytes(body)
+    return Path(body).read_bytes()
+
+
+async def download_room_image(client: Any, event: Any) -> Optional[tuple[bytes, str, str]]:
+    """Download an image event. Returns ``(bytes, filename, media_type)`` or None."""
+    from nio import DownloadError, RoomEncryptedMedia  # noqa: PLC0415
+    from nio.crypto.attachments import decrypt_attachment  # noqa: PLC0415
+
+    name = (getattr(event, "body", None) or "image").strip() or "image"
+    media_type = (getattr(event, "mimetype", None) or "").strip()
+    url = getattr(event, "url", None)
+    if not url:
+        return None
+    resp = await client.download(url)
+    if isinstance(resp, DownloadError):
+        logger.warning("Matrix image download failed: %s", getattr(resp, "message", resp))
+        return None
+    data = _download_body(resp)
+    if isinstance(event, RoomEncryptedMedia):
+        key = event.key.get("k") if isinstance(getattr(event, "key", None), dict) else None
+        hashes = event.hashes if isinstance(getattr(event, "hashes", None), dict) else {}
+        digest = hashes.get("sha256")
+        iv = getattr(event, "iv", None)
+        if not key or not digest or not iv:
+            return None
+        data = decrypt_attachment(data, key, digest, iv)
+        media_type = media_type or (getattr(resp, "content_type", None) or "")
+    else:
+        media_type = media_type or (getattr(resp, "content_type", None) or "")
+    filename = Path(name.replace("\\", "/")).name or "image"
+    return data, filename, media_type
+
+
+def event_is_image(event: Any) -> bool:
+    """True for image messages and image files."""
+    kind = type(event).__name__
+    if kind in {"RoomMessageImage", "RoomEncryptedImage"}:
+        return True
+    media_type = (getattr(event, "mimetype", None) or "").lower()
+    if media_type.startswith("image/"):
+        return True
+    name = getattr(event, "body", None) or ""
+    return Path(str(name)).suffix.lower() in _IMAGE_SUFFIXES
+
+
 def chunk_text(text: str, limit: int = _MAX_CHUNK) -> list[str]:
     """Split long replies so room_send stays under Matrix size limits."""
     if len(text) <= limit:
@@ -676,6 +773,10 @@ def _register_callbacks(client: Any, cfg: Any, registry: Any) -> None:
         KeyVerificationStart,
         LocalProtocolError,
         MegolmEvent,
+        RoomEncryptedFile,
+        RoomEncryptedImage,
+        RoomMessageFile,
+        RoomMessageImage,
         RoomMessageText,
         ToDeviceError,
         ToDeviceMessage,
@@ -854,6 +955,15 @@ def _register_callbacks(client: Any, cfg: Any, registry: Any) -> None:
                 text = await registry.stats(session_id, cfg)
                 await _send_text(client, room.room_id, text)
                 return
+            if prompt.strip() == "/vision refresh":
+                arm_image_reread(room.room_id)
+                await client.room_typing(room.room_id, typing_state=True)
+                await _send_text(
+                    client,
+                    room.room_id,
+                    "The next image in this room will be read again.",
+                )
+                return
 
             from pawn_agent.core.coworker.slash import resolve_chat_message  # noqa: PLC0415
 
@@ -906,6 +1016,79 @@ def _register_callbacks(client: Any, cfg: Any, registry: Any) -> None:
                 except Exception:
                     pass
 
+    async def on_image(room: Any, event: Any) -> None:
+        if event.sender == client.user_id:
+            return
+        if not event_is_image(event):
+            return
+        is_dm = is_direct_room(room.member_count)
+        prompt = image_turn_prompt(
+            getattr(event, "body", "") or "",
+            command_prefix=mb.command_prefix,
+            is_dm=is_dm,
+        )
+        if prompt is None:
+            return
+
+        session_id = conversation_id(room.room_id)
+        progress: Optional[MatrixTurnProgress] = None
+        try:
+            downloaded = await download_room_image(client, event)
+            if downloaded is None:
+                await _send_text(client, room.room_id, "I couldn't download that image.")
+                return
+            data, filename, media_type = downloaded
+            force = take_image_reread(room.room_id)
+            from pawn_agent.core.agent_runner import run_agent_turn
+            from pawn_agent.core.vision import TurnImage
+
+            progress = MatrixTurnProgress(
+                client,
+                room.room_id,
+                getattr(event, "event_id", None),
+                loop=asyncio.get_running_loop(),
+                updates=bool(getattr(mb, "progress_updates", True)),
+                reactions=bool(getattr(mb, "progress_reactions", True)),
+            )
+            await progress.start()
+            result = await run_agent_turn(
+                cfg=cfg,
+                registry=registry,
+                prompt=prompt,
+                session_id=session_id,
+                source="matrix",
+                on_progress=(
+                    progress.on_progress if getattr(mb, "progress_updates", True) else None
+                ),
+                images=[
+                    TurnImage(
+                        filename=filename,
+                        media_type=media_type,
+                        data=data,
+                        role="question",
+                    )
+                ],
+                force_caption=force,
+            )
+            await progress.finish(result.response or "(empty reply)")
+        except Exception:
+            logger.exception("Matrix image turn failed room=%s", room.room_id)
+            if progress is not None:
+                await progress.fail("Sorry — something went wrong.")
+            else:
+                try:
+                    await _send_text(client, room.room_id, "Sorry — something went wrong.")
+                except Exception:
+                    logger.exception("Failed to send error reply")
+        finally:
+            if progress is not None:
+                await progress.close()
+            else:
+                try:
+                    await client.room_typing(room.room_id, typing_state=False)
+                except Exception:
+                    pass
+
     async def on_invite(room: Any, event: Any) -> None:
         # InviteMemberEvent fires for every member in rooms.invite; only our invite.
         if event.state_key != client.user_id:
@@ -937,6 +1120,10 @@ def _register_callbacks(client: Any, cfg: Any, registry: Any) -> None:
 
     client.add_to_device_callback(on_to_device, (KeyVerificationEvent, UnknownToDeviceEvent))
     client.add_event_callback(on_message, (RoomMessageText,))
+    client.add_event_callback(
+        on_image,
+        (RoomMessageImage, RoomMessageFile, RoomEncryptedImage, RoomEncryptedFile),
+    )
     client.add_event_callback(on_invite, (InviteMemberEvent,))
     client.add_event_callback(on_megolm, (MegolmEvent,))
 

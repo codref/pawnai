@@ -9,12 +9,13 @@ import {
   setIcon,
 } from "obsidian";
 import { resolveActiveMarkdownFile } from "../active";
-import { ModelChoice, NoteContext, ServerUnreachable } from "../api";
+import { ChatImage, ModelChoice, NoteContext, ServerUnreachable } from "../api";
 import { PromptCommand, renderPrompt } from "../commands/PromptCommands";
 import { renderInbox } from "../inbox/InboxView";
 import { JobFilter, renderJobCard, renderJobsList } from "../jobs/JobsView";
 import type PawnPlugin from "../main";
 import { ContextBar, ContextSnapshot, resolveDroppedNote } from "./ContextBar";
+import { bytesToBase64, isImageName, mimeForName, noteImageTargets } from "./noteImages";
 import { renderMessageActions, renderUserMessageActions } from "./MessageActions";
 import {
   ChatMessage,
@@ -82,6 +83,10 @@ export class PawnChatView extends ItemView {
   private modelButtonLabel: HTMLElement | null = null;
   private modelPop: HTMLElement | null = null;
   private modelPopCloser: (() => void) | null = null;
+  /** Pictures dropped on the composer; sent as question images. */
+  private pendingImages: { filename: string; mediaType: string; data: ArrayBuffer }[] = [];
+  /** One-shot: recaption images this conversation has already seen. */
+  private rereadImages = false;
 
   constructor(
     leaf: WorkspaceLeaf,
@@ -154,10 +159,11 @@ export class PawnChatView extends ItemView {
     const name = current ? modelChipLabel(current, ids) : "Model";
     const choice = this.currentChoice();
     const effort = choice?.reasoning?.length ? REASONING_LABEL[this.effectiveReasoning()] : "";
-    const text = effort ? `${name} ${effort}` : name;
+    const vision = choice?.vision ? "Vision" : "";
+    const text = [name, effort, vision].filter(Boolean).join(" ");
     label.setText(text);
     const route = choice?.routes?.length ? ROUTE_LABEL[this.effectiveRoute()] : "";
-    button.title = [current, effort, route].filter(Boolean).join(" · ") || "Model";
+    button.title = [current, effort, route, vision].filter(Boolean).join(" · ") || "Model";
     button.setAttr("aria-label", button.title);
   }
 
@@ -207,7 +213,10 @@ export class PawnChatView extends ItemView {
       this.openSubmenu(
         pop,
         ids.length
-          ? ids.map((id) => ({ value: id, label: modelMenuLabel(id) }))
+          ? ids.map((id) => ({
+              value: id,
+              label: modelMenuLabel(id, this.modelChoices.some((c) => c.id === id && c.vision)),
+            }))
           : [{ value: "", label: "No models configured", disabled: true }],
         current,
         (id) => {
@@ -829,6 +838,7 @@ export class PawnChatView extends ItemView {
     this.switchBannerEl = wrap.createDiv({ cls: "pawn-switch-banner is-hidden" });
     this.renderComposerBanner();
     this.context.mount(wrap);
+    this.renderImageBar(wrap);
     this.slashEl = wrap.createDiv({ cls: "pawn-slash is-hidden" });
     const ta = wrap.createEl("textarea", {
       cls: "pawn-input",
@@ -875,7 +885,7 @@ export class PawnChatView extends ItemView {
     attach.onclick = () => this.fileInput?.click();
     this.fileInput.onchange = () => {
       const files = Array.from(this.fileInput?.files ?? []);
-      void this.uploadFiles(files);
+      void this.acceptDroppedFiles(files);
       if (this.fileInput) this.fileInput.value = "";
     };
 
@@ -1123,7 +1133,7 @@ export class PawnChatView extends ItemView {
       const dt = ev.dataTransfer;
       if (!dt) return;
       if (dt.files && dt.files.length) {
-        void this.uploadFiles(Array.from(dt.files));
+        void this.acceptDroppedFiles(Array.from(dt.files));
         return;
       }
       const text = dt.getData("text/plain");
@@ -1138,6 +1148,75 @@ export class PawnChatView extends ItemView {
       }
       if (!added && text.trim()) new Notice("Drop notes from the file explorer, or files from disk.");
     });
+  }
+
+  private modelIsVision(): boolean {
+    return Boolean(this.currentChoice()?.vision);
+  }
+
+  private renderImageBar(wrap: HTMLElement): void {
+    const showReread = this.modelIsVision() && this.plugin.settings.includeNoteImages;
+    if (!this.pendingImages.length && !showReread) return;
+    const bar = wrap.createDiv({ cls: "pawn-image-bar" });
+    this.pendingImages.forEach((image, index) => {
+      const chip = bar.createDiv({ cls: "pawn-chip" });
+      chip.createSpan({ cls: "pawn-chip-label", text: image.filename });
+      const close = chip.createEl("button", {
+        cls: "pawn-chip-remove",
+        attr: { type: "button", "aria-label": `Remove ${image.filename}` },
+      });
+      close.textContent = "×";
+      close.onclick = () => {
+        this.pendingImages.splice(index, 1);
+        this.render();
+      };
+    });
+    if (showReread) {
+      const toggle = bar.createEl("button", {
+        cls: "pawn-chip pawn-reread" + (this.rereadImages ? " is-on" : ""),
+        attr: { type: "button" },
+        text: "Re-read images",
+      });
+      toggle.onclick = () => {
+        this.rereadImages = !this.rereadImages;
+        this.render();
+      };
+    }
+  }
+
+  private async acceptDroppedFiles(files: File[]): Promise<void> {
+    const images: File[] = [];
+    const rest: File[] = [];
+    for (const file of files) {
+      if (isImageName(file.name, file.type)) images.push(file);
+      else rest.push(file);
+    }
+    if (images.length) await this.attachImages(images);
+    if (rest.length) await this.uploadFiles(rest);
+  }
+
+  private async attachImages(files: File[]): Promise<void> {
+    if (!this.modelIsVision()) {
+      new Notice("This model can't see images. Pick a vision model in the model menu.");
+      return;
+    }
+    const maxBytes = 4 * 1024 * 1024;
+    for (const file of files) {
+      if (this.pendingImages.length >= 4) {
+        new Notice("Four images can be attached to one message.");
+        break;
+      }
+      if (file.size > maxBytes) {
+        new Notice(`${file.name} is larger than 4MB.`);
+        continue;
+      }
+      this.pendingImages.push({
+        filename: file.name,
+        mediaType: file.type || mimeForName(file.name),
+        data: await file.arrayBuffer(),
+      });
+    }
+    this.render();
   }
 
   private async uploadFiles(files: File[]): Promise<void> {
@@ -1169,13 +1248,55 @@ export class PawnChatView extends ItemView {
     const ta = this.composer;
     if (!ta) return;
     const text = ta.value.trim();
-    if (!text) return;
+    if (!text && !this.pendingImages.length) return;
+    if (this.background && this.pendingImages.length) {
+      new Notice("Background jobs don't include images. Uncheck Background, or remove the images.");
+      return;
+    }
+    if (this.pendingImages.length && !this.modelIsVision()) {
+      new Notice("This model can't see images. Pick a vision model in the model menu.");
+      return;
+    }
     ta.value = "";
     this.draftText = "";
     this.pendingSwitch = null;
     this.autosize();
     this.hideSlash();
     await this.send(text, { background: this.background });
+  }
+
+  private async contextImages(files: TFile[]): Promise<ChatImage[]> {
+    const out: ChatImage[] = [];
+    const seen = new Set<string>();
+    const maxBytes = 4 * 1024 * 1024;
+    for (const file of files) {
+      let body = "";
+      try {
+        body = await this.app.vault.cachedRead(file);
+      } catch {
+        continue;
+      }
+      for (const target of noteImageTargets(body)) {
+        if (out.length >= 12) return out;
+        const dest =
+          this.app.metadataCache.getFirstLinkpathDest(target, file.path) ??
+          this.app.vault.getAbstractFileByPath(target);
+        if (!(dest instanceof TFile) || seen.has(dest.path) || !isImageName(dest.name)) continue;
+        seen.add(dest.path);
+        const data = await this.app.vault.readBinary(dest);
+        if (data.byteLength > maxBytes) {
+          new Notice(`${dest.name} is larger than 4MB and was skipped.`);
+          continue;
+        }
+        out.push({
+          filename: dest.name,
+          media_type: mimeForName(dest.name),
+          data_base64: bytesToBase64(data),
+          role: "context",
+        });
+      }
+    }
+    return out;
   }
 
   private async noteContext(file: TFile): Promise<NoteContext> {
@@ -1208,10 +1329,15 @@ export class PawnChatView extends ItemView {
     const selection: SelectionRef | undefined = snap.selection ?? undefined;
     const notePath = snap.activeNote?.path ?? selection?.path;
     const contextPaths = snap.extra.map((f) => f.path);
+    const questionImages = this.pendingImages.splice(0);
+    const reread = this.rereadImages;
+    this.rereadImages = false;
+    const imageNote = questionImages.map((image) => image.filename).join(", ");
+    const message = text || "Look at this image.";
     convs.add(conversation, {
       id: newId(),
       role: "user",
-      content: text,
+      content: imageNote ? (text ? `${text}\n\n(images: ${imageNote})` : `(images: ${imageNote})`) : text,
       createdAt: Date.now(),
       selection,
       notePath,
@@ -1219,6 +1345,7 @@ export class PawnChatView extends ItemView {
     });
 
     if (opts.background) {
+      this.rereadImages = reread;
       await this.sendBackground(text, conversation, snap);
       return;
     }
@@ -1231,14 +1358,32 @@ export class PawnChatView extends ItemView {
       const activeNote = snap.activeNote ? await this.noteContext(snap.activeNote) : undefined;
       const context = await Promise.all(snap.extra.map((f) => this.noteContext(f)));
       const model = this.selectedModel();
+      const includeNotes = this.plugin.settings.includeNoteImages && this.modelIsVision();
+      const noteFiles = [...(snap.activeNote ? [snap.activeNote] : []), ...snap.extra];
+      const contextImages =
+        includeNotes && this.plugin.settings.sendLocalNoteContent
+          ? await this.contextImages(noteFiles)
+          : [];
+      const images: ChatImage[] = [
+        ...questionImages.map((image) => ({
+          filename: image.filename,
+          media_type: image.mediaType || mimeForName(image.filename),
+          data_base64: bytesToBase64(image.data),
+          role: "question" as const,
+        })),
+        ...contextImages,
+      ];
       await this.plugin.client.chat(
         {
           conversation,
-          message: text,
+          message,
           active_note: activeNote,
           selection: selection?.text,
           context,
           model: model || undefined,
+          images: images.length ? images : undefined,
+          force_caption: reread || undefined,
+          include_note_images: includeNotes,
           ...this.tuningFields(),
         },
         {
@@ -1360,11 +1505,11 @@ function modelChipLabel(id: string, ids: string[]): string {
 }
 
 /** Menu row: model name, then the provider, so the full catalog id stays out of the row. */
-function modelMenuLabel(id: string): string {
+function modelMenuLabel(id: string, vision = false): string {
   const provider = modelProvider(id);
   const tail = modelTail(id);
-  if (!provider || provider === tail) return tail;
-  return `${tail} · ${provider}`;
+  const base = !provider || provider === tail ? tail : `${tail} · ${provider}`;
+  return vision ? `${base} · Vision` : base;
 }
 
 const REASONING_LABEL: Record<string, string> = {

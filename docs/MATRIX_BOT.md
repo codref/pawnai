@@ -64,9 +64,15 @@ pawn-server serve --no-matrix
 | Group room | Message must start with `command_prefix` |
 | `/reset` | Clears sallm conversation for that room |
 | `/stats` | Session stats (skill, messages, memory, last-turn tokens) |
+| `/vision` | Whether the background model is vision-ready |
+| `/vision refresh` | The next image in this room is captioned again |
+| Image in a DM | Starts a turn when the background model has `vision: true` |
+| Image in a room | Same prefix rule as text. A filename-only image is ignored |
 | Session key | `matrix:{room_id}` (chat memory, not diarization id) |
 
 Discover diarization sessions with the `sessions_list` tool, same as CLI/API chat.
+
+A vision model is a catalog entry with `vision: true`. Dropping an image in a DM (or a prefixed image in a room) sends those bytes as the question. Follow-up text keeps using the same room session, so the picture stays in view without a second caption. `/vision refresh` forces the next image to be read again. Encrypted media is decrypted after download; a message the bot cannot decrypt still gets the usual verification reply.
 
 ## Progress while the agent works
 
