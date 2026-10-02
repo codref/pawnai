@@ -257,29 +257,7 @@ async def process_note(
         store=store,
         source_link=f"[[{key}]]",
     )
-    _maybe_idea_companion(cfg, store, key, body)
     return result
-
-
-def _maybe_idea_companion(cfg: AgentConfig, store: Any, key: str, body: str) -> None:
-    lowered = key.lower()
-    tagged = "#idea" in body.lower() or "idea" in lowered
-    if not tagged and not lowered.startswith("ideas/"):
-        return
-    from pawn_core.goals import slugify as slug  # noqa: PLC0415
-
-    title = key.rsplit("/", 1)[-1].removesuffix(".md")
-    dest = f"{cfg.coworker.ideas_dir.strip('/')}/{slug(title)}.md"
-    note = (
-        f'---\npawn: idea\nsource: "[[{key}]]"\n---\n'
-        f"# {title}\n\n"
-        f"Developed from [[{key}]]. Pawn does not edit the original note.\n\n"
-        f"## Summary\n\n{body.strip()[:1500]}\n"
-    )
-    try:
-        store.write(dest, note)
-    except Exception as exc:
-        logger.debug("idea companion skipped: %s", exc)
 
 
 async def _notify_item(cfg: AgentConfig, item: dict[str, Any]) -> None:

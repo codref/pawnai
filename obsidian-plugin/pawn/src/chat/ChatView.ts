@@ -12,6 +12,7 @@ import { resolveActiveMarkdownFile } from "../active";
 import { ChatImage, ModelChoice, NoteContext, ServerUnreachable } from "../api";
 import { PromptCommand, renderPrompt } from "../commands/PromptCommands";
 import { renderInbox } from "../inbox/InboxView";
+import { captureIdea, noticeError } from "../inbox/ideas";
 import { JobFilter, renderJobCard, renderJobsList } from "../jobs/JobsView";
 import type PawnPlugin from "../main";
 import { ContextBar, ContextSnapshot, resolveDroppedNote } from "./ContextBar";
@@ -122,7 +123,7 @@ export class PawnChatView extends ItemView {
     this.containerEl.addClass("pawn-view");
     this.conversationId = this.defaultConversation();
     this.unsubscribeJobs = this.plugin.jobs.onChange(() => this.onJobsChanged());
-    this.unsubscribeInbox = this.plugin.inbox?.onChange(() => this.onJobsChanged());
+    this.unsubscribeInbox = this.plugin.inbox?.onChange(() => this.onInboxChanged());
     this.registerEvent(
       this.app.workspace.on("active-leaf-change", () => this.onActiveNoteChanged()),
     );
@@ -570,7 +571,12 @@ export class PawnChatView extends ItemView {
 
   private onJobsChanged(): void {
     if (this.tab === "jobs") this.renderBody();
-    else this.renderThread();
+    else if (this.tab === "chat") this.renderThread();
+    this.renderTabs();
+  }
+
+  private onInboxChanged(): void {
+    if (this.tab === "inbox") this.renderBody();
     this.renderTabs();
   }
 
@@ -969,7 +975,7 @@ export class PawnChatView extends ItemView {
       {
         slug: "idea",
         label: "/idea",
-        hint: "Capture an idea skeleton",
+        hint: "Save one line under Ideas/",
         run: () => this.prefillSlash("/idea "),
       },
       {
@@ -1397,6 +1403,25 @@ export class PawnChatView extends ItemView {
   }
 
   async send(text: string, opts: { background?: boolean } = {}): Promise<void> {
+    const idea = text.trim().match(/^\/idea(?:\s+([\s\S]+))?$/i);
+    if (idea) {
+      const line = (idea[1] ?? "").trim();
+      if (!line) {
+        new Notice("Usage: /idea <one line>");
+        return;
+      }
+      try {
+        const path = await captureIdea(this.app, line);
+        if (this.composer) this.composer.value = "";
+        this.draftText = "";
+        this.hideSlash();
+        new Notice(`Captured ${path}`);
+      } catch (e) {
+        noticeError(e);
+      }
+      return;
+    }
+
     if (this.pending) {
       new Notice("Pawn is still answering; stop it first or wait.");
       return;

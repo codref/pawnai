@@ -122,9 +122,9 @@ always attached as structured context.
   after Sync Engine uploads it; the result syncs back and shows in the Jobs
   tab.
 - The status bar shows server reachability, running jobs, results
-  awaiting review, and inbox items that need a tap. Click it to open the Jobs tab.
-- **Inbox** tab lists coworker items (File / Task / Later / Ignore, or Approve / Reject).
-- **Quick capture** saves an `#idea` note under `Ideas/`. **Apply goals proposal**
+  awaiting review, and idea notes still in the inbox. Click it to open the Jobs tab.
+- **Inbox** tab lists `Ideas/` notes with `status: inbox` (Keep / Goal / Task / Drop).
+- **Quick capture** and `/idea` save that note under `Ideas/`. **Apply goals proposal**
   writes `Goals.md` from the `goals` fence in the active weekly review, after a diff.
 
 ## Settings

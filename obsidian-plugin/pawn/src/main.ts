@@ -12,6 +12,7 @@ import {
 import { PromptCommand, PromptCommandRegistry, PromptPickerModal } from "./commands/PromptCommands";
 import { applyGoalsFromActiveFile } from "./inbox/ApplyGoals";
 import { InboxStore } from "./inbox/InboxView";
+import { captureIdea, noticeError } from "./inbox/ideas";
 import { QuickCaptureModal } from "./inbox/QuickCapture";
 import { JobStore } from "./jobs/JobStore";
 import { DEFAULT_SETTINGS, PawnSettings, PawnSettingTab } from "./settings";
@@ -44,7 +45,7 @@ export default class PawnPlugin extends Plugin {
     this.client = new PawnClient(() => this.settings);
     this.conversations = new ConversationStore(this.data.conversations, () => this.persistSoon());
     this.jobs = new JobStore(this, this.client);
-    this.inbox = new InboxStore(this, this.client);
+    this.inbox = new InboxStore(this);
     this.vaultSync = new VaultSync(this, this.client);
     this.prompts = new PromptCommandRegistry(this);
 
@@ -170,12 +171,12 @@ export default class PawnPlugin extends Plugin {
       name: "Quick capture",
       callback: () => {
         new QuickCaptureModal(this.app, async (title) => {
-          const day = window.moment().format("YYYY-MM-DD");
-          const slug = title.split("\n")[0].slice(0, 60).replace(/[\\/:*?"<>|]/g, "").trim() || "idea";
-          const path = `Ideas/${day} ${slug}.md`;
-          const body = `---\ntags: [idea]\n---\n# ${slug}\n\n${title.trim()}\n`;
-          await this.app.vault.create(path, body);
-          new Notice(`Saved ${path}`);
+          try {
+            const path = await captureIdea(this.app, title);
+            new Notice(`Captured ${path}`);
+          } catch (e) {
+            noticeError(e);
+          }
         }).open();
       },
     });

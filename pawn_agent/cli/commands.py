@@ -50,7 +50,7 @@ def chat(
 
     Type [bold]/exit[/bold] or [bold]/quit[/bold] to end, or press Ctrl-D / Ctrl-C.
     Type [bold]/stats[/bold] for session metrics, [bold]/reset[/bold] to clear
-    conversation state. [bold]/idea[/bold] captures an idea, [bold]/goal[/bold]
+    conversation state. [bold]/idea[/bold] writes an idea note, [bold]/goal[/bold]
     writes an active thread in Goals.md.
 
     \b
@@ -95,7 +95,7 @@ def chat(
         "Type /exit or /quit to end. /stats shows session metrics; "
         "/reset clears sallm session memory. "
         "/model sets the background model. "
-        "/idea captures an idea; /goal writes Goals.md.[/dim]\n"
+        "/idea writes an idea note; /goal writes Goals.md.[/dim]\n"
     )
     try:
         asyncio.run(

@@ -31,16 +31,15 @@ Free-standing plugin chats use `chat:{uuid}`.
 | `Pawn/Threads/…` | Pawn | Filed items and open loops for one goal thread |
 | `Pawn/Today.md` | Pawn | What needs a tap, then what was filed quietly |
 | `Pawn/Daily/{date}.md` | Pawn | Morning briefing |
-| `Pawn/Ideas/…` | Pawn | Companion notes for ideas you captured. Your original note is not edited |
 | `Pawn/Reviews/{week}.md` | Pawn | Weekly review, including a proposed Goals.md. Chat drafts land in `Pawn/Reviews/goal-proposal.md` |
-| `Ideas/…` | You | Idea notes. `/idea` asks Pawn to write the first skeleton |
+| `Ideas/…` | You | Idea notes. `/idea` and Quick capture write one line with `status: inbox` |
 | `Goals.md` | You | Active threads and attention rules. `/goal`, `/park`, and `/goal apply` are the chat commands that write it |
 | `Pawn/Inbox/…` | Pawn | Non-audio files uploaded from the plugin |
 | `Pawn/Commands/*.md` | You | Prompt commands for the plugin (`/`, palette, editor menu) |
 | Everything else | You | Editable by Pawn only if frontmatter has `pawn: editable` |
 | `.obsidian/` | You | Never touched by Pawn |
 
-How to turn the coworker loop on, write `Goals.md`, and triage from the Inbox is in [COWORKER.md](COWORKER.md).
+How to turn the coworker loop on, write `Goals.md`, and file ideas from the Inbox is in [COWORKER.md](COWORKER.md).
 
 ## Enable
 

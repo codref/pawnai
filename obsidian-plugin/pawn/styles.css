@@ -678,6 +678,24 @@ button.pawn-chip-pin:hover {
   color: var(--text-error);
 }
 
+.pawn-inbox-title {
+  font-weight: var(--font-semibold);
+  white-space: normal;
+  cursor: pointer;
+}
+
+.pawn-inbox-line {
+  margin-top: 4px;
+  white-space: pre-wrap;
+}
+
+.pawn-inbox-card .pawn-job-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--size-4-1);
+  margin-top: var(--size-4-2);
+}
+
 .pawn-notice {
   cursor: pointer;
 }

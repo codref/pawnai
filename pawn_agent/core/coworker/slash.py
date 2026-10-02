@@ -1,9 +1,8 @@
 """Chat slash commands for ideas, goals, and inbox triage.
 
-``/idea`` becomes an agent prompt. ``/goal``, ``/park``, ``/goals``, and
-``/inbox`` run here and do not start a model turn. A normal prompt never
-writes Goals.md; that file changes only from ``/goal``, ``/park``, and
-``/goal apply``.
+``/idea``, ``/goal``, ``/park``, ``/goals``, and ``/inbox`` run here and do
+not start a model turn. A normal prompt never writes Goals.md; that file
+changes only from ``/goal``, ``/park``, and ``/goal apply``.
 """
 
 from __future__ import annotations
@@ -54,26 +53,6 @@ class _Directive:
     extra: str = ""
 
 
-def idea_prompt(line: str) -> str:
-    """Agent instruction that fills an idea skeleton from one line."""
-    seed = line.strip()
-    return (
-        "Capture this as an idea skeleton. The user's entire idea is:\n\n"
-        f"{seed}\n\n"
-        "Call idea_capture once. Pass --seed as that line unchanged. "
-        "Set --title to a short noun phrase taken from the line. "
-        "Fill --why, --sketch, and --question from that line only. "
-        "Use one or two sentences for why and for the sketch, and one to "
-        "three open questions. Do not research the repo. Do not add tasks. "
-        "Do not invent dates, owners, or commitments that are not in the line. "
-        "Reply with the vault path and a one-line summary.\n"
-        "```run\n"
-        'idea_capture --title "..." --seed "..." --why "..." '
-        '--sketch "..." --question "..."\n'
-        "```"
-    )
-
-
 def _command_arg(text: str, command: str) -> Optional[str]:
     """Return the text after ``/command`` when the first word matches."""
     head, _, tail = text.partition(" ")
@@ -92,7 +71,7 @@ def classify_chat_text(text: str, *, triage: bool = False) -> _Directive:
     if idea is not None:
         if not idea:
             return _Directive("usage", _IDEA_USAGE)
-        return _Directive("prompt", idea_prompt(idea), command="idea")
+        return _Directive("direct", command="idea", arg=idea)
 
     goal = _command_arg(raw, "/goal")
     if goal is not None:
@@ -215,7 +194,15 @@ def _list_inbox(cfg: AgentConfig) -> str:
     return "\n".join(lines)
 
 
+def _capture_idea(cfg: AgentConfig, store: Any, line: str) -> str:
+    from pawn_agent.tools.ideas_impl import capture_idea  # noqa: PLC0415
+
+    return capture_idea(cfg, line=line, store=store)
+
+
 def _run_direct(cfg: AgentConfig, directive: _Directive, *, store: Any) -> str:
+    if directive.command == "idea":
+        return _capture_idea(cfg, store, directive.arg)
     if directive.command == "goal":
         return _add_thread(cfg, store, directive.arg, status="active")
     if directive.command == "park":
@@ -238,8 +225,8 @@ async def resolve_chat_message(
 ) -> ChatResolution:
     """Turn a user message into a reply or an agent prompt.
 
-    Direct goal and inbox commands run here. ``/idea`` is rewritten into a
-    capture prompt and left for the agent.
+    Direct idea, goal, and inbox commands run here. None of them start a
+    model turn.
     """
     from pawn_agent.core.vision import try_vision_command  # noqa: PLC0415
     from pawn_agent.utils.model_catalog import try_model_command  # noqa: PLC0415
@@ -255,11 +242,7 @@ async def resolve_chat_message(
     triage = bool(getattr(getattr(cfg, "coworker", None), "enabled", False))
     classified = classify_chat_text(text, triage=triage)
     if classified.kind == "prompt":
-        return ChatResolution(
-            "prompt",
-            classified.text,
-            rewritten=classified.command == "idea",
-        )
+        return ChatResolution("prompt", classified.text)
     if classified.kind == "usage":
         return ChatResolution("reply", classified.text)
     if classified.kind == "triage":

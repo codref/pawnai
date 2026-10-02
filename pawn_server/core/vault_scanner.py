@@ -38,6 +38,18 @@ def _watched(key: str, folders: list[str]) -> bool:
     return False
 
 
+def is_idea_note(key: str, text: str) -> bool:
+    """True for ``Ideas/`` notes and notes tagged ``idea``.
+
+    Those notes are captured by ``/idea``. The meeting extractor does not run
+    on them.
+    """
+    normalized = key.lstrip("/").casefold()
+    if normalized == "ideas" or normalized.startswith("ideas/"):
+        return True
+    return _tagged(text, ["idea"])
+
+
 async def run_vault_scanner_tick(cfg: Any, *, store: Any = None) -> dict[str, int]:
     """Process quiet note edits and new audio under the capture folder."""
     if not getattr(cfg.coworker, "enabled", False):
@@ -112,6 +124,14 @@ async def _consider_note(
     if state.last_processed_hash == digest:
         return False
     if not substantial_change("", text):
+        return False
+    if is_idea_note(key, text):
+        itemdb.upsert_note_state(
+            cfg.db_dsn,
+            key,
+            last_processed_at=now,
+            last_processed_hash=digest,
+        )
         return False
     from pawn_agent.core.coworker.pipeline import process_note  # noqa: PLC0415
 

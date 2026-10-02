@@ -1,6 +1,6 @@
 # Using the coworker loop
 
-The coworker loop keeps a short list of what you are trying to move, files what comes out of meetings and notes, and interrupts you only when an active thread is affected. You triage from the vault, from Matrix, or from the plugin Inbox. The loop stays off until `coworker.enabled` is true.
+The coworker loop keeps a short list of what you are trying to move, files what comes out of meetings and notes, and interrupts you only when an active thread is affected. You triage meeting items from the item note, from Matrix, or from chat. The plugin Inbox is the list of idea notes you have not filed. The loop stays off until `coworker.enabled` is true.
 
 ## Turn it on
 
@@ -82,7 +82,7 @@ autonomy: off
 
 ### Mobile inbox
 - note: [[Ideas/Mobile inbox]]
-- do: Link related meetings and develop the companion note. Do not notify.
+- do: Link related meetings and develop the idea note. Do not notify.
 
 ## Done recently
 
@@ -160,7 +160,7 @@ Use any of the three surfaces. They call the same actions.
 
 `<id>` is the `short_id` or the full UUID.
 
-**Obsidian.** Open the Pawn pane on the Inbox tab, or run **Show inbox**. Each card has File, Task, Later, and Ignore. Schedule proposals and research proposals show Approve and Reject. Later from the plugin snoozes until tomorrow. The status bar counts items that still need a tap.
+**Obsidian.** Meeting items are triaged from the item note. The plugin Inbox tab, and **Show inbox**, list idea notes whose `status` is `inbox`. Each card has Keep, Goal, Task, and Drop. The status bar counts those notes.
 
 **The item note.** Set `action:` to `file`, `task`, `later`, or `ignore` and let it sync. The vault watcher applies it on its next poll (default 15 seconds). `later` from the note is also tomorrow. A note already filed, tasked, or dismissed is left alone.
 
@@ -187,25 +187,22 @@ curl -X POST "$PAWN_URL/v1/items/a1b2c3d4/action" \
 
 ## Capture an idea
 
-Ideas are notes under `Ideas/`. `/idea` and **Quick capture** write the first note. Pawn does not edit it after that. A note is picked up when it lives under `coworker.watch_folders` (default `Ideas/`) or carries `coworker.watch_tags` (default `idea`), and only after it has been unchanged for `note_quiet_seconds` (default 120).
+Ideas are notes under `Ideas/`. `/idea` and **Quick capture** write the note and do not start a model turn. An existing file at that path is left in place. The scanner does not extract a note under `Ideas/` or a note tagged `idea`. `coworker.watch_folders` and `coworker.watch_tags` start empty. A folder you still list is scanned, except idea notes.
 
-Save this as `Ideas/Mobile inbox.md`. It matches the parked thread above.
+The plugin Inbox lists notes with `status: inbox`. Keep sets `status: later`. Goal appends a Parked thread in `Goals.md` that links the note, then sets `status: goal`. Task writes one note under `{agent root}/TaskNotes/Tasks/` and sets `status: task`. Drop sets `status: dropped`. Notes with no `status` stay in the folder and do not appear as cards.
 
 ```markdown
 ---
 tags: [idea]
+status: inbox
 ---
 
-# Mobile inbox
+# implement multi-model in pawnai
 
-The phone should be a short list of judgments, not a chat transcript.
-
-When a meeting ends, Pawn files decisions and commitments into the vault. On the phone I only want the ones that need a tap: file this, remind me tomorrow, or ignore it.
-
-Open question: does this live as `Pawn/Today.md`, or as a separate inbox note I can pin?
+implement multi-model in pawnai
 ```
 
-The plugin command **Quick capture** writes `Ideas/{date} {title}.md` with `tags: [idea]` for you.
+The plugin command **Quick capture** writes `Ideas/{date} {title}.md` in that shape. In the plugin composer, `/idea` writes the same file locally. Matrix and `pawn-agent chat` write it through the server.
 
 ## From chat
 
@@ -213,7 +210,7 @@ These commands work in `pawn-agent chat`, the plugin composer, Matrix (after `co
 
 | Command | What it does |
 |---------|----------------|
-| `/idea implement multi-model in pawnai` | Asks the agent to write an idea skeleton under `Ideas/`. Why, Sketch, and Open questions come from that one line. The seed line is kept as you typed it. An existing file at that path is left in place. |
+| `/idea implement multi-model in pawnai` | Writes `Ideas/{date} {title}.md` with that line. No model turn. An existing file at that path is left in place. |
 | `/goal <line>` | Inserts an Active thread. The heading and `why` are that line. `movement` and `interrupt` stay empty. |
 | `/park <line>` | Inserts a Parked thread and does not notify. |
 | `/goals` | Lists active and parked threads. |
@@ -221,36 +218,6 @@ These commands work in `pawn-agent chat`, the plugin composer, Matrix (after `co
 | `/goal apply` | Writes `Goals.md` from `Pawn/Reviews/goal-proposal.md`. |
 
 A sentence such as "add multi-model to my goals" calls `goal_propose`. That writes `Pawn/Reviews/goal-proposal.md` with a `goals` fence and leaves `Goals.md` unchanged until `/goal apply` or **Apply goals proposal**.
-
-The skeleton looks like this:
-
-```markdown
----
-tags: [idea]
----
-
-# Implement multi-model in pawnai
-
-## Seed
-
-implement multi-model in pawnai
-
-## Why
-
-One or two sentences from that line.
-
-## Sketch
-
-A short outline from that line.
-
-## Open questions
-
-- One question the line leaves open.
-```
-
-The watcher still writes the `Pawn/Ideas/` companion after the quiet window. The capture command does not.
-
-After the quiet window, Pawn writes a companion at `Pawn/Ideas/mobile-inbox.md` that links back to your note, and it indexes the text. Because the matching thread is Parked, this does not notify. Promote the thread under `## Active` when you want interrupts.
 
 `knowledge_search --query "mobile inbox"` searches notes, transcripts, and items. Backfill with:
 

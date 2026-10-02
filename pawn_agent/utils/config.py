@@ -392,15 +392,15 @@ class CoworkerConfig(BaseModel):
     threads_dir: str = "Pawn/Threads"
     daily_dir: str = "Pawn/Daily"
     today_path: str = "Pawn/Today.md"
-    ideas_dir: str = "Pawn/Ideas"
+    ideas_dir: str = "Pawn/Ideas"  # unused; kept so existing yaml still loads
     reviews_dir: str = "Pawn/Reviews"
     capture_dir: str = "Pawn/Capture"
     briefing_cron: str = "0 8 * * *"
     weekly_cron: str = "0 17 * * 5"
     timezone: str = "UTC"
     matrix_target: str = "matrix"
-    watch_folders: list[str] = Field(default_factory=lambda: ["Ideas/"])
-    watch_tags: list[str] = Field(default_factory=lambda: ["idea"])
+    watch_folders: list[str] = Field(default_factory=list)
+    watch_tags: list[str] = Field(default_factory=list)
     note_quiet_seconds: int = 120
     max_notes_per_tick: int = 5
     capture_audio_dir: str = ""

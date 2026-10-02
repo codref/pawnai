@@ -255,8 +255,11 @@ coworker:
   timezone: Europe/Rome
   briefing_cron: "0 8 * * *"
   weekly_cron: "0 17 * * 5"
-  watch_folders: ["Ideas/"]
-  watch_tags: ["idea"]
+  # Notes in these folders are extracted like a meeting. Idea notes are never
+  # extracted, including anything under Ideas/ or tagged idea. Leave both empty
+  # unless you want that pass on some other folder.
+  watch_folders: []
+  watch_tags: []
   # Folder where the phone's audio recorder drops files. Empty disables capture.
   capture_audio_dir: ""
   me: []

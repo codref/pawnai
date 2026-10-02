@@ -60,7 +60,7 @@ Notes: pytest defaults to `--cov=pawn_diarize --cov-report=term-missing`; pass `
   - Stock obsidian-copilot → `/v1/chat/completions` + `/v1/models` (list content parts, CORS, `X-Pawn-Conversation`, streamed keep-alives/`reasoning_content` progress via `pawn_server/core/progress.py`).
   - `/v1/vault/tasks*` are deprecated aliases. Approve indexes into sallm memory. Session keys `note:{path}` / `chat:{uuid}`.
 - Agent run persistence is centralized in `pawn_agent/core/agent_runner.py`.
-- Coworker loop (`coworker:` in config, off by default): after diarization, `chain_agent.command: session_completed` extracts items, scores them against `Goals.md`, writes `Pawn/Items` and `Pawn/Today.md`, and notifies only on an active-thread interrupt. Triage is `file|task|later|ignore` from Matrix, item-note frontmatter, `GET/POST /v1/items`, or the same words in chat. `/idea` captures an idea skeleton, `/goal` and `/park` write `Goals.md`, and a normal prompt only drafts `Pawn/Reviews/goal-proposal.md` until `/goal apply`. Morning and weekly crons live in `pawn_server/core/coworker_worker.py`. See `docs/COWORKER.md`.
+- Coworker loop (`coworker:` in config, off by default): after diarization, `chain_agent.command: session_completed` extracts items, scores them against `Goals.md`, writes `Pawn/Items` and `Pawn/Today.md`, and notifies only on an active-thread interrupt. Triage is `file|task|later|ignore` from Matrix, item-note frontmatter, `GET/POST /v1/items`, or the same words in chat. `/idea` writes one note under `Ideas/` (`status: inbox`) and does not start a model turn. The plugin Inbox lists those notes (Keep / Goal / Task / Drop). Idea notes are not extracted. `/goal` and `/park` write `Goals.md`, and a normal prompt only drafts `Pawn/Reviews/goal-proposal.md` until `/goal apply`. Morning and weekly crons live in `pawn_server/core/coworker_worker.py`. See `docs/COWORKER.md`.
 
 ## Agent Tools / Skills
 
@@ -69,7 +69,7 @@ Domain logic stays in `pawn_agent/tools/*_impl`. Production path uses **CliTools
 Migrated CliTools: `sessions_list`, `session_transcript`, `session_analyze`,
 `session_screenshots`, `session_delete`, `session_relabel`, `note_read`, `note_search`,
 `note_write`, `note_append`, `task_update`, `schedule_propose`, `queue_push`,
-`idea_capture`, `goal_propose`.
+`goal_propose`.
 
 `session_analyze --save` / `note_write`: prefer `--save` for analysis Markdown
 under `Pawn/Analyses/`. Free-form notes use `note_write --content-file @note`
@@ -111,9 +111,9 @@ picks from the checklist, or asks Pawn to create the list directly. Same
 title and assignee are not duplicated. `task_update` remains the vault-job
 tool and is not used for these notes.
 
-`coworker` captures idea skeletons (`idea_capture`) and drafts goal threads
-(`goal_propose`). It does not write `Goals.md`. `/goal`, `/park`, and
-`/goal apply` are the chat commands that do.
+`coworker` drafts goal threads (`goal_propose`). It does not write `Goals.md`
+and it does not capture ideas. `/idea` writes the idea note directly. `/goal`,
+`/park`, and `/goal apply` are the chat commands that write `Goals.md`.
 
 Session memory is owned by sallm (SQLite + Lance + `Agent.remember`). Old memorize/recall/vectorize tools were removed.
 

@@ -235,17 +235,6 @@ def build_pawn_clitools() -> dict[str, CliTool]:
                 "Open the .base file in Obsidian."
             ),
         ),
-        "idea_capture": CliTool(
-            name="idea_capture",
-            argv=_cli_argv("idea_capture.py"),
-            summary=(
-                "Write one idea skeleton under the coworker watch folder (default Ideas/). "
-                "Required: --seed (the user's line, unchanged), --title, --why, --sketch, "
-                "and at least one --question (or --open-questions, one per line). "
-                "Fills Why, Sketch, and Open questions from that line only. "
-                "Does not overwrite an existing note and does not write the Pawn/Ideas companion."
-            ),
-        ),
         "goal_propose": CliTool(
             name="goal_propose",
             argv=_cli_argv("goal_propose.py"),

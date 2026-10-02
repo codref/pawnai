@@ -11,7 +11,7 @@ import pytest
 from pawn_agent.core.coworker.review import extract_goals_block
 from pawn_agent.core.coworker.slash import resolve_chat_message
 from pawn_agent.tools.goals_impl import goal_propose_impl
-from pawn_agent.tools.ideas_impl import idea_capture_impl, render_idea_note
+from pawn_agent.tools.ideas_impl import capture_idea, render_idea_note
 from pawn_agent.utils.config import AgentConfig
 from pawn_core.goals import GoalInsertError, insert_goal_thread, parse_goals
 from pawn_core.vault import VaultNotFound, VaultStore, VaultWriteDenied
@@ -109,51 +109,29 @@ def test_insert_missing_note_is_a_goals_file() -> None:
     assert "Do not notify" in goals.parked[0].do
 
 
-def test_idea_capture_writes_once() -> None:
+def test_capture_idea_writes_once() -> None:
     store = MemStore()
     cfg = _cfg()
-    first = idea_capture_impl(
-        cfg,
-        title="Implement multi-model in pawnai",
-        seed="implement multi-model in pawnai",
-        why="Chat should be able to pick a model per turn.",
-        sketch="A setting and a slash command that selects the model.",
-        open_questions=["Which models are already configured?"],
-        store=store,
-        today=date(2026, 9, 29),
-    )
-    key = "Ideas/2026-09-29 Implement multi-model in pawnai.md"
+    line = "implement multi-model in pawnai"
+    first = capture_idea(cfg, line=line, store=store, today=date(2026, 9, 29))
+    key = "Ideas/2026-09-29 implement multi-model in pawnai.md"
     assert first == f"Captured {key}"
     body = store.files[key]
     assert "tags: [idea]" in body
+    assert "status: inbox" in body
     assert "pawn: editable" not in body
-    assert "## Seed\n\nimplement multi-model in pawnai" in body
-    assert "Which models are already configured?" in body
+    assert "## Seed" not in body
+    assert f"# implement multi-model in pawnai\n\n{line}\n" in body
     assert store.skip == [True]
     store.files[key] = "kept"
-    second = idea_capture_impl(
-        cfg,
-        title="Implement multi-model in pawnai",
-        seed="implement multi-model in pawnai",
-        why="Again.",
-        sketch="Again.",
-        open_questions=["Again?"],
-        store=store,
-        today=date(2026, 9, 29),
-    )
+    second = capture_idea(cfg, line=line, store=store, today=date(2026, 9, 29))
     assert "Already captured" in second
     assert store.files[key] == "kept"
 
 
 def test_idea_note_is_denied_to_note_write() -> None:
     store = VaultStore(bucket="b", client=MagicMock())
-    body = render_idea_note(
-        title="Multi-model",
-        seed="implement multi-model",
-        why="Because.",
-        sketch="A switch.",
-        open_questions=["Where?"],
-    )
+    body = render_idea_note(title="Multi-model", line="implement multi-model")
     with pytest.raises(VaultWriteDenied):
         store.assert_writable("Ideas/2026-09-29 Multi-model.md", existing_body=body)
 
@@ -209,10 +187,15 @@ def test_slash_goal_writes_and_idea_rewrites() -> None:
     idea = asyncio.run(
         resolve_chat_message(cfg, "/idea implement multi-model in pawnai", store=store)
     )
-    assert idea.mode == "prompt"
-    assert idea.rewritten
-    assert "implement multi-model in pawnai" in idea.text
-    assert "idea_capture" in idea.text
+    assert idea.mode == "reply"
+    assert not idea.rewritten
+    assert "idea_capture" not in idea.text
+    idea_keys = [key for key in store.files if key.startswith("Ideas/")]
+    assert len(idea_keys) == 1
+    note = store.files[idea_keys[0]]
+    assert "status: inbox" in note
+    assert "implement multi-model in pawnai" in note
+    assert "## Seed" not in note
 
     usage = asyncio.run(resolve_chat_message(cfg, "/idea", store=store))
     assert usage.mode == "reply"

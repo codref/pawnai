@@ -40,7 +40,6 @@ def test_build_pawn_clitools_names() -> None:
         "tasknotes_commit",
         "tasknotes_update",
         "tasknotes_board",
-        "idea_capture",
         "goal_propose",
     }
 
@@ -78,12 +77,12 @@ def test_coworker_skill_hides_note_write() -> None:
     available = build_pawn_clitools()
     skill = registry.get("coworker")
     assert skill.tools is not None
-    assert "idea_capture" in skill.tools
     assert "goal_propose" in skill.tools
+    assert "idea_capture" not in skill.tools
     assert "note_write" not in skill.tools
     visible = registry.resolve_tools("coworker", available)
-    assert "idea_capture" in visible
     assert "goal_propose" in visible
+    assert "idea_capture" not in visible
     assert "note_write" not in visible
 
 

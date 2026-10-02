@@ -296,19 +296,15 @@ TASKNOTES = Skill(
 COWORKER = Skill(
     name="coworker",
     description=(
-        "User wants to capture an idea, draft a change to Goals.md, or ask "
-        "what is on the goals list. Prefer this over notes whenever they "
-        "mention an idea, a goal, a thread, or Goals.md."
+        "User wants to draft a change to Goals.md, or ask what is on the goals "
+        "list. Prefer this over notes whenever they mention a goal, a thread, "
+        "or Goals.md. An idea is captured with /idea, which does not start a "
+        "model turn."
     ),
     prompt=(
         "Active skill: coworker.\n"
-        "Ideas are notes under the watch folder (default Ideas/), tagged idea. "
-        "Call idea_capture once. --seed is the user's line unchanged. --title "
-        "is a short noun phrase from that line. Fill --why, --sketch, and "
-        "--question from that line only: one or two sentences each for why and "
-        "the sketch, and one to three open questions. Do not research the repo. "
-        "Do not add tasks. Do not invent dates, owners, or commitments. "
-        "An existing note at that path is left in place.\n"
+        "Ideas are notes under Ideas/, tagged idea, with status inbox. "
+        "You do not capture them. Tell the user to run /idea followed by the line.\n"
         "Goals.md is the user's note. You must not write it. To contribute a "
         "thread, call goal_propose with --name --why --movement --interrupt and "
         "--status active or parked. That writes Pawn/Reviews/goal-proposal.md. "
@@ -320,7 +316,6 @@ COWORKER = Skill(
         "Do not call note_write. Do not dump tool errors into the vault."
     ),
     tools=(
-        "idea_capture",
         "goal_propose",
         "note_read",
         "knowledge_search",

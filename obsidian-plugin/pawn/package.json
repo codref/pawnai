@@ -1,6 +1,6 @@
 {
   "name": "obsidian-pawn",
-  "version": "0.2.2",
+  "version": "0.2.3",
   "description": "Copilot-style chat with Pawn AI, plus background jobs, prompt commands and uploads.",
   "main": "main.js",
   "scripts": {
