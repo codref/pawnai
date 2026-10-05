@@ -89,14 +89,46 @@ def build_pawn_clitools() -> dict[str, CliTool]:
             argv=_cli_argv("session_relabel.py"),
             summary=(
                 "Rename a speaker across one diarization session and propagate "
-                "the display name to speaker_names / embeddings / session_state. "
+                "the display name to speaker_names / session_speaker_map / "
+                "session_state. "
                 "Required: --session-id ID --from LABEL --to NAME. "
                 "--from may be SPEAKER_XX or a current display name "
                 "(e.g. --from SPEAKER_00 --to Davide). "
                 "Existing vault transcript notes refresh automatically; pass "
                 "--push-vault to create/update even without a prior mapping. "
                 "Use when the user asks to change / correct / rename a speaker "
-                "on a session. Never invent session ids — sessions_list first."
+                "on a session. Prefer speakers_list + speaker_enroll + "
+                "session_reidentify when building lasting voice identity. "
+                "Never invent session ids — sessions_list first."
+            ),
+        ),
+        "speakers_list": CliTool(
+            name="speakers_list",
+            argv=_cli_argv("speakers_list.py"),
+            summary=(
+                "List curated Speakers gallery people (id, name, enrollment count). "
+                "Optional: --include-inactive. Use before speaker_enroll."
+            ),
+        ),
+        "speaker_enroll": CliTool(
+            name="speaker_enroll",
+            argv=_cli_argv("speaker_enroll.py"),
+            summary=(
+                "Manually approve a voiceprint into the Speakers gallery. "
+                "Required: --speaker NAME. Provide either "
+                "--session ID --from LABEL or --audio PATH. "
+                "ALWAYS confirm with the user that the label/span is correct "
+                "and audio quality is good before calling. Never auto-enroll."
+            ),
+        ),
+        "session_reidentify": CliTool(
+            name="session_reidentify",
+            argv=_cli_argv("session_reidentify.py"),
+            summary=(
+                "Re-match an existing session against the Speakers gallery "
+                "(no re-diarization). Required: --session-id ID. "
+                "Use after speaker_enroll or gallery edits. "
+                "Never invent session ids."
             ),
         ),
         "note_read": CliTool(

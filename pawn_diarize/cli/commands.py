@@ -16,6 +16,11 @@ app = typer.Typer(
 s3_app = typer.Typer(help="S3 storage management commands.")
 app.add_typer(s3_app, name="s3")
 
+from .speakers_cmd import speakers_app  # noqa: E402
+
+app.add_typer(speakers_app, name="speakers")
+
+
 
 def _resolve_s3_paths(
     paths: List[str],
@@ -46,7 +51,7 @@ def _resolve_s3_paths(
 
     has_s3 = any(is_s3_path(p) for p in paths)
     if not has_s3:
-        return paths, []
+        return paths, [], {p: p for p in paths}
 
     s3_cfg = app_cfg.get_s3_config()
     if s3_cfg is None:
@@ -130,7 +135,9 @@ def diarize(
         help="Similarity threshold for speaker matching (0-1, default: 0.7)",
     ),
     store_new: bool = typer.Option(
-        True, "--store-new/--no-store", help="Store embeddings for unknown speakers"
+        False,
+        "--store-new/--no-store",
+        help="Deprecated/ignored: gallery enrollments are manual only",
     ),
 ) -> None:
     """Perform speaker diarization on one or more audio files.
@@ -141,13 +148,12 @@ def diarize(
 
     Analyzes the audio to identify and separate different speakers,
     showing when each speaker talks with timestamps. Automatically
-    recognizes known speakers from the database.
+    recognizes known speakers from the curated Speakers gallery.
 
     Example:
         pawn-diarize diarize audio.wav
         pawn-diarize diarize part1.wav part2.wav part3.wav -o result.json
         pawn-diarize diarize audio.wav -t 0.8  # Stricter matching
-        pawn-diarize diarize audio.wav --no-store  # Don't save new speakers
     """
     # Lazy imports to avoid loading models during --help
     import json
@@ -168,7 +174,14 @@ def diarize(
         config = Config(db_dsn=db_dsn)
         config.ensure_paths_exist()
 
-        engine = DiarizationEngine()
+        engine = DiarizationEngine(
+            device=str(app_cfg.device.resolved),
+            diarization_backend=app_cfg.models.diarization_backend,
+            diarization_model=app_cfg.models.diarization_model,
+            embedding_model=app_cfg.models.embedding_model,
+            hf_token=app_cfg.models.hf_token,
+            identify_margin=app_cfg.speakers.identify_margin,
+        )
         if len(audio_paths) == 1:
             console.print(f"[cyan]Diarizing: {audio_paths[0]}[/cyan]")
         else:
@@ -180,8 +193,9 @@ def diarize(
             audio_paths if len(audio_paths) > 1 else audio_paths[0],
             db_dsn=db_dsn,
             similarity_threshold=threshold,
-            store_new_speakers=store_new,
+            store_new_speakers=False,
             source_map=_path_map,
+            identify_margin=app_cfg.speakers.identify_margin,
         )
 
         console.print(f"[green]✓ Diarization complete[/green]")
@@ -197,10 +211,10 @@ def diarize(
             console.print(
                 f"\n[bold yellow]New/Unknown speakers:[/bold yellow] {', '.join(result['new_speakers'])}"
             )
-            if store_new:
-                console.print(f"  [dim](Embeddings stored for future recognition)[/dim]")
-            else:
-                console.print(f"  [dim](Use 'pawn-diarize label' to assign names)[/dim]")
+            console.print(
+                "  [dim](Enroll with: pawn-diarize speakers enroll -s NAME "
+                "--session SID --from LABEL)[/dim]"
+            )
 
         console.print(
             f"\n[bold]Detected {result['num_speakers']} speaker(s):[/bold] {', '.join(result['speakers'])}"
@@ -478,18 +492,20 @@ def transcribe_diarize(
         0.7, "--threshold", "-t", help="Similarity threshold for speaker matching (0-1)"
     ),
     store_new: bool = typer.Option(
-        True, "--store-new/--no-store", help="Store embeddings for unknown speakers"
+        False,
+        "--store-new/--no-store",
+        help="Deprecated/ignored: gallery enrollments are manual only",
     ),
     device: str = typer.Option("cuda", "--device", "-d", help="Device to use: cuda or cpu"),
     chunk_duration: Optional[float] = typer.Option(
         None, "--chunk-duration", "-c", help="Split each audio file into chunks of N seconds"
     ),
     cross_file_threshold: float = typer.Option(
-        0.85,
+        0.55,
         "--cross-threshold",
         "-x",
         help="Cosine-similarity threshold for matching speakers across files (0-1). "
-        "Higher = stricter; only used when multiple files are provided.",
+        "Higher = stricter; only used when multiple files are provided. Default 0.55.",
     ),
     no_timestamps: bool = typer.Option(
         False, "--no-timestamps", help="Hide timestamps in text output"
@@ -597,6 +613,8 @@ def transcribe_diarize(
             from sqlalchemy import delete as sql_delete
             from sqlalchemy.orm import Session as OrmSession
 
+            from pawn_core.database import SessionSpeakerMap
+
             with OrmSession(db_engine) as _db:
                 seg_del = _db.execute(
                     sql_delete(TranscriptionSegment).where(
@@ -607,10 +625,16 @@ def transcribe_diarize(
                     sql_delete(SessionAnalysis).where(SessionAnalysis.session_id == session_id)
                 )
                 _db.execute(sql_delete(SessionState).where(SessionState.session_id == session_id))
+                map_del = _db.execute(
+                    sql_delete(SessionSpeakerMap).where(
+                        SessionSpeakerMap.session_id == session_id
+                    )
+                )
                 _db.commit()
             console.print(
-                f"[yellow]⚠ Overwrite: deleted {seg_del.rowcount} segment(s) "
-                f"and session state for '{session_id}'[/yellow]"
+                f"[yellow]⚠ Overwrite: deleted {seg_del.rowcount} segment(s), "
+                f"{map_del.rowcount} speaker-map row(s), and session state "
+                f"for '{session_id}'[/yellow]"
             )
 
         if session:
@@ -650,7 +674,7 @@ def transcribe_diarize(
             audio_paths if len(audio_paths) > 1 else audio_paths[0],
             db_dsn=db_dsn,
             similarity_threshold=threshold,
-            store_new_speakers=store_new,
+            store_new_speakers=False,
             device=device,
             chunk_duration=chunk_duration,
             cross_file_threshold=cross_file_threshold,
@@ -659,6 +683,12 @@ def transcribe_diarize(
             verbose=verbose,
             backend=backend,
             source_map=_path_map,
+            session_id=session_id,
+            identify_margin=float(app_cfg.speakers.identify_margin),
+            diarization_backend=app_cfg.models.diarization_backend,
+            diarization_model=app_cfg.models.diarization_model,
+            embedding_model=app_cfg.models.embedding_model,
+            hf_token=app_cfg.models.hf_token,
         )
 
         console.print(f"[green]✓ Processing complete[/green]")
@@ -699,10 +729,10 @@ def transcribe_diarize(
             console.print(
                 f"\n[bold yellow]New/Unknown speakers:[/bold yellow] {', '.join(result['new_speakers'])}"
             )
-            if store_new:
-                console.print(f"  [dim](Embeddings stored for future recognition)[/dim]")
-            else:
-                console.print(f"  [dim](Use 'pawn-diarize label' to assign names)[/dim]")
+            console.print(
+                "  [dim](Enroll with: pawn-diarize speakers enroll -s NAME "
+                "--session SID --from LABEL)[/dim]"
+            )
 
         console.print(
             f"\n[bold]All speakers:[/bold] {', '.join(all_speakers)} "
@@ -723,7 +753,11 @@ def transcribe_diarize(
         )
 
         if session:
-            updated_processed = prior_processed_files + [str(p) for p in audio_paths]
+            from ..core.s3 import to_canonical_paths
+
+            updated_processed = prior_processed_files + to_canonical_paths(
+                [str(p) for p in audio_paths], _path_map
+            )
             save_session_state(
                 session_id=session_id,
                 speaker_embeddings=updated_session_embeddings,
@@ -866,8 +900,12 @@ def embed(
                 console.print(f"  {i}. {p}")
             embeddings = diarization_engine.extract_embeddings(audio_paths)
 
+        from ..core.s3 import to_canonical_paths
+
         embedding_manager.add_embedding(
-            speaker_id, embeddings, _path_map.get(audio_paths[0], audio_paths[0])
+            speaker_id,
+            embeddings,
+            to_canonical_paths([audio_paths[0]], _path_map)[0],
         )
         console.print(f"[green]✓ Embedding stored for speaker: {speaker_id}[/green]")
 
@@ -1322,6 +1360,12 @@ def session_info(
         "-s",
         help="Print the full transcript for this speaker only (name or SPEAKER_XX label).",
     ),
+    sims: bool = typer.Option(
+        False,
+        "--sims",
+        help="Print pairwise cosine similarity between session_state speaker centroids "
+        "(use this to check if two SPEAKER_XX labels are the same voice).",
+    ),
     db_dsn: Optional[str] = typer.Option(None, help="PostgreSQL DSN for the speaker database."),
     config: Optional[str] = typer.Option(
         None, "--config", help="Path to YAML configuration file (pawnai.yaml)."
@@ -1340,11 +1384,13 @@ def session_info(
       how many embedding segments exist and in which file(s) they were captured.
 
     Use --speaker to print only that speaker's transcript lines instead of the
-    full stats overview.
+    full stats overview.  Use --sims to compare session centroids (same person
+    usually scores ≳ 0.55–0.70 with TitaNet).
 
     \b
     Example:
         pawn-diarize session-info my-session
+        pawn-diarize session-info my-session --sims
         pawn-diarize session-info my-session --speaker Alice
         pawn-diarize session-info my-session --speaker SPEAKER_00
         pawn-diarize session-info ef11c094-0d8d-41fe-93c0-c6bf1f2e8663
@@ -1532,6 +1578,88 @@ def session_info(
             f"[dim]Files:[/dim] {len(session_files)}   "
             f"[dim]Speakers:[/dim] {len(speaker_stats)}\n"
         )
+
+        if sims:
+            import numpy as np
+
+            labels = sorted(
+                lbl
+                for lbl, meta in session_emb_meta.items()
+                if isinstance(meta, dict) and meta.get("embedding") is not None
+            )
+            if len(labels) < 2:
+                console.print(
+                    "[yellow]Need at least 2 session_state centroids for --sims "
+                    f"(found {len(labels)}).[/yellow]\n"
+                )
+            else:
+                vecs = []
+                for lbl in labels:
+                    v = np.asarray(
+                        session_emb_meta[lbl]["embedding"], dtype=np.float32
+                    ).flatten()
+                    n = float(np.linalg.norm(v))
+                    vecs.append(v / n if n > 0 else v)
+                stacked = np.stack(vecs)
+                matrix = stacked @ stacked.T
+
+                sim_tbl = Table(
+                    title="Centroid cosine similarity (session_state)",
+                    show_header=True,
+                    header_style="bold",
+                    show_lines=False,
+                    box=None,
+                    padding=(0, 1),
+                )
+                sim_tbl.add_column("", style="cyan", no_wrap=True)
+                for lbl in labels:
+                    sim_tbl.add_column(lbl, justify="right", no_wrap=True)
+                for i, row_lbl in enumerate(labels):
+                    cells = [row_lbl]
+                    for j in range(len(labels)):
+                        score = float(matrix[i, j])
+                        if i == j:
+                            cells.append("[dim]1.000[/dim]")
+                        elif score >= 0.70:
+                            cells.append(f"[green]{score:.3f}[/green]")
+                        elif score >= 0.55:
+                            cells.append(f"[yellow]{score:.3f}[/yellow]")
+                        else:
+                            cells.append(f"{score:.3f}")
+                    sim_tbl.add_row(*cells)
+                console.print(sim_tbl)
+                console.print(
+                    "[dim]Same person is usually ≳0.55–0.70 (yellow/green). "
+                    "Merge with:[/dim]\n"
+                    "[dim]  pawn-diarize session-relabel -s "
+                    f"{session} --from SPEAKER_XX --to SPEAKER_YY[/dim]\n"
+                )
+            if speaker:
+                pass  # fall through to transcript mode only if requested below
+            else:
+                # Still show the compact talk-time table, skip the long per-speaker dump.
+                talk = Table(
+                    title="Talk time",
+                    show_header=True,
+                    header_style="bold",
+                    show_lines=False,
+                    box=None,
+                    padding=(0, 2),
+                )
+                talk.add_column("Speaker", style="cyan")
+                talk.add_column("Talk time", justify="right")
+                talk.add_column("Turns", justify="right")
+                for spk_name, stats in sorted(
+                    speaker_stats.items(), key=lambda kv: -kv[1]["duration"]
+                ):
+                    talk.add_row(
+                        spk_name,
+                        _fmt_dur(stats["duration"]),
+                        str(stats["segments"]),
+                    )
+                console.print(talk)
+                console.print()
+                return
 
         # ── File index ────────────────────────────────────────────────────────
         if session_files:
@@ -2064,6 +2192,8 @@ def status(
     console.print("  label              - Assign names to speakers")
     console.print("  session-relabel    - Bulk-rename a speaker across an entire session")
     console.print("  session-info       - Show speakers & embedding sources for a session")
+    console.print("  retranscribe       - Wipe + re-ASR/diarize a session from its S3 audio")
+    console.print("  rediarize          - Re-run diarization labels only (keeps transcript text)")
     console.print("  sessions           - List or inspect transcription sessions")
     console.print("  push-vault         - Push/update transcript notes in the S3 vault")
     console.print("  s3-ls              - List objects in the configured S3 bucket")
@@ -2469,3 +2599,369 @@ def _fmt_size(num_bytes: int) -> str:
 # ──────────────────────────────────────────────────────────────────────────────
 # RAG / vectorization commands
 # ──────────────────────────────────────────────────────────────────────────────
+
+
+
+@app.command()
+def reidentify(
+    session: str = typer.Option(..., "--session", "-s", help="Session id to rematch"),
+    threshold: float = typer.Option(0.7, "--threshold", "-t"),
+    margin: Optional[float] = typer.Option(None, "--margin"),
+    db_dsn: Optional[str] = typer.Option(None, help="PostgreSQL DSN"),
+    config: Optional[str] = typer.Option(None, "--config"),
+    device: str = typer.Option("auto", "--device", "-d"),
+    push_vault: bool = typer.Option(False, "--push-vault"),
+) -> None:
+    """Re-match an existing session against the curated Speakers gallery.
+
+    Does not re-run anonymous diarization.  Needs session_state speaker
+    centroids (created by a prior transcribe-diarize / rediarize run).
+    """
+    from ..core.config import AppConfig
+    from ..core.reidentify import reidentify_session
+
+    app_cfg = AppConfig(config_path=config) if config else AppConfig()
+    dsn = db_dsn or app_cfg.db_dsn
+    try:
+        result = reidentify_session(
+            session,
+            dsn,
+            threshold=threshold,
+            margin=margin if margin is not None else app_cfg.speakers.identify_margin,
+            device=device,
+            embedding_model=app_cfg.models.embedding_model,
+            hf_token=app_cfg.models.hf_token,
+            speakers_config=app_cfg.speakers,
+        )
+    except ValueError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1)
+
+    console.print(f"[green]{result.summary()}[/green]")
+    if push_vault:
+        from ..core.vault_transcript import push_session_transcript
+
+        try:
+            push_session_transcript(session, db_dsn=dsn, cfg=app_cfg)
+            console.print("[cyan]Vault transcript refreshed[/cyan]")
+        except Exception as exc:  # noqa: BLE001
+            console.print(f"[yellow]Vault refresh skipped: {exc}[/yellow]")
+
+
+@app.command(name="repair-audio-paths")
+def repair_audio_paths(
+    session: Optional[str] = typer.Option(
+        None, "--session", "-s", help="Repair one session id"
+    ),
+    all_sessions: bool = typer.Option(
+        False, "--all", help="Repair every session that has segments"
+    ),
+    db_dsn: Optional[str] = typer.Option(None),
+    config: Optional[str] = typer.Option(None, "--config"),
+) -> None:
+    """Rewrite stale /tmp audio paths to canonical s3:// URIs (no ML).
+
+    Use after queue/CLI sessions that stored ephemeral download paths.
+    Does not re-download or re-diarize — only remaps DB fields when a unique
+    S3 object matches the filename.
+    """
+    from ..core.config import AppConfig
+    from ..core.path_repair import list_sessions_with_audio, repair_session_audio_paths
+
+    if not session and not all_sessions:
+        console.print("[red]Provide --session ID or --all[/red]")
+        raise typer.Exit(1)
+    if session and all_sessions:
+        console.print("[red]Use either --session or --all, not both[/red]")
+        raise typer.Exit(1)
+
+    app_cfg = AppConfig(config_path=config) if config else AppConfig()
+    dsn = db_dsn or app_cfg.db_dsn
+    targets = [session] if session else list_sessions_with_audio(dsn)
+    if not targets:
+        console.print("[yellow]No sessions to repair.[/yellow]")
+        return
+
+    repaired = 0
+    for sid in targets:
+        try:
+            result = repair_session_audio_paths(sid, dsn, app_cfg)
+        except ValueError as exc:
+            console.print(f"[yellow]{sid}: {exc}[/yellow]")
+            continue
+        console.print(f"[green]{result.summary()}[/green]")
+        if result.remaps:
+            repaired += 1
+            for old, new_uri in result.remaps.items():
+                console.print(f"  {Path(old).name} → {new_uri}")
+    console.print(f"[cyan]Done. {repaired}/{len(targets)} session(s) remapped.[/cyan]")
+
+
+def _ordered_session_audio_files(engine: Any, session_id: str) -> List[str]:
+    """Return distinct ``audio_file`` paths for *session_id*, oldest-first.
+
+    Falls back to ``session_state.processed_files`` when segment rows have no
+    paths (should be rare after a successful ingest).
+    """
+    from sqlalchemy import func, select
+    from sqlalchemy.orm import Session as OrmSession
+
+    from pawn_core.database import TranscriptionSegment
+
+    from ..core.database import SessionState
+
+    with OrmSession(engine) as db:
+        ordered = list(
+            db.execute(
+                select(
+                    TranscriptionSegment.audio_file,
+                    func.min(TranscriptionSegment.start_time),
+                )
+                .where(TranscriptionSegment.session_id == session_id)
+                .where(TranscriptionSegment.audio_file.is_not(None))
+                .group_by(TranscriptionSegment.audio_file)
+                .order_by(func.min(TranscriptionSegment.start_time))
+            ).all()
+        )
+        audio_files = [row[0] for row in ordered if row[0]]
+        if audio_files:
+            return audio_files
+        state = db.get(SessionState, session_id)
+        if state and state.processed_files:
+            return [str(p) for p in state.processed_files if p]
+    return []
+
+
+@app.command()
+def retranscribe(
+    ctx: typer.Context,
+    session: str = typer.Option(..., "--session", "-s", help="Session id to rebuild"),
+    confirm: bool = typer.Option(False, "--confirm", help="Required safety flag"),
+    threshold: float = typer.Option(
+        0.7, "--threshold", "-t", help="Gallery identify cosine threshold"
+    ),
+    cross_file_threshold: float = typer.Option(
+        0.55,
+        "--cross-threshold",
+        "-x",
+        help="Cosine similarity to merge the same voice across chunk files (0-1).",
+    ),
+    backend: str = typer.Option(
+        "nemo",
+        "--backend",
+        "-b",
+        help="Transcription backend: 'nemo' (Parakeet) or 'whisper'",
+    ),
+    device: str = typer.Option("cuda", "--device", "-d", help="Device: cuda or cpu"),
+    chunk_duration: Optional[float] = typer.Option(
+        None, "--chunk-duration", "-c", help="Split each file into chunks of N seconds"
+    ),
+    output: Optional[str] = typer.Option(
+        None, "--output", "-o", help="Optional transcript output (.txt / .json)"
+    ),
+    db_dsn: Optional[str] = typer.Option(None),
+    config: Optional[str] = typer.Option(None, "--config"),
+    verbose: bool = typer.Option(False, "--verbose", "-v"),
+    no_timestamps: bool = typer.Option(False, "--no-timestamps"),
+    push_vault: bool = typer.Option(
+        False,
+        "--push-vault",
+        help="Force a vault transcript refresh after processing "
+        "(auto-push still follows vault.auto_push_transcript).",
+    ),
+) -> None:
+    """Re-transcribe + re-diarize a session from its stored audio paths.
+
+    Looks up the session's audio files (repairing stale ``/tmp`` paths back to
+    ``s3://`` when possible), wipes existing segments/state, then runs the same
+    pipeline as ``transcribe-diarize --overwrite``.
+
+    \b
+    Example:
+        pawn-diarize retranscribe --session warren-1005 --confirm
+        pawn-diarize retranscribe -s warren-1005 --confirm --backend whisper
+        pawn-diarize retranscribe -s warren-1005 --confirm --push-vault
+    """
+    from ..core.config import AppConfig
+    from ..core.database import get_engine, init_db
+    from ..core.path_repair import repair_session_audio_paths
+    from ..core.s3 import is_s3_path
+
+    if not confirm:
+        console.print("[red]Refusing without --confirm[/red]")
+        raise typer.Exit(1)
+
+    app_cfg = AppConfig(config_path=config) if config else AppConfig()
+    dsn = db_dsn or app_cfg.db_dsn
+    engine = get_engine(dsn)
+    init_db(engine)
+
+    try:
+        repair = repair_session_audio_paths(session, dsn, app_cfg)
+    except ValueError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1)
+    if repair.remaps:
+        console.print(f"[cyan]{repair.summary()}[/cyan]")
+        for old, new_uri in repair.remaps.items():
+            console.print(f"  {Path(old).name} → {new_uri}")
+
+    audio_files = _ordered_session_audio_files(engine, session)
+    if not audio_files:
+        console.print(f"[red]No audio files for session {session!r}[/red]")
+        raise typer.Exit(1)
+
+    missing = [p for p in audio_files if not is_s3_path(p) and not Path(p).exists()]
+    if missing:
+        console.print(
+            "[red]Audio paths are missing locally and could not be recovered as "
+            "S3 URIs:[/red] " + ", ".join(Path(p).name for p in missing)
+        )
+        raise typer.Exit(1)
+
+    n_s3 = sum(1 for p in audio_files if is_s3_path(p))
+    console.print(
+        f"[cyan]Retranscribe session {session!r}: {len(audio_files)} file(s)"
+        + (f" ({n_s3} from S3)" if n_s3 else "")
+        + "[/cyan]"
+    )
+    for i, p in enumerate(audio_files, 1):
+        console.print(f"  {i}. {Path(p).name if not is_s3_path(p) else p}")
+
+    # Delegate to transcribe-diarize with --overwrite.  Pass canonical paths
+    # (often s3://); that command downloads and builds source_map itself.
+    ctx.invoke(
+        transcribe_diarize,
+        audio_paths=audio_files,
+        output=output,
+        config=config,
+        session=session,
+        db_dsn=dsn,
+        threshold=threshold,
+        store_new=False,
+        device=device,
+        chunk_duration=chunk_duration,
+        cross_file_threshold=cross_file_threshold,
+        no_timestamps=no_timestamps,
+        verbose=verbose,
+        backend=backend,
+        overwrite=True,
+    )
+
+    if push_vault:
+        from ..core.vault_transcript import push_session_transcript
+
+        try:
+            push_session_transcript(session, db_dsn=dsn, cfg=app_cfg)
+            console.print("[cyan]Vault transcript refreshed[/cyan]")
+        except Exception as exc:  # noqa: BLE001
+            console.print(f"[yellow]Vault refresh skipped: {exc}[/yellow]")
+
+
+@app.command()
+def rediarize(
+    session: str = typer.Option(..., "--session", "-s", help="Session id to rebuild"),
+    confirm: bool = typer.Option(False, "--confirm", help="Required safety flag"),
+    threshold: float = typer.Option(
+        0.7, "--threshold", "-t", help="Gallery identify cosine threshold"
+    ),
+    cross_file_threshold: float = typer.Option(
+        0.55,
+        "--cross-threshold",
+        "-x",
+        help="Cosine similarity to merge the same voice across chunk files (0-1). "
+        "Lower merges more aggressively; default 0.55.",
+    ),
+    margin: Optional[float] = typer.Option(None, "--margin"),
+    db_dsn: Optional[str] = typer.Option(None),
+    config: Optional[str] = typer.Option(None, "--config"),
+    device: str = typer.Option("auto", "--device", "-d"),
+    push_vault: bool = typer.Option(False, "--push-vault"),
+) -> None:
+    """Re-run anonymous diarization + gallery identify for a session.
+
+    Re-downloads audio from S3 when segment rows still point at stale local
+    ``/tmp/...`` downloads (common for queue-ingested sessions).  Canonical
+    ``s3://`` URIs are written back to the DB when recovery succeeds.
+
+    Does **not** re-run ASR — use ``retranscribe`` to rebuild transcript text.
+    """
+    from ..core.config import AppConfig
+    from ..core.database import get_engine, init_db
+    from ..core.path_repair import repair_session_audio_paths
+    from ..core.reidentify import rediarize_session
+    from ..core.s3 import is_s3_path
+
+    if not confirm:
+        console.print("[red]Refusing without --confirm[/red]")
+        raise typer.Exit(1)
+
+    app_cfg = AppConfig(config_path=config) if config else AppConfig()
+    dsn = db_dsn or app_cfg.db_dsn
+    engine = get_engine(dsn)
+    init_db(engine)
+
+    try:
+        repair = repair_session_audio_paths(session, dsn, app_cfg)
+    except ValueError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1)
+    if repair.remaps:
+        console.print(f"[cyan]{repair.summary()}[/cyan]")
+        for old, new_uri in repair.remaps.items():
+            console.print(f"  {Path(old).name} → {new_uri}")
+
+    audio_files = _ordered_session_audio_files(engine, session)
+    if not audio_files:
+        console.print(f"[red]No audio files for session {session!r}[/red]")
+        raise typer.Exit(1)
+
+    missing = [p for p in audio_files if not is_s3_path(p) and not Path(p).exists()]
+    if missing:
+        console.print(
+            "[red]Audio paths are missing locally and could not be recovered as "
+            "S3 URIs:[/red] " + ", ".join(Path(p).name for p in missing)
+        )
+        raise typer.Exit(1)
+
+    resolved, temps, path_map = _resolve_s3_paths(list(audio_files), app_cfg)
+    try:
+        for p in resolved:
+            if not Path(p).exists():
+                console.print(f"[red]Audio not found: {p}[/red]")
+                raise typer.Exit(1)
+        if any(is_s3_path(p) for p in audio_files):
+            console.print(
+                f"[cyan]Downloaded {sum(1 for p in audio_files if is_s3_path(p))} "
+                f"file(s) from S3 for rediarize[/cyan]"
+            )
+        result = rediarize_session(
+            session,
+            dsn,
+            audio_paths=resolved,
+            device=device,
+            threshold=threshold,
+            cross_file_threshold=cross_file_threshold,
+            margin=margin if margin is not None else app_cfg.speakers.identify_margin,
+            diarization_backend=app_cfg.models.diarization_backend,
+            diarization_model=app_cfg.models.diarization_model,
+            embedding_model=app_cfg.models.embedding_model,
+            hf_token=app_cfg.models.hf_token,
+            source_map=path_map,
+        )
+    except ValueError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1)
+    finally:
+        for t in temps:
+            shutil.rmtree(t, ignore_errors=True)
+
+    console.print(f"[green]{result.summary()}[/green]")
+    if push_vault:
+        from ..core.vault_transcript import push_session_transcript
+
+        try:
+            push_session_transcript(session, db_dsn=dsn, cfg=app_cfg)
+            console.print("[cyan]Vault transcript refreshed[/cyan]")
+        except Exception as exc:  # noqa: BLE001
+            console.print(f"[yellow]Vault refresh skipped: {exc}[/yellow]")

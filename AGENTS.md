@@ -88,10 +88,17 @@ in chat before calling. It does not clear sallm chat memory or vault notes.
 
 `session_relabel` renames a speaker across one session (`--from SPEAKER_00
 --to Davide` or a wrong display name). Updates transcript labels,
-`speaker_names` (so embedding matches resolve to the new name), and
-`session_state` prior-speaker keys. Same core as `pawn-diarize session-relabel`.
-Existing vault Speakers+Transcript notes refresh automatically after
-relabel; pass `--push-vault` to create/update even without a prior mapping.
+`speaker_names`, `session_speaker_map`, and `session_state` prior-speaker
+keys. Same core as `pawn-diarize session-relabel`. For lasting voice
+identity use the curated Speakers gallery (`docs/SPEAKERS.md`):
+`speakers create/enroll`, then `reidentify` / `session_reidentify`.
+Runtime diarization never auto-enrolls voiceprints.
+
+`pawn-diarize rediarize --session X --confirm` re-runs diarization labels
+only (keeps ASR text). `pawn-diarize retranscribe --session X --confirm`
+repairs/downloads the session's stored S3 audio, wipes segments/state, and
+runs a full transcribe-diarize overwrite — use this when transcript text
+is missing or wrong.
 
 Vault diary transcripts (diarize, not agent): `pawn-diarize push-vault`
 creates/updates a stable session note (Speakers, Transcript, and Screenshots

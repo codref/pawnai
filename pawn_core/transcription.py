@@ -42,10 +42,28 @@ def _is_oom(exc: Exception) -> bool:
 
 @contextlib.contextmanager  # type: ignore[misc]
 def _quiet_nemo():  # type: ignore[return]
-    """Suppress NeMo noise: redirect stdout/stderr to devnull and set loggers to ERROR."""
+    """Suppress NeMo noise: redirect stdout/stderr to devnull and raise log levels.
+
+    NeMo's Logger caches ``StreamHandler(sys.stderr)`` objects.  If those
+    handlers are (re)created while stderr points at our temporary ``devnull``,
+    they keep that closed file after we restore the real streams — every later
+    ``logging.warning`` then raises ``ValueError: I/O operation on closed file``.
+    Always rebind NeMo stream handlers to the live stdout/stderr before closing
+    the temporary null device.
+    """
     import logging
+
     for name in _NEMO_LOGGERS:
         logging.getLogger(name).setLevel(logging.ERROR)
+
+    old_nemo_verbosity = None
+    try:
+        from nemo.utils import logging as nemo_logging  # noqa: PLC0415
+
+        old_nemo_verbosity = nemo_logging.get_verbosity()
+        nemo_logging.set_verbosity(logging.ERROR)
+    except Exception:
+        nemo_logging = None  # type: ignore[assignment]
 
     devnull = open(os.devnull, "w")
     old_out, old_err = sys.stdout, sys.stderr
@@ -54,10 +72,58 @@ def _quiet_nemo():  # type: ignore[return]
         yield
     finally:
         sys.stdout, sys.stderr = old_out, old_err
-        devnull.close()
-        # Re-apply: NeMo reconfigures its loggers during import/init
+        # Rebind *before* closing null so handlers never keep a closed stream.
+        _rebind_nemo_stream_handlers()
+        try:
+            devnull.close()
+        except Exception:
+            pass
+        _rebind_nemo_stream_handlers()
+        if nemo_logging is not None and old_nemo_verbosity is not None:
+            try:
+                nemo_logging.set_verbosity(old_nemo_verbosity)
+            except Exception:
+                pass
         for name in _NEMO_LOGGERS:
             logging.getLogger(name).setLevel(logging.ERROR)
+
+
+def _rebind_nemo_stream_handlers() -> None:
+    """Point NeMo / stdlib stream handlers at the current sys.stdout/stderr."""
+    import logging
+
+    try:
+        from nemo.utils import logging as nemo_logging  # noqa: PLC0415
+
+        if hasattr(nemo_logging, "remove_stream_handlers") and hasattr(
+            nemo_logging, "add_stream_handlers"
+        ):
+            nemo_logging.remove_stream_handlers()
+            nemo_logging.add_stream_handlers()
+    except Exception:
+        pass
+
+    def _drop_closed(logger: logging.Logger) -> None:
+        for handler in list(logger.handlers):
+            stream = getattr(handler, "stream", None)
+            if stream is not None and getattr(stream, "closed", False):
+                try:
+                    logger.removeHandler(handler)
+                    handler.close()
+                except Exception:
+                    pass
+
+    _drop_closed(logging.getLogger())
+    for name in _NEMO_LOGGERS:
+        _drop_closed(logging.getLogger(name))
+    try:
+        from nemo.utils import logging as nemo_logging  # noqa: PLC0415
+
+        inner = getattr(nemo_logging, "_logger", None)
+        if inner is not None:
+            _drop_closed(inner)
+    except Exception:
+        pass
 
 
 @contextlib.contextmanager  # type: ignore[misc]
@@ -68,6 +134,46 @@ def _maybe_quiet(verbose: bool):  # type: ignore[return]
     else:
         with _quiet_nemo():
             yield
+
+
+@contextlib.contextmanager  # type: ignore[misc]
+def quiet_nemo_loggers(level: Optional[int] = None):  # type: ignore[return]
+    """Raise NeMo logger levels without redirecting stdout/stderr.
+
+    Use around Sortformer ``diarize()`` so Lhotse "ignored keys" warnings stay
+    quiet while tqdm progress bars still render.
+    """
+    import logging
+
+    target = logging.ERROR if level is None else level
+    previous: Dict[str, int] = {}
+    for name in _NEMO_LOGGERS:
+        lg = logging.getLogger(name)
+        previous[name] = lg.level
+        lg.setLevel(target)
+
+    old_nemo_verbosity = None
+    nemo_logging = None
+    try:
+        from nemo.utils import logging as nemo_logging  # noqa: PLC0415
+
+        old_nemo_verbosity = nemo_logging.get_verbosity()
+        nemo_logging.set_verbosity(target)
+    except Exception:
+        pass
+
+    _rebind_nemo_stream_handlers()
+    try:
+        yield
+    finally:
+        if nemo_logging is not None and old_nemo_verbosity is not None:
+            try:
+                nemo_logging.set_verbosity(old_nemo_verbosity)
+            except Exception:
+                pass
+        for name, prev in previous.items():
+            logging.getLogger(name).setLevel(prev)
+        _rebind_nemo_stream_handlers()
 
 
 class TranscriptionEngine:

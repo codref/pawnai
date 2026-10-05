@@ -19,6 +19,12 @@ vault_notes
     Mapping from diarization session_id to vault object key + content hash.
 session_captures
     Notes and screenshots attached to a diarization session, keyed by item id.
+speakers
+    Curated people registry used for speaker identification.
+speaker_enrollments
+    Manually approved voiceprints for each speaker (never auto-written).
+session_speaker_map
+    Per-session mapping from local SPEAKER_XX labels to gallery people.
 """
 
 from __future__ import annotations
@@ -28,7 +34,7 @@ from contextlib import contextmanager
 from datetime import datetime, timezone
 from typing import Any, Generator, Optional
 
-from sqlalchemy import DateTime, Float, Integer, String, Text, create_engine
+from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, String, Text, create_engine
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sessionmaker
@@ -155,6 +161,92 @@ class SessionCapture(Base):
     audio_offset_s: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     chunk_audio_start: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
     received_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class Speaker(Base):
+    """A curated person in the Speakers gallery.
+
+    Runtime diarization never creates these rows.  Humans (or the agent, after
+    an explicit user confirmation) enroll people via ``pawn-diarize speakers``.
+    """
+
+    __tablename__ = "speakers"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    display_name: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    aliases: Mapped[Any] = mapped_column(JSONB, nullable=False, default=list)
+    notes: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    created_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+        default=lambda: datetime.now(timezone.utc),
+    )
+    updated_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+        default=lambda: datetime.now(timezone.utc),
+    )
+
+
+class SpeakerEnrollment(Base):
+    """One manually approved voiceprint for a gallery speaker.
+
+    Store a small set of high-quality enrollments (roughly 3–5) rather than
+    dumping every diarization turn.  ``embedding`` is a JSON list of floats
+    (L2-normalised) so model dimension changes do not require a schema rewrite.
+    """
+
+    __tablename__ = "speaker_enrollments"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    speaker_id: Mapped[str] = mapped_column(
+        String,
+        ForeignKey("speakers.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    embedding: Mapped[Any] = mapped_column(JSONB, nullable=False)
+    embedding_model: Mapped[str] = mapped_column(String, nullable=False)
+    embedding_dim: Mapped[int] = mapped_column(Integer, nullable=False)
+    source_session_id: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    source_audio_file: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    start_time: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    end_time: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    duration: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    quality_score: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    notes: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    approved_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+        default=lambda: datetime.now(timezone.utc),
+    )
+
+
+class SessionSpeakerMap(Base):
+    """Maps a local diarization label in one session to a gallery speaker.
+
+    ``match_method`` is one of ``gallery`` (auto from enrollments), ``manual``
+    (session-relabel / enroll), or ``prior`` (carried from session_state).
+    """
+
+    __tablename__ = "session_speaker_map"
+
+    session_id: Mapped[str] = mapped_column(String, primary_key=True)
+    local_label: Mapped[str] = mapped_column(String, primary_key=True)
+    speaker_id: Mapped[Optional[str]] = mapped_column(
+        String,
+        ForeignKey("speakers.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    display_name: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    match_score: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    match_method: Mapped[str] = mapped_column(String, nullable=False, default="manual")
+    updated_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+        default=lambda: datetime.now(timezone.utc),
+    )
 
 
 # ──────────────────────────────────────────────────────────────────────────────

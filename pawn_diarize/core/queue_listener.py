@@ -119,10 +119,10 @@ COMMAND_DEFAULTS: Dict[str, Dict[str, Any]] = {
         "session": None,
         "db_dsn": None,  # None → AppConfig default
         "threshold": 0.7,
-        "store_new": True,
+        "store_new": False,
         "device": "cuda",
         "chunk_duration": None,
-        "cross_file_threshold": 0.85,
+        "cross_file_threshold": 0.55,
         "no_timestamps": False,
         "verbose": False,
         "backend": "nemo",
@@ -143,7 +143,7 @@ COMMAND_DEFAULTS: Dict[str, Dict[str, Any]] = {
         "output": None,
         "db_dsn": None,
         "threshold": 0.7,
-        "store_new": True,
+        "store_new": False,
     },
     "embed": {
         "audio_paths": [],
@@ -235,15 +235,21 @@ async def dispatch(
 # ──────────────────────────────────────────────────────────────────────────────
 
 
-def _resolve_audio_paths(paths: List[str], cfg: Any) -> tuple[List[str], List[str]]:
-    """Download any s3:// paths and return (resolved_local, temp_dirs)."""
+def _resolve_audio_paths(
+    paths: List[str], cfg: Any
+) -> tuple[List[str], List[str], Dict[str, str]]:
+    """Download any s3:// paths and return (resolved_local, temp_dirs, path_map).
+
+    *path_map* maps each local temp path → the original ``s3://`` URI so
+    callers can persist canonical object keys instead of ``/tmp/...``.
+    """
     import tempfile
     from pathlib import Path
 
     from .s3 import S3Client, expand_s3_glob, is_s3_path, parse_s3_uri
 
     if not any(is_s3_path(p) for p in paths):
-        return paths, []
+        return paths, [], {p: p for p in paths}
 
     s3_cfg = cfg.get_s3_config()
     if s3_cfg is None:
@@ -270,17 +276,20 @@ def _resolve_audio_paths(paths: List[str], cfg: Any) -> tuple[List[str], List[st
             expanded.append(path)
 
     resolved: List[str] = []
+    path_map: Dict[str, str] = {}
     for path in expanded:
         if not is_s3_path(path):
+            path_map[path] = path
             resolved.append(path)
             continue
         bucket, key = parse_s3_uri(path, configured_bucket=client.bucket)
         local_path = tmp_dir / Path(key).name
         logger.info("Downloading s3://%s/%s → %s", bucket, key, local_path)
         client.download_file(key, str(local_path), bucket=bucket)
+        path_map[str(local_path)] = path
         resolved.append(str(local_path))
 
-    return resolved, [str(tmp_dir)]
+    return resolved, [str(tmp_dir)], path_map
 
 
 def _cleanup(temp_dirs: List[str]) -> None:
@@ -313,15 +322,15 @@ def _run_transcribe_diarize(
     if not audio_paths:
         raise ValueError("transcribe-diarize: 'audio_paths' is required")
 
-    resolved, temps = _resolve_audio_paths(audio_paths, cfg)
+    resolved, temps, path_map = _resolve_audio_paths(audio_paths, cfg)
     try:
         db_dsn = _resolve_db_dsn(params, cfg)
         session = params.get("session")
         threshold = float(params.get("threshold", 0.7))
-        store_new = bool(params.get("store_new", True))
+        store_new = bool(params.get("store_new", False))
         device = params.get("device", "cuda")
         chunk_duration = params.get("chunk_duration")
-        cross_file_threshold = float(params.get("cross_file_threshold", 0.85))
+        cross_file_threshold = float(params.get("cross_file_threshold", 0.55))
         no_timestamps = bool(params.get("no_timestamps", False))
         verbose = bool(params.get("verbose", False))
         backend = params.get("backend", "nemo")
@@ -374,6 +383,8 @@ def _run_transcribe_diarize(
             backend=backend,
             prior_speaker_embeddings=prior_embeddings,
             time_cursor=time_cursor,
+            source_map=path_map,
+            session_id=session,
             transcription_engine=(
                 model_cache.get_transcription_engine(device, backend)
                 if model_cache is not None
@@ -386,9 +397,10 @@ def _run_transcribe_diarize(
 
         # Save session state
         if session and result:
-            new_processed = processed_files + (
-                resolved if isinstance(resolved, list) else [resolved]
-            )
+            from .s3 import to_canonical_paths
+
+            # Persist canonical s3:// URIs (not /tmp downloads) in processed_files.
+            new_processed = processed_files + to_canonical_paths(resolved, path_map)
             save_session_state(
                 session,
                 result.get("session_speaker_embeddings") or {},
@@ -512,7 +524,7 @@ def _run_transcribe(
     if not audio_paths:
         raise ValueError("transcribe: 'audio_paths' is required")
 
-    resolved, temps = _resolve_audio_paths(audio_paths, cfg)
+    resolved, temps, _path_map = _resolve_audio_paths(audio_paths, cfg)
     try:
         device = params.get("device", "cuda")
         backend = params.get("backend", "nemo")
@@ -553,11 +565,11 @@ def _run_diarize(
     if not audio_paths:
         raise ValueError("diarize: 'audio_paths' is required")
 
-    resolved, temps = _resolve_audio_paths(audio_paths, cfg)
+    resolved, temps, path_map = _resolve_audio_paths(audio_paths, cfg)
     try:
         db_dsn = _resolve_db_dsn(params, cfg)
         threshold = float(params.get("threshold", 0.7))
-        store_new = bool(params.get("store_new", True))
+        store_new = bool(params.get("store_new", False))
         output = params.get("output")
         device = params.get("device", "cuda")
 
@@ -572,6 +584,7 @@ def _run_diarize(
             db_dsn=db_dsn,
             similarity_threshold=threshold,
             store_new_speakers=store_new,
+            source_map=path_map,
         )
 
         text = _json.dumps(result, indent=2, default=str)
@@ -595,13 +608,20 @@ def _run_embed(params: Dict[str, Any], cfg: Any) -> None:
     if not speaker_id:
         raise ValueError("embed: 'speaker_id' is required")
 
-    resolved, temps = _resolve_audio_paths(audio_paths, cfg)
+    resolved, temps, path_map = _resolve_audio_paths(audio_paths, cfg)
     try:
         db_dsn = _resolve_db_dsn(params, cfg)
         manager = EmbeddingManager(db_dsn=db_dsn)
         for path in resolved:
-            manager.add_speaker(speaker_id=speaker_id, audio_path=path)
-            logger.info("Embedding stored for speaker '%s' from %s", speaker_id, path)
+            canonical = path_map.get(path, path)
+            from .diarization import DiarizationEngine
+            from .s3 import to_canonical_paths
+
+            eng = DiarizationEngine()
+            emb = eng.extract_embeddings(path)
+            canonical = to_canonical_paths([path], path_map)[0]
+            manager.add_embedding(speaker_id, emb, canonical)
+            logger.info("Embedding stored for speaker '%s' from %s", speaker_id, canonical)
     finally:
         _cleanup(temps)
 

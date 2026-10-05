@@ -41,8 +41,13 @@ class ModelsConfig(BaseModel):
     transcription_model: str = "nvidia/parakeet-tdt-0.6b-v3"
     transcription_backend: Literal["nemo", "whisper"] = "nemo"
     whisper_model: str = "large-v3"
+    # Anonymous "who spoke when" backend.  ``nemotron`` needs a recent NeMo
+    # with nvidia/Nemotron-3-Diarization; ``pyannote`` is the safe default.
+    diarization_backend: Literal["pyannote", "nemotron"] = "pyannote"
     diarization_model: str = "pyannote/speaker-diarization-community-1"
-    embedding_model: str = "pyannote/embedding"
+    # Curated gallery voiceprints.  TitaNet is preferred; pyannote/embedding
+    # remains available for installs that cannot load NeMo speaker models.
+    embedding_model: str = "nvidia/speakerverification_en_titanet_large"
     hf_token: Optional[str] = None
     hf_cache_dir: Optional[str] = None  # override HF_HUB_CACHE; applies to all HF model downloads
     model_idle_timeout_minutes: float = 10.0
@@ -66,6 +71,27 @@ class ModelsConfig(BaseModel):
         if self.hf_cache_dir:
             os.environ["HF_HUB_CACHE"] = self.hf_cache_dir
         return self
+
+
+class SpeakersConfig(BaseModel):
+    """Curated Speakers gallery matching and enrollment policy.
+
+    Runtime diarization never writes enrollments.  Training is an explicit
+    ``speakers enroll`` step after a human confirms the span is correct.
+    """
+
+    # Accept a gallery hit only when cosine similarity clears this floor.
+    identify_threshold: float = 0.7
+    # Also require a clear gap vs the runner-up (reduces lookalike collisions).
+    identify_margin: float = 0.05
+    # Soft cap on approved enrollments per person (quality over quantity).
+    max_enrollments_per_speaker: int = 5
+    # Reject enrollment spans shorter than this (seconds).
+    min_enrollment_seconds: float = 1.5
+    # Pairwise cosine floor vs existing enrollments of the same person.
+    min_enrollment_pairwise: float = 0.55
+    # Hard-disabled: unknown speakers stay SPEAKER_XX until enrolled.
+    auto_enroll: bool = False
 
 
 class DeviceConfig(BaseModel):
@@ -193,6 +219,7 @@ class PawnConfig(BaseSettings):
         validation_alias=AliasChoices("PAWN_DB_DSN", "DATABASE_URL", "db_dsn"),
     )
     models: ModelsConfig = Field(default_factory=ModelsConfig)
+    speakers: SpeakersConfig = Field(default_factory=SpeakersConfig)
     device: DeviceConfig = Field(default_factory=DeviceConfig)
     s3: Optional[S3Config] = None
     vault: VaultConfig = Field(default_factory=VaultConfig)

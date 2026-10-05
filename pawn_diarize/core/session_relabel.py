@@ -291,6 +291,22 @@ def relabel_session_speaker(
                 state.speaker_embeddings = new_embs
                 state_updated = True
 
+        # Keep session_speaker_map in sync for curated-gallery workflows.
+        from pawn_core.database import SessionSpeakerMap
+
+        for alias in aliases:
+            db.merge(
+                SessionSpeakerMap(
+                    session_id=session_id,
+                    local_label=alias,
+                    speaker_id=None,
+                    display_name=to_label,
+                    match_score=None,
+                    match_method="manual",
+                    updated_at=datetime.now(timezone.utc),
+                )
+            )
+
         db.commit()
 
     return RelabelResult(

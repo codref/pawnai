@@ -11,7 +11,7 @@ def transcribe_with_diarization(
     audio_path: Union[str, List[str]],
     db_dsn: Optional[str] = None,
     similarity_threshold: float = 0.7,
-    store_new_speakers: bool = True,
+    store_new_speakers: bool = False,
     device: str = "cuda",
     chunk_duration: Optional[float] = None,
     cross_file_threshold: float = 0.85,
@@ -22,50 +22,18 @@ def transcribe_with_diarization(
     source_map: Optional[Dict[str, str]] = None,
     transcription_engine: Optional["TranscriptionEngine"] = None,
     diarization_engine: Optional["DiarizationEngine"] = None,
+    session_id: Optional[str] = None,
+    identify_margin: float = 0.05,
+    diarization_backend: str = "pyannote",
+    diarization_model: Optional[str] = None,
+    embedding_model: Optional[str] = None,
+    hf_token: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Transcribe audio with speaker diarization labels.
 
-    Supports incremental sessions: pass ``prior_speaker_embeddings`` and
-    ``time_cursor`` from a previously saved session to continue processing
-    new audio without re-processing old files.  Each call returns
-    ``session_speaker_embeddings`` and ``new_time_cursor`` which should be
-    persisted and passed back on the next call.
-
-    Args:
-        audio_path: Path to audio file, or ordered list of paths treated as
-                    sequential chunks of the same conversation.
-        db_dsn: PostgreSQL DSN for speaker database (None to skip).
-        similarity_threshold: Minimum similarity to match speakers against
-                              the database (0-1).
-        store_new_speakers: Whether to store embeddings for unknown speakers.
-        device: Device to use for transcription ("cuda" or "cpu").
-        chunk_duration: Split each audio file into chunks of N seconds.
-        cross_file_threshold: Cosine-similarity threshold for assigning the
-                              same global speaker label across files (0-1).
-        prior_speaker_embeddings: Per-speaker state from a previous session.
-            Mapping of global_label → {"embedding": [...], "total_duration": float}.
-        time_cursor: Seconds of audio already processed in previous calls.
-            All new timestamps are shifted by this value.
-        backend: Transcription backend — ``"nemo"`` (Parakeet) or
-            ``"whisper"`` (faster-whisper).
-
-    Returns:
-        Dictionary containing:
-            - text: Full transcribed text (current call only)
-            - speakers: List of unique speaker names/labels (current call)
-            - num_speakers: Total number of speakers detected
-            - segments: List of dicts with speaker, start, end, text, words
-            - word_timestamps: Word-level timestamps (offset by time_cursor)
-            - diarization: Raw diarization results
-            - matched_speakers: Dict mapping local labels to matched names
-            - new_speakers: List of speaker labels that were not matched
-            - file_offsets: list of {path, start, end} (when multiple files)
-            - session_speaker_embeddings: Updated per-speaker embeddings for
-              the next incremental call (pass as prior_speaker_embeddings).
-            - new_time_cursor: Updated total duration; pass as time_cursor
-              on the next call.
+    Identity matching uses the curated Speakers gallery only.  Unknown
+    speakers stay as ``SPEAKER_XX``; ``store_new_speakers`` is ignored.
     """
-    # Normalise to list
     audio_paths: List[str] = [audio_path] if isinstance(audio_path, str) else list(audio_path)
     multiple = len(audio_paths) > 1
     resume_note = f" (resuming from t={time_cursor:.1f}s)" if time_cursor > 0 else ""
@@ -90,8 +58,6 @@ def transcribe_with_diarization(
             raise ValueError("Transcription failed or returned no results")
         transcription = transcription_results[0]
 
-    # Shift transcription timestamps by prior time_cursor so they sit at
-    # the correct position in the global timeline.
     if time_cursor > 0:
         for key in ("word_timestamps", "segment_timestamps", "char_timestamps"):
             for entry in transcription.get(key, []):
@@ -104,31 +70,36 @@ def transcribe_with_diarization(
 
     print(f"[2/2] Running speaker diarization{'  (' + str(len(audio_paths)) + ' files)' if multiple else ''}{resume_note}...")
     if diarization_engine is None:
-        diarization_engine = DiarizationEngine(device=device)
+        diarization_engine = DiarizationEngine(
+            device=device,
+            diarization_backend=diarization_backend,
+            diarization_model=diarization_model,
+            embedding_model=embedding_model,
+            hf_token=hf_token,
+            identify_margin=identify_margin,
+        )
     diarization = diarization_engine.diarize(
         audio_paths if multiple else audio_paths[0],
         db_dsn=db_dsn,
         similarity_threshold=similarity_threshold,
-        store_new_speakers=store_new_speakers,
+        store_new_speakers=False,
         cross_file_threshold=cross_file_threshold,
         prior_speaker_embeddings=prior_speaker_embeddings,
         time_cursor=time_cursor,
         source_map=source_map,
+        session_id=session_id,
+        identify_margin=identify_margin,
     )
 
     print("Merging transcription with speaker labels...")
     merged_segments = _merge_transcription_with_diarization(transcription, diarization)
 
-    # Recompute speaker list from merged segments: only count speakers that
-    # actually have transcribed words (diarization may produce segments that
-    # don't overlap with any word, inflating the speaker count).
     active_speakers = sorted({
         seg["speaker"]
         for seg in merged_segments
         if seg.get("text", "").strip()
     })
     if not active_speakers:
-        # Fallback: keep whatever diarization reported
         active_speakers = diarization.get("speakers", [])
 
     result: Dict[str, Any] = {
@@ -144,7 +115,6 @@ def transcribe_with_diarization(
         "new_time_cursor": diarization.get("new_time_cursor", time_cursor),
     }
 
-    # Surface per-file offset info when processing multiple files
     if multiple:
         result["file_offsets"] = transcription.get("file_offsets", [])
         result["chunk_offsets"] = diarization.get("chunk_offsets", [])

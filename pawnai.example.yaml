@@ -31,11 +31,26 @@ models:
   # faster-whisper model name, used only when transcription_backend is whisper.
   whisper_model: large-v3
 
-  # Pyannote diarization model. Some models require a Hugging Face token.
+  # Anonymous diarization backend: pyannote (default) or nemotron
+  # (Sortformer / Nemotron-3). PyPI nemo-toolkit 3.0.0 lacks RoPE, so
+  # Nemotron-3 auto-falls back to nvidia/diar_sortformer_4spk-v1 unless you
+  # install NeMo Speech from GitHub (see docs/SPEAKERS.md).
+  diarization_backend: pyannote
+
+  # Must match the backend. For pyannote:
+  #   pyannote/speaker-diarization-community-1
+  # For nemotron (RoPE-capable NeMo Speech):
+  #   nvidia/Nemotron-3-Diarization
+  # For nemotron on stock PyPI 3.0.0:
+  #   nvidia/diar_sortformer_4spk-v1
+  # If backend=nemotron while this stays on a pyannote id, Pawn overrides to
+  # the Nemotron default (a mismatch previously made NeMo fetch the wrong Hub
+  # repo and fail on model_config.yaml).
   diarization_model: pyannote/speaker-diarization-community-1
 
-  # Speaker embedding model used for speaker matching.
-  embedding_model: pyannote/embedding
+  # Curated Speakers gallery voiceprints. Prefer TitaNet; pyannote/embedding
+  # remains available as a fallback.
+  embedding_model: nvidia/speakerverification_en_titanet_large
 
   # Hugging Face token for gated models. Prefer PAWN_MODELS__HF_TOKEN or HF_TOKEN.
   hf_token: ""
@@ -55,6 +70,16 @@ models:
 
   # Idle timeout for TTS models.
   tts_idle_timeout_minutes: 10.0
+
+# Curated Speakers gallery (people + manual enrollments). Runtime diarization
+# never auto-writes enrollments — use `pawn-diarize speakers enroll`.
+speakers:
+  identify_threshold: 0.7
+  identify_margin: 0.05
+  max_enrollments_per_speaker: 5
+  min_enrollment_seconds: 1.5
+  min_enrollment_pairwise: 0.55
+  auto_enroll: false
 
 device:
   # auto, cuda, or cpu.

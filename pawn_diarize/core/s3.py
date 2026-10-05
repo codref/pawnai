@@ -67,6 +67,72 @@ def is_s3_path(path: str) -> bool:
     return path.startswith("s3://")
 
 
+def recover_s3_uri(path: str, client: "S3Client") -> str:
+    """Return a canonical ``s3://`` URI for *path* when possible.
+
+    Already-``s3://`` paths are returned unchanged.  Local paths (including
+    stale ``/tmp/pawn*_s3_*`` downloads) are resolved by searching the
+    configured bucket for an object whose key ends with the same filename.
+    Exactly one match → that URI; zero or many → original *path* unchanged.
+    """
+    if is_s3_path(path):
+        return path
+    filename = Path(path).name
+    if not filename:
+        return path
+    try:
+        paginator = client._client.get_paginator("list_objects_v2")
+        matches: list[str] = []
+        for page in paginator.paginate(Bucket=client.bucket):
+            for obj in page.get("Contents") or []:
+                key = obj["Key"]
+                if key.endswith(f"/{filename}") or key == filename:
+                    matches.append(f"s3://{client.bucket}/{key}")
+                    # Keep scanning only until we know it's ambiguous.
+                    if len(matches) > 1:
+                        return path
+        if len(matches) == 1:
+            return matches[0]
+    except Exception:
+        return path
+    return path
+
+
+def canonicalize_audio_paths(
+    paths: list[str],
+    client: Optional["S3Client"],
+) -> tuple[list[str], dict[str, str]]:
+    """Map stored audio paths to canonical S3 URIs when a client is available.
+
+    Returns ``(canonical_paths, remaps)`` where *remaps* is
+    ``{original_stored_path: recovered_s3_uri}`` for entries that changed.
+    """
+    if client is None:
+        return list(paths), {}
+    canonical: list[str] = []
+    remaps: dict[str, str] = {}
+    for path in paths:
+        recovered = recover_s3_uri(path, client)
+        canonical.append(recovered)
+        if recovered != path and is_s3_path(recovered):
+            remaps[path] = recovered
+    return canonical, remaps
+
+
+def to_canonical_paths(
+    local_paths: List[str],
+    path_map: Dict[str, str],
+) -> List[str]:
+    """Map download-local paths to canonical URIs via *path_map*.
+
+    After ``_resolve_s3_paths`` / queue download, *path_map* is
+    ``{local_temp: s3://…}`` (identity for true local files).  Every DB write
+    of an audio path must go through this helper so chunked sessions never
+    persist ephemeral ``/tmp/...`` downloads.
+    """
+    return [path_map.get(p, p) for p in local_paths]
+
+
 def parse_s3_uri(
     uri: str,
     configured_bucket: Optional[str] = None,
