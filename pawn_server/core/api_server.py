@@ -11,15 +11,25 @@ can be continued through the API and vice versa.
 Endpoints
 ---------
 POST /v1/chat/completions
-    OpenAI-compatible chat completions.  Handles the ``/reset`` sentinel
-    inline.  Supports ``stream=true`` (SSE, word-by-word after full generation).
+    OpenAI-compatible chat completions (works with obsidian-copilot).  Handles
+    the ``/reset`` sentinel inline.  ``stream=true`` sends SSE keep-alives and
+    tool progress (``reasoning_content``) while the agent runs, then the answer.
+
+GET /v1/models
+    OpenAI-compatible model list (``pawn-agent``).
+
+POST /v1/pawn/chat
+    Native SSE chat for the Pawn Obsidian plugin (typed progress/answer/job
+    events, structured note context).
+
+POST /v1/jobs, POST /v1/jobs/upload, GET /v1/jobs, GET /v1/jobs/{id},
+POST /v1/jobs/{id}/approve, POST /v1/jobs/{id}/cancel, POST /v1/jobs/{id}/dismiss,
+GET /v1/jobs/events
+    Background jobs (ask / push_note / upload); always accepted with 202.
+    ``/v1/vault/tasks*`` remain as deprecated aliases.
 
 DELETE /sessions/{session_id}
     Clear all stored turns for a session (start fresh).
-
-POST /knowledge
-    Index content into the RAG vector store (inline text, session transcript,
-    or SiYuan page).
 
 POST /v1/audio/transcriptions
     OpenAI-compatible audio transcription.  Accepts WAV, FLAC, and any format
@@ -39,10 +49,11 @@ GET /health
     Liveness probe — no auth required.
 
 GET /docs
-    Swagger UI (FastAPI built-in).
+    Swagger UI (FastAPI built-in).  Disabled when ``api.enable_docs`` is false.
 
 GET /openapi.json
     OpenAPI spec (FastAPI built-in, auto-generated from Pydantic models).
+    Disabled when ``api.enable_docs`` is false.
 
 Authentication
 --------------
@@ -50,19 +61,15 @@ All endpoints except ``/health`` require ``Authorization: Bearer <token>``.
 If ``api.token`` is not set in ``pawnai.yaml`` the server starts in open
 mode with a warning — useful for local development.
 
-Model selection / session mode
-------------------------------
-The ``model`` field controls both the backend model and whether history is
-loaded from the database (stateful) or taken from the request (stateless):
+When the API is exposed beyond localhost, set ``api.enable_docs: false`` and
+rely on ``api.whitelist_ips`` / auto-blacklist (see ``pawn-server blacklist``).
 
-    ``pawn-agent``                           — stateful,  default model
-    ``pawn-agent/openai:gpt-4o``             — stateful,  gpt-4o
-    ``pawn-agent/stateless``                 — stateless, default model
-    ``pawn-agent/stateless/openai:gpt-4o``   — stateless, override = openai:gpt-4o
-
-Stateless mode uses the ``messages`` array from the request as history
-directly, without touching the database.  Useful with clients that manage
-conversation history themselves (e.g. Open WebUI, Continue).
+Model selection
+---------------
+The server always routes through the sallm agent.  ``/v1/chat/completions``
+honors a catalog id (``provider@model``) and ignores any other ``model``
+value, including ``pawn-agent``.  ``POST /v1/pawn/chat`` and ask jobs take
+the same id and fall back to the background default when it is omitted.
 
 Session management
 ------------------
@@ -85,12 +92,24 @@ import threading
 import time
 import uuid
 from pathlib import Path
-from typing import Any, AsyncIterator, Dict, List, Optional, Union
+from typing import Any, AsyncIterator, List, Optional, Union
 
-from fastapi import Depends, FastAPI, File, Form, HTTPException, Response, UploadFile
-from fastapi.responses import PlainTextResponse, StreamingResponse
+from fastapi import (
+    Depends,
+    FastAPI,
+    File,
+    Form,
+    Header,
+    HTTPException,
+    Query,
+    Request,
+    Response,
+    UploadFile,
+)
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse, PlainTextResponse, StreamingResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 logger = logging.getLogger(__name__)
 
@@ -105,10 +124,33 @@ _transcription_lock = threading.Lock()
 _tts_engine: Optional[Any] = None  # pawn_core.TTSEngine, lazy-loaded
 _tts_lock = threading.Lock()
 _tts_idle_handle: Optional[asyncio.TimerHandle] = None
+_cors_installed = False
+_ip_guard_installed = False
+
+_DOC_PATHS = frozenset({"/openapi.json", "/docs", "/docs/oauth2-redirect", "/redoc"})
+
+from pawn_agent.core.agent_runner import run_agent_turn  # noqa: E402
+
+# Sallm session registry — lazily populated, survives across requests.
+from pawn_agent.core.sallm_registry import SallmSessionRegistry  # noqa: E402
+from pawn_agent.core.sallm_session import strip_tool_trail  # noqa: E402
+
+_sallm_registry = SallmSessionRegistry()
 
 _security = HTTPBearer(auto_error=False)
 
 _RESET_SENTINEL = "/reset"
+
+
+def get_sallm_registry() -> SallmSessionRegistry:
+    """Return the process-wide sallm registry."""
+    return _sallm_registry
+
+
+def set_sallm_registry(registry: SallmSessionRegistry) -> None:
+    """Replace the process-wide registry (tests / serve wiring)."""
+    global _sallm_registry
+    _sallm_registry = registry
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -116,9 +158,35 @@ _RESET_SENTINEL = "/reset"
 # ──────────────────────────────────────────────────────────────────────────────
 
 
+def _flatten_content(value: Any) -> str:
+    """Collapse OpenAI content parts (``[{"type": "text", "text": ...}]``) to text."""
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value
+    if isinstance(value, list):
+        parts: List[str] = []
+        for part in value:
+            if isinstance(part, str):
+                parts.append(part)
+            elif isinstance(part, dict) and part.get("type") in (None, "text", "input_text"):
+                text = part.get("text")
+                if isinstance(text, str):
+                    parts.append(text)
+        return "\n".join(p for p in parts if p)
+    return str(value)
+
+
 class ChatCompletionMessage(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
     role: str
-    content: str
+    content: str = ""
+
+    @field_validator("content", mode="before")
+    @classmethod
+    def _coerce_content(cls, value: Any) -> str:
+        return _flatten_content(value)
 
 
 class ChatCompletionRequest(BaseModel):
@@ -128,13 +196,6 @@ class ChatCompletionRequest(BaseModel):
     messages: List[ChatCompletionMessage]
     user: Optional[str] = None
     stream: Optional[bool] = False
-    # pydantic_ai ModelSettings passthrough
-    temperature: Optional[float] = None
-    max_tokens: Optional[int] = None
-    top_p: Optional[float] = None
-    stop: Optional[List[str]] = None  # maps to stop_sequences
-    frequency_penalty: Optional[float] = None
-    logit_bias: Optional[Dict[str, int]] = None
 
 
 class ChatCompletionChoice(BaseModel):
@@ -159,21 +220,8 @@ class ChatCompletionResponse(BaseModel):
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Pydantic schemas — RAG ingestion
+# Pydantic schemas — transcription & TTS
 # ──────────────────────────────────────────────────────────────────────────────
-
-
-class KnowledgeIngestRequest(BaseModel):
-    model_config = ConfigDict(extra="ignore")
-
-    text: Optional[str] = None          # inline plain text
-    session_id: Optional[str] = None    # index an existing session transcript
-    siyuan_path: Optional[str] = None   # index a SiYuan page by path
-
-
-class KnowledgeIngestResponse(BaseModel):
-    chunks: int
-    message: str
 
 
 class TranscriptionResponse(BaseModel):
@@ -189,10 +237,116 @@ class SpeechRequest(BaseModel):
 
     model: str
     input: str
-    voice: str = "alloy"                  # accepted for OpenAI compat; ignored
-    response_format: str = "wav"          # wav | mp3 | opus | aac | flac | pcm
-    speed: float = 1.0                    # 0.25 – 4.0
-    language: Optional[str] = None        # BCP-47 code, e.g. "en", "it", "fr"; falls back to config
+    voice: str = "alloy"  # accepted for OpenAI compat; ignored
+    response_format: str = "wav"  # wav | mp3 | opus | aac | flac | pcm
+    speed: float = 1.0  # 0.25 – 4.0
+    language: Optional[str] = None  # BCP-47 code, e.g. "en", "it", "fr"; falls back to config
+
+
+class JobCreateRequest(BaseModel):
+    """POST /v1/jobs — accept a background job (always 202)."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    kind: str = "ask"
+    id: Optional[str] = None
+    conversation: Optional[str] = None
+    note_path: Optional[str] = None
+    # ask
+    instruction: Optional[str] = None
+    selection: Optional[str] = None
+    context_paths: List[str] = Field(default_factory=list)
+    context: Optional[str] = None
+    # Catalog id (provider@model). Omitted turns use the background default.
+    model: Optional[str] = None
+    # OpenRouter reasoning effort: none, low, medium, high.
+    reasoning: Optional[str] = None
+    # OpenRouter route: balanced, nitro, floor, exacto.
+    route: Optional[str] = None
+    # push_note
+    path: Optional[str] = None
+    content: Optional[str] = None
+    mode: str = "replace"
+
+
+class JobApproveRequest(BaseModel):
+    """POST /v1/jobs/{id}/approve — index a result into agent memory."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    result: Optional[str] = None
+
+
+class ItemActionRequest(BaseModel):
+    """POST /v1/items/{id}/action — triage a coworker inbox item."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    action: str
+    arg: Optional[str] = None
+
+
+class ContextNote(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    path: str
+    content: Optional[str] = None
+
+
+class ChatImage(BaseModel):
+    """One image on a native chat turn (dropped file or a note embed)."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    filename: str
+    media_type: str = ""
+    data_base64: str
+    role: str = "question"
+
+
+class PawnChatRequest(BaseModel):
+    """POST /v1/pawn/chat — native streaming chat for the Pawn Obsidian plugin."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    conversation: str
+    message: str = ""
+    active_note: Optional[ContextNote] = None
+    selection: Optional[str] = None
+    context: List[ContextNote] = Field(default_factory=list)
+    background: bool = False
+    # Catalog id (provider@model). Omitted turns use the background default.
+    model: Optional[str] = None
+    # OpenRouter reasoning effort: none, low, medium, high.
+    reasoning: Optional[str] = None
+    # OpenRouter route: balanced, nitro, floor, exacto.
+    route: Optional[str] = None
+    images: List[ChatImage] = Field(default_factory=list)
+    # Recaption images this session has already seen.
+    force_caption: bool = False
+    # When false, note embeds are not read from the vault.
+    include_note_images: bool = True
+
+
+class VaultTaskCreateRequest(BaseModel):
+    """Deprecated: POST /v1/vault/tasks (alias of an ``ask`` job)."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    id: Optional[str] = None
+    instruction: str
+    note_path: Optional[str] = None
+    context: Optional[str] = None
+    conversation: Optional[str] = None
+    timeout_seconds: Optional[float] = None
+
+
+class VaultTaskStatusResponse(BaseModel):
+    task_id: str
+    status: str
+    result: Optional[str] = None
+    agent_run_id: Optional[str] = None
+    error_code: Optional[str] = None
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -255,12 +409,8 @@ def _require_token(
 
 
 def _clear_agent_cache() -> None:
-    from pawn_server.core.queue_listener import _agent_cache  # noqa: PLC0415
-
-    count = len(_agent_cache)
-    _agent_cache.clear()
-    if count:
-        logger.info("Model idle timeout reached — cleared %d cached agent(s)", count)
+    _sallm_registry.evict_all()
+    logger.info("Model idle timeout reached — sallm sessions evicted")
 
 
 def _schedule_idle_reset(loop: asyncio.AbstractEventLoop, timeout_seconds: float) -> None:
@@ -309,70 +459,104 @@ def _is_reset(messages: List[dict]) -> bool:
     return _last_user_message(messages).strip() == _RESET_SENTINEL
 
 
-def _session_id(messages: List[dict], user: Optional[str]) -> str:
+def _session_id(messages: List[dict], user: Optional[str], header: Optional[str] = None) -> str:
     if user:
         return user
+    if header and header.strip():
+        return header.strip()
     first = next((m["content"] for m in messages if m.get("role") == "user"), "")
     if first:
         return str(uuid.UUID(hashlib.md5(first.encode()).hexdigest()))
     return str(uuid.uuid4())
 
 
-def _parse_model(model_str: str) -> tuple:
-    """Parse the model string into (stateless, model_override).
-
-    Supported forms:
-        pawn-agent                      → stateful,  no override
-        pawn-agent/openai:gpt-4o        → stateful,  override = openai:gpt-4o
-        pawn-agent/stateless            → stateless, no override
-        pawn-agent/stateless/openai:gpt-4o → stateless, override = openai:gpt-4o
-    """
-    # strip the leading component (pawn-agent / pawn_agent / default / …)
-    first_slash = model_str.find("/")
-    remainder = model_str[first_slash + 1:] if first_slash != -1 else ""
-
-    if remainder.startswith("stateless"):
-        after = remainder[len("stateless"):]
-        override_str = after.lstrip("/") or None
-        return True, override_str or None
-    else:
-        override_str = remainder or None
-        return False, override_str or None
+def _system_prompt(messages: List[dict]) -> str:
+    return "\n\n".join(
+        m["content"] for m in messages if m.get("role") == "system" and m.get("content")
+    )
 
 
-def _openai_messages_to_history(messages: List[dict]) -> list:
-    """Convert an OpenAI messages array to pydantic_ai ModelMessage history.
-
-    Skips system messages (handled by the agent's own system prompt).
-    """
-    from pydantic_ai.messages import ModelRequest, ModelResponse, TextPart, UserPromptPart  # noqa: PLC0415
-
-    history = []
-    for msg in messages:
-        role = msg.get("role")
-        content = msg.get("content") or ""
-        if role == "user":
-            history.append(ModelRequest(parts=[UserPromptPart(content=content)]))
-        elif role == "assistant":
-            history.append(ModelResponse(parts=[TextPart(content=content)]))
-    return history
+def _build_prompt(messages: List[dict], include_system: bool) -> str:
+    prompt = _last_user_message(messages)
+    if not include_system or not prompt:
+        return prompt
+    system = _system_prompt(messages)
+    if not system:
+        return prompt
+    return f"Client instructions (from the calling app):\n{system}\n\nUser message:\n{prompt}"
 
 
-def _build_model_settings(req: ChatCompletionRequest) -> dict:
-    s: dict = {}
-    if req.temperature is not None:
-        s["temperature"] = req.temperature
-    if req.max_tokens is not None:
-        s["max_tokens"] = req.max_tokens
-    if req.top_p is not None:
-        s["top_p"] = req.top_p
-    if req.stop:
-        s["stop_sequences"] = req.stop
-    if req.frequency_penalty is not None:
-        s["frequency_penalty"] = req.frequency_penalty
-    if req.logit_bias is not None:
-        s["logit_bias"] = req.logit_bias
-    return s
+def _sse(data: dict) -> str:
+    return f"data: {json.dumps(data)}\n\n"
+
+
+def _sse_event(event: str, data: dict) -> str:
+    return f"event: {event}\ndata: {json.dumps(data)}\n\n"
+
+
+_SSE_KEEPALIVE = ": keep-alive\n\n"
+
+
+def _chunk(completion_id: str, created: int, model: str, delta: dict, finish: Any = None) -> dict:
+    return {
+        "id": completion_id,
+        "object": "chat.completion.chunk",
+        "created": created,
+        "model": model,
+        "choices": [{"index": 0, "delta": delta, "finish_reason": finish}],
+    }
+
+
+async def _stream_agent_turn_openai(
+    cfg: Any,
+    *,
+    prompt: str,
+    session_id: str,
+    model: str,
+    agent_model: Optional[str] = None,
+) -> AsyncIterator[str]:
+    """OpenAI SSE while the agent runs: keep-alives, progress as reasoning, answer."""
+    from pawn_server.core.progress import stream_turn  # noqa: PLC0415
+
+    completion_id = f"chatcmpl-{uuid.uuid4().hex}"
+    created = int(time.time())
+    show_progress = bool(getattr(cfg.api, "stream_progress", True))
+    yield _sse(_chunk(completion_id, created, model, {"role": "assistant", "content": ""}))
+
+    async def _run(on_progress: Any) -> Any:
+        return await run_agent_turn(
+            cfg=cfg,
+            registry=_sallm_registry,
+            prompt=prompt,
+            session_id=session_id,
+            source="api",
+            command="run",
+            model=agent_model,
+            on_progress=on_progress,
+        )
+
+    reply = ""
+    async for event, data in stream_turn(
+        _run, keepalive_seconds=float(getattr(cfg.api, "stream_keepalive_seconds", 10.0))
+    ):
+        if event == "keepalive":
+            yield _SSE_KEEPALIVE
+        elif event == "progress":
+            if show_progress:
+                delta = {"reasoning_content": f"{data['text']}\n"}
+                yield _sse(_chunk(completion_id, created, model, delta))
+        elif event == "error":
+            logger.error("sallm agent error for session %r: %s", session_id, data)
+            reply = f"Agent error: {data}"
+        elif event == "result":
+            reply = data.response
+
+    words = reply.split(" ")
+    for i, word in enumerate(words):
+        content = word if i == 0 else f" {word}"
+        yield _sse(_chunk(completion_id, created, model, {"content": content}))
+    yield _sse(_chunk(completion_id, created, model, {}, "stop"))
+    yield "data: [DONE]\n\n"
 
 
 def _build_openai_response(reply: str, model: str) -> ChatCompletionResponse:
@@ -408,7 +592,9 @@ async def _stream_sse(reply: str, model: str) -> AsyncIterator[str]:
         "object": "chat.completion.chunk",
         "created": created,
         "model": model,
-        "choices": [{"index": 0, "delta": {"role": "assistant", "content": ""}, "finish_reason": None}],
+        "choices": [
+            {"index": 0, "delta": {"role": "assistant", "content": ""}, "finish_reason": None}
+        ],
     }
     yield f"data: {json.dumps(opening)}\n\n"
 
@@ -438,34 +624,6 @@ async def _stream_sse(reply: str, model: str) -> AsyncIterator[str]:
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Thread-executor helper
-# ──────────────────────────────────────────────────────────────────────────────
-
-
-def _run_turn(agent: Any, prompt: str, history: list, model_settings: dict) -> Any:
-    """Synchronous wrapper — runs in a thread executor from the async endpoint."""
-    return agent.run_sync(
-        prompt,
-        message_history=history,
-        model_settings=model_settings or None,
-    )
-
-
-def _history_mode(cfg: Any) -> str:
-    return getattr(cfg, "history_mode", "raw")
-
-
-def _history_kwargs(cfg: Any) -> dict[str, Any]:
-    return {
-        "strip_thinking": getattr(cfg, "strip_thinking", True),
-        "recent_turns": getattr(cfg, "history_recent_turns", 4),
-        "replay_max_tokens": getattr(cfg, "history_replay_max_tokens", 8000),
-        "max_text_chars": getattr(cfg, "history_max_text_chars", 500),
-        "sanitize_leaked_thoughts": getattr(cfg, "history_sanitize_leaked_thoughts", True),
-    }
-
-
-# ──────────────────────────────────────────────────────────────────────────────
 # FastAPI application
 # ──────────────────────────────────────────────────────────────────────────────
 
@@ -490,103 +648,118 @@ async def health() -> dict:
 async def chat_completions(
     req: ChatCompletionRequest,
     cfg: Any = Depends(_get_cfg),
+    x_pawn_conversation: Optional[str] = Header(default=None),
 ) -> Union[ChatCompletionResponse, StreamingResponse]:
     """OpenAI-compatible chat completions endpoint.
 
-    Send ``/reset`` as the last user message to clear the session history
-    instead of running the agent.  ``stream=true`` is accepted but ignored —
-    the response is always a complete JSON object.
-    """
-    from pawn_server.core.queue_listener import _get_or_create_agent  # noqa: PLC0415
-    from pawn_agent.core.session_store import (  # noqa: PLC0415
-        append_turn,
-        build_replay_history,
-        delete_session as _delete_session,
-        load_history,
-    )
+    All requests are handled by the sallm agent.  The ``model`` field is
+    A catalog id (``provider@model``) selects that profile and provider.
+    Any other value, including ``pawn-agent``, is ignored and the background
+    default is used.  sallm owns the
+    conversation history, so only the last user message is sent to the agent
+    (plus the client system prompt when ``api.include_system_prompt`` is on).
 
+    Session key: ``user`` field, then ``X-Pawn-Conversation`` header, then a
+    hash of the first user message.
+
+    Send ``/reset`` as the last user message to clear the session history.
+    """
     logger.debug("chat/completions raw payload: %s", req.model_dump())
     messages = [m.model_dump() for m in req.messages]
-    session_id = _session_id(messages, req.user)
+    session_id = _session_id(messages, req.user, x_pawn_conversation)
     loop = asyncio.get_running_loop()
     _schedule_idle_reset(loop, cfg.api_model_idle_timeout_minutes * 60)
 
-    stateless_check, _ = _parse_model(req.model)
-    if req.user:
-        logger.info(
-            "chat/completions: session_id=%r model=%r stateless=%s",
-            session_id, req.model, stateless_check,
-        )
+    if req.user or x_pawn_conversation:
+        logger.info("chat/completions: session_id=%r model=%r", session_id, req.model)
     else:
         logger.warning(
-            "chat/completions: session_id=%r model=%r stateless=%s "
+            "chat/completions: session_id=%r model=%r "
             "— 'user' field not set in request payload, session_id derived from message hash",
-            session_id, req.model, stateless_check,
+            session_id,
+            req.model,
         )
 
     if _is_reset(messages):
-        deleted = _delete_session(session_id, cfg.db_dsn)
-        reply = f"Session reset. ({deleted} turn{'s' if deleted != 1 else ''} deleted)"
+        await _sallm_registry.reset(session_id, cfg.db_dsn)
+        reply = "Session reset."
         if req.stream:
             return StreamingResponse(_stream_sse(reply, req.model), media_type="text/event-stream")
         return _build_openai_response(reply, req.model)
 
-    prompt = _last_user_message(messages)
+    from pawn_agent.core.coworker.slash import resolve_chat_message  # noqa: PLC0415
+
+    resolved = await resolve_chat_message(
+        cfg, _last_user_message(messages), registry=_sallm_registry
+    )
+    if resolved.mode == "reply":
+        if req.stream:
+            return StreamingResponse(
+                _stream_sse(resolved.text, req.model), media_type="text/event-stream"
+            )
+        return _build_openai_response(resolved.text, req.model)
+
+    prompt = _build_prompt(messages, bool(getattr(cfg.api, "include_system_prompt", False)))
+    if resolved.rewritten:
+        prompt = resolved.text
     if not prompt:
         raise HTTPException(status_code=422, detail="No user message found in messages")
 
-    stateless, model_override = stateless_check, _parse_model(req.model)[1]
-    model_settings = _build_model_settings(req)
+    from pawn_agent.utils.model_catalog import catalog_model_or_none  # noqa: PLC0415
 
-    if stateless:
-        # Use the client-provided messages as history (all but the last user message)
-        history = _openai_messages_to_history(messages[:-1])
-    else:
-        if _history_mode(cfg) == "raw":
-            history = load_history(
-                session_id,
-                cfg.db_dsn,
-                strip_thinking=getattr(cfg, "strip_thinking", True),
-            )
-        else:
-            history = build_replay_history(
-                session_id,
-                cfg.db_dsn,
-                **_history_kwargs(cfg),
-            )
-
-    # Bind agents to session_id in stateful mode so SessionVars can persist.
-    agent_session_id = None if stateless else session_id
-    agent = _get_or_create_agent(
-        cfg,
-        model_override=model_override,
-        session_id=agent_session_id,
-    )
-    source_id = str(uuid.uuid4())
+    agent_model = catalog_model_or_none(cfg, req.model)
+    if req.stream:
+        return StreamingResponse(
+            _stream_agent_turn_openai(
+                cfg,
+                prompt=prompt,
+                session_id=session_id,
+                model=req.model,
+                agent_model=agent_model,
+            ),
+            media_type="text/event-stream",
+        )
 
     try:
-        result = await agent.run_async(
-            prompt,
-            message_history=history,
-            model_settings=model_settings or None,
+        result = await run_agent_turn(
+            cfg=cfg,
+            registry=_sallm_registry,
+            prompt=prompt,
+            session_id=session_id,
+            source="api",
+            command="run",
+            model=agent_model,
         )
+        reply = result.response
     except Exception as exc:
-        # Return all agent errors as a 200 assistant message rather than 500.
-        # A 500 causes LiteLLM (and other proxies) to retry — which never helps
-        # for model-side failures such as malformed tool-call JSON (e.g. invalid
-        # escape sequences like \( \) from LaTeX in generated content).
-        logger.error("Agent error for session %r: %s", session_id, exc, exc_info=True)
+        logger.error("sallm agent error for session %r: %s", session_id, exc, exc_info=True)
         reply = f"Agent error: {exc}"
-        if req.stream:
-            return StreamingResponse(_stream_sse(reply, req.model), media_type="text/event-stream")
-        return _build_openai_response(reply, req.model)
 
-    if not stateless:
-        append_turn(source_id, session_id, list(result.new_messages()), cfg.db_dsn)
+    return _build_openai_response(reply, req.model)
 
-    if req.stream:
-        return StreamingResponse(_stream_sse(result.output, req.model), media_type="text/event-stream")
-    return _build_openai_response(result.output, req.model)
+
+@app.get("/v1/pawn/models", dependencies=[Depends(_require_token)])
+async def list_pawn_models(cfg: Any = Depends(_get_cfg)) -> dict:
+    """Selectable catalog ids for the Pawn plugin. No credentials."""
+    from pawn_agent.utils.model_catalog import public_catalog  # noqa: PLC0415
+
+    return public_catalog(cfg)
+
+
+@app.get("/v1/models", dependencies=[Depends(_require_token)])
+async def list_models() -> dict:
+    """OpenAI-compatible model list (one virtual model: the Pawn agent)."""
+    return {
+        "object": "list",
+        "data": [
+            {
+                "id": "pawn-agent",
+                "object": "model",
+                "created": 0,
+                "owned_by": "pawnai",
+            }
+        ],
+    }
 
 
 @app.delete(
@@ -604,136 +777,8 @@ async def delete_session(
     the ``user`` field) will start fresh.  Returns 404 if the session does not
     exist.
     """
-    from pawn_agent.core.session_store import delete_session as _delete  # noqa: PLC0415
-
-    deleted = _delete(session_id, cfg.db_dsn)
-    if deleted == 0:
-        raise HTTPException(status_code=404, detail=f"Session {session_id!r} not found")
+    await _sallm_registry.reset(session_id, cfg.db_dsn)
     return Response(status_code=204)
-
-
-@app.post(
-    "/knowledge",
-    response_model=KnowledgeIngestResponse,
-    status_code=201,
-    dependencies=[Depends(_require_token)],
-)
-async def ingest_knowledge(
-    req: KnowledgeIngestRequest,
-    cfg: Any = Depends(_get_cfg),
-) -> KnowledgeIngestResponse:
-    """Index content into the RAG vector store.
-
-    Provide exactly one source field:
-
-    - **text** — embed inline plain text directly.
-    - **session_id** — index an existing session's analysis.  The session must
-      have a stored analysis; run ``analyze_summary`` via the agent first if
-      needed.
-    - **siyuan_path** — index a SiYuan page by its human-readable path
-      (e.g. ``/Notes/MyPage``).
-    """
-    sources = [x for x in (req.text, req.session_id, req.siyuan_path) if x]
-    if len(sources) != 1:
-        raise HTTPException(
-            status_code=422,
-            detail="Provide exactly one of: text, session_id, siyuan_path",
-        )
-
-    loop = asyncio.get_running_loop()
-
-    if req.session_id:
-        from pawn_agent.utils.vectorize import vectorize_session  # noqa: PLC0415
-
-        session_id = req.session_id
-        try:
-            n, _ = await loop.run_in_executor(
-                None,
-                lambda: vectorize_session(
-                    session_id=session_id,
-                    db_dsn=cfg.db_dsn,
-                    embed_model=cfg.embed_model,
-                    embed_device=cfg.embed_device,
-                    embed_dim=cfg.embed_dim,
-                    embed_local_files_only=cfg.embed_local_files_only,
-                ),
-            )
-        except ValueError as exc:
-            raise HTTPException(status_code=422, detail=str(exc)) from exc
-        return KnowledgeIngestResponse(
-            chunks=n,
-            message=f"Indexed {n} chunks for session '{session_id}'.",
-        )
-
-    if req.siyuan_path:
-        from pawn_core.siyuan import siyuan_post  # noqa: PLC0415
-        from pawn_agent.utils.vectorize import vectorize_siyuan_page  # noqa: PLC0415
-
-        if not cfg.siyuan_notebook:
-            raise HTTPException(status_code=400, detail="siyuan.notebook is not configured")
-
-        siyuan_path = req.siyuan_path
-        try:
-            ids = siyuan_post(
-                cfg.siyuan_url,
-                cfg.siyuan_token,
-                "/api/filetree/getIDsByHPath",
-                {"path": siyuan_path, "notebook": cfg.siyuan_notebook},
-            )
-        except Exception as exc:
-            raise HTTPException(
-                status_code=502, detail=f"SiYuan error: {exc}"
-            ) from exc
-
-        if not isinstance(ids, list) or not ids:
-            raise HTTPException(
-                status_code=404, detail=f"No SiYuan page found at '{siyuan_path}'"
-            )
-
-        page_id = ids[0]
-        try:
-            n = await loop.run_in_executor(
-                None,
-                lambda: vectorize_siyuan_page(
-                    page_id=page_id,
-                    siyuan_url=cfg.siyuan_url,
-                    siyuan_token=cfg.siyuan_token,
-                    db_dsn=cfg.db_dsn,
-                    embed_model=cfg.embed_model,
-                    embed_device=cfg.embed_device,
-                    embed_dim=cfg.embed_dim,
-                    embed_local_files_only=cfg.embed_local_files_only,
-                ),
-            )
-        except ValueError as exc:
-            raise HTTPException(status_code=422, detail=str(exc)) from exc
-        return KnowledgeIngestResponse(
-            chunks=n,
-            message=f"Indexed {n} chunks for SiYuan page '{siyuan_path}'.",
-        )
-
-    # text branch
-    from pawn_agent.utils.vectorize import vectorize_text  # noqa: PLC0415
-
-    text_content = req.text
-    try:
-        n = await loop.run_in_executor(
-            None,
-            lambda: vectorize_text(
-                content=text_content,
-                db_dsn=cfg.db_dsn,
-                embed_model=cfg.embed_model,
-                embed_device=cfg.embed_device,
-                embed_dim=cfg.embed_dim,
-                embed_local_files_only=cfg.embed_local_files_only,
-            ),
-        )
-    except ValueError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
-    return KnowledgeIngestResponse(
-        chunks=n,
-        message=f"Indexed {n} chunk{'s' if n != 1 else ''} from inline text.",
-    )
 
 
 @app.post(
@@ -743,7 +788,7 @@ async def ingest_knowledge(
 )
 async def audio_transcriptions(
     file: UploadFile = File(...),
-    model: str = Form(default="whisper-1"),       # accepted for OpenAI compat; always uses parakeet
+    model: str = Form(default="whisper-1"),  # accepted for OpenAI compat; always uses parakeet
     response_format: str = Form(default="json"),  # "json" | "text"
     cfg: Any = Depends(_get_cfg),
 ) -> Union[TranscriptionResponse, PlainTextResponse, dict]:
@@ -807,6 +852,7 @@ async def audio_transcriptions(
 
     loop = asyncio.get_running_loop()
     try:
+
         def _do_transcribe() -> dict:
             engine = _get_transcription_engine(cfg)
             results = engine.transcribe([transcribe_path], include_timestamps=verbose)
@@ -842,11 +888,11 @@ async def audio_transcriptions(
 
 _SPEECH_FORMATS: dict = {
     # format → (ffmpeg output args, media_type)
-    "mp3":  (["-f", "mp3"],                           "audio/mpeg"),
-    "opus": (["-f", "opus"],                          "audio/ogg"),
-    "aac":  (["-f", "adts"],                          "audio/aac"),
-    "flac": (["-f", "flac"],                          "audio/flac"),
-    "pcm":  (["-f", "s16le", "-ac", "1"], "audio/pcm"),
+    "mp3": (["-f", "mp3"], "audio/mpeg"),
+    "opus": (["-f", "opus"], "audio/ogg"),
+    "aac": (["-f", "adts"], "audio/aac"),
+    "flac": (["-f", "flac"], "audio/flac"),
+    "pcm": (["-f", "s16le", "-ac", "1"], "audio/pcm"),
 }
 
 
@@ -920,11 +966,477 @@ async def audio_speech(
         )
     except subprocess.CalledProcessError as exc:
         stderr = exc.stderr.decode(errors="replace") if exc.stderr else ""
-        raise HTTPException(
-            status_code=500, detail=f"Audio conversion failed: {stderr}"
-        ) from exc
+        raise HTTPException(status_code=500, detail=f"Audio conversion failed: {stderr}") from exc
 
     return Response(content=proc.stdout, media_type=media_type)
+
+
+# ── Background jobs ───────────────────────────────────────────────────────────
+
+
+def _job_error(exc: Exception) -> HTTPException:
+    from pawn_server.core.jobs import JobError  # noqa: PLC0415
+
+    if isinstance(exc, JobError):
+        return HTTPException(status_code=exc.status_code, detail=str(exc))
+    return HTTPException(status_code=500, detail=str(exc))
+
+
+async def _create_job(cfg: Any, body: JobCreateRequest) -> dict:
+    from pawn_server.core import jobs  # noqa: PLC0415
+    from pawn_server.core.vault_tasks import new_task_id  # noqa: PLC0415
+
+    job_id = (body.id or "").strip() or new_task_id()
+    if body.kind == "ask":
+        row = await jobs.create_ask_job(
+            cfg,
+            registry=_sallm_registry,
+            job_id=job_id,
+            instruction=body.instruction or "",
+            note_path=body.note_path,
+            selection=body.selection,
+            context_paths=body.context_paths,
+            context=body.context,
+            conversation=body.conversation,
+            model=(body.model or "").strip() or None,
+            reasoning=(body.reasoning or "").strip() or None,
+            route=(body.route or "").strip() or None,
+        )
+    elif body.kind == "push_note":
+        row = await jobs.create_push_note_job(
+            cfg,
+            job_id=job_id,
+            path=body.path or body.note_path or "",
+            content=body.content or "",
+            mode=body.mode,
+            conversation=body.conversation,
+        )
+    else:
+        raise jobs.JobError(
+            f"unknown job kind {body.kind!r} (use ask or push_note; uploads go to "
+            "/v1/jobs/upload)",
+            status_code=422,
+        )
+    return jobs.serialize_job(row)
+
+
+@app.post("/v1/jobs", status_code=202, dependencies=[Depends(_require_token)])
+async def job_create(body: JobCreateRequest, cfg: Any = Depends(_get_cfg)) -> JSONResponse:
+    """Accept a background job. Always returns 202 with the job record."""
+    try:
+        job = await _create_job(cfg, body)
+    except Exception as exc:
+        raise _job_error(exc) from exc
+    return JSONResponse(status_code=202, content=job)
+
+
+@app.post("/v1/jobs/upload", status_code=202, dependencies=[Depends(_require_token)])
+async def job_upload(
+    file: UploadFile = File(...),
+    conversation: Optional[str] = Form(default=None),
+    note_path: Optional[str] = Form(default=None),
+    index: bool = Form(default=False),
+    job_id: Optional[str] = Form(default=None, alias="id"),
+    cfg: Any = Depends(_get_cfg),
+) -> JSONResponse:
+    """Upload a file: audio is queued for transcribe-diarize, other files land in Pawn/Inbox/."""
+    from pawn_server.core import jobs  # noqa: PLC0415
+    from pawn_server.core.vault_tasks import new_task_id  # noqa: PLC0415
+
+    data = await file.read()
+    try:
+        row = await jobs.create_upload_job(
+            cfg,
+            registry=_sallm_registry,
+            job_id=(job_id or "").strip() or new_task_id(),
+            filename=file.filename or "upload.bin",
+            data=data,
+            content_type=file.content_type,
+            note_path=note_path,
+            conversation=conversation,
+            index=index,
+        )
+    except Exception as exc:
+        raise _job_error(exc) from exc
+    return JSONResponse(status_code=202, content=jobs.serialize_job(row))
+
+
+@app.get("/v1/jobs", dependencies=[Depends(_require_token)])
+async def job_list(
+    conversation: Optional[str] = Query(default=None),
+    status: Optional[str] = Query(default=None, description="Comma-separated statuses"),
+    limit: int = Query(default=50),
+    cfg: Any = Depends(_get_cfg),
+) -> dict:
+    """List jobs newest first, optionally filtered by conversation / status."""
+    from pawn_server.core import jobs  # noqa: PLC0415
+
+    statuses = [s.strip() for s in (status or "").split(",") if s.strip()]
+    return {
+        "object": "list",
+        "data": jobs.list_jobs(cfg, conversation=conversation, statuses=statuses, limit=limit),
+    }
+
+
+@app.get("/v1/jobs/events", dependencies=[Depends(_require_token)])
+async def job_events_stream(request: Request, cfg: Any = Depends(_get_cfg)) -> StreamingResponse:
+    """SSE stream of job updates (``event: job`` with the full job record)."""
+    from pawn_server.core import jobs  # noqa: PLC0415
+    from pawn_server.core.job_events import SHUTDOWN_EVENT, job_events  # noqa: PLC0415
+
+    keepalive = float(getattr(cfg.api, "stream_keepalive_seconds", 10.0))
+    queue = job_events.subscribe()
+
+    async def _gen() -> AsyncIterator[str]:
+        try:
+            yield _sse_event("ready", {"subscribers": job_events.subscriber_count})
+            while True:
+                if job_events.closed or await request.is_disconnected():
+                    break
+                try:
+                    event = await asyncio.wait_for(queue.get(), timeout=keepalive)
+                except asyncio.TimeoutError:
+                    yield _SSE_KEEPALIVE
+                    continue
+                if event is SHUTDOWN_EVENT:
+                    break
+                job = await asyncio.to_thread(jobs.get_job, cfg, event["job_id"])
+                yield _sse_event("job", job or event)
+        finally:
+            job_events.unsubscribe(queue)
+
+    return StreamingResponse(_gen(), media_type="text/event-stream")
+
+
+_VAULT_POLL_MAX_SECONDS = 25.0
+
+
+@app.get("/v1/vault/events", dependencies=[Depends(_require_token)])
+async def vault_events_poll(
+    since: int = Query(default=0, ge=0),
+    timeout: float = Query(default=_VAULT_POLL_MAX_SECONDS, ge=0, le=_VAULT_POLL_MAX_SECONDS),
+) -> dict:
+    """Long-poll vault writes from agent turns in this process.
+
+    Returns immediately when an event newer than ``since`` is buffered.
+    Otherwise waits up to ``timeout`` seconds (max 25). An empty ``events``
+    list means the client should poll again. ``resync`` is set when the ring
+    dropped events behind ``since``.
+    """
+    from pawn_server.core.vault_events import vault_events  # noqa: PLC0415
+
+    return await vault_events.wait(since, timeout)
+
+
+@app.get("/v1/jobs/{job_id}", dependencies=[Depends(_require_token)])
+async def job_get(job_id: str, cfg: Any = Depends(_get_cfg)) -> dict:
+    from pawn_server.core import jobs  # noqa: PLC0415
+
+    job = jobs.get_job(cfg, job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Job not found")
+    return job
+
+
+async def _approve(cfg: Any, job_id: str, result: Optional[str]) -> Any:
+    from pawn_core.vault_config import vault_store_from_config  # noqa: PLC0415
+    from pawn_server.core.vault_tasks import approve_vault_task  # noqa: PLC0415
+
+    try:
+        store = vault_store_from_config(cfg)
+    except Exception:
+        store = None
+    outcome = await approve_vault_task(
+        cfg, job_id, registry=_sallm_registry, store=store, result_text=result
+    )
+    if outcome.error_code == "not_found":
+        raise HTTPException(status_code=404, detail="Job not found")
+    if outcome.error_code == "not_ready":
+        raise HTTPException(status_code=409, detail=f"Job is {outcome.status}, not ready")
+    if outcome.error_code == "index_failed":
+        raise HTTPException(status_code=500, detail="Could not index into agent memory")
+    return outcome
+
+
+@app.post("/v1/jobs/{job_id}/approve", dependencies=[Depends(_require_token)])
+async def job_approve(job_id: str, body: JobApproveRequest, cfg: Any = Depends(_get_cfg)) -> dict:
+    """Index an ``ask`` job's result into sallm memory and mark it done."""
+    from pawn_server.core import jobs  # noqa: PLC0415
+
+    job = jobs.get_job(cfg, job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Job not found")
+    if job["kind"] != "ask":
+        raise HTTPException(status_code=409, detail="Only ask jobs can be approved")
+    await _approve(cfg, job_id, body.result)
+    return jobs.get_job(cfg, job_id) or job
+
+
+@app.post("/v1/jobs/{job_id}/cancel", dependencies=[Depends(_require_token)])
+async def job_cancel(job_id: str, cfg: Any = Depends(_get_cfg)) -> dict:
+    """Stop tracking a running job and mark it blocked/cancelled."""
+    from pawn_server.core import jobs  # noqa: PLC0415
+
+    try:
+        return await jobs.cancel_job(cfg, job_id)
+    except Exception as exc:
+        raise _job_error(exc) from exc
+
+
+@app.post("/v1/jobs/{job_id}/dismiss", dependencies=[Depends(_require_token)])
+async def job_dismiss(job_id: str, cfg: Any = Depends(_get_cfg)) -> dict:
+    """Close a review ask job without indexing the result into memory."""
+    from pawn_server.core import jobs  # noqa: PLC0415
+
+    try:
+        return await jobs.dismiss_job(cfg, job_id)
+    except Exception as exc:
+        raise _job_error(exc) from exc
+
+
+@app.get("/v1/items", dependencies=[Depends(_require_token)])
+async def items_list(
+    status: Optional[str] = None,
+    limit: int = 100,
+    cfg: Any = Depends(_get_cfg),
+) -> dict:
+    """List coworker inbox items, newest first."""
+    from pawn_agent.core.coworker import db as itemdb  # noqa: PLC0415
+
+    rows = await asyncio.to_thread(
+        itemdb.list_items, cfg.db_dsn, status=status or None, limit=limit
+    )
+    return {"items": rows}
+
+
+@app.post("/v1/items/{item_id}/action", dependencies=[Depends(_require_token)])
+async def item_action(
+    item_id: str,
+    body: ItemActionRequest,
+    cfg: Any = Depends(_get_cfg),
+) -> dict:
+    """Apply file, task, later, ignore, approve, or reject to one item."""
+    from pawn_agent.core.coworker import db as itemdb  # noqa: PLC0415
+    from pawn_agent.core.coworker.actions import apply_action  # noqa: PLC0415
+
+    receipt = await apply_action(cfg, item_id, body.action, body.arg, registry=_sallm_registry)
+    item = await asyncio.to_thread(itemdb.get_item, cfg.db_dsn, item_id)
+    if item is None:
+        raise HTTPException(status_code=404, detail=receipt)
+    return {"receipt": receipt, "item": item}
+
+
+# ── Deprecated vault task aliases (plugin <= 0.1) ─────────────────────────────
+
+
+def _legacy_status(job: dict) -> VaultTaskStatusResponse:
+    return VaultTaskStatusResponse(
+        task_id=job["id"],
+        status=job["status"],
+        result=job.get("result"),
+        agent_run_id=job.get("agent_run_id"),
+        error_code=job.get("error_code"),
+    )
+
+
+@app.post("/v1/vault/tasks", deprecated=True, dependencies=[Depends(_require_token)])
+async def vault_task_create(
+    body: VaultTaskCreateRequest, cfg: Any = Depends(_get_cfg)
+) -> JSONResponse:
+    """Deprecated alias: starts an ``ask`` job and returns 202 immediately."""
+    try:
+        job = await _create_job(
+            cfg,
+            JobCreateRequest(
+                kind="ask",
+                id=body.id,
+                instruction=body.instruction,
+                note_path=body.note_path,
+                context=body.context,
+                conversation=body.conversation,
+            ),
+        )
+    except Exception as exc:
+        raise _job_error(exc) from exc
+    return JSONResponse(
+        status_code=202,
+        content={"task_id": job["id"], "status": "accepted", "message": "running in background"},
+    )
+
+
+@app.get(
+    "/v1/vault/tasks/{task_id}",
+    deprecated=True,
+    response_model=VaultTaskStatusResponse,
+    dependencies=[Depends(_require_token)],
+)
+async def vault_task_get(task_id: str, cfg: Any = Depends(_get_cfg)) -> VaultTaskStatusResponse:
+    return _legacy_status(await job_get(task_id, cfg))
+
+
+@app.post(
+    "/v1/vault/tasks/{task_id}/approve",
+    deprecated=True,
+    response_model=VaultTaskStatusResponse,
+    dependencies=[Depends(_require_token)],
+)
+async def vault_task_approve(
+    task_id: str, body: JobApproveRequest, cfg: Any = Depends(_get_cfg)
+) -> VaultTaskStatusResponse:
+    return _legacy_status(await job_approve(task_id, body, cfg))
+
+
+# ── Native streaming chat for the Pawn plugin ─────────────────────────────────
+
+
+@app.post("/v1/pawn/chat", dependencies=[Depends(_require_token)])
+async def pawn_chat(body: PawnChatRequest, cfg: Any = Depends(_get_cfg)) -> StreamingResponse:
+    """SSE chat with typed events: ``progress``, ``answer``, ``job``, ``error``, ``done``.
+
+    Context (active note, selection, extra notes) is structured; the server
+    builds the agent prompt. ``background: true`` turns the message into an
+    ``ask`` job instead of a live turn.
+    """
+    from pawn_core.vault_config import vault_store_from_config  # noqa: PLC0415
+    from pawn_server.core.chat_context import (  # noqa: PLC0415
+        NoteRef,
+        build_chat_prompt,
+        resolve_notes,
+    )
+    from pawn_server.core.progress import stream_turn  # noqa: PLC0415
+
+    conversation = body.conversation.strip()
+    message = body.message.strip()
+    if not conversation or (not message and not body.images):
+        raise HTTPException(status_code=422, detail="conversation and message are required")
+    if not message and body.images:
+        message = "Look at this image."
+    loop = asyncio.get_running_loop()
+    _schedule_idle_reset(loop, cfg.api_model_idle_timeout_minutes * 60)
+    keepalive = float(getattr(cfg.api, "stream_keepalive_seconds", 10.0))
+
+    async def _gen() -> AsyncIterator[str]:
+        if message == _RESET_SENTINEL:
+            await _sallm_registry.reset(conversation, cfg.db_dsn)
+            yield _sse_event("answer", {"content": "Session reset."})
+            yield _sse_event("done", {"conversation": conversation})
+            return
+
+        from pawn_agent.core.coworker.slash import resolve_chat_message  # noqa: PLC0415
+
+        resolved = await resolve_chat_message(cfg, message, registry=_sallm_registry)
+        if resolved.mode == "reply":
+            yield _sse_event("answer", {"content": resolved.text})
+            yield _sse_event("done", {"conversation": conversation})
+            return
+        agent_message = resolved.text if resolved.rewritten else message
+
+        if body.background:
+            context_paths = [n.path for n in body.context]
+            try:
+                job = await _create_job(
+                    cfg,
+                    JobCreateRequest(
+                        kind="ask",
+                        instruction=agent_message,
+                        conversation=conversation,
+                        note_path=body.active_note.path if body.active_note else None,
+                        selection=body.selection,
+                        context_paths=context_paths,
+                        model=(body.model or "").strip() or None,
+                        reasoning=(body.reasoning or "").strip() or None,
+                        route=(body.route or "").strip() or None,
+                    ),
+                )
+            except Exception as exc:
+                yield _sse_event("error", {"message": str(exc)})
+            else:
+                yield _sse_event("job", job)
+            yield _sse_event("done", {"conversation": conversation})
+            return
+
+        try:
+            store = vault_store_from_config(cfg)
+        except Exception:
+            store = None
+        active = (
+            NoteRef(path=body.active_note.path, content=body.active_note.content)
+            if body.active_note
+            else None
+        )
+        if active is not None:
+            active = (await resolve_notes(store, [active]))[0]
+        extra = await resolve_notes(store, [NoteRef(n.path, n.content) for n in body.context])
+        if resolved.rewritten:
+            prompt = agent_message
+        else:
+            prompt = build_chat_prompt(
+                message, active_note=active, selection=body.selection, context=extra
+            )
+
+        from pawn_agent.core.vision import (  # noqa: PLC0415
+            MAX_CANDIDATE_IMAGES,
+            ImageRejected,
+            decode_chat_image,
+            load_note_images,
+        )
+
+        try:
+            decoded = [
+                decode_chat_image(
+                    filename=image.filename,
+                    media_type=image.media_type,
+                    data_base64=image.data_base64,
+                    role=image.role,
+                )
+                for image in body.images[:MAX_CANDIDATE_IMAGES]
+            ]
+        except ImageRejected as exc:
+            yield _sse_event("error", {"message": str(exc)})
+            yield _sse_event("done", {"conversation": conversation})
+            return
+        questions = [image for image in decoded if image.role == "question"]
+        supplied_context = [image for image in decoded if image.role == "context"]
+        note_images: list = []
+        if body.include_note_images and not supplied_context:
+            note_pairs = []
+            if active is not None:
+                note_pairs.append((active.path, active.content))
+            note_pairs.extend((note.path, note.content) for note in extra)
+            note_images = await asyncio.to_thread(load_note_images, store, note_pairs)
+        turn_images = (questions + supplied_context + note_images)[:MAX_CANDIDATE_IMAGES]
+
+        async def _run(on_progress: Any) -> Any:
+            return await run_agent_turn(
+                cfg=cfg,
+                registry=_sallm_registry,
+                prompt=prompt,
+                session_id=conversation,
+                source="obsidian",
+                command="run",
+                model=(body.model or "").strip() or None,
+                reasoning=(body.reasoning or "").strip() or None,
+                route=(body.route or "").strip() or None,
+                on_progress=on_progress,
+                images=turn_images or None,
+                force_caption=bool(body.force_caption),
+            )
+
+        run_id: Optional[str] = None
+        async for event, data in stream_turn(_run, keepalive_seconds=keepalive):
+            if event == "keepalive":
+                yield _SSE_KEEPALIVE
+            elif event == "progress":
+                yield _sse_event("progress", data)
+            elif event == "error":
+                logger.error("pawn chat error for %r: %s", conversation, data)
+                yield _sse_event("error", {"message": data})
+            elif event == "result":
+                run_id = data.run_id
+                yield _sse_event("answer", {"content": strip_tool_trail(data.response or "")})
+        yield _sse_event("done", {"conversation": conversation, "run_id": run_id})
+
+    return StreamingResponse(_gen(), media_type="text/event-stream")
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -932,8 +1444,48 @@ async def audio_speech(
 # ──────────────────────────────────────────────────────────────────────────────
 
 
+def _apply_docs_enabled(enabled: bool) -> None:
+    """Register or strip FastAPI docs / OpenAPI routes based on *enabled*."""
+    app.router.routes = [
+        route for route in app.router.routes if getattr(route, "path", None) not in _DOC_PATHS
+    ]
+    if enabled:
+        app.openapi_url = "/openapi.json"
+        app.docs_url = "/docs"
+        app.redoc_url = "/redoc"
+        app.setup()
+    else:
+        app.openapi_url = None
+        app.docs_url = None
+        app.redoc_url = None
+
+
 def create_app(cfg: Any) -> FastAPI:
     """Initialise the FastAPI app with the given config and return it."""
-    global _cfg
+    global _cfg, _cors_installed, _ip_guard_installed
     _cfg = cfg
+
+    from pawn_server.core.ip_guard import (  # noqa: PLC0415
+        IpGuardMiddleware,
+        reset_counters,
+    )
+
+    reset_counters()
+    enable_docs = bool(getattr(getattr(cfg, "api", None), "enable_docs", True))
+    _apply_docs_enabled(enable_docs)
+
+    origins = list(getattr(getattr(cfg, "api", None), "cors_origins", None) or [])
+    if origins and not _cors_installed:
+        app.add_middleware(
+            CORSMiddleware,
+            allow_origins=origins,
+            allow_methods=["*"],
+            allow_headers=["*"],
+        )
+        _cors_installed = True
+
+    if not _ip_guard_installed:
+        app.add_middleware(IpGuardMiddleware, get_cfg=lambda: _cfg)
+        _ip_guard_installed = True
+
     return app

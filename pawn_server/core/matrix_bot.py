@@ -1,0 +1,1240 @@
+"""Inbound Matrix chatbot worker for ``pawn-server serve``.
+
+Talks to Matrix via matrix-nio and runs agent turns in-process
+(``run_agent_turn``) — same tools/skills/memory as ``pawn-agent chat``.
+Does not call the HTTP API.
+
+Install: ``uv sync --extra matrix``
+"""
+
+from __future__ import annotations
+
+import asyncio
+import logging
+from pathlib import Path
+from typing import Any, Optional
+
+logger = logging.getLogger(__name__)
+
+# Matrix event content soft limit; leave headroom under the hard ~65k byte cap.
+_MAX_CHUNK = 30_000
+# Long-poll sync; keep under typical reverse-proxy idle timeouts when possible.
+_SYNC_TIMEOUT_MS = 30_000
+_SYNC_BACKOFF_START_S = 1.0
+_SYNC_BACKOFF_MAX_S = 60.0
+# room_typing defaults to 30s; refresh before expiry during long ReAct turns.
+_TYPING_KEEPALIVE_S = 20.0
+_PROGRESS_DEBOUNCE_S = 0.75
+_REACT_WORKING = "⏳"
+_REACT_OK = "✅"
+_REACT_FAIL = "❌"
+_MD_EXTENSIONS = ["fenced_code", "nl2br", "sane_lists"]
+
+
+# ── Pure helpers (unit-tested without nio) ────────────────────────────────────
+
+
+def conversation_id(room_id: str) -> str:
+    """Stable sallm conversation key for a Matrix room (not a diarization id)."""
+    return f"matrix:{room_id}"
+
+
+def is_direct_room(member_count: int) -> bool:
+    """Heuristic: 1–2 members ≈ DM; larger rooms need the command prefix."""
+    return member_count <= 2
+
+
+def normalize_body(body: str, *, is_edit: bool = False, new_body: Optional[str] = None) -> str:
+    """Prefer edit payload; drop Matrix reply quote fallbacks."""
+    text = (new_body if is_edit and new_body else body) or ""
+    if is_edit and text.startswith("* "):
+        text = text[2:]
+    # Reply fallbacks look like "> <@user:hs> line\\n\\nactual message"
+    if text.startswith(">"):
+        parts = text.split("\n\n", 1)
+        if len(parts) == 2:
+            text = parts[1]
+    return text.strip()
+
+
+def extract_prompt(
+    body: str,
+    *,
+    command_prefix: str,
+    is_dm: bool,
+) -> Optional[str]:
+    """Return agent prompt text, or None if this room message should be ignored."""
+    text = body.strip()
+    if not text:
+        return None
+    if text.startswith(command_prefix):
+        return text[len(command_prefix) :].lstrip() or None
+    if is_dm:
+        return text
+    return None
+
+
+_IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".gif", ".webp"}
+_reread_rooms: set[str] = set()
+
+
+def arm_image_reread(room_id: str) -> None:
+    """The next image in this room is captioned again."""
+    if room_id:
+        _reread_rooms.add(room_id)
+
+
+def take_image_reread(room_id: str) -> bool:
+    """Consume a one-shot re-read for this room."""
+    if room_id in _reread_rooms:
+        _reread_rooms.discard(room_id)
+        return True
+    return False
+
+
+def _filename_only(text: str) -> bool:
+    name = text.replace("\\", "/").rsplit("/", 1)[-1]
+    if name != text:
+        return False
+    return Path(name).suffix.lower() in _IMAGE_SUFFIXES
+
+
+def image_turn_prompt(
+    body: str,
+    *,
+    command_prefix: str,
+    is_dm: bool,
+) -> Optional[str]:
+    """Prompt for an image message, or None when the room should ignore it.
+
+    A filename-only body in a DM becomes "Look at this image." The same body
+    in a room is ignored unless it starts with the command prefix.
+    """
+    text = (body or "").strip()
+    prefix = command_prefix or ""
+    if prefix and text.startswith(prefix):
+        rest = text[len(prefix) :].lstrip()
+        return rest or "Look at this image."
+    if not is_dm:
+        return None
+    if not text or _filename_only(text):
+        return "Look at this image."
+    return text
+
+
+def _download_body(resp: Any) -> bytes:
+    body = getattr(resp, "body", b"")
+    if isinstance(body, (bytes, bytearray)):
+        return bytes(body)
+    return Path(body).read_bytes()
+
+
+async def download_room_image(client: Any, event: Any) -> Optional[tuple[bytes, str, str]]:
+    """Download an image event. Returns ``(bytes, filename, media_type)`` or None."""
+    from nio import DownloadError, RoomEncryptedMedia  # noqa: PLC0415
+    from nio.crypto.attachments import decrypt_attachment  # noqa: PLC0415
+
+    name = (getattr(event, "body", None) or "image").strip() or "image"
+    media_type = (getattr(event, "mimetype", None) or "").strip()
+    url = getattr(event, "url", None)
+    if not url:
+        return None
+    resp = await client.download(url)
+    if isinstance(resp, DownloadError):
+        logger.warning("Matrix image download failed: %s", getattr(resp, "message", resp))
+        return None
+    data = _download_body(resp)
+    if isinstance(event, RoomEncryptedMedia):
+        key = event.key.get("k") if isinstance(getattr(event, "key", None), dict) else None
+        hashes = event.hashes if isinstance(getattr(event, "hashes", None), dict) else {}
+        digest = hashes.get("sha256")
+        iv = getattr(event, "iv", None)
+        if not key or not digest or not iv:
+            return None
+        data = decrypt_attachment(data, key, digest, iv)
+        media_type = media_type or (getattr(resp, "content_type", None) or "")
+    else:
+        media_type = media_type or (getattr(resp, "content_type", None) or "")
+    filename = Path(name.replace("\\", "/")).name or "image"
+    return data, filename, media_type
+
+
+def event_is_image(event: Any) -> bool:
+    """True for image messages and image files."""
+    kind = type(event).__name__
+    if kind in {"RoomMessageImage", "RoomEncryptedImage"}:
+        return True
+    media_type = (getattr(event, "mimetype", None) or "").lower()
+    if media_type.startswith("image/"):
+        return True
+    name = getattr(event, "body", None) or ""
+    return Path(str(name)).suffix.lower() in _IMAGE_SUFFIXES
+
+
+def chunk_text(text: str, limit: int = _MAX_CHUNK) -> list[str]:
+    """Split long replies so room_send stays under Matrix size limits."""
+    if len(text) <= limit:
+        return [text]
+    return [text[i : i + limit] for i in range(0, len(text), limit)]
+
+
+def matrix_reply_body(raw: str) -> str:
+    """Drop CLI ``[tool]`` trail lines; Matrix users only need the answer."""
+    from pawn_agent.core.sallm_session import strip_tool_trail  # noqa: PLC0415
+
+    return strip_tool_trail(raw)
+
+
+def verification_allowed(
+    sender: str,
+    *,
+    bot_user_id: str,
+    inviters: list[str],
+) -> bool:
+    """Own-account cross-device verify always; else allowlist (empty = open)."""
+    if sender == bot_user_id:
+        return True
+    if not inviters:
+        return True
+    return sender in inviters
+
+
+def format_progress_status(
+    kind: str,
+    attrs: Optional[dict[str, Any]] = None,
+    *,
+    tools_ran: bool = False,
+) -> Optional[str]:
+    """Map a sallm Tracer event kind/attrs to a short Matrix status body.
+
+    Returns ``None`` when the event should not change the status message.
+    """
+    attrs = attrs or {}
+    if kind == "turn.start":
+        return "Working…"
+    if kind == "control":
+        skill = str(attrs.get("sallm.control.skill") or "").strip() or "?"
+        return f"Skill: `{skill}`…"
+    if kind == "tool":
+        name = str(attrs.get("gen_ai.tool.name") or "").strip() or "?"
+        return f"Ran `{name}`…"
+    if kind == "llm" and tools_ran:
+        return "Thinking…"
+    return None
+
+
+def build_text_content(body: str) -> dict[str, Any]:
+    """``m.room.message`` content for markdown text (plain + HTML)."""
+    from markdown import markdown
+
+    return {
+        "msgtype": "m.text",
+        "body": body,
+        "format": "org.matrix.custom.html",
+        "formatted_body": markdown(body, extensions=_MD_EXTENSIONS),
+    }
+
+
+def build_edit_content(body: str, replaces_event_id: str) -> dict[str, Any]:
+    """MSC2676 ``m.replace`` edit payload for an existing message event."""
+    new_content = build_text_content(body)
+    return {
+        "msgtype": "m.text",
+        "body": f"* {body}",
+        "m.new_content": new_content,
+        "m.relates_to": {
+            "rel_type": "m.replace",
+            "event_id": replaces_event_id,
+        },
+    }
+
+
+def build_reaction_content(event_id: str, key: str) -> dict[str, Any]:
+    """``m.reaction`` annotation content for *event_id*."""
+    return {
+        "m.relates_to": {
+            "rel_type": "m.annotation",
+            "event_id": event_id,
+            "key": key,
+        }
+    }
+
+
+def _require_nio():
+    try:
+        import nio  # noqa: F401
+    except ImportError as exc:
+        raise RuntimeError(
+            "matrix-nio is required for matrix_bot. Install with: uv sync --extra matrix"
+        ) from exc
+
+
+def _patch_nio_sas_for_element() -> None:
+    """Fix matrix-nio 0.26 SAS interop with Element.
+
+    1. Commitment must be unpadded base64, not hex (nio#570).
+    2. Prefer ``hkdf-hmac-sha256.v2``; nio advertises v1 but uses the v2
+       calculator, so Element rejects MACs as key mismatch.
+    """
+    import base64
+    from hashlib import sha256
+
+    from nio.api import Api
+    from nio.crypto.sas import Sas, SasState
+    from nio.event_builders import ToDeviceMessage
+
+    if getattr(Sas, "_pawn_sas_patched", False):
+        return
+
+    _MAC_V1 = "hkdf-hmac-sha256"
+    _MAC_V2 = "hkdf-hmac-sha256.v2"
+
+    def _unpadded_b64(data: bytes) -> str:
+        return base64.b64encode(data).decode("ascii").rstrip("=")
+
+    def _mac_fn(self):
+        assert self.established_sas
+        # v2 / fixed encoding; legacy v1 name needs the broken base64 variant.
+        if self.chosen_mac_method == _MAC_V1:
+            return self.established_sas.calculate_mac_invalid_base64
+        return self.established_sas.calculate_mac
+
+    _orig_from_start = Sas.from_key_verification_start
+
+    @classmethod  # type: ignore[misc]
+    def _from_start(cls, own_user, own_device, own_fp_key, other_olm_device, event):
+        obj = _orig_from_start.__func__(
+            cls, own_user, own_device, own_fp_key, other_olm_device, event
+        )
+        string_content = Api.to_canonical_json(event.source["content"])
+        obj.commitment = _unpadded_b64(
+            sha256(obj.pubkey.encode() + string_content.encode()).digest()
+        )
+        macs = list(event.message_authentication_codes or [])
+        # Orig cancels if v1 absent; revive when Element only offers v2.
+        if obj.state == SasState.canceled and _MAC_V2 in macs:
+            obj.state = SasState.started
+            obj.cancel_code = None
+            obj.cancel_reason = None
+        return obj
+
+    def _check_commitment(self, key: str) -> bool:
+        assert self.commitment
+        calculated = _unpadded_b64(
+            sha256(
+                key.encode() + Api.to_canonical_json(self.start_verification().content).encode()
+            ).digest()
+        )
+        return self.commitment == calculated
+
+    def _accept_verification(self) -> ToDeviceMessage:
+        if self.we_started_it:
+            from nio.exceptions import LocalProtocolError
+
+            raise LocalProtocolError("Verification was started by us, can't accept offer.")
+        if self.state == SasState.canceled:
+            from nio.exceptions import LocalProtocolError
+
+            raise LocalProtocolError("SAS verification was canceled, can't accept offer.")
+
+        sas_methods = []
+        if "emoji" in self.short_auth_string:
+            sas_methods.append("emoji")
+        if "decimal" in self.short_auth_string:
+            sas_methods.append("decimal")
+
+        macs = list(self.mac_methods or [])
+        self.chosen_mac_method = _MAC_V2 if _MAC_V2 in macs else _MAC_V1
+
+        if Sas._key_agreement_v2 in self.key_agreement_protocols:
+            self.chosen_key_agreement = Sas._key_agreement_v2
+        else:
+            self.chosen_key_agreement = Sas._key_agreement_v1
+
+        content = {
+            "transaction_id": self.transaction_id,
+            "key_agreement_protocol": self.chosen_key_agreement,
+            "hash": self._hash_v1,
+            "message_authentication_code": self.chosen_mac_method,
+            "short_authentication_string": sas_methods,
+            "commitment": self.commitment,
+        }
+        return ToDeviceMessage(
+            "m.key.verification.accept",
+            self.other_olm_device.user_id,
+            self.other_olm_device.id,
+            content,
+        )
+
+    def _get_mac(self) -> ToDeviceMessage:
+        if not self.sas_accepted:
+            from nio.exceptions import LocalProtocolError
+
+            raise LocalProtocolError("SAS string wasn't yet accepted")
+        if self.state == SasState.canceled:
+            from nio.exceptions import LocalProtocolError
+
+            raise LocalProtocolError("SAS verification was canceled, can't generate MAC.")
+
+        key_id = f"ed25519:{self.own_device}"
+        calculate_mac = _mac_fn(self)
+        info = (
+            "MATRIX_KEY_VERIFICATION_MAC"
+            f"{self.own_user}{self.own_device}"
+            f"{self.other_olm_device.user_id}{self.other_olm_device.id}"
+            f"{self.transaction_id}"
+        )
+        mac = {key_id: calculate_mac(self.own_fp_key, info + key_id)}
+        content = {
+            "mac": mac,
+            "keys": calculate_mac(key_id, info + "KEY_IDS"),
+            "transaction_id": self.transaction_id,
+        }
+        return ToDeviceMessage(
+            "m.key.verification.mac",
+            self.other_olm_device.user_id,
+            self.other_olm_device.id,
+            content,
+        )
+
+    def _receive_mac_event(self, event) -> None:
+        """Like nio's handler, but use the MAC fn matching chosen_mac_method."""
+        if self.verified:
+            return
+        if not self._event_ok(event):
+            return
+        if self.state != SasState.key_received:
+            self.state = SasState.canceled
+            self.cancel_code, self.cancel_reason = Sas._unexpected_message_error
+            return
+
+        info = (
+            f"MATRIX_KEY_VERIFICATION_MAC{self.other_olm_device.user_id}"
+            f"{self.other_olm_device.id}{self.own_user}{self.own_device}"
+            f"{self.transaction_id}"
+        )
+        key_ids = ",".join(sorted(event.mac.keys()))
+        calculate_mac = _mac_fn(self)
+
+        if event.keys != calculate_mac(key_ids, info + "KEY_IDS"):
+            # Element may include cross-signing keys; still try device key alone.
+            logger.warning(
+                "SAS KEY_IDS MAC mismatch (will still check device key); " "chosen_mac_method=%s",
+                self.chosen_mac_method,
+            )
+
+        for key_id, key_mac in event.mac.items():
+            try:
+                key_type, device_id = key_id.split(":", 1)
+            except ValueError:
+                continue
+            if key_type != "ed25519" or device_id != self.other_olm_device.id:
+                continue
+            other_fp_key = self.other_olm_device.ed25519
+            if key_mac != calculate_mac(other_fp_key, info + key_id):
+                self.state = SasState.canceled
+                self.cancel_code, self.cancel_reason = self._key_mismatch_error
+                return
+            self.verified_devices.append(device_id)
+
+        if not self.verified_devices:
+            self.state = SasState.canceled
+            self.cancel_code, self.cancel_reason = self._key_mismatch_error
+            return
+        self.state = SasState.mac_received
+
+    Sas.from_key_verification_start = _from_start  # type: ignore[method-assign]
+    Sas._check_commitment = _check_commitment  # type: ignore[method-assign]
+    Sas.accept_verification = _accept_verification  # type: ignore[method-assign]
+    Sas.get_mac = _get_mac  # type: ignore[method-assign]
+    Sas.receive_mac_event = _receive_mac_event  # type: ignore[method-assign]
+    Sas._pawn_sas_patched = True  # type: ignore[attr-defined]
+    logger.info("Patched matrix-nio SAS for Element (commitment + MAC v2)")
+
+
+def _validate_cfg(mb: Any) -> None:
+    if not mb.homeserver_url or not mb.user_id:
+        raise RuntimeError("matrix_bot.homeserver_url and matrix_bot.user_id are required")
+    if not mb.user_token and not mb.user_password:
+        raise RuntimeError("matrix_bot needs user_token or user_password")
+
+
+# ── Client lifecycle ──────────────────────────────────────────────────────────
+
+
+def _build_client(mb: Any):
+    from nio import AsyncClient, AsyncClientConfig
+
+    # Reuse device_id + store_path across restarts; a fresh device_id in E2EE
+    # rooms often means silent message drops until re-verified.
+    Path(mb.store_path).mkdir(parents=True, exist_ok=True)
+    return AsyncClient(
+        mb.homeserver_url,
+        mb.user_id,
+        device_id=mb.device_id,
+        store_path=mb.store_path,
+        config=AsyncClientConfig(
+            max_limit_exceeded=0,
+            max_timeouts=0,
+            store_sync_tokens=True,
+            encryption_enabled=True,
+        ),
+    )
+
+
+async def _login(client: Any, mb: Any) -> None:
+    from nio import LoginError
+
+    if mb.user_token:
+        client.access_token = mb.user_token
+        client.user_id = mb.user_id
+        client.load_store()
+        if client.should_upload_keys:
+            await client.keys_upload()
+        return
+
+    resp = await client.login(password=mb.user_password, device_name=mb.device_name)
+    if isinstance(resp, LoginError):
+        raise RuntimeError(f"Matrix login failed: {resp.message}")
+
+
+async def _send_text(client: Any, room_id: str, text: str) -> Optional[str]:
+    """Send markdown text; return the first chunk's event_id (if any)."""
+    body = matrix_reply_body(text)
+    first_event_id: Optional[str] = None
+    for chunk in chunk_text(body):
+        content = build_text_content(chunk)
+        resp = await client.room_send(
+            room_id,
+            "m.room.message",
+            content,
+            ignore_unverified_devices=True,
+        )
+        eid = getattr(resp, "event_id", None)
+        if first_event_id is None and eid:
+            first_event_id = str(eid)
+    return first_event_id
+
+
+async def _edit_text(
+    client: Any,
+    room_id: str,
+    event_id: str,
+    text: str,
+    *,
+    strip_tool_trail: bool = False,
+) -> None:
+    """Replace an existing message via ``m.replace``."""
+    body = matrix_reply_body(text) if strip_tool_trail else (text or "").strip()
+    if not body:
+        body = "(empty)"
+    # Edits are single-event; truncate rather than multi-chunk replace.
+    if len(body) > _MAX_CHUNK:
+        body = body[: _MAX_CHUNK - 1] + "…"
+    content = build_edit_content(body, event_id)
+    await client.room_send(
+        room_id,
+        "m.room.message",
+        content,
+        ignore_unverified_devices=True,
+    )
+
+
+async def _react(
+    client: Any,
+    room_id: str,
+    event_id: str,
+    key: str,
+) -> Optional[str]:
+    """Send an ``m.reaction``; return the reaction event_id when available."""
+    resp = await client.room_send(
+        room_id,
+        "m.reaction",
+        build_reaction_content(event_id, key),
+        ignore_unverified_devices=True,
+    )
+    eid = getattr(resp, "event_id", None)
+    return str(eid) if eid else None
+
+
+class MatrixTurnProgress:
+    """Live status edits + optional reactions + typing keepalive for one turn."""
+
+    def __init__(
+        self,
+        client: Any,
+        room_id: str,
+        user_event_id: Optional[str],
+        *,
+        loop: asyncio.AbstractEventLoop,
+        updates: bool = True,
+        reactions: bool = True,
+        debounce_s: float = _PROGRESS_DEBOUNCE_S,
+        typing_interval_s: float = _TYPING_KEEPALIVE_S,
+    ) -> None:
+        self._client = client
+        self._room_id = room_id
+        self._user_event_id = user_event_id
+        self._loop = loop
+        self._updates = updates
+        self._reactions = reactions
+        self._debounce_s = debounce_s
+        self._typing_interval_s = typing_interval_s
+        self._status_event_id: Optional[str] = None
+        self._reaction_event_id: Optional[str] = None
+        self._tools_ran = False
+        self._latest_status: Optional[str] = None
+        self._lock = asyncio.Lock()
+        self._debounce_task: Optional[asyncio.Task[None]] = None
+        self._typing_task: Optional[asyncio.Task[None]] = None
+        self._closed = False
+
+    async def start(self) -> None:
+        """Post initial status, reaction, and start typing keepalive."""
+        await self._set_typing(True)
+        self._typing_task = asyncio.create_task(self._typing_keepalive())
+        if self._reactions and self._user_event_id:
+            try:
+                self._reaction_event_id = await _react(
+                    self._client,
+                    self._room_id,
+                    self._user_event_id,
+                    _REACT_WORKING,
+                )
+            except Exception:
+                logger.exception("Failed to set working reaction")
+        if self._updates:
+            try:
+                self._status_event_id = await _send_text(self._client, self._room_id, "Working…")
+            except Exception:
+                logger.exception("Failed to send progress status message")
+
+    def on_progress(self, kind: str, attrs: dict[str, Any]) -> None:
+        """Sync Tracer bridge — schedule a debounced status edit on the loop."""
+        if self._closed or not self._updates:
+            return
+        if kind == "tool":
+            self._tools_ran = True
+        status = format_progress_status(kind, attrs, tools_ran=self._tools_ran)
+        if status is None:
+            return
+        try:
+            asyncio.run_coroutine_threadsafe(self._queue_status(status), self._loop)
+        except Exception:
+            logger.exception("Failed to schedule progress update")
+
+    async def _queue_status(self, text: str) -> None:
+        self._latest_status = text
+        if self._debounce_task is not None and not self._debounce_task.done():
+            return
+        self._debounce_task = asyncio.create_task(self._flush_status_soon())
+
+    async def _flush_status_soon(self) -> None:
+        try:
+            await asyncio.sleep(self._debounce_s)
+            await self._flush_status_now()
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("Progress status flush failed")
+
+    async def _flush_status_now(self) -> None:
+        async with self._lock:
+            text = self._latest_status
+            event_id = self._status_event_id
+            if not text or not event_id or self._closed:
+                return
+            try:
+                await _edit_text(self._client, self._room_id, event_id, text)
+            except Exception:
+                logger.exception("Failed to edit progress status")
+
+    async def finish(self, answer: str) -> None:
+        """Replace status with the final answer (or send normally)."""
+        await self._cancel_debounce()
+        body = matrix_reply_body(answer) or "(empty reply)"
+        chunks = chunk_text(body)
+        if self._updates and self._status_event_id:
+            async with self._lock:
+                try:
+                    await _edit_text(
+                        self._client,
+                        self._room_id,
+                        self._status_event_id,
+                        chunks[0],
+                        strip_tool_trail=False,
+                    )
+                except Exception:
+                    logger.exception("Failed to edit final answer into status")
+                    await _send_text(self._client, self._room_id, body)
+                    chunks = []
+            for chunk in chunks[1:]:
+                await _send_text(self._client, self._room_id, chunk)
+        else:
+            await _send_text(self._client, self._room_id, body)
+        await self._set_reaction(_REACT_OK)
+
+    async def fail(self, message: str) -> None:
+        """Surface an error on the status message (or as a new send)."""
+        await self._cancel_debounce()
+        text = message or "Sorry — something went wrong."
+        if self._updates and self._status_event_id:
+            async with self._lock:
+                try:
+                    await _edit_text(self._client, self._room_id, self._status_event_id, text)
+                except Exception:
+                    logger.exception("Failed to edit error into status")
+                    try:
+                        await _send_text(self._client, self._room_id, text)
+                    except Exception:
+                        logger.exception("Failed to send error reply")
+        else:
+            try:
+                await _send_text(self._client, self._room_id, text)
+            except Exception:
+                logger.exception("Failed to send error reply")
+        await self._set_reaction(_REACT_FAIL)
+
+    async def close(self) -> None:
+        """Stop keepalive / debounce and clear typing."""
+        self._closed = True
+        await self._cancel_debounce()
+        if self._typing_task is not None:
+            self._typing_task.cancel()
+            try:
+                await self._typing_task
+            except asyncio.CancelledError:
+                pass
+            self._typing_task = None
+        await self._set_typing(False)
+
+    async def _cancel_debounce(self) -> None:
+        task = self._debounce_task
+        self._debounce_task = None
+        if task is not None and not task.done():
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+
+    async def _typing_keepalive(self) -> None:
+        try:
+            while not self._closed:
+                await asyncio.sleep(self._typing_interval_s)
+                if self._closed:
+                    return
+                await self._set_typing(True)
+        except asyncio.CancelledError:
+            return
+
+    async def _set_typing(self, state: bool) -> None:
+        try:
+            await self._client.room_typing(
+                self._room_id,
+                typing_state=state,
+                timeout=int(_TYPING_KEEPALIVE_S * 1000) + 10_000,
+            )
+        except Exception:
+            if state:
+                logger.debug("room_typing failed room=%s", self._room_id, exc_info=True)
+
+    async def _set_reaction(self, key: str) -> None:
+        if not self._reactions or not self._user_event_id:
+            return
+        if self._reaction_event_id:
+            try:
+                await self._client.room_redact(
+                    self._room_id,
+                    self._reaction_event_id,
+                    reason="progress",
+                )
+            except Exception:
+                logger.debug("Failed to redact prior reaction", exc_info=True)
+            self._reaction_event_id = None
+        try:
+            self._reaction_event_id = await _react(
+                self._client, self._room_id, self._user_event_id, key
+            )
+        except Exception:
+            logger.exception("Failed to set reaction %s", key)
+
+
+# ── Event handlers ────────────────────────────────────────────────────────────
+
+
+def _register_callbacks(client: Any, cfg: Any, registry: Any) -> None:
+    from nio import (
+        InviteMemberEvent,
+        KeyVerificationCancel,
+        KeyVerificationEvent,
+        KeyVerificationKey,
+        KeyVerificationMac,
+        KeyVerificationStart,
+        LocalProtocolError,
+        MegolmEvent,
+        RoomEncryptedFile,
+        RoomEncryptedImage,
+        RoomMessageFile,
+        RoomMessageImage,
+        RoomMessageText,
+        ToDeviceError,
+        ToDeviceMessage,
+        UnknownToDeviceEvent,
+    )
+
+    mb = cfg.matrix_bot
+
+    def _allowed(sender: str) -> bool:
+        return verification_allowed(
+            sender,
+            bot_user_id=client.user_id,
+            inviters=list(mb.inviters or []),
+        )
+
+    async def on_to_device(event: Any) -> None:
+        # Modern Element: request → ready → start → key → mac → done.
+        # nio often fails Element's cross-signing MACs ("expected key did not
+        # match"); we still verify_device() after emoji confirm so trust sticks.
+        try:
+            etype = (getattr(event, "source", {}) or {}).get("type", "")
+
+            if etype == "m.key.verification.request":
+                content = event.source.get("content") or {}
+                if not _allowed(event.sender):
+                    logger.warning("Ignoring verification request from %s", event.sender)
+                    return
+                if "m.sas.v1" not in (content.get("methods") or []):
+                    logger.warning("Verification request without SAS from %s", event.sender)
+                    return
+                txid = content["transaction_id"]
+                logger.info("Verification request from %s — sending ready", event.sender)
+                ready = ToDeviceMessage(
+                    type="m.key.verification.ready",
+                    recipient=event.sender,
+                    recipient_device=content["from_device"],
+                    content={
+                        "from_device": client.device_id,
+                        "methods": ["m.sas.v1"],
+                        "transaction_id": txid,
+                    },
+                )
+                resp = await client.to_device(ready, txid)
+                if isinstance(resp, ToDeviceError):
+                    logger.error("verification ready failed: %s", resp)
+
+            elif isinstance(event, KeyVerificationStart):
+                if not _allowed(event.sender):
+                    logger.warning("Ignoring verification start from %s", event.sender)
+                    return
+                if "emoji" not in (event.short_authentication_string or []):
+                    logger.warning(
+                        "Verification without emoji from %s: %s",
+                        event.sender,
+                        event.short_authentication_string,
+                    )
+                    return
+                resp = await client.accept_key_verification(event.transaction_id)
+                if isinstance(resp, ToDeviceError):
+                    logger.error("accept_key_verification failed: %s", resp)
+                    return
+                sas = client.key_verifications[event.transaction_id]
+                resp = await client.to_device(sas.share_key())
+                if isinstance(resp, ToDeviceError):
+                    logger.error("share_key failed: %s", resp)
+
+            elif isinstance(event, KeyVerificationKey):
+                sas = client.key_verifications[event.transaction_id]
+                logger.info(
+                    "SAS emojis: %s — click They match in Element",
+                    sas.get_emoji(),
+                )
+                # Send our MAC now (Element verifies it after you confirm).
+                resp = await client.confirm_short_auth_string(event.transaction_id)
+                if isinstance(resp, ToDeviceError):
+                    logger.error("confirm_short_auth_string failed: %s", resp)
+                    return
+                other = getattr(sas, "other_olm_device", None)
+                if other is not None:
+                    client.verify_device(other)
+                    logger.info(
+                        "Marked device verified: %s %s (mac_method=%s)",
+                        other.user_id,
+                        other.device_id,
+                        getattr(sas, "chosen_mac_method", "?"),
+                    )
+
+            elif isinstance(event, KeyVerificationMac):
+                sas = client.key_verifications.get(event.transaction_id)
+                if sas is None or sas.canceled:
+                    logger.warning(
+                        "Ignoring MAC for canceled/unknown verification %s",
+                        getattr(event, "transaction_id", "?"),
+                    )
+                    return
+                if not sas.sas_accepted:
+                    sas.accept_sas()
+                try:
+                    mac_msg = sas.get_mac()
+                except LocalProtocolError as exc:
+                    logger.warning("Verification MAC skipped: %s", exc)
+                    return
+                resp = await client.to_device(mac_msg)
+                if isinstance(resp, ToDeviceError):
+                    logger.error("verification MAC send failed: %s", resp)
+                    return
+                other = getattr(sas, "other_olm_device", None)
+                if other is not None:
+                    client.verify_device(other)
+                    done = ToDeviceMessage(
+                        type="m.key.verification.done",
+                        recipient=event.sender,
+                        recipient_device=other.device_id,
+                        content={"transaction_id": sas.transaction_id},
+                    )
+                    resp = await client.to_device(done, sas.transaction_id)
+                    if isinstance(resp, ToDeviceError):
+                        logger.error("verification done failed: %s", resp)
+                logger.info(
+                    "Device verification MAC exchanged with %s (verified=%s)",
+                    event.sender,
+                    sas.verified,
+                )
+
+            elif etype == "m.key.verification.done":
+                txid = (event.source.get("content") or {}).get("transaction_id")
+                sas = client.key_verifications.get(txid) if txid else None
+                logger.info(
+                    "Verification finished with %s (verified=%s devices=%s)",
+                    event.sender,
+                    getattr(sas, "verified", None),
+                    getattr(sas, "verified_devices", None),
+                )
+
+            elif isinstance(event, KeyVerificationCancel):
+                # Element often cancels after emoji with this reason even when UI
+                # goes green; device was already trusted on KeyVerificationKey.
+                logger.info(
+                    "Verification cancelled by %s: %s "
+                    "(ok if device was already marked verified above)",
+                    event.sender,
+                    getattr(event, "reason", ""),
+                )
+        except Exception:
+            logger.exception("Key verification handler failed")
+
+    async def on_message(room: Any, event: Any) -> None:
+        if event.sender == client.user_id:
+            return
+
+        source = getattr(event, "source", {}) or {}
+        content = source.get("content", {}) if isinstance(source, dict) else {}
+        relates = content.get("m.relates_to") or {}
+        is_edit = relates.get("rel_type") == "m.replace"
+        new_body = (content.get("m.new_content") or {}).get("body")
+
+        body = normalize_body(event.body or "", is_edit=is_edit, new_body=new_body)
+        prompt = extract_prompt(
+            body,
+            command_prefix=mb.command_prefix,
+            is_dm=is_direct_room(room.member_count),
+        )
+        if prompt is None:
+            return
+
+        session_id = conversation_id(room.room_id)
+        progress: Optional[MatrixTurnProgress] = None
+        try:
+            if prompt.strip() == "/reset":
+                await client.room_typing(room.room_id, typing_state=True)
+                await registry.reset(session_id)
+                await _send_text(client, room.room_id, "Session reset.")
+                return
+            if prompt.strip() == "/stats":
+                await client.room_typing(room.room_id, typing_state=True)
+                text = await registry.stats(session_id, cfg)
+                await _send_text(client, room.room_id, text)
+                return
+            if prompt.strip() == "/vision refresh":
+                arm_image_reread(room.room_id)
+                await client.room_typing(room.room_id, typing_state=True)
+                await _send_text(
+                    client,
+                    room.room_id,
+                    "The next image in this room will be read again.",
+                )
+                return
+
+            from pawn_agent.core.coworker.slash import resolve_chat_message  # noqa: PLC0415
+
+            resolved = await resolve_chat_message(cfg, prompt, registry=registry)
+            if resolved.mode == "reply":
+                await client.room_typing(room.room_id, typing_state=True)
+                await _send_text(client, room.room_id, resolved.text)
+                return
+            prompt = resolved.text
+
+            from pawn_agent.core.agent_runner import run_agent_turn
+
+            progress = MatrixTurnProgress(
+                client,
+                room.room_id,
+                getattr(event, "event_id", None),
+                loop=asyncio.get_running_loop(),
+                updates=bool(getattr(mb, "progress_updates", True)),
+                reactions=bool(getattr(mb, "progress_reactions", True)),
+            )
+            await progress.start()
+
+            # source="matrix" tags agent_runs; session_id is a chat key, not diarization.
+            result = await run_agent_turn(
+                cfg=cfg,
+                registry=registry,
+                prompt=prompt,
+                session_id=session_id,
+                source="matrix",
+                on_progress=(
+                    progress.on_progress if getattr(mb, "progress_updates", True) else None
+                ),
+            )
+            await progress.finish(result.response or "(empty reply)")
+        except Exception:
+            logger.exception("Matrix agent turn failed room=%s", room.room_id)
+            if progress is not None:
+                await progress.fail("Sorry — something went wrong.")
+            else:
+                try:
+                    await _send_text(client, room.room_id, "Sorry — something went wrong.")
+                except Exception:
+                    logger.exception("Failed to send error reply")
+        finally:
+            if progress is not None:
+                await progress.close()
+            else:
+                try:
+                    await client.room_typing(room.room_id, typing_state=False)
+                except Exception:
+                    pass
+
+    async def on_image(room: Any, event: Any) -> None:
+        if event.sender == client.user_id:
+            return
+        if not event_is_image(event):
+            return
+        is_dm = is_direct_room(room.member_count)
+        prompt = image_turn_prompt(
+            getattr(event, "body", "") or "",
+            command_prefix=mb.command_prefix,
+            is_dm=is_dm,
+        )
+        if prompt is None:
+            return
+
+        session_id = conversation_id(room.room_id)
+        progress: Optional[MatrixTurnProgress] = None
+        try:
+            downloaded = await download_room_image(client, event)
+            if downloaded is None:
+                await _send_text(client, room.room_id, "I couldn't download that image.")
+                return
+            data, filename, media_type = downloaded
+            force = take_image_reread(room.room_id)
+            from pawn_agent.core.agent_runner import run_agent_turn
+            from pawn_agent.core.vision import TurnImage
+
+            progress = MatrixTurnProgress(
+                client,
+                room.room_id,
+                getattr(event, "event_id", None),
+                loop=asyncio.get_running_loop(),
+                updates=bool(getattr(mb, "progress_updates", True)),
+                reactions=bool(getattr(mb, "progress_reactions", True)),
+            )
+            await progress.start()
+            result = await run_agent_turn(
+                cfg=cfg,
+                registry=registry,
+                prompt=prompt,
+                session_id=session_id,
+                source="matrix",
+                on_progress=(
+                    progress.on_progress if getattr(mb, "progress_updates", True) else None
+                ),
+                images=[
+                    TurnImage(
+                        filename=filename,
+                        media_type=media_type,
+                        data=data,
+                        role="question",
+                    )
+                ],
+                force_caption=force,
+            )
+            await progress.finish(result.response or "(empty reply)")
+        except Exception:
+            logger.exception("Matrix image turn failed room=%s", room.room_id)
+            if progress is not None:
+                await progress.fail("Sorry — something went wrong.")
+            else:
+                try:
+                    await _send_text(client, room.room_id, "Sorry — something went wrong.")
+                except Exception:
+                    logger.exception("Failed to send error reply")
+        finally:
+            if progress is not None:
+                await progress.close()
+            else:
+                try:
+                    await client.room_typing(room.room_id, typing_state=False)
+                except Exception:
+                    pass
+
+    async def on_invite(room: Any, event: Any) -> None:
+        # InviteMemberEvent fires for every member in rooms.invite; only our invite.
+        if event.state_key != client.user_id:
+            return
+        inviter = getattr(room, "inviter", None) or event.sender
+        if mb.inviters and inviter not in mb.inviters:
+            logger.warning("Ignoring invite to %s from %s", room.room_id, inviter)
+            return
+        from nio import JoinError
+
+        for attempt in range(3):
+            result = await client.join(room.room_id)
+            if not isinstance(result, JoinError):
+                logger.info("Joined %s", room.room_id)
+                return
+            logger.warning("Join %s attempt %d: %s", room.room_id, attempt + 1, result.message)
+        logger.error("Unable to join %s", room.room_id)
+
+    async def on_megolm(room: Any, event: Any) -> None:
+        logger.warning("Cannot decrypt event in %s", room.room_id)
+        try:
+            await _send_text(
+                client,
+                room.room_id,
+                "I couldn't decrypt that message. You may need to verify this device.",
+            )
+        except Exception:
+            pass
+
+    client.add_to_device_callback(on_to_device, (KeyVerificationEvent, UnknownToDeviceEvent))
+    client.add_event_callback(on_message, (RoomMessageText,))
+    client.add_event_callback(
+        on_image,
+        (RoomMessageImage, RoomMessageFile, RoomEncryptedImage, RoomEncryptedFile),
+    )
+    client.add_event_callback(on_invite, (InviteMemberEvent,))
+    client.add_event_callback(on_megolm, (MegolmEvent,))
+
+
+# ── Sync / presence ───────────────────────────────────────────────────────────
+
+
+def next_sync_backoff(seconds: float, *, max_s: float = _SYNC_BACKOFF_MAX_S) -> float:
+    """Exponential backoff cap for sync reconnect sleeps."""
+    return min(max(seconds, _SYNC_BACKOFF_START_S) * 2.0, max_s)
+
+
+async def _assert_online(client: Any) -> None:
+    """Best-effort presence refresh so Element stays green between turns."""
+    try:
+        await client.set_presence("online")
+    except Exception:
+        logger.debug("Matrix set_presence(online) failed", exc_info=True)
+
+
+async def run_sync_with_reconnect(
+    client: Any,
+    *,
+    timeout_ms: int = _SYNC_TIMEOUT_MS,
+    max_backoff_s: float = _SYNC_BACKOFF_MAX_S,
+) -> None:
+    """Keep ``sync_forever`` running with online presence and reconnect.
+
+    Failed ``/sync`` bodies (nio ``SyncError`` / ``next_batch`` warnings) do not
+    crash the loop, but they stop refreshing presence — so we log them and
+    re-assert online. Transport crashes restart sync with backoff.
+    """
+    from nio import SyncError, SyncResponse
+
+    async def on_sync_response(response: Any) -> None:
+        if isinstance(response, SyncError):
+            logger.warning(
+                "Matrix sync error (presence may go offline): %s",
+                getattr(response, "message", response),
+            )
+            await _assert_online(client)
+        elif isinstance(response, SyncResponse):
+            logger.debug("Matrix sync ok")
+
+    client.add_response_callback(on_sync_response, (SyncResponse, SyncError))
+
+    backoff = _SYNC_BACKOFF_START_S
+    while True:
+        try:
+            await _assert_online(client)
+            logger.info("Matrix sync starting (presence=online, timeout=%sms)", timeout_ms)
+            await client.sync_forever(
+                timeout=timeout_ms,
+                full_state=True,
+                set_presence="online",
+            )
+            logger.info("Matrix sync_forever stopped")
+            return
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("Matrix sync crashed; reconnecting in %.0fs", backoff)
+            await asyncio.sleep(backoff)
+            backoff = next_sync_backoff(backoff, max_s=max_backoff_s)
+
+
+# ── Entrypoint ────────────────────────────────────────────────────────────────
+
+
+async def start_matrix_bot(cfg: Any) -> None:
+    """Login, sync forever, and route eligible messages to the sallm agent.
+
+    When ``matrix_bot.notify_room_id`` and ``queue_producers`` are configured,
+    also starts an outbound notify consumer sharing the same Matrix client.
+    """
+    _require_nio()
+    _patch_nio_sas_for_element()
+    mb = cfg.matrix_bot
+    _validate_cfg(mb)
+
+    from pawn_agent.core.sallm_registry import SallmSessionRegistry
+
+    registry = SallmSessionRegistry()
+    client = _build_client(mb)
+    notify_task: Optional[asyncio.Task] = None
+    try:
+        await _login(client, mb)
+        _register_callbacks(client, cfg, registry)
+        logger.info("Matrix bot logged in as %s", mb.user_id)
+
+        from pawn_server.core.matrix_notifier import (  # noqa: PLC0415
+            matrix_notifier_enabled,
+            run_matrix_notifier_loop,
+        )
+
+        if matrix_notifier_enabled(cfg):
+            notify_task = asyncio.create_task(
+                run_matrix_notifier_loop(cfg, client),
+                name="matrix-notifier",
+            )
+            logger.info(
+                "Matrix outbound notifier armed → room %s",
+                mb.notify_room_id,
+            )
+
+        await run_sync_with_reconnect(client)
+    finally:
+        if notify_task is not None:
+            notify_task.cancel()
+            try:
+                await notify_task
+            except (asyncio.CancelledError, Exception):
+                pass
+        await client.close()

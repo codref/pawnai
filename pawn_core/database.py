@@ -15,28 +15,23 @@ session_analysis
     Structured analysis results (title, summary, topics, sentiment, tags).
 graph_triples
     Knowledge-graph triples extracted from session transcripts.
-rag_sources
-    Source documents registered in the RAG index.
-text_chunks
-    Text chunks with sentence-transformer embeddings for RAG retrieval.
+vault_notes
+    Mapping from diarization session_id to vault object key + content hash.
+session_captures
+    Notes and screenshots attached to a diarization session, keyed by item id.
 """
 
 from __future__ import annotations
 
-import os
+import threading
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from typing import Any, Generator, Optional
 
-from pgvector.sqlalchemy import Vector
 from sqlalchemy import DateTime, Float, Integer, String, Text, create_engine
 from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.engine import Engine
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sessionmaker
-
-# Dimension for text chunk embeddings (sentence-transformers).
-# Read from env so the value matches whatever was used when running the migration.
-TEXT_CHUNK_DIM: int = int(os.environ.get("PAWN_EMBED_DIM", "1024"))
-
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Shared declarative base
@@ -120,37 +115,46 @@ class GraphTriple(Base):
     )
 
 
-class RagSource(Base):
-    """A source document registered in the RAG index."""
+class VaultNote(Base):
+    """Stable vault object mapping for a diarization session transcript."""
 
-    __tablename__ = "rag_sources"
+    __tablename__ = "vault_notes"
 
-    id: Mapped[str] = mapped_column(String, primary_key=True)
-    source_type: Mapped[str] = mapped_column(String, nullable=False, index=True)
-    external_id: Mapped[str] = mapped_column(String, nullable=False, index=True)
-    display_name: Mapped[Optional[str]] = mapped_column(String, nullable=True)
-    extra_data: Mapped[Optional[Any]] = mapped_column("metadata", JSONB, nullable=True)
-    created_at: Mapped[Optional[datetime]] = mapped_column(
+    session_id: Mapped[str] = mapped_column(String, primary_key=True)
+    key: Mapped[str] = mapped_column(String, nullable=False)
+    content_hash: Mapped[str] = mapped_column(String, nullable=False, default="")
+    updated_at: Mapped[Optional[datetime]] = mapped_column(
         DateTime, nullable=True, default=lambda: datetime.now(timezone.utc)
     )
 
 
-class TextChunk(Base):
-    """A text chunk with a sentence-transformer embedding for RAG retrieval."""
+class SessionCapture(Base):
+    """One recorder note or screenshot for a diarization session.
 
-    __tablename__ = "text_chunks"
+    ``(session_id, item_id)`` is the identity. A retried queue message inserts
+    nothing when that pair already exists. ``at`` is stored in UTC;
+    ``at_offset_minutes`` keeps the clock offset the recorder sent so the vault
+    line can still show 22:10 instead of the UTC equivalent. ``received_at`` and
+    ``chunk_audio_start`` are the accept-time snapshot used to place the item
+    on the transcript timeline, and they are not updated on conflict.
+    """
 
-    id: Mapped[str] = mapped_column(String, primary_key=True)
-    source_id: Mapped[str] = mapped_column(String, nullable=False, index=True)
-    speaker_name: Mapped[Optional[str]] = mapped_column(String, nullable=True)
-    start_time: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
-    end_time: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    __tablename__ = "session_captures"
+
+    session_id: Mapped[str] = mapped_column(String, primary_key=True)
+    item_id: Mapped[str] = mapped_column(String, primary_key=True)
+    kind: Mapped[str] = mapped_column(String, nullable=False)
+    at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    at_offset_minutes: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     text: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
-    embedding: Mapped[list] = mapped_column(Vector(TEXT_CHUNK_DIM), nullable=False)
-    extra_data: Mapped[Optional[Any]] = mapped_column("metadata", JSONB, nullable=True)
-    created_at: Mapped[Optional[datetime]] = mapped_column(
-        DateTime, nullable=True, default=lambda: datetime.now(timezone.utc)
-    )
+    s3_uri: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    output: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    region: Mapped[Optional[Any]] = mapped_column(JSONB, nullable=True)
+    vault_key: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    summary: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    audio_offset_s: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    chunk_audio_start: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    received_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -158,18 +162,47 @@ class TextChunk(Base):
 # ──────────────────────────────────────────────────────────────────────────────
 
 
+_engines: dict[str, Engine] = {}
+_engines_lock = threading.Lock()
+
+
+def get_engine(dsn: str) -> Engine:
+    """Return a process-wide cached :class:`Engine` for *dsn*.
+
+    Creating a new engine on every call leaks connection pools (each orphaned
+    engine keeps idle pooled connections until GC, which may never reclaim them
+    while the process lives). Long-running ``pawn-server`` workers (scheduler,
+    agent runner, queue) must reuse one engine per DSN.
+    """
+    with _engines_lock:
+        engine = _engines.get(dsn)
+        if engine is None:
+            engine = create_engine(dsn, pool_pre_ping=True)
+            _engines[dsn] = engine
+        return engine
+
+
+def dispose_engines() -> None:
+    """Dispose and clear all cached engines (tests / process shutdown)."""
+    with _engines_lock:
+        engines = list(_engines.values())
+        _engines.clear()
+    for engine in engines:
+        engine.dispose()
+
+
 def make_db_session(dsn: str) -> Session:
-    """Return a new :class:`Session` bound to a fresh engine for *dsn*."""
-    engine = create_engine(dsn)
-    SessionLocal = sessionmaker(bind=engine)
-    return SessionLocal()
+    """Return a new :class:`Session` bound to the shared engine for *dsn*.
+
+    Caller must ``close()`` the session (or use it as a context manager).
+    """
+    return sessionmaker(bind=get_engine(dsn))()
 
 
 @contextmanager
 def _get_session(dsn: str) -> Generator[Session, None, None]:
     """Context manager that yields a committed-or-rolled-back :class:`Session`."""
-    engine = create_engine(dsn)
-    with Session(engine) as session:
+    with Session(get_engine(dsn)) as session:
         try:
             yield session
             session.commit()

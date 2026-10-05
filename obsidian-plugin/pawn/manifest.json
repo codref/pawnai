@@ -1,0 +1,9 @@
+{
+  "id": "pawn",
+  "name": "Pawn",
+  "version": "0.2.3",
+  "minAppVersion": "1.5.0",
+  "description": "Copilot-style chat with Pawn AI, plus background jobs, prompt commands and uploads.",
+  "author": "PawnAI",
+  "isDesktopOnly": false
+}

@@ -116,12 +116,12 @@ Every message sent to the queue must be a JSON object with a `command` key.  All
 
 | `command` | Required fields | Notable optional fields |
 |---|---|---|
-| `transcribe-diarize` | `audio_paths` | `session`, `threshold`, `cross_file_threshold`, `device`, `backend`, `store_new`, `no_timestamps`, `chunk_duration`, `output`, `db_dsn` |
+| `transcribe-diarize` | `audio_paths` | `session`, `threshold`, `cross_file_threshold`, `device`, `backend`, `store_new`, `no_timestamps`, `chunk_duration`, `output`, `db_dsn`, `annotations`, `screenshots` |
 | `transcribe` | `audio_paths` | `session`, `device`, `backend`, `timestamps`, `chunk_duration`, `output`, `db_dsn` |
 | `diarize` | `audio_paths` | `threshold`, `store_new`, `output`, `db_dsn` |
 | `embed` | `audio_paths`, `speaker_id` | `db_dsn` |
 | `analyze` | `session` or `input_path` | `mode` (`summary`\|`graph`), `model`, `output`, `db_dsn` |
-| `sync-siyuan` | `session` or `all_sessions: true` | `notebook`, `token`, `url`, `path_template`, `daily_note`, `daily_path_template`, `db_dsn` |
+| `analyze` | `session` or `all_sessions: true` | `notebook`, `token`, `url`, `path_template`, `daily_note`, `daily_path_template`, `db_dsn` |
 
 ---
 
@@ -139,6 +139,13 @@ Every message sent to the queue must be a JSON object with a `command` key.  All
   "device": "cpu"
 }
 ```
+
+`annotations` and `screenshots` are optional on `transcribe-diarize` only.
+Each item has a stable `id` and an `at` timestamp. Notes are merged into the
+vault Annotations section. Screenshot bytes are copied beside the transcript
+note and listed under Screenshots. Set `vault.screenshot_vision: false` to
+skip vision deltas during ingest; `session_screenshots --summarize` can run
+them later. Empty lists are omitted.
 
 ### transcribe-diarize (multiple explicit files, GPU, whisper backend)
 
@@ -192,20 +199,20 @@ Every message sent to the queue must be a JSON object with a `command` key.  All
 }
 ```
 
-### sync-siyuan — push analysis to SiYuan Note
+### analyze — push analysis to Obsidian vault Note
 
 ```json
 {
-  "command": "sync-siyuan",
+  "command": "analyze",
   "session": "tom-20260305"
 }
 ```
 
-Override SiYuan connection details when needed (otherwise the `siyuan:` section in `.pawn-diarize.yml` is used):
+Override Obsidian vault connection details when needed (otherwise the `# vault:` section in `.pawn-diarize.yml` is used):
 
 ```json
 {
-  "command": "sync-siyuan",
+  "command": "analyze",
   "session": "tom-20260305",
   "notebook": "20210817205410-2kvfpfn",
   "token": "your_api_token",
@@ -217,7 +224,7 @@ Sync every session that has a completed analysis:
 
 ```json
 {
-  "command": "sync-siyuan",
+  "command": "analyze",
   "all_sessions": true
 }
 ```

@@ -55,19 +55,18 @@ class ModelCache:
 
     @property
     def has_models(self) -> bool:
-        return (
-            self._transcription_engine is not None
-            or self._diarization_engine is not None
-        )
+        return self._transcription_engine is not None or self._diarization_engine is not None
 
     def get_transcription_engine(self, device: str, backend: str) -> Any:
         """Return a cached (or newly created) :class:`TranscriptionEngine`."""
         key: Tuple[str, str] = (device, backend)
         if self._transcription_engine is None or self._transcription_key != key:
             from .transcription import TranscriptionEngine
+
             logger.info(
                 "ModelCache: loading TranscriptionEngine (device=%s, backend=%s)",
-                device, backend,
+                device,
+                backend,
             )
             self._transcription_engine = TranscriptionEngine(device=device, backend=backend)
             self._transcription_key = key
@@ -78,6 +77,7 @@ class ModelCache:
         diarize_device: Optional[str] = device if device != "cpu" else None
         if self._diarization_engine is None or self._diarization_key != diarize_device:
             from .diarization import DiarizationEngine
+
             logger.info(
                 "ModelCache: loading DiarizationEngine (device=%s)",
                 diarize_device,
@@ -98,11 +98,13 @@ class ModelCache:
         gc.collect()
         try:
             import torch
+
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
                 logger.info("ModelCache: CUDA memory cache cleared")
         except ImportError:
             pass
+
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Per-command parameter defaults
@@ -112,10 +114,10 @@ class ModelCache:
 
 COMMAND_DEFAULTS: Dict[str, Dict[str, Any]] = {
     "transcribe-diarize": {
-        "audio_paths": [],          # required — producer MUST supply this
+        "audio_paths": [],  # required — producer MUST supply this
         "output": None,
         "session": None,
-        "db_dsn": None,             # None → AppConfig default
+        "db_dsn": None,  # None → AppConfig default
         "threshold": 0.7,
         "store_new": True,
         "device": "cuda",
@@ -124,7 +126,7 @@ COMMAND_DEFAULTS: Dict[str, Dict[str, Any]] = {
         "no_timestamps": False,
         "verbose": False,
         "backend": "nemo",
-        "chain_agent": None,        # None = use config; True = enable; str = custom prompt; False = disable
+        "chain_agent": None,  # None = use config; True = enable; str = custom prompt; False = disable
     },
     "transcribe": {
         "audio_paths": [],
@@ -145,18 +147,15 @@ COMMAND_DEFAULTS: Dict[str, Dict[str, Any]] = {
     },
     "embed": {
         "audio_paths": [],
-        "speaker_id": None,         # required for embed
+        "speaker_id": None,  # required for embed
         "db_dsn": None,
     },
-    "sync-siyuan": {
-        "session": None,           # required unless all_sessions=True
+    "push-vault": {
+        "session": None,
         "all_sessions": False,
-        "notebook": None,          # falls back to siyuan.notebook in config
-        "token": None,             # falls back to siyuan.token in config
-        "url": None,               # falls back to siyuan.url in config
-        "path_template": None,
-        "daily_note": True,
-        "daily_path_template": None,
+        "since": None,
+        "latest": False,
+        "dry_run": False,
         "db_dsn": None,
     },
 }
@@ -184,6 +183,7 @@ def _merge_params(command: str, payload: Dict[str, Any]) -> Dict[str, Any]:
 def _resolve_db_dsn(params: Dict[str, Any], cfg: Any) -> str:
     """Return the DB DSN from *params* or fall back to the AppConfig default."""
     from .config import DEFAULT_DB_DSN
+
     return params.get("db_dsn") or cfg.get("db_dsn") or DEFAULT_DB_DSN
 
 
@@ -224,8 +224,8 @@ async def dispatch(
         await loop.run_in_executor(None, _run_diarize, params, cfg, model_cache)
     elif command == "embed":
         await loop.run_in_executor(None, _run_embed, params, cfg)
-    elif command == "sync-siyuan":
-        await loop.run_in_executor(None, _run_sync_siyuan, params, cfg)
+    elif command == "push-vault":
+        await loop.run_in_executor(None, _run_push_vault, params, cfg)
     else:
         raise ValueError(f"Unsupported command: {command!r}")
 
@@ -237,9 +237,10 @@ async def dispatch(
 
 def _resolve_audio_paths(paths: List[str], cfg: Any) -> tuple[List[str], List[str]]:
     """Download any s3:// paths and return (resolved_local, temp_dirs)."""
-    from .s3 import is_s3_path, S3Client, parse_s3_uri, expand_s3_glob
     import tempfile
     from pathlib import Path
+
+    from .s3 import S3Client, expand_s3_glob, is_s3_path, parse_s3_uri
 
     if not any(is_s3_path(p) for p in paths):
         return paths, []
@@ -256,7 +257,9 @@ def _resolve_audio_paths(paths: List[str], cfg: Any) -> tuple[List[str], List[st
     if base_dir:
         base_dir.mkdir(parents=True, exist_ok=True)
 
-    tmp_dir = Path(tempfile.mkdtemp(prefix="pawn_diarize_queue_", dir=str(base_dir) if base_dir else None))
+    tmp_dir = Path(
+        tempfile.mkdtemp(prefix="pawn_diarize_queue_", dir=str(base_dir) if base_dir else None)
+    )
 
     expanded: List[str] = []
     for path in paths:
@@ -282,6 +285,7 @@ def _resolve_audio_paths(paths: List[str], cfg: Any) -> tuple[List[str], List[st
 
 def _cleanup(temp_dirs: List[str]) -> None:
     import shutil
+
     for d in temp_dirs:
         try:
             shutil.rmtree(d, ignore_errors=True)
@@ -294,11 +298,15 @@ def _run_transcribe_diarize(
 ) -> None:
     import json as _json
     from pathlib import Path as _Path
-    from .combined import transcribe_with_diarization, format_transcript_with_speakers
+
+    from .combined import format_transcript_with_speakers, transcribe_with_diarization
     from .config import DEFAULT_DB_DSN
     from .database import (
-        get_engine, init_db,
-        load_session_state, save_session_state, save_transcription_segments,
+        get_engine,
+        init_db,
+        load_session_state,
+        save_session_state,
+        save_transcription_segments,
     )
 
     audio_paths: List[str] = params.get("audio_paths") or []
@@ -330,7 +338,29 @@ def _run_transcribe_diarize(
 
         if session:
             # load_session_state returns (embeddings, time_cursor, processed_files, segment_count)
-            prior_embeddings, time_cursor, processed_files, prior_segment_count = load_session_state(session, engine)
+            prior_embeddings, time_cursor, processed_files, prior_segment_count = (
+                load_session_state(session, engine)
+            )
+            # Persist notes/screenshots before transcription so a retry of this
+            # message cannot duplicate them, and a later vault push still sees them.
+            try:
+                from datetime import datetime, timezone
+
+                from .session_captures import ingest_session_captures
+
+                ingest_session_captures(
+                    engine,
+                    session,
+                    params,
+                    chunk_audio_start=float(time_cursor),
+                    received_at=datetime.now(timezone.utc),
+                )
+            except Exception as exc:
+                logger.warning(
+                    "session captures ingest failed for %r (non-fatal): %s",
+                    session,
+                    exc,
+                )
 
         result = transcribe_with_diarization(
             audio_path=resolved if len(resolved) > 1 else resolved[0],
@@ -346,17 +376,19 @@ def _run_transcribe_diarize(
             time_cursor=time_cursor,
             transcription_engine=(
                 model_cache.get_transcription_engine(device, backend)
-                if model_cache is not None else None
+                if model_cache is not None
+                else None
             ),
             diarization_engine=(
-                model_cache.get_diarization_engine(device)
-                if model_cache is not None else None
+                model_cache.get_diarization_engine(device) if model_cache is not None else None
             ),
         )
 
         # Save session state
         if session and result:
-            new_processed = processed_files + (resolved if isinstance(resolved, list) else [resolved])
+            new_processed = processed_files + (
+                resolved if isinstance(resolved, list) else [resolved]
+            )
             save_session_state(
                 session,
                 result.get("session_speaker_embeddings") or {},
@@ -365,12 +397,12 @@ def _run_transcribe_diarize(
                 engine,
             )
             if result.get("segments"):
-                save_transcription_segments(result["segments"], session, engine, start_index=prior_segment_count)
+                save_transcription_segments(
+                    result["segments"], session, engine, start_index=prior_segment_count
+                )
 
         # Format and write output
-        text = format_transcript_with_speakers(
-            result, include_timestamps=not no_timestamps
-        )
+        text = format_transcript_with_speakers(result, include_timestamps=not no_timestamps)
         if output:
             out_path = _Path(output)
             out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -382,8 +414,92 @@ def _run_transcribe_diarize(
         else:
             logger.info("Transcript:\n%s", text)
 
+        if session:
+            try:
+                from .session_captures import assign_audio_offsets
+
+                raw_end = result.get("new_time_cursor") if result else None
+                audio_end = float(time_cursor if raw_end is None else raw_end)
+                assign_audio_offsets(
+                    engine,
+                    session,
+                    audio_start=float(time_cursor),
+                    audio_end=audio_end,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "session capture offsets failed for %r (non-fatal): %s",
+                    session,
+                    exc,
+                )
+            try:
+                from pawn_agent.core.screenshot_vision import maybe_summarize_screenshots
+
+                maybe_summarize_screenshots(cfg, session, db_dsn)
+            except Exception as exc:
+                logger.warning(
+                    "screenshot vision failed for %r (non-fatal): %s",
+                    session,
+                    exc,
+                )
+
+            from .vault_transcript import maybe_push_transcript_to_vault
+
+            maybe_push_transcript_to_vault(session, cfg, db_dsn=db_dsn)
+
     finally:
         _cleanup(temps)
+
+
+def _run_push_vault(params: Dict[str, Any], cfg: Any) -> None:
+    from .database import get_engine, init_db
+    from .vault_transcript import (
+        list_session_ids_with_segments,
+        parse_since,
+        push_session_transcript,
+    )
+
+    db_dsn = _resolve_db_dsn(params, cfg)
+    session = params.get("session")
+    all_sessions = bool(params.get("all_sessions", False))
+    latest = bool(params.get("latest", False))
+    since_raw = params.get("since")
+    dry_run = bool(params.get("dry_run", False))
+
+    modes = sum(bool(x) for x in (session, latest, all_sessions, since_raw))
+    if modes != 1:
+        raise ValueError(
+            "push-vault: provide exactly one of session, latest, all_sessions, or since"
+        )
+
+    since_dt = None
+    if since_raw:
+        since_dt = parse_since(str(since_raw))
+
+    engine = get_engine(db_dsn)
+    init_db(engine)
+
+    if session:
+        session_ids = [session]
+    elif latest:
+        session_ids = list_session_ids_with_segments(engine, latest=True)
+    elif since_dt is not None:
+        session_ids = list_session_ids_with_segments(engine, since=since_dt)
+    else:
+        session_ids = list_session_ids_with_segments(engine, latest=False)
+
+    if not session_ids:
+        logger.info("push-vault: no sessions with segments found")
+        return
+
+    for sid in session_ids:
+        status = push_session_transcript(
+            sid,
+            db_dsn=db_dsn,
+            cfg=cfg,
+            dry_run=dry_run,
+        )
+        logger.info("push-vault: %s", status)
 
 
 def _run_transcribe(
@@ -408,6 +524,7 @@ def _run_transcribe(
             engine = model_cache.get_transcription_engine(device, backend)
         else:
             from .transcription import TranscriptionEngine
+
             engine = TranscriptionEngine(device=device, backend=backend)
         results = engine.transcribe(
             resolved,
@@ -448,6 +565,7 @@ def _run_diarize(
             engine = model_cache.get_diarization_engine(device)
         else:
             from .diarization import DiarizationEngine
+
             engine = DiarizationEngine()
         result = engine.diarize(
             resolved,
@@ -488,118 +606,6 @@ def _run_embed(params: Dict[str, Any], cfg: Any) -> None:
         _cleanup(temps)
 
 
-def _run_sync_siyuan(params: Dict[str, Any], cfg: Any) -> None:
-    from .siyuan import (
-        SiyuanClient,
-        SiyuanError,
-        format_session_markdown,
-        resolve_path_template,
-        DEFAULT_PATH_TEMPLATE,
-        DEFAULT_DAILY_PATH_TEMPLATE,
-    )
-    from .database import get_engine, init_db, get_session_analysis
-    from .config import DEFAULT_DB_DSN
-
-    session: Optional[str] = params.get("session")
-    all_sessions: bool = bool(params.get("all_sessions", False))
-    if not session and not all_sessions:
-        raise ValueError("sync-siyuan: 'session' or 'all_sessions': true is required")
-
-    sy_cfg = cfg.get_siyuan_config() or {}
-    resolved_url = params.get("url") or sy_cfg.get("url", "http://127.0.0.1:6806")
-    resolved_token = params.get("token") or sy_cfg.get("token", "")
-    resolved_notebook = params.get("notebook") or sy_cfg.get("notebook", "")
-    resolved_path_tpl = params.get("path_template") or sy_cfg.get("path_template", DEFAULT_PATH_TEMPLATE)
-    resolved_daily_tpl = params.get("daily_path_template") or sy_cfg.get("daily_note_path", DEFAULT_DAILY_PATH_TEMPLATE)
-    daily_note: bool = bool(params.get("daily_note", True))
-
-    if not resolved_notebook:
-        raise ValueError("sync-siyuan: 'notebook' is required (or set siyuan.notebook in .pawn-diarize.yml)")
-
-    db_dsn = _resolve_db_dsn(params, cfg)
-    engine = get_engine(db_dsn)
-    init_db(engine)
-
-    client = SiyuanClient(url=resolved_url, token=resolved_token, notebook_id=resolved_notebook)
-
-    from sqlalchemy.orm import Session as OrmSession
-    from .database import SessionAnalysis
-    from sqlalchemy import select
-
-    with OrmSession(engine) as orm_session:
-        if all_sessions:
-            rows = orm_session.execute(select(SessionAnalysis)).scalars().all()
-            session_ids = list({r.session_id for r in rows})
-        else:
-            session_ids = [session]
-
-    for sid in session_ids:
-        analysis = get_session_analysis(sid, engine)
-        if analysis is None:
-            logger.warning("sync-siyuan: no analysis found for session %r — skipping", sid)
-            continue
-
-        # Load transcript text (same approach as CLI sync_siyuan command)
-        try:
-            from .analysis import AnalysisEngine as _AE
-            transcript = _AE()._load_transcript("", db_dsn=db_dsn, session_id=sid)
-        except Exception:
-            transcript = "_Transcript not available._"
-
-        md = format_session_markdown(
-            title=analysis.title,
-            summary=analysis.summary,
-            key_topics=analysis.key_topics,
-            speaker_highlights=analysis.speaker_highlights,
-            sentiment=analysis.sentiment,
-            sentiment_tags=analysis.sentiment_tags,
-            tags=analysis.tags,
-            session_id=analysis.session_id,
-            source=analysis.source,
-            analyzed_at=analysis.analyzed_at,
-            transcript=transcript,
-            model=getattr(analysis, "model", ""),
-        )
-        doc_path = resolve_path_template(
-            resolved_path_tpl,
-            session_id=sid,
-            title=analysis.title,
-        )
-        attrs: Dict[str, str] = {"custom-pawn-diarize-session": sid}
-        all_tags = list(analysis.tags or []) + list(analysis.sentiment_tags or [])
-        if all_tags:
-            attrs["tags"] = ",".join(all_tags)
-        if getattr(analysis, "model", None):
-            attrs["custom-model"] = analysis.model
-
-        doc_id = client.upsert_session_doc(
-            notebook=resolved_notebook,
-            path=doc_path,
-            markdown=md,
-            attrs=attrs,
-        )
-        logger.info("sync-siyuan: synced session %r → %s (doc_id=%s)", sid, doc_path, doc_id)
-
-        if daily_note and resolved_daily_tpl:
-            try:
-                from datetime import datetime, timezone
-                daily_path = resolve_path_template(
-                    resolved_daily_tpl,
-                    session_id=sid,
-                    title=None,
-                    now=datetime.now(timezone.utc),
-                )
-                client.append_daily_note_link(
-                    notebook=resolved_notebook,
-                    daily_path=daily_path,
-                    doc_id=doc_id,
-                    title=analysis.title or sid,
-                )
-                logger.info("sync-siyuan: backlink added to daily note %s", daily_path)
-            except Exception as exc:
-                logger.warning("sync-siyuan: could not write daily note backlink: %s", exc)
-
-
 # ──────────────────────────────────────────────────────────────────────────────
 # Message handler
 # ──────────────────────────────────────────────────────────────────────────────
@@ -622,15 +628,21 @@ def _resolve_chain_cfg(
 
     if msg_override is False or str(msg_override).lower() == "false":
         return None
+    if isinstance(msg_override, dict):
+        return {
+            "prompt": msg_override.get("prompt")
+            or config_chain.get("prompt", "Analyze this session."),
+            "command": msg_override.get("command") or config_chain.get("command") or "run",
+        }
     if not msg_override and not config_chain.get("enabled"):
         return None
 
     prompt = (
         msg_override
         if isinstance(msg_override, str)
-        else config_chain.get("prompt", "Analyze this session and save the analysis to SiYuan.")
+        else config_chain.get("prompt", "Analyze this session.")
     )
-    return {"prompt": prompt}
+    return {"prompt": prompt, "command": config_chain.get("command") or "run"}
 
 
 def make_message_handler(
@@ -695,9 +707,7 @@ def make_message_handler(
         command: Optional[str] = payload.pop("command", None)
 
         if not command:
-            logger.error(
-                "Message %s has no 'command' key — sending to dead-letter", msg.id
-            )
+            logger.error("Message %s has no 'command' key — sending to dead-letter", msg.id)
             await msg.nack()
             return
 
@@ -726,31 +736,35 @@ def make_message_handler(
                 queue_cfg = cfg.get_queue_config() or {}
                 chain_cfg = _resolve_chain_cfg(params, queue_cfg)
                 if chain_cfg and session:
+                    command_name = chain_cfg.get("command") or "run"
                     agent_payload = {
-                        "command": "run",
+                        "command": command_name,
                         "session_id": session,
-                        "prompt": chain_cfg["prompt"],
                     }
+                    if command_name == "run":
+                        agent_payload["prompt"] = chain_cfg["prompt"]
                     try:
                         await publisher.publish(agent_topic, agent_payload)
                         logger.info(
                             "Chained agent job for session %r on topic %r",
-                            session, agent_topic,
+                            session,
+                            agent_topic,
                         )
                     except Exception as chain_exc:
                         # Diarize job already succeeded — log but don't nack
                         logger.error(
                             "Failed to publish agent chain job for session %r: %s",
-                            session, chain_exc,
+                            session,
+                            chain_exc,
                         )
                 elif chain_cfg and not session:
-                    logger.debug(
-                        "chain_agent is enabled but message has no 'session' — skipping"
-                    )
+                    logger.debug("chain_agent is enabled but message has no 'session' — skipping")
 
         except Exception as exc:
             logger.error(
-                "Message %s failed: %s — sending to dead-letter", msg.id, exc,
+                "Message %s failed: %s — sending to dead-letter",
+                msg.id,
+                exc,
                 exc_info=True,
             )
             await msg.nack()
@@ -791,9 +805,7 @@ async def start_listener(
     try:
         from pawn_queue import PawnQueueBuilder
     except ImportError as exc:
-        raise ImportError(
-            "pawn-queue is not installed. Run: uv pip install pawn-queue"
-        ) from exc
+        raise ImportError("pawn-queue is not installed. Run: uv pip install pawn-queue") from exc
 
     queue_cfg: Optional[Dict[str, Any]] = cfg.get_queue_config()
     if queue_cfg is None:
@@ -834,25 +846,27 @@ async def start_listener(
     )
 
     if polling_section:
-        builder = builder.polling(**{
-            k: v for k, v in polling_section.items()
-            if k in (
-                "interval_seconds",
-                "max_messages_per_poll",
-                "visibility_timeout_seconds",
-                "lease_refresh_interval_seconds",
-                "jitter_max_ms",
-            )
-        })
+        builder = builder.polling(
+            **{
+                k: v
+                for k, v in polling_section.items()
+                if k
+                in (
+                    "interval_seconds",
+                    "max_messages_per_poll",
+                    "visibility_timeout_seconds",
+                    "lease_refresh_interval_seconds",
+                    "jitter_max_ms",
+                )
+            }
+        )
 
     if concurrency_section.get("strategy"):
         builder = builder.concurrency(strategy=concurrency_section["strategy"])
 
     # Model idle timeout: release loaded engines after N minutes of inactivity.
     # Configured under models.model_idle_timeout_minutes in pawnai.yaml.
-    model_idle_timeout_minutes: float = float(
-        cfg.get("model_idle_timeout_minutes", 10)
-    )
+    model_idle_timeout_minutes: float = float(cfg.get("model_idle_timeout_minutes", 10))
     model_idle_timeout_seconds: float = model_idle_timeout_minutes * 60.0
     model_cache = ModelCache()
 
@@ -881,15 +895,11 @@ async def start_listener(
         if chain_section.get("enabled"):
             agent_queue_cfg: Dict[str, Any] = cfg.get("agent_queue") or {}
             agent_topic_for_chain = (
-                chain_section.get("topic")
-                or agent_queue_cfg.get("topic")
-                or "pawn-agent-jobs"
+                chain_section.get("topic") or agent_queue_cfg.get("topic") or "pawn-agent-jobs"
             )
             try:
                 await pq.create_topic(agent_topic_for_chain)
-                logger.info(
-                    "chain_agent enabled — agent topic %r ready", agent_topic_for_chain
-                )
+                logger.info("chain_agent enabled — agent topic %r ready", agent_topic_for_chain)
             except Exception as exc:
                 logger.warning(
                     "Could not create agent chain topic %r: %s", agent_topic_for_chain, exc
@@ -897,9 +907,7 @@ async def start_listener(
 
         consumer = await pq.register_consumer(consumer_name, topics=[topic])
         producer = (
-            await pq.register_producer(f"{consumer_name}-chain")
-            if agent_topic_for_chain
-            else None
+            await pq.register_producer(f"{consumer_name}-chain") if agent_topic_for_chain else None
         )
         handler = make_message_handler(
             cfg,
@@ -911,7 +919,9 @@ async def start_listener(
 
         logger.info("Listening on topic %r as consumer %r …", topic, consumer_name)
         try:
-            await consumer.listen(handler)
+            from pawn_core.queue_control import listen_respecting_pause  # noqa: PLC0415
+
+            await listen_respecting_pause(consumer, handler, pq._client, topic)
         except asyncio.CancelledError:
             logger.info("Listener cancelled — shutting down cleanly")
             model_cache.release()

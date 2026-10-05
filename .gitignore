@@ -241,3 +241,17 @@ hf_cache
 mlflow.db
 
 temp
+
+.stdix
+# sallm local agent state (SQLite + Lance)
+.sallm/
+
+# Matrix nio E2EE device store
+.matrix-store/
+
+# Self-signed TLS material (make ssl-cert)
+certs/
+
+# Obsidian plugin build
+obsidian-plugin/**/node_modules/
+obsidian-plugin/**/main.js.map

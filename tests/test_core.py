@@ -1,8 +1,9 @@
 """Tests for core diarization functionality."""
 
 import pytest
-from pawn_diarize.core.diarization import DiarizationEngine
+
 from pawn_diarize.core.config import Config
+from pawn_diarize.core.diarization import DiarizationEngine
 
 
 def test_diarization_engine_initialization():
@@ -17,7 +18,7 @@ def test_diarization_engine_device():
     # Test auto-detection
     engine_auto = DiarizationEngine(device="auto")
     assert engine_auto.device is not None
-    
+
     # Test CPU device
     engine_cpu = DiarizationEngine(device="cpu")
     assert engine_cpu.device.type == "cpu"

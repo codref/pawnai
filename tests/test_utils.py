@@ -1,8 +1,10 @@
 """Tests for utility functions."""
 
-import pytest
-from pawn_diarize.utils import find_audio_files, validate_audio_file
 from pathlib import Path
+
+import pytest
+
+from pawn_diarize.utils import find_audio_files, validate_audio_file
 
 
 def test_validate_audio_file_wav(tmp_path):
@@ -30,7 +32,7 @@ def test_find_audio_files(tmp_path):
     (tmp_path / "audio1.wav").write_text("dummy")
     (tmp_path / "audio2.mp3").write_text("dummy")
     (tmp_path / "not_audio.txt").write_text("dummy")
-    
+
     files = find_audio_files(str(tmp_path))
     assert len(files) == 2
     assert any("audio1.wav" in f for f in files)

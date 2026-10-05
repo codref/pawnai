@@ -1,28 +1,39 @@
 """Queue listener for pawn-server.
 
 Consumes messages from a pawn-queue S3-backed topic and dispatches them
-to the PydanticAgent.  Results are persisted in the ``agent_runs`` table
-so they can be inspected later (the listener is headless — no terminal).
+to registered command handlers.  Results are persisted in the
+``agent_runs`` table so they can be inspected later (the listener is
+headless — no terminal).
 
-Message format::
+Message format (published by pawn-diarize ``chain_agent``)::
 
     {
         "command": "run",
-        "prompt": "Summarise session abc123 and push to SiYuan",
-        "session_id": "abc123",   // optional
-        "model": "openai:gpt-4o"  // optional
+        "prompt": "Summarise session abc123",
+        "session_id": "abc123",   // required — diarization session name
+        "model": "openai:gpt-4o"  // optional per-message override
     }
+
+The ``session_id`` is the diarization session name (not a conversation UUID).
+It is passed directly to the sallm registry so that agent tools such as
+``session_transcript`` can look up the correct transcript in the database.
+Subsequent ``run`` messages for the same session continue the same
+sallm conversation context.
 """
 
 from __future__ import annotations
 
 import asyncio
 import logging
-import uuid
-from copy import deepcopy
 from typing import Any, Callable, Coroutine, Dict, Optional
 
+from pawn_agent.core.agent_runner import run_agent_turn
+from pawn_agent.core.sallm_registry import SallmSessionRegistry
+
 logger = logging.getLogger(__name__)
+
+# Module-level registry — one sallm session per diarization session_id.
+_registry = SallmSessionRegistry()
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Per-command defaults
@@ -30,25 +41,21 @@ logger = logging.getLogger(__name__)
 
 COMMAND_DEFAULTS: Dict[str, Dict[str, Any]] = {
     "run": {
-        "prompt": "",       # required — producer MUST supply
+        "prompt": None,
         "session_id": None,
         "model": None,
+        "parent_run_id": None,
+        "depth": 0,
+        "event_id": None,
     },
+    "vault_run": {
+        "prompt": None,
+        "session_id": None,
+        "model": None,
+        "request_id": None,
+    },
+    "session_completed": {"session_id": None},
 }
-
-
-def _history_mode(cfg: Any) -> str:
-    return getattr(cfg, "history_mode", "raw")
-
-
-def _history_kwargs(cfg: Any) -> Dict[str, Any]:
-    return {
-        "strip_thinking": getattr(cfg, "strip_thinking", True),
-        "recent_turns": getattr(cfg, "history_recent_turns", 4),
-        "replay_max_tokens": getattr(cfg, "history_replay_max_tokens", 8000),
-        "max_text_chars": getattr(cfg, "history_max_text_chars", 500),
-        "sanitize_leaked_thoughts": getattr(cfg, "history_sanitize_leaked_thoughts", True),
-    }
 
 
 def _merge_params(command: str, payload: Dict[str, Any]) -> Dict[str, Any]:
@@ -56,6 +63,50 @@ def _merge_params(command: str, payload: Dict[str, Any]) -> Dict[str, Any]:
     merged = dict(COMMAND_DEFAULTS[command])
     merged.update(payload)
     return merged
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# "run" handler
+# ──────────────────────────────────────────────────────────────────────────────
+
+
+async def _run_sallm(
+    params: Dict[str, Any],
+    cfg: Any,
+    message_id: Optional[str] = None,
+    *,
+    command: str = "run",
+    source: str = "queue",
+) -> None:
+    """Execute a ``run`` / ``vault_run`` command via the sallm session registry.
+
+    Creates an ``agent_runs`` row immediately (so every attempt is tracked),
+    then validates required fields.  On any failure the row is marked *failed*
+    and the exception re-raised so the caller can nack the message.
+    """
+    prompt: Optional[str] = params.get("prompt") or None
+    session_id: Optional[str] = params.get("session_id") or None
+    model: Optional[str] = params.get("model") or None
+    parent = params.get("parent_run_id") or None
+    event_id = params.get("event_id") or None
+    try:
+        depth = int(params.get("depth") or 0)
+    except (TypeError, ValueError):
+        depth = 0
+
+    await run_agent_turn(
+        cfg=cfg,
+        registry=_registry,
+        message_id=message_id,
+        source=source,
+        command=command,
+        prompt=prompt,
+        session_id=session_id,
+        model=model,
+        parent_run_id=parent,
+        depth=depth,
+        event_id=event_id,
+    )
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -71,122 +122,82 @@ async def dispatch(
 ) -> None:
     """Route *command* to the correct handler.
 
-    Heavy work runs in a thread executor to avoid blocking the event loop.
+    Raises :class:`ValueError` for any command not registered in
+    :data:`COMMAND_DEFAULTS`.
     """
-    if command != "run":
+    if command not in COMMAND_DEFAULTS:
         raise ValueError(f"Unsupported command: {command!r}")
 
-    loop = asyncio.get_running_loop()
-    await loop.run_in_executor(None, _run_prompt, params, cfg, message_id)
+    if command == "run":
+        await _run_sallm(params, cfg, message_id, command="run", source="queue")
+        return
+    if command == "vault_run":
+        await _run_sallm(params, cfg, message_id, command="vault_run", source="vault")
+        return
+    if command == "session_completed":
+        await _session_completed(params, cfg)
+        return
+
+    raise NotImplementedError(f"Command {command!r} has no handler registered")
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# Runners
-# ──────────────────────────────────────────────────────────────────────────────
+def _reject_self_run(cfg: Any, params: Dict[str, Any]) -> Optional[str]:
+    """Return a policy reason when a child run must be dropped."""
+    parent = params.get("parent_run_id")
+    if not parent:
+        return None
+    from datetime import datetime, timedelta, timezone  # noqa: PLC0415
 
-# Cache agents by (model, session_id) so session variables remain isolated.
-_agent_cache: Dict[tuple[str, Optional[str]], Any] = {}
+    from pawn_agent.core.coworker import db as itemdb  # noqa: PLC0415
+    from pawn_agent.core.coworker.autonomy import reject_reason  # noqa: PLC0415
 
-
-def _get_or_create_agent(
-    cfg: Any,
-    model_override: Optional[str] = None,
-    *,
-    session_id: Optional[str] = None,
-) -> Any:
-    """Return a cached PydanticAgent, creating one if needed.
-
-    Session-bound agents are required for session variable persistence
-    (e.g. ``listen_only``) because :class:`SessionVars` persists only when
-    instantiated with a session id.
-    """
-    from pawn_agent.core.pydantic_agent import PydanticAgent  # noqa: PLC0415
-
-    model_key = model_override or cfg.pydantic_model
-    cache_key = (model_key, session_id)
-
-    if cache_key not in _agent_cache:
-        agent_cfg = cfg
-        if model_override:
-            from pawn_agent.utils.model_utils import _apply_model_override  # noqa: PLC0415
-
-            agent_cfg = deepcopy(cfg)
-            _apply_model_override(agent_cfg, model_override)
-        _agent_cache[cache_key] = PydanticAgent(cfg=agent_cfg, session_id=session_id)
-
-    return _agent_cache[cache_key]
-
-
-def _run_prompt(
-    params: Dict[str, Any],
-    cfg: Any,
-    message_id: Optional[str] = None,
-) -> None:
-    """Execute a prompt through the PydanticAgent and persist the result."""
-    from pawn_agent.utils.db import create_agent_run, update_agent_run  # noqa: PLC0415
-    from pawn_agent.core.session_store import append_turn, build_replay_history, load_history  # noqa: PLC0415
-
-    prompt: str = params.get("prompt", "")
-    session_id: Optional[str] = params.get("session_id")
-    model_override: Optional[str] = params.get("model")
-
-    effective_model = model_override or cfg.pydantic_model
-
-    # Create a history record before any validation so every message is traceable
-    run_id = create_agent_run(
-        cfg.db_dsn,
-        message_id=message_id,
-        command="run",
-        prompt=prompt,
-        session_id=session_id,
-        model=effective_model,
-    )
-
-    if not prompt:
-        update_agent_run(
-            cfg.db_dsn,
-            run_id,
-            "failed",
-            error="Message is missing required 'prompt' field",
-        )
-        raise ValueError("Message is missing required 'prompt' field")
-
-    # Mark as running
-    update_agent_run(cfg.db_dsn, run_id, "running")
-
-    # Prepend session hint so the agent can locate the right conversation
-    effective_prompt = prompt
-    if session_id:
-        effective_prompt = f"[Session ID: {session_id}]\n{prompt}"
-
-    # Load conversation history from the session store
-    if _history_mode(cfg) == "raw":
-        history = load_history(
-            session_id or "",
-            cfg.db_dsn,
-            strip_thinking=getattr(cfg, "strip_thinking", True),
-        )
-    else:
-        history = build_replay_history(
-            session_id or "",
-            cfg.db_dsn,
-            **_history_kwargs(cfg),
-        )
-
+    autonomy = cfg.coworker.autonomy
     try:
-        agent = _get_or_create_agent(cfg, model_override, session_id=session_id)
-        result = agent.run_sync(effective_prompt, message_history=history)
-        response = result.output
+        depth = int(params.get("depth") or 0)
+    except (TypeError, ValueError):
+        depth = 0
+    event_id = params.get("event_id") or ""
+    event_count = itemdb.count_runs_for_event(cfg.db_dsn, event_id) if event_id else 0
+    day_count = itemdb.count_self_runs_since(
+        cfg.db_dsn, datetime.now(timezone.utc) - timedelta(days=1)
+    )
+    duplicate = itemdb.recent_duplicate_run(
+        cfg.db_dsn, str(params.get("prompt") or ""), str(params.get("session_id") or "")
+    )
+    reason = reject_reason(
+        depth=depth,
+        event_count=event_count,
+        day_count=day_count,
+        max_depth=int(autonomy.max_depth),
+        max_per_event=int(autonomy.max_self_jobs_per_event),
+        max_per_day=int(autonomy.max_self_jobs_per_day),
+        duplicate=duplicate,
+    )
+    if reason:
+        try:
+            itemdb.record_decision(
+                cfg.db_dsn,
+                event_kind="self_queue",
+                policy_decision="deny",
+                event_id=event_id or None,
+                proposed_action=str(params.get("prompt") or "")[:500],
+                outcome=reason,
+            )
+        except Exception as exc:
+            logger.warning("could not record self-queue denial: %s", exc)
+    return reason
 
-        # Persist this turn — idempotent via source_id = message_id
-        source_id = message_id or str(uuid.uuid4())
-        append_turn(source_id, session_id or "", list(result.new_messages()), cfg.db_dsn)
 
-        update_agent_run(cfg.db_dsn, run_id, "completed", response=response)
-        logger.info("Run %s completed (%d chars)", run_id, len(response))
-    except Exception as exc:
-        update_agent_run(cfg.db_dsn, run_id, "failed", error=str(exc))
-        raise
+async def _session_completed(params: Dict[str, Any], cfg: Any) -> None:
+    session_id = params.get("session_id") or None
+    if not session_id:
+        raise ValueError("session_completed requires session_id")
+    if not getattr(cfg.coworker, "enabled", False):
+        logger.info("session_completed for %s ignored; coworker disabled", session_id)
+        return
+    from pawn_agent.core.coworker.pipeline import process_session  # noqa: PLC0415
+
+    await process_session(cfg, session_id)
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -210,9 +221,7 @@ def make_message_handler(
         command: Optional[str] = payload.pop("command", None)
 
         if not command:
-            logger.error(
-                "Message %s has no 'command' key — sending to dead-letter", msg.id
-            )
+            logger.error("Message %s has no 'command' key — sending to dead-letter", msg.id)
             await msg.nack()
             return
 
@@ -229,13 +238,22 @@ def make_message_handler(
         params = _merge_params(command, payload)
         logger.info("Processing message %s: command=%r", msg.id, command)
 
+        if command == "run":
+            reason = _reject_self_run(cfg, params)
+            if reason:
+                logger.info("Message %s dropped by coworker policy: %s", msg.id, reason)
+                await msg.ack()
+                return
+
         try:
             await dispatch(command, params, cfg, message_id=msg.id)
             logger.info("Message %s completed successfully — ack", msg.id)
             await msg.ack()
         except Exception as exc:
             logger.error(
-                "Message %s failed: %s — sending to dead-letter", msg.id, exc,
+                "Message %s failed: %s — sending to dead-letter",
+                msg.id,
+                exc,
                 exc_info=True,
             )
             await msg.nack()
@@ -268,9 +286,7 @@ async def start_listener(
     try:
         from pawn_queue import PawnQueueBuilder
     except ImportError as exc:
-        raise ImportError(
-            "pawn-queue is not installed. Run: uv pip install pawn-queue"
-        ) from exc
+        raise ImportError("pawn-queue is not installed. Run: uv pip install pawn-queue") from exc
 
     queue_cfg: Optional[Dict[str, Any]] = cfg.queue_config
     if queue_cfg is None:
@@ -308,16 +324,20 @@ async def start_listener(
     )
 
     if polling_section:
-        builder = builder.polling(**{
-            k: v for k, v in polling_section.items()
-            if k in (
-                "interval_seconds",
-                "max_messages_per_poll",
-                "visibility_timeout_seconds",
-                "lease_refresh_interval_seconds",
-                "jitter_max_ms",
-            )
-        })
+        builder = builder.polling(
+            **{
+                k: v
+                for k, v in polling_section.items()
+                if k
+                in (
+                    "interval_seconds",
+                    "max_messages_per_poll",
+                    "visibility_timeout_seconds",
+                    "lease_refresh_interval_seconds",
+                    "jitter_max_ms",
+                )
+            }
+        )
 
     if concurrency_section.get("strategy"):
         builder = builder.concurrency(strategy=concurrency_section["strategy"])
@@ -342,6 +362,8 @@ async def start_listener(
 
         logger.info("Listening on topic %r as consumer %r …", topic, consumer_name)
         try:
-            await consumer.listen(handler)
+            from pawn_core.queue_control import listen_respecting_pause  # noqa: PLC0415
+
+            await listen_respecting_pause(consumer, handler, pq._client, topic)
         except asyncio.CancelledError:
             logger.info("Listener cancelled — shutting down cleanly")

@@ -33,8 +33,34 @@ Useful for local development; not recommended in production.
 | `POST` | `/knowledge` | Index content into the RAG store |
 | `DELETE` | `/sessions/{session_id}` | Clear a session's conversation history |
 | `GET` | `/health` | Liveness probe (no auth) |
-| `GET` | `/docs` | Swagger UI |
-| `GET` | `/openapi.json` | OpenAPI spec |
+| `GET` | `/docs` | Swagger UI (disabled when `api.enable_docs: false`) |
+| `GET` | `/openapi.json` | OpenAPI spec (disabled when `api.enable_docs: false`) |
+
+When exposing port 8000 beyond localhost, set `api.enable_docs: false`.  The
+server also auto-blacklists client IPs after repeated 401s or 404s (scan
+symptom); manage the list with `pawn-server blacklist list|add|remove|clear`.
+Whitelist trusted peers via `api.whitelist_ips` (defaults to loopback).
+
+Behind a reverse proxy, set `api.trust_proxy: true` and list the proxy peer in
+`api.trusted_proxies` (defaults to loopback).  Only then are `X-Real-IP` /
+`X-Forwarded-For` used for blacklist decisions; leave `trust_proxy` false when
+clients connect to pawn-server directly.
+
+### TLS (direct HTTPS)
+
+When there is no reverse proxy terminating TLS, set both paths (or use the
+CLI flags).  Create a self-signed pair with `make ssl-cert`:
+
+```yaml
+api:
+  ssl_certfile: certs/cert.pem
+  ssl_keyfile: certs/key.pem
+```
+
+```bash
+make ssl-cert
+pawn-server serve --ssl-certfile certs/cert.pem --ssl-keyfile certs/key.pem
+```
 
 ---
 
@@ -132,7 +158,7 @@ def chat(prompt: str) -> str:
     return r.choices[0].message.content
 
 print(chat("Summarise session abc123"))
-print(chat("Now save that summary to SiYuan under 'Meetings/2026'"))
+print(chat("Now save that summary to Obsidian vault under 'Meetings/2026'"))
 ```
 
 ### curl example
@@ -293,8 +319,10 @@ Content-Type: application/json
 Authorization: Bearer <token>
 ```
 
-Indexes content into the pgvector RAG store for use by the agent's
-`search_knowledge` tool.
+Indexes content into the pgvector RAG store (legacy HTTP helper). The chat
+agent no longer exposes a `search_knowledge` CliTool — durable chat memory
+is handled by sallm (SQLite + Lance). Prefer `Agent.remember` / retrieval
+for conversational recall.
 
 ```json
 { "text": "Inline plain text to index..." }
@@ -303,10 +331,10 @@ Indexes content into the pgvector RAG store for use by the agent's
 { "session_id": "abc123" }
 ```
 ```json
-{ "siyuan_path": "/Meetings/2026/april" }
+{ "vault_path": "/Meetings/2026/april" }
 ```
 
-Exactly one of `text`, `session_id`, or `siyuan_path` must be set.
+Exactly one of `text`, `session_id`, or `vault_path` must be set.
 
 Response: `{"chunks": 12, "message": "Indexed 12 chunks from inline text."}`
 

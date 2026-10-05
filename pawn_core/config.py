@@ -1,7 +1,7 @@
 """Shared configuration base for pawn_diarize and pawn_agent.
 
 Both apps subclass :class:`PawnConfig` and add their own fields.
-All common sections (models, device, s3, siyuan, rag) are defined here so the
+All common sections (models, device, s3, rag) are defined here so the
 same ``pawnai.yaml`` drives both without duplicated parsing code.
 
 Source priority (highest → lowest):
@@ -32,7 +32,6 @@ from typing import Literal, Optional
 from pydantic import AliasChoices, BaseModel, Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict, YamlConfigSettingsSource
 
-
 # ── Section models ─────────────────────────────────────────────────────────────
 
 
@@ -47,9 +46,11 @@ class ModelsConfig(BaseModel):
     hf_token: Optional[str] = None
     hf_cache_dir: Optional[str] = None  # override HF_HUB_CACHE; applies to all HF model downloads
     model_idle_timeout_minutes: float = 10.0
-    tts_language: str = "en"           # BCP-47 code, e.g. "en", "it", "fr"
-    tts_voice: str = "af_heart"        # Kokoro voice ID or OpenAI alias
-    tts_device: Optional[str] = None  # None → fall back to global device.type; use "cpu" if CUDA unavailable
+    tts_language: str = "en"  # BCP-47 code, e.g. "en", "it", "fr"
+    tts_voice: str = "af_heart"  # Kokoro voice ID or OpenAI alias
+    tts_device: Optional[str] = (
+        None  # None → fall back to global device.type; use "cpu" if CUDA unavailable
+    )
     tts_idle_timeout_minutes: float = 10.0
 
     @model_validator(mode="after")
@@ -79,6 +80,7 @@ class DeviceConfig(BaseModel):
             return self.type
         try:
             import torch  # noqa: PLC0415
+
             return "cuda" if torch.cuda.is_available() else "cpu"
         except ImportError:
             return "cpu"
@@ -97,14 +99,48 @@ class S3Config(BaseModel):
     path_style: bool = True
 
 
-class SiYuanConfig(BaseModel):
-    """SiYuan Notes API settings."""
+class VaultS3Config(BaseModel):
+    """Dedicated S3 credentials for the Obsidian notes vault.
 
-    url: str = "http://127.0.0.1:6806"
-    token: str = ""
-    notebook: str = ""
-    path_template: str = "/Conversations/{date}/{session_id}/{title}"
-    daily_note_path: str = "/daily note/{year}/{month}/{date}"
+    Always separate from the top-level ``s3:`` queue/audio bucket. Env:
+    ``PAWN_VAULT__S3__BUCKET``, ``PAWN_VAULT__S3__ACCESS_KEY``, etc.
+    """
+
+    bucket: str = ""
+    endpoint_url: Optional[str] = None
+    access_key: Optional[str] = None
+    secret_key: Optional[str] = None
+    region: Optional[str] = None
+    prefix: str = ""
+    verify_ssl: bool = True
+    path_style: bool = True
+
+
+class VaultConfig(BaseModel):
+    """Markdown notes vault on a dedicated S3 bucket (Obsidian Sync Engine)."""
+
+    s3: VaultS3Config = Field(default_factory=VaultS3Config)
+    agent_root: str = "Pawn"
+    transcript_path_template: str = "{agent_root}/Transcripts/{date} {session_id}.md"
+    analysis_path_template: str = "{agent_root}/Analyses/{session_id}.md"
+    task_path_template: str = "{agent_root}/Tasks/{id}.md"
+    notes_path_template: str = "{agent_root}/Notes/{title}.md"
+    daily_note_path: Optional[str] = None
+    auto_push_transcript: bool = False
+    # When true, transcribe-diarize asks the background model to describe
+    # screenshot changes. Set false (PAWN_VAULT__SCREENSHOT_VISION=false) to
+    # keep the files and summarize later with session_screenshots --summarize.
+    screenshot_vision: bool = True
+    obsidian_vault_name: str = ""
+
+    @property
+    def bucket(self) -> str:
+        """S3 bucket name (shortcut for ``s3.bucket``)."""
+        return self.s3.bucket or ""
+
+    @property
+    def prefix(self) -> str:
+        return self.s3.prefix or ""
 
 
 class RagConfig(BaseModel):
@@ -153,13 +189,13 @@ class PawnConfig(BaseSettings):
     )
 
     db_dsn: str = Field(
-        default="postgresql+psycopg://postgres:postgres@localhost:5432/pawnai",
-        validation_alias=AliasChoices("PAWN_DB_DSN", "DATABASE_URL"),
+        default="postgresql+psycopg://postgres:postgres@localhost:5433/pawnai",
+        validation_alias=AliasChoices("PAWN_DB_DSN", "DATABASE_URL", "db_dsn"),
     )
     models: ModelsConfig = Field(default_factory=ModelsConfig)
     device: DeviceConfig = Field(default_factory=DeviceConfig)
     s3: Optional[S3Config] = None
-    siyuan: SiYuanConfig = Field(default_factory=SiYuanConfig)
+    vault: VaultConfig = Field(default_factory=VaultConfig)
     rag: RagConfig = Field(default_factory=RagConfig)
     logging: LoggingConfig = Field(default_factory=LoggingConfig)
 

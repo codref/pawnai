@@ -1,6 +1,6 @@
 # PawnAI
 
-A Python monolith for speaker diarization, audio transcription, and LLM-powered conversation analysis. Provides two CLI applications: **pawn-diarize** for audio processing and embedding management, and **pawn-agent** for conversational analysis of recorded sessions.
+A Python monolith for speaker diarization, audio transcription, and LLM-powered conversation analysis. Provides three CLI applications: **pawn-diarize** for audio processing and embedding management, **pawn-agent** for conversational analysis of recorded sessions, and **pawn-server** for the HTTP API, queue listener, durable agent scheduler, and optional Matrix bot.
 
 ## Features
 
@@ -12,10 +12,11 @@ A Python monolith for speaker diarization, audio transcription, and LLM-powered 
 - **Speaker Embeddings**: Extract and store 512-dim speaker vectors in PostgreSQL with pgvector
 - **Conversation Analysis**: Generate titles, summaries, key topics, sentiment, and per-speaker highlights
 - **Knowledge Graph Extraction**: Extract semantic triples (subject, relation, object) from transcripts
-- **RAG Index**: Embed transcripts and SiYuan notes for semantic similarity search
+- **RAG Index**: Embed transcripts and Obsidian vault notes for semantic similarity search
 - **S3 Storage Management**: List, filter, and delete objects in S3-compatible storage
-- **SiYuan Notes Integration**: Push analysis documents back to a SiYuan Notes instance
+- **Obsidian vault**: S3 Markdown vault (Sync Engine) for transcripts, analyses, and agent tasks — see `docs/OBSIDIAN_AGENT.md`
 - **Background Queue Worker**: S3-backed job queue with lease-based concurrency
+- **Durable Agent Scheduler**: Store scheduled agent prompts in PostgreSQL and run them from pawn-server
 - **GPU Support**: Accelerated processing on CUDA-enabled devices
 
 ## Installation
@@ -46,6 +47,7 @@ alembic upgrade head
 
 All settings live in `pawnai.yaml` (auto-discovered in the current directory, or passed via `--config`).
 Precedence: **CLI flags → `pawnai.yaml` → environment variables → defaults**.
+See `pawnai.example.yaml` for a full commented configuration with every supported section.
 
 ```yaml
 models:
@@ -71,11 +73,13 @@ s3:
   verify_ssl: true
   path_style: true
 
-siyuan:
-  url: http://localhost:6806
-  token: your-siyuan-token
-  notebook: Meetings
-  path_template: "/conversations/{date}/{session_id}/{title}"  # child page per analysis
+queue_producers:
+  matrix:
+    topic: matrix-jobs
+    bucket_name: my-audio-bucket
+  downstream:
+    topic: downstream-jobs
+    bucket_name: my-audio-bucket
 
 agent:
   name: Bob
@@ -92,10 +96,18 @@ rag:
   embed_dim: 1024
   embed_device: cpu
 
-queue:
-  topic: pawn-jobs
-  consumer_name: worker-1
+agent_queue:
+  topic: pawn-agent-jobs
+  consumer_name: pawn-agent-listener
   bucket_name: my-audio-bucket
+
+agent_scheduler:
+  enabled: true
+  poll_interval_seconds: 30
+  max_due_per_tick: 5
+  default_timezone: UTC
+  stale_fire_after_seconds: 3600
+  allow_agent_auto_apply: false
 ```
 
 ---
@@ -252,16 +264,45 @@ pawn-diarize label --list
 
 #### `session-relabel`
 
-Bulk-rename a mis-identified speaker across an entire session.
+Bulk-rename a mis-identified speaker across an entire session. Accepts a raw
+`SPEAKER_XX` label or a wrong display name; updates transcript segments,
+`speaker_names` (so future embedding matches resolve correctly), and
+`session_state` prior-speaker keys.
 
 ```bash
 pawn-diarize session-relabel --session SESSION_ID --from OLD_NAME --to NEW_NAME [OPTIONS]
 
 Options:
-  --yes, -y    Skip confirmation prompt
+  --yes, -y         Skip confirmation prompt
+  --push-vault      Force create/update the vault Speakers+Transcript note
   --db-dsn TEXT
   --config TEXT
 ```
+
+```bash
+pawn-diarize session-relabel --session my-session --from SPEAKER_00 --to Davide --yes
+pawn-diarize session-relabel --session my-session -F SPEAKER_00 -T Davide --yes --push-vault
+```
+
+The agent exposes the same operation as the `session_relabel` CliTool.
+Existing vault Speakers+Transcript notes refresh automatically; `--push-vault`
+creates the note when no `vault_notes` mapping exists yet.
+
+#### `push-vault`
+
+Project a session transcript into the S3 Obsidian vault as a stable Markdown
+note (`Pawn/Transcripts/…`). Speakers and Transcript are overwritten on each
+push; Annotations are preserved. Opt-in auto-push after each
+`transcribe-diarize` chunk with `vault.auto_push_transcript: true`.
+
+```bash
+pawn-diarize push-vault --latest
+pawn-diarize push-vault --session myconv
+pawn-diarize push-vault --since 2026-09-01
+pawn-diarize push-vault --all --dry-run
+```
+
+See `docs/OBSIDIAN_AGENT.md`.
 
 #### `session-info`
 
@@ -284,25 +325,6 @@ Options:
   --tail INT        Show last N segments
   --output TEXT     Save output to file
   --config TEXT     Path to pawnai.yaml
-```
-
-#### `sync-siyuan`
-
-Push a session's analysis to a SiYuan Notes instance as a new document.
-
-```bash
-pawn-diarize sync-siyuan [OPTIONS]
-
-Options:
-  --session TEXT          Session ID to sync
-  --all                   Sync all sessions with stored analysis
-  --notebook TEXT         Target SiYuan notebook
-  --token TEXT            SiYuan API token
-  --url TEXT              SiYuan instance URL
-  --path-template TEXT    Document path template
-  --daily-note            Insert into today's daily note
-  --db-dsn TEXT
-  --config TEXT
 ```
 
 #### `s3 ls`
@@ -361,7 +383,7 @@ pawn-diarize s3 rm --older-than 90 --prefix recordings/ --yes
 
 #### `listen`
 
-Background worker that polls a pawn-queue topic and executes jobs (transcribe-diarize, transcribe, diarize, embed, analyze, sync-siyuan).
+Background worker that polls a pawn-queue topic and executes jobs (transcribe-diarize, transcribe, diarize, embed, analyze).
 
 ```bash
 pawn-diarize listen [OPTIONS]
@@ -401,39 +423,32 @@ Tools are **auto-discovered** from `pawn_agent/tools/` — any module that expor
 
 #### `chat`
 
-Start an interactive multi-turn conversation session with persistent history.
+Start an interactive multi-turn conversation session.
 
 ```bash
 pawn-agent chat [OPTIONS]
 
 Options:
-  --config TEXT    Path to pawnai.yaml
-  --model TEXT     Override the configured LLM model (e.g. openai:gpt-4o)
-  --session TEXT   Session ID to load and continue a stored conversation
-  --db-dsn TEXT    PostgreSQL DSN override
+  --config TEXT       Path to pawnai.yaml
+  --model TEXT        Override the configured LLM model (e.g. openai:gpt-4o)
+  --db-dsn TEXT       PostgreSQL DSN override
+  --otlp TEXT         Optional OTLP/HTTP endpoint for sallm Tempo traces
+  --metrics-port INT  Optional Prometheus /metrics port (0 = off)
 ```
 
 **Terminal features:**
 
-- **Multi-line paste**: pasted text is buffered as a single message (no spurious multi-turn splits)
-- **Context size indicator**: the prompt shows serialized history size and a token estimate after every turn:
-  ```
-  You [18.3 KB · ~4k tok]:
-  ```
-  On session load the same figures are printed next to the resume banner:
-  ```
-  Resuming session 'warren-20260325' (42 stored message(s) · 18.3 KB · ~4k tok)
-  ```
 - **Slash commands:**
 
   | Command | Effect |
   |---------|--------|
   | `/exit` or `/quit` | End the session |
-  | `/reset` | Clear in-memory history and wipe stored turns from the database |
+  | `/stats` | Show sallm session metrics |
+  | `/reset` | Clear sallm session memory |
 
   `Ctrl-D` and `Ctrl-C` also exit cleanly.
 
-**Session persistence**: when `--session` is given, every turn is appended to `agent_session_turns` in PostgreSQL. Resuming the same session replays the full stored history so the model retains context across invocations. `/reset` deletes all stored turns so the next message starts fresh.
+Chat uses the durable sallm ReAct agent (skills + CliTools). Conversation memory lives under `agent.sallm.state_dir` (SQLite + Lance); optional tracing goes to Tempo via `--otlp` / `agent.sallm.otlp_endpoint`.
 
 #### `run`
 
@@ -449,7 +464,7 @@ Options:
 ```
 
 ```bash
-pawn-agent run "Summarize session abc123 and save to SiYuan"
+pawn-agent run "Summarize session abc123 and save analysis"
 ```
 
 #### `tools`
@@ -470,17 +485,183 @@ pawn-agent models [--config TEXT]
 
 ### Available Tools
 
-| Tool | Description |
+| CliTool | Description |
 |------|-------------|
-| `query_conversation` | Fetch the full transcript for a session from the database |
-| `analyze_summary` | Run structured analysis (title, summary, topics, sentiment, tags) and persist to DB |
-| `get_analysis` | Retrieve the most recent stored analysis for a session |
-| `extract_graph` | Extract knowledge-graph triples from a transcript and persist to DB |
-| `vectorize` | Embed session transcripts or SiYuan pages into the RAG index |
-| `search_knowledge` | Semantic similarity search over transcript chunks and SiYuan notes |
-| `save_to_siyuan` | Save Markdown content to SiYuan Notes as a child page under the session node; title inferred from the first `# Heading` |
-| `fetch_siyuan_page` | Fetch the text content of a SiYuan page by path |
-| `rag_stats` | Show a summary of the RAG vector index (sources and chunk counts) |
+| `sessions_list` | List diarization sessions from the database |
+| `session_transcript` | Fetch the full transcript for a session |
+| `session_analyze` | Run structured analysis (title, summary, topics, sentiment, tags); `--save` writes to `Pawn/Analyses/` |
+| `session_delete` | Permanently delete one diarization session (requires matching `--confirm`) |
+| `session_relabel` | Rename a speaker across a session (`--from SPEAKER_00 --to Davide`) |
+| `note_read` | Read a vault Markdown note (`--path`, optional `--follow-links`) |
+| `note_search` | List/filter vault notes (`--folder`, `--tag`) |
+| `note_write` | Create/overwrite a vault note (write guards under `Pawn/`) |
+| `note_append` | Append Markdown to a vault note |
+| `task_update` | Update a vault task note status / Result |
+| `queue_push` | Publish progress updates or notifications to configured queue producers |
+| `schedule_propose` | Create schedule-change proposals for application approval |
+
+Tools are sallm CliTools (`pawn_agent/tools/cli/`). See [docs/TOOLS.md](docs/TOOLS.md).
+Vault task loop: [docs/OBSIDIAN_AGENT.md](docs/OBSIDIAN_AGENT.md).
+
+---
+
+## pawn-server
+
+HTTP API server, queue listener, scheduler, vault watcher, and optional Matrix bot for `pawn-agent`.
+
+### Serve
+
+```bash
+pawn-server serve [OPTIONS]
+```
+
+Options:
+
+```text
+--config, -c TEXT          Path to pawnai.yaml
+--host, -H TEXT            Bind host, overriding api.host
+--port, -p INTEGER         Bind port, overriding api.port
+--model, -m TEXT           PydanticAI model string override
+--topic, -T TEXT           Queue topic override
+--consumer-name, -n TEXT   Queue consumer name override
+--no-queue                 Disable the queue listener
+--disable-scheduler        Disable the durable scheduler
+--scheduler-only           Run only the durable scheduler
+--no-matrix                Disable the Matrix bot
+--matrix-only              Run only the Matrix bot
+--no-vault-watcher         Disable the vault task watcher
+--vault-watcher-only       Run only the vault task watcher
+--ssl-certfile PATH        TLS certificate PEM (overrides api.ssl_certfile)
+--ssl-keyfile PATH         TLS private key PEM (overrides api.ssl_keyfile)
+```
+
+`pawn-server serve` starts the OpenAI-compatible HTTP API and, when configured,
+the queue listener, scheduler, Matrix bot, and vault watcher. Agent turns use
+the in-process sallm registry and are recorded in `agent_runs`. Matrix chat
+needs `uv sync --extra matrix` and `matrix_bot.enabled` — see
+[docs/MATRIX_BOT.md](docs/MATRIX_BOT.md). Vault tasks:
+[docs/OBSIDIAN_AGENT.md](docs/OBSIDIAN_AGENT.md).
+
+```bash
+# API + queue listener + scheduler (+ Matrix / vault watcher if enabled)
+pawn-server serve
+
+# API only
+pawn-server serve --no-queue --disable-scheduler --no-matrix --no-vault-watcher
+
+# Scheduler worker only
+pawn-server serve --scheduler-only
+
+# Matrix bot only
+pawn-server serve --matrix-only
+
+# Vault watcher only
+pawn-server serve --vault-watcher-only
+```
+
+### Schedule Management
+
+Schedules live in PostgreSQL. Agent-facing tools create proposals only; the
+application owns approval and all actual schedule mutations.
+
+```bash
+pawn-server schedules list
+pawn-server schedules show <schedule-id>
+pawn-server schedules proposals
+pawn-server schedules approve <proposal-id>
+pawn-server schedules reject <proposal-id>
+pawn-server schedules pause <schedule-id>
+pawn-server schedules resume <schedule-id>
+pawn-server schedules cancel <schedule-id>
+```
+
+### Queue Management
+
+Inspect or control configured pawn-queue topics from `agent_queue`,
+`diarize_queue`, and `queue_producers`:
+
+```bash
+pawn-server queue stats
+pawn-server queue stats --name diarize
+pawn-server queue pause --name agent
+pawn-server queue pause --topic audio-chunks
+pawn-server queue resume --all
+pawn-server queue empty --name agent --dry-run
+pawn-server queue empty --name diarize --yes
+```
+
+`stats` lists every configured queue by default. Mutating commands need
+`--name`, `--topic`, or `--all`. Pause/resume toggle `{topic}/.paused` in the
+queue bucket; agent and diarize listeners stop claiming new work while paused.
+
+### API security (docs, IP blacklist, reverse proxy)
+
+When exposing the HTTP API, set a Bearer token and turn docs off:
+
+```yaml
+api:
+  token: "strong-secret"
+  enable_docs: false
+  whitelist_ips:
+    - 127.0.0.1
+    - "::1"
+  bruteforce_enabled: true
+  auth_fail_threshold: 10
+  not_found_threshold: 40
+  bruteforce_window_seconds: 300
+  # Behind nginx/Caddy that sets X-Real-IP / X-Forwarded-For:
+  trust_proxy: false          # keep false for direct :8000 exposure
+  trusted_proxies:
+    - 127.0.0.1
+    - "::1"
+  # Direct TLS (no reverse proxy). Create files with: make ssl-cert
+  # ssl_certfile: certs/cert.pem
+  # ssl_keyfile: certs/key.pem
+```
+
+Repeated auth failures (401) or path scans (404) auto-ban the client IP in
+PostgreSQL. Manage the list with:
+
+```bash
+pawn-server blacklist list
+pawn-server blacklist add 203.0.113.9 --reason manual
+pawn-server blacklist remove 203.0.113.9
+pawn-server blacklist clear --yes
+```
+
+`trust_proxy` is off by default. Enable it only when a reverse proxy is the
+TCP peer (e.g. local nginx → `127.0.0.1:8000`); headers from peers outside
+`trusted_proxies` are ignored so clients cannot spoof their IP. See also
+`deploy/nginx-pawn-location.conf` and [docs/OPENAI_API.md](docs/OPENAI_API.md).
+
+For **direct HTTPS** (no proxy), generate a self-signed cert and point the
+API at it:
+
+```bash
+make ssl-cert
+# optional LAN IP / hostname:
+# make ssl-cert CERT_CN=pawn.local \
+#   CERT_SAN='DNS:pawn.local,DNS:localhost,IP:192.168.1.10,IP:127.0.0.1'
+```
+
+```yaml
+api:
+  ssl_certfile: certs/cert.pem
+  ssl_keyfile: certs/key.pem
+```
+
+Or pass `--ssl-certfile` / `--ssl-keyfile` on `pawn-server serve`. Clients must
+trust (or skip verification of) the self-signed certificate. Prefer a real
+reverse-proxy cert when you already terminate TLS at nginx/Caddy.
+
+Schedule kinds:
+
+- `once`: one run at an ISO 8601 `run_at`
+- `interval`: repeat every `interval_seconds`
+- `cron`: cron expression in the configured timezone; requires `croniter`
+
+See `docs/AGENT_SCHEDULER.md` for the schedule contract and proposal approval
+model.
 
 ---
 
@@ -502,23 +683,29 @@ parakeet/
 │   │   ├── database.py       # SQLAlchemy ORM (embeddings, segments, analysis, RAG, graph)
 │   │   ├── analysis.py       # Session analysis via Copilot
 │   │   ├── s3.py             # S3/MinIO client and transparent download helpers
-│   │   ├── siyuan.py         # SiYuan Notes API client
 │   │   └── queue_listener.py # Background job worker
 │   └── utils/
 ├── pawn_agent/
 │   ├── __main__.py           # Entry point → pawn-agent
-│   ├── cli/commands.py       # run, chat, tools, models
+│   ├── cli/commands.py       # chat, tools, models
 │   ├── core/
-│   │   ├── agent.py          # ConversationAgent (Copilot SDK)
-│   │   └── pydantic_agent.py # PydanticAI multi-provider agent
-│   ├── tools/                # Auto-discovered tool modules
+│   │   ├── sallm_*.py        # Embedded sallm harness (factory/session/registry/skills/tools)
+│   │   ├── agent_runner.py   # Persisted turn helper for API/queue/scheduler
+│   │   ├── scheduler.py      # Durable agent scheduler service
+│   │   └── session_candidates.py
+│   ├── tools/                # *_impl helpers + cli/ CliTool entrypoints
 │   └── utils/
-│       ├── config.py         # AgentConfig loader
-│       ├── db.py             # DB session factory + RAG tables
+│       ├── config.py         # AgentConfig loader (incl. agent.sallm)
+│       ├── db.py             # Agent/schedule ORM helpers
 │       ├── transcript.py     # Fetch/format session transcripts
-│       ├── siyuan.py         # SiYuan helpers
-│       ├── analysis.py       # Analysis runner
-│       └── vectorize.py      # RAG vectorization
+│       └── analysis.py       # Analysis runner
+├── pawn_server/
+│   ├── __main__.py           # Entry point → pawn-server
+│   ├── cli/commands.py       # serve and schedules commands
+│   └── core/
+│       ├── api_server.py     # FastAPI OpenAI-compatible API
+│       ├── matrix_bot.py     # Inbound Matrix chatbot worker
+│       └── queue_listener.py # pawn-agent queue consumer
 ├── migrations/               # Alembic schema versions
 ├── pawnai.yaml               # Project configuration
 └── alembic.ini
@@ -536,7 +723,8 @@ parakeet/
 | LLM agent | PydanticAI (multi-provider) + GitHub Copilot SDK |
 | S3 storage | boto3 / aioboto3 |
 | Job queue | pawn-queue (S3-backed) |
-| Notes integration | SiYuan Notes API |
+| Scheduler | PostgreSQL + croniter |
+| Notes integration | Obsidian vault (S3 + Sync Engine + plugin) |
 | CLI | Typer + Rich |
 
 ## Development

@@ -19,7 +19,7 @@ litellm proxy  :4000
 pawn-agent server  :8000
     │
     ├── PostgreSQL (session history, RAG, analysis)
-    └── SiYuan notes
+    └── Obsidian vault notes
 ```
 
 The litellm proxy translates the standard OpenAI request envelope into pawn-agent's `/chat` endpoint.
@@ -75,7 +75,7 @@ Authorization: Bearer <key>
 {
   "model": "pawn-agent",
   "messages": [
-    { "role": "user", "content": "Summarise session abc123 and save to SiYuan" }
+    { "role": "user", "content": "Summarise session abc123 and save analysis" }
   ],
   "user": "my-session-id"
 }
@@ -163,27 +163,24 @@ and returns the confirmation message. The `/chat` endpoint is never called.
 
 ## What the agent can do
 
-The agent auto-discovers tools from `pawn_agent/tools/`. Currently available:
+The agent uses sallm CliTools (see [TOOLS.md](TOOLS.md)):
 
-| Tool | What it does |
+| CliTool | What it does |
 |---|---|
-| `query_conversation` | Fetch the full transcript for a diarization session |
-| `search_knowledge` | Semantic search over transcripts and SiYuan pages (RAG) |
-| `extract_graph` | Extract knowledge-graph triples (subject → relation → object) |
-| `fetch_siyuan_page` | Read a SiYuan note by path |
-| `get_analysis` | Return stored analysis (title, summary, topics, sentiment, tags) |
-| `analyze_summary` | Run a fresh standard analysis on a session |
-| `save_to_siyuan` | Write Markdown content to a SiYuan note |
-| `rag_stats` | Show RAG index summary |
-| `vectorize` | Embed a session or SiYuan page into the RAG index |
+| `sessions_list` | List diarization sessions |
+| `session_transcript` | Fetch a full transcript |
+| `session_analyze` | Run structured analysis (optional Obsidian vault save) |
+| `session_analyze --save` | Save Markdown / stored analysis to Obsidian vault (`--from-analysis` or `--content-file @note` + ```file`) |
+| `schedule_propose` | Propose schedule changes (approve via `pawn-server schedules`) |
+| `queue_push` | Publish notifications to configured queue producers |
 
-Prompt the agent in natural language. It selects and chains tools automatically.
+Prompt the agent in natural language. It selects tools via ReAct `` ```run `` blocks.
 
 Example prompts:
-- `"Summarise session abc123"` → uses `analyze_summary`
-- `"What did Alice say about the budget in session abc123?"` → uses `query_conversation` or `search_knowledge`
-- `"Save a note titled Meeting Notes with the summary of session abc123 to SiYuan"` → chains `analyze_summary` → `save_to_siyuan`
-- `"Index session abc123 into the knowledge base"` → uses `vectorize`
+- `"Summarise session abc123"` → `session_analyze`
+- `"What did Alice say about the budget in session abc123?"` → `session_transcript`
+- `"Store the daniel-20260630 analysis on Obsidian vault"` → `session_analyze --save --from-analysis`
+- `"Save this write-up to Obsidian vault"` → `session_analyze --save --content-file @note` + ```file note`
 
 ---
 
@@ -212,7 +209,7 @@ def chat(prompt: str) -> str:
 print(chat("Summarise session abc123"))
 
 # Multi-turn: each call shares SESSION_ID, the agent remembers context
-print(chat("Now save that summary to SiYuan under 'Meetings/2026-03'"))
+print(chat("Now save that summary to Obsidian vault under 'Meetings/2026-03'"))
 ```
 
 ---
@@ -253,7 +250,7 @@ curl -X DELETE http://localhost:8000/sessions/test-session-1 \
 ## Running the stack
 
 ```bash
-# Start postgres + siyuan + litellm proxy
+# Start postgres + litellm proxy
 docker compose -f docker/docker-compose.yml up -d
 
 # Start pawn-agent HTTP server (in a separate terminal, with venv active)

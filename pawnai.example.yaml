@@ -1,0 +1,341 @@
+# PawnAI example configuration.
+#
+# Copy this file to pawnai.yaml and edit values for your machine. The real
+# pawnai.yaml is gitignored because it may contain API keys and tokens.
+#
+# Precedence:
+#   CLI flags > pawnai.yaml > environment variables > defaults
+#
+# Environment variable convention:
+#   PAWN_DB_DSN -> db_dsn
+#   PAWN_MODELS__HF_TOKEN -> models.hf_token
+#   PAWN_MODELS__TRANSCRIPTION_BACKEND -> models.transcription_backend
+#   PAWN_DEVICE__TYPE -> device.type
+#   DATABASE_URL -> db_dsn
+#   HF_TOKEN -> models.hf_token
+
+# PostgreSQL database used by diarization, agent memory, RAG, and run history.
+# The default project Docker Compose maps postgres to host port 5433.
+db_dsn: postgresql+psycopg://postgres:postgres@localhost:5433/pawnai
+
+# Default local audio directory used by pawn-diarize.
+audio_dir: audio/
+
+models:
+  # NeMo Parakeet ASR model.
+  transcription_model: nvidia/parakeet-tdt-0.6b-v3
+
+  # Transcription backend: nemo or whisper.
+  transcription_backend: nemo
+
+  # faster-whisper model name, used only when transcription_backend is whisper.
+  whisper_model: large-v3
+
+  # Pyannote diarization model. Some models require a Hugging Face token.
+  diarization_model: pyannote/speaker-diarization-community-1
+
+  # Speaker embedding model used for speaker matching.
+  embedding_model: pyannote/embedding
+
+  # Hugging Face token for gated models. Prefer PAWN_MODELS__HF_TOKEN or HF_TOKEN.
+  hf_token: ""
+
+  # Optional Hugging Face cache directory. Also sets HF_HUB_CACHE when present.
+  hf_cache_dir: ""
+
+  # Idle timeout for heavy transcription models.
+  model_idle_timeout_minutes: 10.0
+
+  # Text-to-speech defaults for the pawn-server speech endpoint.
+  tts_language: en
+  tts_voice: af_heart
+
+  # null means use device.type. Set cpu if CUDA is unavailable.
+  tts_device: null
+
+  # Idle timeout for TTS models.
+  tts_idle_timeout_minutes: 10.0
+
+device:
+  # auto, cuda, or cpu.
+  type: auto
+
+s3:
+  # Shared S3-compatible storage settings. Used by audio commands and all
+  # pawn-queue listeners/producers. Works with AWS S3, MinIO, Ceph, Hetzner,
+  # Cloudflare R2, and similar services.
+  bucket: my-audio-bucket
+  endpoint_url: https://s3.amazonaws.com
+  access_key: ""
+  secret_key: ""
+  region: us-east-1
+
+  # Optional prefix prepended to object keys for audio/object operations.
+  prefix: ""
+
+  # Set false only for local/dev endpoints with self-signed certificates.
+  verify_ssl: true
+
+  # Usually true for MinIO and many S3-compatible providers.
+  path_style: true
+
+# Markdown notes vault (Obsidian Sync Engine). Uses its own S3 credentials —
+# do not reuse the top-level s3: queue/audio keys.
+vault:
+  s3:
+    bucket: my-obsidian-bucket
+    endpoint_url: https://fsn1.your-objectstorage.com
+    access_key: ""
+    secret_key: ""
+    region: fsn1
+    # Key prefix shared with Sync Engine (e.g. vault/). Empty = bucket root.
+    prefix: ""
+    path_style: true
+    verify_ssl: true
+  agent_root: Pawn
+  transcript_path_template: "{agent_root}/Transcripts/{date} {session_id}.md"
+  analysis_path_template: "{agent_root}/Analyses/{session_id}.md"
+  task_path_template: "{agent_root}/Tasks/{id}.md"
+  notes_path_template: "{agent_root}/Notes/{title}.md"
+  # Optional daily note path template; leave null so Pawn never edits dailies.
+  daily_note_path: null
+  auto_push_transcript: false
+  # Used only to build obsidian://open links in Matrix notifications.
+  obsidian_vault_name: ""
+
+vault_watcher:
+  # Polls Pawn/Tasks/ for todo / approved-review notes.
+  enabled: true
+  poll_interval_seconds: 15
+  max_claims_per_tick: 3
+  matrix_target: matrix
+
+rag:
+  # Embedding model and vector dimensionality for transcript RAG.
+  embed_model: Qwen/Qwen3-Embedding-0.6B
+  embed_dim: 1024
+  embed_device: cpu
+
+  # true keeps embedding loads offline/local-only where supported.
+  embed_local_files_only: true
+
+logging:
+  # DEBUG, INFO, WARNING, ERROR, or CRITICAL.
+  level: WARNING
+
+agent:
+  # Display/name identity used by pawn-agent.
+  name: Bob
+
+  # Optional system prompt/personality file.
+  anima: anima.md
+
+  # Strip model "thinking" blocks from final chat output when supported.
+  strip_thinking: true
+
+  # User-owned sallm profiles. Relative paths resolve from the working directory.
+  # profiles_dir: ~/.config/pawn/profiles
+  # Catalog id used by autonomous jobs, Matrix, and chat turns that omit a model.
+  # Change it at runtime with /model <id> (persisted under agent.sallm.state_dir).
+  default: ollama@gemma4:4b
+  providers:
+    ollama:
+      base_url: http://localhost:11434/v1
+      api_key: ollama
+      models:
+        # model: overrides target_model inside the profile file.
+        # large.yaml is the packaged fallback; point profile at a tuned file.
+        # vision: true lets Matrix and Obsidian chat attach images to this model.
+        - model: gemma4:4b
+          profile: large.yaml
+          # vision: true
+    opencode:
+      # API root, not the docs page and not the full .../chat/completions URL.
+      # Go models: https://opencode.ai/zen/go/v1
+      # Zen models (nemotron-3-ultra-free and the other free models):
+      # https://opencode.ai/zen/v1
+      # user_agent is this client's own name. OpenCode also requires
+      # x-opencode-session, which Pawn fills with the conversation id.
+      base_url: https://opencode.ai/zen/go/v1
+      api_key: ""
+      user_agent: pawn/1.0
+      models:
+        - model: glm-5.3-flash
+          profile: large.yaml
+  # Legacy single block, used only when providers is omitted:
+  # openai:
+  #   model: gpt-4o
+  #   api_key: ""
+  #   base_url: https://api.openai.com/v1
+
+  copilot:
+    # Sub-agent settings used by copilot-backed helper flows.
+    model: claude-sonnet-4.6
+    backend: copilot
+    base_url: null
+    api_key: ollama
+
+api:
+  # pawn-server HTTP API settings.
+  # If token is empty/null, the server starts without bearer-token auth.
+  token: ""
+  host: 0.0.0.0
+  port: 8000
+
+  # Idle timeout for API-managed model resources.
+  model_idle_timeout_minutes: 10.0
+
+  # FastAPI /docs, /redoc, /openapi.json — turn off when exposing the port publicly.
+  enable_docs: true
+
+  # IPs that skip auto-blacklist (exact match; ::ffff:x.x.x.x normalised).
+  whitelist_ips:
+    - 127.0.0.1
+    - "::1"
+
+  # Auto-blacklist after N 401s or 404s inside the sliding window.
+  bruteforce_enabled: true
+  auth_fail_threshold: 10
+  not_found_threshold: 40
+  bruteforce_window_seconds: 300
+  # null = permanent until `pawn-server blacklist remove|clear`
+  blacklist_ttl_seconds: null
+
+  # Reverse-proxy support (nginx, Caddy, …). Off by default — enable only when
+  # pawn-server sits behind a proxy that sets X-Real-IP / X-Forwarded-For, and
+  # list the proxy peer address(es). Headers from non-trusted peers are ignored.
+  trust_proxy: false
+  trusted_proxies:
+    - 127.0.0.1
+    - "::1"
+
+  # Optional TLS when clients hit pawn-server directly (no reverse proxy).
+  # Both paths required. Create a self-signed pair with: make ssl-cert
+  # ssl_certfile: certs/cert.pem
+  # ssl_keyfile: certs/key.pem
+  ssl_certfile: null
+  ssl_keyfile: null
+
+mlflow:
+  # Optional MLflow tracing/experiment logging.
+  enabled: false
+  tracking_uri: null
+  experiment: pawn-agent
+
+diarize_queue:
+  # Queue consumed by `pawn-diarize listen`.
+  # Credentials and endpoint come from the top-level s3 section.
+  topic: pawn-diarize-jobs
+  consumer_name: pawn-diarize-listener
+  bucket_name: pawn-diarize-queue
+
+  polling:
+    interval_seconds: 5
+    max_messages_per_poll: 1
+    visibility_timeout_seconds: 300
+    lease_refresh_interval_seconds: 60
+    jitter_max_ms: 200
+
+  concurrency:
+    # auto, conditional_write, or csprng_verify.
+    strategy: auto
+
+  chain_agent:
+    # When enabled, successful transcribe-diarize jobs enqueue a pawn-agent
+    # message. command "run" keeps the free-form prompt; "session_completed"
+    # runs the coworker extract/score loop (requires coworker.enabled).
+    enabled: false
+    topic: pawn-agent-jobs
+    command: run
+    prompt: Analyze this conversation.
+
+coworker:
+  enabled: false
+  goals_path: Goals.md
+  timezone: Europe/Rome
+  briefing_cron: "0 8 * * *"
+  weekly_cron: "0 17 * * 5"
+  # Notes in these folders are extracted like a meeting. Idea notes are never
+  # extracted, including anything under Ideas/ or tagged idea. Leave both empty
+  # unless you want that pass on some other folder.
+  watch_folders: []
+  watch_tags: []
+  # Folder where the phone's audio recorder drops files. Empty disables capture.
+  capture_audio_dir: ""
+  me: []
+  autonomy:
+    mode: suggest_only
+  notify:
+    ntfy_url: ""
+    topic: ""
+
+agent_queue:
+  # Queue consumed by `pawn-agent listen` / pawn-server queue listener.
+  # Credentials and endpoint come from the top-level s3 section.
+  topic: pawn-agent-jobs
+  consumer_name: pawn-agent-listener
+  bucket_name: pawn-agent-queue
+
+  polling:
+    interval_seconds: 5
+    max_messages_per_poll: 1
+    visibility_timeout_seconds: 300
+    lease_refresh_interval_seconds: 60
+    jitter_max_ms: 200
+
+  concurrency:
+    # auto, conditional_write, or csprng_verify.
+    strategy: auto
+
+matrix_bot:
+  # Inbound Matrix chatbot (pawn-server serve). Opt-in; needs `uv sync --extra matrix`.
+  # Agent runs in-process — does not call the HTTP API.
+  enabled: false
+  homeserver_url: https://matrix.example.com
+  user_id: "@pawn:example.com"
+  # Prefer an access token; password is a fallback for first login.
+  user_token: ""
+  # user_password: ""
+  # Reuse a stable device_id with store_path; a new id in encrypted rooms drops messages.
+  device_id: PAWNBOT01
+  device_name: pawn-matrix
+  store_path: .matrix-store
+  command_prefix: "!pawn"
+  inviters:
+    - "@you:example.com"
+  # Edit a live "Working…" message as ReAct steps complete; keep typing alive.
+  progress_updates: true
+  # React ⏳ on the user message, then ✅ / ❌ when the turn finishes.
+  progress_reactions: true
+  # Room for outbound ready-for-review alerts (queue_push / notifier).
+  # notify_room_id: "!yourRoom:matrix.example.com"
+
+queue_producers:
+  # Named producer targets used by pawn-agent's push_queue_message tool.
+  # The agent prefers a target named "matrix" for notification-style updates.
+  # Outbound notifications only — not the inbound matrix_bot worker above.
+  matrix:
+    topic: matrix-bot-notifications
+    bucket_name: pawn-agent-queue
+
+    # Optional explicit producer name. If omitted, the tool generates one from
+    # the target name.
+    producer_name: pawn-agent-producer-matrix
+
+    polling:
+      interval_seconds: 5
+      max_messages_per_poll: 1
+      visibility_timeout_seconds: 300
+      lease_refresh_interval_seconds: 60
+      jitter_max_ms: 200
+
+    concurrency:
+      # auto, conditional_write, or csprng_verify.
+      strategy: auto
+
+  downstream:
+    # Example target for explicit publish requests such as handing work to
+    # another service.
+    topic: downstream-jobs
+    bucket_name: pawn-agent-queue
+    producer_name: pawn-agent-producer-downstream

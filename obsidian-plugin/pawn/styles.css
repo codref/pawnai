@@ -1,0 +1,741 @@
+/* ── Layout ─────────────────────────────────────────────────────────────── */
+
+.pawn-view .view-content.pawn-root {
+  display: flex;
+  flex-direction: column;
+  padding: 0;
+  overflow: hidden;
+  box-sizing: border-box;
+  min-height: 0;
+}
+
+/* Phone keyboard: the view height is set in JS. Let the thread absorb the
+   shrink so the composer stays on screen. */
+.pawn-view.is-keyboard-open .pawn-header {
+  flex-shrink: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.pawn-header {
+  flex-shrink: 0;
+  padding: var(--size-4-2) var(--size-4-2) 0;
+  border-bottom: 1px solid var(--background-modifier-border);
+}
+
+.pawn-header-row {
+  display: flex;
+  align-items: center;
+  gap: var(--size-4-1);
+}
+
+.pawn-conv-select {
+  flex: 1;
+  min-width: 0;
+}
+
+.pawn-tabs {
+  display: flex;
+  align-items: center;
+  gap: var(--size-4-1);
+  margin-top: var(--size-4-2);
+}
+
+.pawn-tabs button {
+  background: none;
+  box-shadow: none;
+  border-radius: 0;
+  border-bottom: 2px solid transparent;
+  padding: var(--size-4-1) var(--size-4-2);
+  color: var(--text-muted);
+}
+
+.pawn-tabs button.is-active {
+  color: var(--text-normal);
+  border-bottom-color: var(--interactive-accent);
+}
+
+.pawn-dot {
+  margin-left: auto;
+  font-size: 0.7em;
+}
+
+.pawn-dot.is-online {
+  color: var(--color-green);
+}
+
+.pawn-dot.is-offline {
+  color: var(--color-red);
+}
+
+.status-bar-item .pawn-dot {
+  margin-left: 0;
+}
+
+.pawn-body {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.pawn-body.is-dragover {
+  outline: 2px dashed var(--interactive-accent);
+  outline-offset: -4px;
+}
+
+.pawn-hidden {
+  display: none;
+}
+
+.pawn-empty {
+  color: var(--text-muted);
+  text-align: center;
+  padding: var(--size-4-6) var(--size-4-4);
+}
+
+.pawn-hint {
+  font-size: var(--font-ui-smaller);
+}
+
+/* ── Thread ─────────────────────────────────────────────────────────────── */
+
+.pawn-thread {
+  flex: 1;
+  overflow-y: auto;
+  padding: var(--size-4-2);
+  display: flex;
+  flex-direction: column;
+  gap: var(--size-4-2);
+}
+
+.pawn-msg {
+  border-radius: var(--radius-m);
+  padding: var(--size-4-2) var(--size-4-3);
+  word-break: break-word;
+  user-select: text;
+}
+
+.pawn-msg.is-user {
+  align-self: flex-end;
+  max-width: 90%;
+  background: var(--interactive-accent);
+  color: var(--text-on-accent);
+  white-space: pre-wrap;
+}
+
+.pawn-msg.is-user::selection,
+.pawn-msg.is-user *::selection {
+  background: var(--text-on-accent);
+  color: var(--interactive-accent);
+}
+
+.pawn-msg.is-user::-moz-selection,
+.pawn-msg.is-user *::-moz-selection {
+  background: var(--text-on-accent);
+  color: var(--interactive-accent);
+}
+
+.pawn-msg.is-assistant {
+  background: var(--background-secondary);
+}
+
+.pawn-msg.is-error {
+  background: rgba(var(--color-red-rgb), 0.1);
+  color: var(--text-error);
+  font-size: var(--font-ui-small);
+}
+
+.pawn-msg.is-job {
+  padding: 0;
+}
+
+.pawn-msg-context {
+  margin-top: var(--size-4-1);
+  font-size: var(--font-ui-smaller);
+  opacity: 0.8;
+}
+
+.pawn-msg .markdown-rendered > :first-child {
+  margin-top: 0;
+}
+
+.pawn-msg .markdown-rendered > :last-child {
+  margin-bottom: 0;
+}
+
+.pawn-progress-log {
+  font-size: var(--font-ui-smaller);
+  color: var(--text-muted);
+  margin-bottom: var(--size-4-1);
+}
+
+.pawn-pending-row {
+  display: flex;
+  align-items: center;
+  gap: var(--size-4-2);
+  color: var(--text-muted);
+}
+
+.pawn-spinner {
+  width: 12px;
+  height: 12px;
+  border: 2px solid var(--background-modifier-border);
+  border-top-color: var(--interactive-accent);
+  border-radius: 50%;
+  animation: pawn-spin 0.8s linear infinite;
+}
+
+@keyframes pawn-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.pawn-msg-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px;
+  margin-top: var(--size-4-1);
+  opacity: 0.6;
+}
+
+.pawn-msg:hover .pawn-msg-actions,
+.pawn-job-card:hover .pawn-msg-actions,
+.pawn-msg:focus-within .pawn-msg-actions {
+  opacity: 1;
+}
+
+.pawn-msg.is-user .pawn-msg-actions {
+  opacity: 0;
+  justify-content: flex-end;
+}
+
+.pawn-msg.is-user:hover .pawn-msg-actions,
+.pawn-msg.is-user:focus-within .pawn-msg-actions {
+  opacity: 1;
+}
+
+.pawn-msg.is-user .pawn-msg-actions .clickable-icon {
+  color: var(--text-on-accent);
+}
+
+.pawn-msg.is-user .pawn-msg-actions .clickable-icon:hover {
+  background: color-mix(in srgb, var(--text-on-accent) 20%, transparent);
+}
+
+/* ── Composer ───────────────────────────────────────────────────────────── */
+
+.pawn-switch-banner {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--size-4-2);
+  padding: var(--size-4-1) var(--size-4-2);
+  border-radius: var(--radius-m);
+  background: var(--background-modifier-hover);
+  font-size: var(--font-ui-small);
+  color: var(--text-muted);
+}
+
+.pawn-switch-banner.is-hidden {
+  display: none;
+}
+
+.pawn-switch-banner-actions {
+  display: flex;
+  gap: var(--size-4-1);
+  margin-left: auto;
+}
+
+.pawn-composer {
+  position: relative;
+  flex-shrink: 0;
+  border-top: 1px solid var(--background-modifier-border);
+  padding: var(--size-4-2);
+  display: flex;
+  flex-direction: column;
+  gap: var(--size-4-1);
+}
+
+/* The desktop status bar floats over the bottom of the side panels. */
+body:not(.is-mobile) .mod-right-split .pawn-composer,
+body:not(.is-mobile) .mod-left-split .pawn-composer {
+  padding-bottom: calc(var(--size-4-2) + 28px);
+}
+
+.pawn-input {
+  width: 100%;
+  resize: none;
+  min-height: 3em;
+  max-height: 240px;
+}
+
+.pawn-composer-row {
+  display: flex;
+  align-items: center;
+  gap: var(--size-4-2);
+  min-width: 0;
+}
+
+.pawn-composer-tunes {
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.pawn-send,
+.pawn-attach {
+  flex: 0 0 auto;
+}
+
+.pawn-reread-btn.is-hidden {
+  display: none;
+}
+
+.pawn-reread-btn.is-active {
+  color: var(--text-accent);
+}
+
+.pawn-spacer {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.pawn-bg-toggle {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex: 0 1 auto;
+  min-width: 0;
+  font-size: var(--font-ui-small);
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.pawn-model-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  max-width: min(11rem, 46%);
+  min-width: 0;
+  flex: 0 1 auto;
+  margin: 0;
+  padding: 2px 4px 2px 8px;
+  border: none;
+  border-radius: var(--radius-s);
+  background: transparent;
+  color: var(--text-muted);
+  font-size: var(--font-ui-small);
+  cursor: pointer;
+}
+
+.pawn-model-btn:hover {
+  color: var(--text-normal);
+  background: var(--background-modifier-hover);
+}
+
+.pawn-model-btn-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+.pawn-model-btn-chevron {
+  display: flex;
+  flex: 0 0 auto;
+  width: 14px;
+  height: 14px;
+  opacity: 0.7;
+}
+
+.pawn-model-pop,
+.pawn-model-sub {
+  position: fixed;
+  z-index: 1000;
+  min-width: 220px;
+  padding: 4px;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--radius-m);
+  background: var(--background-primary);
+  box-shadow: var(--shadow-s);
+}
+
+.pawn-model-pop {
+  position: fixed;
+}
+
+.pawn-model-row,
+.pawn-model-sub-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  margin: 0;
+  padding: 6px 8px;
+  border: none;
+  border-radius: var(--radius-s);
+  background: transparent;
+  color: var(--text-normal);
+  font-size: var(--font-ui-small);
+  text-align: left;
+  cursor: pointer;
+}
+
+.pawn-model-row:hover,
+.pawn-model-row.is-open,
+.pawn-model-sub-item:hover,
+.pawn-model-sub-item.is-active {
+  background: var(--background-modifier-hover);
+}
+
+.pawn-model-row-key {
+  flex: 0 0 auto;
+  color: var(--text-muted);
+}
+
+.pawn-model-row-value {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-align: right;
+  color: var(--text-normal);
+}
+
+.pawn-model-row-chevron,
+.pawn-model-sub-check {
+  display: flex;
+  flex: 0 0 auto;
+  width: 14px;
+  height: 14px;
+  color: var(--text-muted);
+}
+
+.pawn-model-row-chevron svg,
+.pawn-model-sub-check svg,
+.pawn-model-btn-chevron svg {
+  width: 14px;
+  height: 14px;
+}
+
+.pawn-model-sub {
+  position: absolute;
+  left: calc(100% + 4px);
+  top: 4px;
+  min-width: 160px;
+}
+
+.pawn-model-sub.is-left {
+  left: auto;
+  right: calc(100% + 4px);
+}
+
+.pawn-context-bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.pawn-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  max-width: 100%;
+  padding: 1px 8px;
+  border-radius: var(--radius-l);
+  background: var(--background-modifier-hover);
+  font-size: var(--font-ui-smaller);
+}
+
+.pawn-chip.is-toggle {
+  cursor: pointer;
+}
+
+.pawn-chip.is-muted {
+  opacity: 0.45;
+  text-decoration: line-through;
+}
+
+.pawn-chip-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pawn-chip-icon,
+.pawn-chip-remove {
+  display: inline-flex;
+}
+
+.pawn-chip-icon svg,
+.pawn-chip-remove svg {
+  width: 12px;
+  height: 12px;
+}
+
+button.pawn-chip-remove {
+  background: transparent;
+  border: none;
+  box-shadow: none;
+  margin: 0;
+  padding: 0;
+  height: auto;
+  width: auto;
+  color: var(--text-muted);
+  cursor: pointer;
+  opacity: 0.7;
+  flex-shrink: 0;
+}
+
+button.pawn-chip-remove:hover {
+  opacity: 1;
+  color: var(--text-normal);
+}
+
+button.pawn-chip-pin {
+  font: inherit;
+  color: var(--text-muted);
+  background: transparent;
+  border: 1px dashed var(--background-modifier-border);
+  box-shadow: none;
+  cursor: pointer;
+}
+
+button.pawn-chip-pin:hover {
+  color: var(--text-normal);
+  background: var(--background-modifier-hover);
+}
+
+.pawn-chip-add {
+  padding: 1px 6px;
+}
+
+.pawn-slash {
+  position: absolute;
+  left: var(--size-4-2);
+  right: var(--size-4-2);
+  bottom: 100%;
+  max-height: 260px;
+  overflow-y: auto;
+  background: var(--background-primary);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--radius-m);
+  box-shadow: var(--shadow-s);
+  z-index: var(--layer-popover);
+}
+
+.pawn-slash.is-hidden {
+  display: none;
+}
+
+.pawn-slash-item {
+  display: flex;
+  gap: var(--size-4-2);
+  padding: var(--size-4-1) var(--size-4-2);
+  cursor: pointer;
+}
+
+.pawn-slash-item.is-selected,
+.pawn-slash-item:hover {
+  background: var(--background-modifier-hover);
+}
+
+.pawn-slash-label {
+  font-family: var(--font-monospace);
+}
+
+.pawn-slash-hint {
+  color: var(--text-muted);
+}
+
+/* ── Jobs ───────────────────────────────────────────────────────────────── */
+
+.pawn-jobs {
+  flex: 1;
+  overflow-y: auto;
+  padding: var(--size-4-2);
+}
+
+.pawn-jobs-toolbar {
+  display: flex;
+  gap: var(--size-4-1);
+  margin-bottom: var(--size-4-2);
+}
+
+.pawn-jobs-toolbar button.is-active {
+  background: var(--interactive-accent);
+  color: var(--text-on-accent);
+}
+
+.pawn-jobs-toolbar .clickable-icon {
+  margin-left: auto;
+}
+
+.pawn-jobs-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--size-4-2);
+}
+
+.pawn-job-card {
+  border: 1px solid var(--background-modifier-border);
+  border-left: 3px solid var(--text-faint);
+  border-radius: var(--radius-m);
+  padding: var(--size-4-2) var(--size-4-3);
+  background: var(--background-primary);
+}
+
+.pawn-job-card.is-running,
+.pawn-job-card.is-claimed,
+.pawn-job-card.is-queued {
+  border-left-color: var(--color-blue);
+}
+
+.pawn-job-card.is-todo {
+  border-left-color: var(--color-yellow);
+}
+
+.pawn-job-card.is-review {
+  border-left-color: var(--color-orange);
+}
+
+.pawn-job-card.is-done {
+  border-left-color: var(--color-green);
+}
+
+.pawn-job-card.is-blocked {
+  border-left-color: var(--color-red);
+}
+
+.pawn-job-card.is-focused {
+  box-shadow: 0 0 0 2px var(--interactive-accent);
+}
+
+.pawn-job-head {
+  display: flex;
+  align-items: center;
+  gap: var(--size-4-2);
+}
+
+.pawn-job-icon {
+  display: inline-flex;
+  color: var(--text-muted);
+}
+
+.pawn-job-icon svg {
+  width: 14px;
+  height: 14px;
+}
+
+.pawn-job-title {
+  flex: 1;
+  min-width: 0;
+  font-weight: var(--font-semibold);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pawn-job-status {
+  font-size: var(--font-ui-smaller);
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+.pawn-job-status.is-active::before {
+  content: "";
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  margin-right: 4px;
+  border-radius: 50%;
+  background: var(--color-blue);
+  animation: pawn-pulse 1.2s ease-in-out infinite;
+}
+
+@keyframes pawn-pulse {
+  50% {
+    opacity: 0.3;
+  }
+}
+
+.pawn-job-meta {
+  font-size: var(--font-ui-smaller);
+  color: var(--text-faint);
+  margin-top: 2px;
+}
+
+.pawn-job-result {
+  margin-top: var(--size-4-2);
+  max-height: 320px;
+  overflow-y: auto;
+  user-select: text;
+}
+
+.pawn-job-result.is-error {
+  color: var(--text-error);
+}
+
+.pawn-inbox-title {
+  font-weight: var(--font-semibold);
+  white-space: normal;
+  cursor: pointer;
+}
+
+.pawn-inbox-line {
+  margin-top: 4px;
+  white-space: pre-wrap;
+}
+
+.pawn-inbox-card .pawn-job-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--size-4-1);
+  margin-top: var(--size-4-2);
+}
+
+.pawn-notice {
+  cursor: pointer;
+}
+
+/* ── Diff modal ─────────────────────────────────────────────────────────── */
+
+.pawn-diff {
+  max-height: 60vh;
+  overflow: auto;
+  font-family: var(--font-monospace);
+  font-size: var(--font-ui-small);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--radius-s);
+  margin-bottom: var(--size-4-3);
+}
+
+.pawn-diff-line {
+  display: flex;
+  white-space: pre-wrap;
+  padding: 0 var(--size-4-2);
+}
+
+.pawn-diff-line.is-add {
+  background: rgba(var(--color-green-rgb), 0.15);
+}
+
+.pawn-diff-line.is-del {
+  background: rgba(var(--color-red-rgb), 0.15);
+  text-decoration: line-through;
+}
+
+.pawn-diff-sign {
+  width: 1.2em;
+  flex-shrink: 0;
+  color: var(--text-muted);
+}
+
+/* ── Callout (optional > [!pawn] links to task notes) ──────────────────── */
+
+.callout[data-callout="pawn"] {
+  --callout-color: 120, 160, 255;
+  --callout-icon: chess-king;
+}

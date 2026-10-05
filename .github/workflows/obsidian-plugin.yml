@@ -1,0 +1,80 @@
+name: Obsidian plugin
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "obsidian-plugin/pawn/**"
+      - ".github/workflows/obsidian-plugin.yml"
+  # Tag pushes stay unfiltered so `obsidian-plugin-v*` always publishes.
+  push:
+    branches: [main]
+    tags:
+      - "obsidian-plugin-v*"
+
+permissions:
+  actions: write
+  contents: write
+
+concurrency:
+  group: obsidian-plugin-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: obsidian-plugin/pawn
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: obsidian-plugin/pawn/package-lock.json
+
+      - name: Install and build
+        run: npm ci && npm run build
+
+      - name: Package pawn.zip
+        run: make package
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pawn-obsidian-plugin
+          path: obsidian-plugin/pawn/pawn.zip
+          if-no-files-found: error
+
+      - name: Publish GitHub release
+        if: startsWith(github.ref, 'refs/tags/obsidian-plugin-v')
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          tag="${GITHUB_REF#refs/tags/}"
+          ver="${tag#obsidian-plugin-v}"
+          manifest_ver="$(node -p "require('./manifest.json').version")"
+          if [ "$ver" != "$manifest_ver" ]; then
+            echo "Tag version ${ver} does not match manifest.json version ${manifest_ver}."
+            exit 1
+          fi
+          notes="$(cat <<EOF
+          Obsidian plugin ${ver}.
+
+          Download **pawn.zip** and unzip it into \`<vault>/.obsidian/plugins/\`. The archive contains a \`pawn/\` folder (\`main.js\`, \`manifest.json\`, \`styles.css\`). Enable **Pawn** under Settings → Community plugins.
+
+          The three runtime files are also attached on their own for [BRAT](https://github.com/TfTHacker/obsidian-brat): add \`codref/pawnai\` and choose tag \`${tag}\`.
+          EOF
+          )"
+          if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$tag" --repo "$GITHUB_REPOSITORY" --clobber \
+              main.js manifest.json styles.css pawn.zip
+          else
+            gh release create "$tag" \
+              --repo "$GITHUB_REPOSITORY" \
+              --title "Pawn Obsidian plugin ${ver}" \
+              --notes "$notes" \
+              --verify-tag \
+              main.js manifest.json styles.css pawn.zip
+          fi

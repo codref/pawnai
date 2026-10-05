@@ -1,84 +1,83 @@
+"""CLI smoke tests for pawn-agent chat (sallm-backed)."""
+
 from __future__ import annotations
 
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from typer.testing import CliRunner
 
 from pawn_agent.cli.commands import app
-
+from pawn_agent.utils.config import SallmSection
 
 runner = CliRunner()
 
 
-def test_inspect_session_command_renders_troubleshooting_report() -> None:
-    report = {
-        "session_id": "sess-123",
-        "turn_count": 17,
-        "raw_message_count": 40,
-        "replay_message_count": 40,
-        "raw_context_kb": 12.5,
-        "raw_context_tokens": 3200,
-        "replay_context_kb": 11.0,
-        "replay_context_tokens": 2800,
-        "session_vars": {"listen_only": True},
-        "issues": ["Found 1 request message(s) containing RetryPromptPart."],
-        "counts": {"retry_prompt_requests": 1},
-        "replay_payload": [{"parts": [{"content": "hi", "part_kind": "user-prompt"}], "kind": "request"}],
-        "recent_messages": [
-            {
-                "index": 40,
-                "kind": "response",
-                "parts": ["TextPart"],
-                "excerpt": "ok",
-                "issues": [],
-            }
-        ],
-        "turns": [],
-    }
+def _cfg() -> SimpleNamespace:
+    return SimpleNamespace(
+        db_dsn="postgresql://dummy",
+        agent_name="Bob",
+        chat_model_id="openai@gpt-4o",
+        litellm_model="openai/gpt-4o",
+        agent=SimpleNamespace(sallm=SallmSection()),
+    )
+
+
+def test_chat_routes_to_sallm_runner() -> None:
+    captured: dict[str, object] = {}
+
+    async def fake_run_sallm_chat(**kwargs) -> None:
+        captured.update(kwargs)
+
+    cfg = _cfg()
 
     with (
-        patch("pawn_agent.utils.config.load_config", return_value=SimpleNamespace(db_dsn="postgresql://dummy")),
-        patch("pawn_agent.core.session_store.inspect_session_history", return_value=report) as mock_inspect,
+        patch("pawn_agent.utils.config.load_config", return_value=cfg),
+        patch(
+            "pawn_agent.core.sallm_session.run_sallm_chat",
+            side_effect=fake_run_sallm_chat,
+        ),
     ):
-        result = runner.invoke(app, ["inspect-session", "sess-123"])
+        result = runner.invoke(app, ["chat"])
 
     assert result.exit_code == 0
-    assert "Session Inspection" in result.stdout
-    assert "sess-123" in result.stdout
-    assert "RetryPromptPart" in result.stdout
-    mock_inspect.assert_called_once_with("sess-123", "postgresql://dummy", tail=12)
+    assert "mode=sallm" in result.stdout
+    assert captured["cfg"] is cfg
+    assert callable(captured["emit"])
+    assert callable(captured["on_thinking"])
+    assert captured["conversation_id"] == "cli"
 
 
-def test_inspect_session_command_can_dump_llm_context() -> None:
-    report = {
-        "session_id": "sess-123",
-        "turn_count": 1,
-        "raw_message_count": 2,
-        "replay_message_count": 2,
-        "raw_context_kb": 1.0,
-        "raw_context_tokens": 100,
-        "replay_context_kb": 1.0,
-        "replay_context_tokens": 100,
-        "session_vars": {},
-        "issues": [],
-        "counts": {},
-        "replay_payload": [
-            {"parts": [{"content": "how much is 1+1", "part_kind": "user-prompt"}], "kind": "request"},
-            {"parts": [{"content": "2", "part_kind": "text"}], "kind": "response"},
-        ],
-        "recent_messages": [],
-        "turns": [],
-    }
+def test_chat_passes_otlp_into_config() -> None:
+    captured: dict[str, object] = {}
+
+    async def fake_run_sallm_chat(**kwargs) -> None:
+        captured.update(kwargs)
+
+    cfg = _cfg()
 
     with (
-        patch("pawn_agent.utils.config.load_config", return_value=SimpleNamespace(db_dsn="postgresql://dummy")),
-        patch("pawn_agent.core.session_store.inspect_session_history", return_value=report) as mock_inspect,
+        patch("pawn_agent.utils.config.load_config", return_value=cfg),
+        patch(
+            "pawn_agent.core.sallm_session.run_sallm_chat",
+            side_effect=fake_run_sallm_chat,
+        ),
     ):
-        result = runner.invoke(app, ["inspect-session", "sess-123", "--dump-context"])
+        result = runner.invoke(app, ["chat", "--otlp", "http://localhost:4318"])
 
     assert result.exit_code == 0
-    assert "LLM Context Dump" in result.stdout
-    assert "how much is 1+1" in result.stdout
-    assert "\"kind\": \"response\"" in result.stdout
-    mock_inspect.assert_called_once_with("sess-123", "postgresql://dummy", tail=12)
+    assert cfg.agent.sallm.otlp_endpoint == "http://localhost:4318"
+    assert captured["cfg"] is cfg
+
+
+def test_tools_lists_clitools() -> None:
+    fake_tool = MagicMock()
+    fake_tool.summary = "List sessions"
+    with patch(
+        "pawn_agent.core.sallm_tools.build_pawn_clitools",
+        return_value={"sessions_list": fake_tool},
+    ):
+        result = runner.invoke(app, ["tools"])
+
+    assert result.exit_code == 0
+    assert "sessions_list" in result.stdout

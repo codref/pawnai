@@ -7,7 +7,7 @@ name = "pawn-diarize"
 dynamic = ["version"]
 description = "Speaker diarization and transcription CLI tool"
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.12"
 license = {text = "MIT"}
 authors = [
     {name = "Pawn Diarize Contributors"},
@@ -40,7 +40,6 @@ dependencies = [
     "PyYAML>=6.0",
     "boto3>=1.26.0",
     "github-copilot-sdk",
-    "pydantic-ai>=0.1.0",
     "requests>=2.28.0",
     "alembic>=1.13.0",
     "sentence-transformers>=2.7.0",
@@ -50,6 +49,10 @@ dependencies = [
     "uvicorn[standard]>=0.29.0",
     "mlflow[genai]>=3.0.0",
     "pydantic-settings[yaml]>=2.3.0",
+    "litellm>=1.40.0",
+    "croniter>=2.0.0",
+    # Local editable by default; switch to git+https://github.com/codref/sallm-agent.git when needed.
+    "sallm-agent",
 ]
 
 [project.optional-dependencies]
@@ -66,8 +69,11 @@ docs = [
     "sphinx-rtd-theme>=1.0",
 ]
 litellm = [
-    "litellm>=1.40.0",
     "httpx>=0.27.0",
+]
+matrix = [
+    "matrix-nio[e2e]>=0.25.0",
+    "markdown>=3.5",
 ]
 
 [project.scripts]
@@ -88,23 +94,31 @@ Repository = "https://github.com/example/pawn-diarize.git"
 packages = [
     "pawn_core",
     "pawn_diarize", "pawn_diarize.core", "pawn_diarize.cli", "pawn_diarize.utils",
-    "pawn_agent", "pawn_agent.core", "pawn_agent.cli", "pawn_agent.utils", "pawn_agent.tools",
+    "pawn_agent", "pawn_agent.core", "pawn_agent.cli", "pawn_agent.utils",
+    "pawn_agent.tools", "pawn_agent.tools.cli", "pawn_agent.profiles",
     "pawn_server", "pawn_server.core", "pawn_server.cli",
 ]
 
+[tool.setuptools.package-data]
+pawn_agent = ["profiles/*.yaml", "profiles/*.yml", "profiles/*.json"]
+
+# Resolve the local sallm-agent checkout during development.
+[tool.uv.sources]
+sallm-agent = { path = "../sallm-agent", editable = true }
+
+[tool.mypy]
+python_version = "3.12"
+warn_return_any = true
+warn_unused_configs = true
+ignore_missing_imports = true
+
 [tool.black]
 line-length = 100
-target-version = ['py38']
+target-version = ['py312']
 
 [tool.isort]
 profile = "black"
 line_length = 100
-
-[tool.mypy]
-python_version = "3.8"
-warn_return_any = true
-warn_unused_configs = true
-ignore_missing_imports = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

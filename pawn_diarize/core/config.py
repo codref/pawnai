@@ -29,7 +29,6 @@ from pawn_core.config import (  # noqa: F401
     PawnConfig,
     RagConfig,
     S3Config,
-    SiYuanConfig,
 )
 
 
@@ -74,7 +73,6 @@ class DiarizeConfig(PawnConfig):
             "db_dsn": lambda: self.db_dsn,
             "audio_dir": lambda: self.audio_dir,
             "s3": lambda: self.s3.model_dump() if self.s3 else None,
-            "siyuan": lambda: self.siyuan.model_dump(),
             "queue": lambda: self.diarize_queue.model_dump() if self.diarize_queue else None,
             "rag": lambda: self.rag.model_dump(),
         }
@@ -88,9 +86,6 @@ class DiarizeConfig(PawnConfig):
 
     def get_s3_config(self) -> Optional[dict]:
         return self.s3.model_dump() if self.s3 else None
-
-    def get_siyuan_config(self) -> Optional[dict]:
-        return self.siyuan.model_dump()
 
     def get_rag_config(self) -> Optional[dict]:
         return self.rag.model_dump()

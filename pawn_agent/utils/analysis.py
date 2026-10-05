@@ -1,4 +1,4 @@
-"""Core structured-analysis logic shared by analyze_summary and vectorize tools."""
+"""Core structured-analysis logic used by ``analyze_summary_impl``."""
 
 from __future__ import annotations
 
@@ -6,8 +6,8 @@ import re
 from typing import Any, Dict, List, Optional
 
 from pawn_agent.utils.config import AgentConfig
-from pawn_agent.utils.transcript import fetch_transcript
 from pawn_agent.utils.db import save_session_analysis
+from pawn_agent.utils.transcript import fetch_transcript
 
 _SYSTEM_PROMPT = (
     "You are an expert conversation analyst. "
@@ -17,6 +17,9 @@ _SYSTEM_PROMPT = (
 
 _PROMPT_TEMPLATE = """\
 You are an expert conversation analyst. Below is a speaker-diarized transcript. \
+Lines tagged [note] are notes taken during the session. Lines tagged [screen] \
+describe what changed on a display. A final line may say screenshots were captured \
+but not summarized. Treat those lines as part of what happened. \
 Please provide a structured analysis with the following sections:
 
 ## Title
@@ -56,19 +59,19 @@ def _split_tags(raw: Optional[str]) -> Optional[List[str]]:
     cleaned = raw.strip().strip("`").strip()
     cleaned = re.sub(r"[*_]{1,2}([^*_]+)[*_]{1,2}", r"\1", cleaned)
     cleaned = re.sub(r"\s*\n\s*", ", ", cleaned)
-    tags = [
-        re.sub(r"[`*_]", "", t).strip().lower()
-        for t in cleaned.split(",")
-        if t.strip()
-    ]
+    tags = [re.sub(r"[`*_]", "", t).strip().lower() for t in cleaned.split(",") if t.strip()]
     return tags if tags else None
 
 
 def parse_sections(analysis_text: str) -> Dict[str, Any]:
     result: Dict[str, Any] = {
-        "title": None, "summary": None, "key_topics": None,
-        "speaker_highlights": None, "sentiment": None,
-        "sentiment_tags": None, "tags": None,
+        "title": None,
+        "summary": None,
+        "key_topics": None,
+        "speaker_highlights": None,
+        "sentiment": None,
+        "sentiment_tags": None,
+        "tags": None,
     }
     for block in re.split(r"(?m)^## ", analysis_text):
         if not block.strip():
@@ -116,7 +119,7 @@ async def run_analysis(cfg: AgentConfig, session_id: str) -> str:
     save_session_analysis(
         session_id=session_id,
         source=f"session:{session_id}",
-        model=cfg.model,
+        model=cfg.chat_model_id,
         title=sections.get("title"),
         summary=sections.get("summary"),
         key_topics=sections.get("key_topics"),

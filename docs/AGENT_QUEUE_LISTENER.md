@@ -125,7 +125,7 @@ Execute a natural-language prompt through the PydanticAgent with all tools avail
 ```json
 {
   "command": "run",
-  "prompt": "Analyze this session and save the results to SiYuan",
+  "prompt": "Analyze this session and save the results to Obsidian vault",
   "session_id": "meeting-20260321"
 }
 ```
@@ -235,7 +235,7 @@ async def publish_agent_job():
 
         message_id = await producer.publish("pawn-agent-jobs", {
             "command": "run",
-            "prompt": "Analyze this session and push to SiYuan",
+            "prompt": "Analyze this session and analyze the session",
             "session_id": "meeting-20260321",
         })
         print(f"Published: {message_id}")
