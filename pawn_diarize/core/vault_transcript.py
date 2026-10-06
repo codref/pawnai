@@ -136,8 +136,14 @@ def format_speakers_section(
     *,
     file_count: Optional[int] = None,
     time_cursor: Optional[float] = None,
+    people_links: Optional[Dict[str, str]] = None,
 ) -> str:
-    """Build the Speakers markdown table (talk time + turn count)."""
+    """Build the Speakers markdown table (talk time + turn count).
+
+    When *people_links* maps a display name → vault wiki target
+    (e.g. ``People/davide``), the Speakers column uses ``[[People/davide|Davide]]``
+    so Obsidian backlinks connect transcripts to person bios.
+    """
     talk: Dict[str, float] = defaultdict(float)
     turns: Dict[str, int] = defaultdict(int)
     for seg in segments:
@@ -148,13 +154,16 @@ def format_speakers_section(
         talk[name] += max(0.0, duration)
         turns[name] += 1
 
+    links = people_links or {}
     lines = [
         "| Speaker | Talk time | Turns |",
         "|---|---|---|",
     ]
     for name in sorted(talk.keys(), key=lambda n: (-talk[n], n.lower())):
         clock = _format_clock(talk[name])
-        lines.append(f"| {name} | {clock} | {turns[name]} |")
+        target = links.get(name)
+        label = f"[[{target}|{name}]]" if target else name
+        lines.append(f"| {label} | {clock} | {turns[name]} |")
 
     if not talk:
         lines.append("| _(none)_ | — | 0 |")
@@ -497,11 +506,22 @@ def push_session_transcript(
         copy_screenshots_to_vault(engine, store, cfg, session_id, note_key, captures)
 
     file_count, time_cursor = _load_session_meta(session_id, engine)
+    people_links: Dict[str, str] = {}
+    try:
+        # Optional AgentConfig path: gallery → People/{speaker_id} wikilinks.
+        from pawn_agent.core.people.refresh import (  # noqa: PLC0415
+            gallery_people_wiki_lookup,
+        )
+
+        people_links = gallery_people_wiki_lookup(cfg, session_id)
+    except Exception as exc:
+        logger.debug("people wikilinks skipped for %r: %s", session_id, exc)
     speakers_md = format_speakers_section(
         segments,
         name_lookup,
         file_count=file_count,
         time_cursor=time_cursor,
+        people_links=people_links or None,
     )
     transcript_md = format_transcript_section(segments, name_lookup, captures)
     digest = content_hash(speakers_md, transcript_md)

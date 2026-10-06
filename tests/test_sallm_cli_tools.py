@@ -27,6 +27,14 @@ def test_build_pawn_clitools_names() -> None:
         "session_screenshots",
         "session_delete",
         "session_relabel",
+        "speakers_list",
+        "speakers_show",
+        "speakers_update",
+        "speaker_enroll",
+        "session_reidentify",
+        "people_show",
+        "people_ensure",
+        "people_append",
         "note_read",
         "note_search",
         "note_write",
@@ -55,6 +63,8 @@ def test_build_pawn_skills_includes_sessions() -> None:
     assert "session_delete" in sessions.tools
     assert "session_relabel" in sessions.tools
     assert "session_screenshots" in sessions.tools
+    assert "people_show" in sessions.tools
+    assert "speakers_show" in sessions.tools
 
 
 def test_tasknotes_skill_hides_generic_note_writes() -> None:

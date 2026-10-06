@@ -52,7 +52,9 @@ pawn-diarize speakers purge-legacy-embeddings --confirm
 | `rediarize --session --confirm` | Re-run diarization + identify (keeps ASR text) |
 | `retranscribe --session --confirm` | Wipe session + full ASR + diarize from stored S3 audio |
 
-Agent CliTools: `speakers_list`, `speaker_enroll`, `session_reidentify`.
+Agent CliTools: `speakers_list`, `speakers_show`, `speakers_update`,
+`speaker_enroll`, `session_reidentify`, plus vault bio tools
+`people_show` / `people_ensure` / `people_append` (see [PEOPLE.md](PEOPLE.md)).
 The agent must confirm quality with you before `speaker_enroll`.
 
 ## Config (`pawnai.yaml`)

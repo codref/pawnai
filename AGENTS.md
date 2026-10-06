@@ -61,13 +61,16 @@ Notes: pytest defaults to `--cov=pawn_diarize --cov-report=term-missing`; pass `
   - `/v1/vault/tasks*` are deprecated aliases. Approve indexes into sallm memory. Session keys `note:{path}` / `chat:{uuid}`.
 - Agent run persistence is centralized in `pawn_agent/core/agent_runner.py`.
 - Coworker loop (`coworker:` in config, off by default): after diarization, `chain_agent.command: session_completed` extracts items, scores them against `Goals.md`, writes `Pawn/Items` and `Pawn/Today.md`, and notifies only on an active-thread interrupt. Triage is `file|task|later|ignore` from Matrix, item-note frontmatter, `GET/POST /v1/items`, or the same words in chat. `/idea` writes one note under `Ideas/` (`status: inbox`) and does not start a model turn. The plugin Inbox lists those notes (Keep / Goal / Task / Drop). Idea notes are not extracted. `/goal` and `/park` write `Goals.md`, and a normal prompt only drafts `Pawn/Reviews/goal-proposal.md` until `/goal apply`. Morning and weekly crons live in `pawn_server/core/coworker_worker.py`. See `docs/COWORKER.md`.
+- People bios (`docs/PEOPLE.md`): vault notes `People/{speaker_id}.md` linked to the Speakers gallery. After `session_completed`, `speakers_refresh` appends Appearances and proposes or applies Facts under autonomy `people_refresh`. Transcript Speakers tables wikilink into People notes. Tools: `people_show` / `people_ensure` / `people_append`. One-off CLI: `pawn-server coworker people-refresh --session ID` (does not create Items; use `coworker process` for Items only).
 
 ## Agent Tools / Skills
 
 Domain logic stays in `pawn_agent/tools/*_impl`. Production path uses **CliTools** under `pawn_agent/tools/cli/` registered in `sallm_tools.py`.
 
 Migrated CliTools: `sessions_list`, `session_transcript`, `session_analyze`,
-`session_screenshots`, `session_delete`, `session_relabel`, `note_read`, `note_search`,
+`session_screenshots`, `session_delete`, `session_relabel`, `speakers_list`,
+`speakers_show`, `speakers_update`, `speaker_enroll`, `session_reidentify`,
+`people_show`, `people_ensure`, `people_append`, `note_read`, `note_search`,
 `note_write`, `note_append`, `task_update`, `schedule_propose`, `queue_push`,
 `goal_propose`.
 

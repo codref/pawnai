@@ -36,6 +36,9 @@ CONVERSE = Skill(
         "speaker_enroll --speaker Davide --session <id> --from SPEAKER_00\n"
         "```\n"
         "then session_reidentify --session-id <id>. Never auto-enroll.\n"
+        "For who someone is (bio, facts, past meetings), use people_show / "
+        "speakers_show — not chat memory. Durable facts go to people_append "
+        "(confirm with the user). Person notes live under People/{speaker_id}.md.\n"
         "Existing vault transcript notes refresh automatically; if the user "
         "also wants a vault note and none exists yet, add --push-vault.\n"
         "To delete a diarization session, ALWAYS ask the user to confirm the "
@@ -79,7 +82,10 @@ SESSIONS = Skill(
         "Active skill: sessions.\n"
         "Use sessions_list / session_transcript / session_analyze / "
         "session_screenshots / session_relabel / session_delete / "
-        "speakers_list / speaker_enroll / session_reidentify via ```run blocks.\n"
+        "speakers_list / speakers_show / speaker_enroll / session_reidentify / "
+        "people_show / people_ensure / people_append via ```run blocks.\n"
+        "When the user asks who a speaker is, call people_show (vault bio) and "
+        "speakers_show (gallery card). Do not invent biography.\n"
         "Never invent session ids — list first when the id is unclear.\n"
         "Do NOT pass --save unless the user explicitly asks for vault notes. "
         "When they want analysis AND vault, prefer a single "
@@ -124,6 +130,14 @@ SESSIONS = Skill(
         "session_screenshots",
         "session_relabel",
         "session_delete",
+        "speakers_list",
+        "speakers_show",
+        "speakers_update",
+        "speaker_enroll",
+        "session_reidentify",
+        "people_show",
+        "people_ensure",
+        "people_append",
         "knowledge_search",
     ),
 )
@@ -174,6 +188,10 @@ NOTES = Skill(
         "note_search",
         "note_write",
         "note_append",
+        "people_show",
+        "people_ensure",
+        "people_append",
+        "speakers_show",
         "knowledge_search",
         "tasknotes_list",
         "tasknotes_commit",

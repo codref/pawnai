@@ -51,8 +51,9 @@ dependencies = [
     "pydantic-settings[yaml]>=2.3.0",
     "litellm>=1.40.0",
     "croniter>=2.0.0",
+    "python-multipart",
     # Local editable by default; switch to git+https://github.com/codref/sallm-agent.git when needed.
-    "sallm-agent",
+    "sallm-agent"
 ]
 
 [project.optional-dependencies]

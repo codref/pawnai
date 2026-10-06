@@ -40,8 +40,7 @@ def speakers_list(
         enrollments = gallery.list_enrollments(sp.id)
         flag = "" if sp.active else " (inactive)"
         console.print(
-            f"[cyan]{sp.id}[/cyan]  {sp.display_name}{flag}  "
-            f"enrollments={len(enrollments)}"
+            f"[cyan]{sp.id}[/cyan]  {sp.display_name}{flag}  " f"enrollments={len(enrollments)}"
         )
 
 
@@ -102,6 +101,46 @@ def speakers_rename(
         raise typer.Exit(1)
     updated = gallery.rename_speaker(sp.id, new_name)
     console.print(f"[green]Renamed[/green] {sp.id} → {updated.display_name}")
+
+
+@speakers_app.command("update")
+def speakers_update(
+    speaker: str = typer.Argument(..., help="Speaker id or display name"),
+    alias: Optional[list[str]] = typer.Option(
+        None,
+        "--alias",
+        help="Add an alias (repeatable). Merged with existing.",
+    ),
+    notes: Optional[str] = typer.Option(
+        None,
+        "--notes",
+        help="Replace short gallery notes card (pass empty to clear)",
+    ),
+    display_name: Optional[str] = typer.Option(None, "--display-name"),
+    db_dsn: Optional[str] = typer.Option(None),
+    config: Optional[str] = typer.Option(None, "--config"),
+) -> None:
+    """Update gallery card fields (aliases / notes). Does not enroll voice."""
+    gallery, _ = _gallery(db_dsn, config)
+    sp = gallery.get_speaker(speaker) or gallery.find_speaker_by_name(speaker)
+    if sp is None:
+        console.print(f"[red]Unknown speaker: {speaker}[/red]")
+        raise typer.Exit(1)
+    merged = list(sp.aliases or [])
+    for a in alias or []:
+        a = a.strip()
+        if a and a.lower() not in {x.lower() for x in merged}:
+            merged.append(a)
+    updated = gallery.update_speaker(
+        sp.id,
+        aliases=merged if alias else None,
+        notes=notes,
+        display_name=display_name,
+    )
+    console.print(
+        f"[green]Updated[/green] {updated.id} aliases={updated.aliases!r} "
+        f"notes={updated.notes!r}"
+    )
 
 
 @speakers_app.command("deactivate")
@@ -217,9 +256,7 @@ def speakers_enroll(
             )
             raise typer.Exit(1)
     else:
-        console.print(
-            "[red]Provide either --audio FILE or --session + --from LABEL[/red]"
-        )
+        console.print("[red]Provide either --audio FILE or --session + --from LABEL[/red]")
         raise typer.Exit(1)
 
     try:

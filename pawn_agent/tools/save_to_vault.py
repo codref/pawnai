@@ -10,11 +10,20 @@ from pawn_core.vault import dump_frontmatter, resolve_path_template
 from pawn_core.vault_config import vault_store_from_config
 
 
-def format_analysis_markdown(row) -> str:
-    """Render a SessionAnalysis ORM row as Markdown suitable for the vault."""
+def format_analysis_markdown(row, *, people_links: Optional[dict[str, str]] = None) -> str:
+    """Render a SessionAnalysis ORM row as Markdown suitable for the vault.
+
+    When *people_links* is provided (display name → ``People/{id}``), a
+    Speakers section with Obsidian wikilinks is prepended after the title so
+    analyses join the same graph as transcripts and person bios.
+    """
     parts: list[str] = []
     if row.title:
         parts.append(f"# {row.title}")
+    if people_links:
+        link_lines = [f"- [[{target}|{name}]]" for name, target in sorted(people_links.items())]
+        if link_lines:
+            parts.append("## Speakers\n\n" + "\n".join(link_lines))
     if row.summary:
         parts.append(f"## Summary\n\n{row.summary}")
     if row.key_topics:
@@ -85,7 +94,16 @@ def save_analysis_to_vault_impl(
             f"Error: no stored analysis for session {session_id!r}. "
             "Run session_analyze first, or session_analyze --save."
         )
-    content = format_analysis_markdown(row)
+    people_links: Optional[dict[str, str]] = None
+    try:
+        from pawn_agent.core.people.refresh import (  # noqa: PLC0415
+            gallery_people_wiki_lookup,
+        )
+
+        people_links = gallery_people_wiki_lookup(cfg, session_id) or None
+    except Exception:
+        people_links = None
+    content = format_analysis_markdown(row, people_links=people_links)
     if not content:
         return f"Error: analysis for {session_id!r} has no content fields to save."
     doc_title = title or row.title or session_id

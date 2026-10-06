@@ -107,7 +107,52 @@ def build_pawn_clitools() -> dict[str, CliTool]:
             argv=_cli_argv("speakers_list.py"),
             summary=(
                 "List curated Speakers gallery people (id, name, enrollment count). "
-                "Optional: --include-inactive. Use before speaker_enroll."
+                "Optional: --include-inactive. Use before speaker_enroll / people_show."
+            ),
+        ),
+        "speakers_show": CliTool(
+            name="speakers_show",
+            argv=_cli_argv("speakers_show.py"),
+            summary=(
+                "Show one Speakers gallery person: aliases, short notes, enrollments, "
+                "and the linked People/{id}.md path. Arg: SPEAKER id or name."
+            ),
+        ),
+        "speakers_update": CliTool(
+            name="speakers_update",
+            argv=_cli_argv("speakers_update.py"),
+            summary=(
+                "Update gallery card fields only (not voice). "
+                "Flags: --speaker NAME --alias A (repeatable) --notes TEXT "
+                "--display-name NAME. Prefer people_append for vault bios. "
+                "Never enrolls voiceprints."
+            ),
+        ),
+        "people_show": CliTool(
+            name="people_show",
+            argv=_cli_argv("people_show.py"),
+            summary=(
+                "Read the vault person bio (People/{speaker_id}.md). "
+                "Arg: SPEAKER id or display name. Use when asked who someone is."
+            ),
+        ),
+        "people_ensure": CliTool(
+            name="people_ensure",
+            argv=_cli_argv("people_ensure.py"),
+            summary=(
+                "Create a stub People/{speaker_id}.md for a gallery speaker if missing. "
+                "Required: --speaker NAME. Does not create gallery people."
+            ),
+        ),
+        "people_append": CliTool(
+            name="people_append",
+            argv=_cli_argv("people_append.py"),
+            summary=(
+                "Append Facts/Appearances/tags to a person note. "
+                "Required: --speaker. Optional: --fact TEXT (repeatable), "
+                "--fact-file @note, --appearance, --tag, --alias, --summary, "
+                "--source [[wikilink]]. Never overwrites ## Notes. "
+                "Confirm durable facts with the user before writing."
             ),
         ),
         "speaker_enroll": CliTool(

@@ -55,6 +55,8 @@ COMMAND_DEFAULTS: Dict[str, Dict[str, Any]] = {
         "request_id": None,
     },
     "session_completed": {"session_id": None},
+    # Gallery-linked People/ note refresh (appearances + optional facts).
+    "speakers_refresh": {"session_id": None, "force": False},
 }
 
 
@@ -137,6 +139,9 @@ async def dispatch(
     if command == "session_completed":
         await _session_completed(params, cfg)
         return
+    if command == "speakers_refresh":
+        await _speakers_refresh(params, cfg)
+        return
 
     raise NotImplementedError(f"Command {command!r} has no handler registered")
 
@@ -198,6 +203,23 @@ async def _session_completed(params: Dict[str, Any], cfg: Any) -> None:
     from pawn_agent.core.coworker.pipeline import process_session  # noqa: PLC0415
 
     await process_session(cfg, session_id)
+    # People bios refresh after the item extract pass (same event, isolated try).
+    try:
+        await _speakers_refresh({"session_id": session_id}, cfg)
+    except Exception as exc:
+        logger.error("speakers_refresh after session_completed failed: %s", exc, exc_info=True)
+
+
+async def _speakers_refresh(params: Dict[str, Any], cfg: Any) -> None:
+    """Update People/ notes for gallery speakers in a finished session."""
+    session_id = params.get("session_id") or None
+    if not session_id:
+        raise ValueError("speakers_refresh requires session_id")
+    force = bool(params.get("force"))
+    from pawn_agent.core.people.refresh import refresh_people_for_session  # noqa: PLC0415
+
+    result = await refresh_people_for_session(cfg, session_id, force=force)
+    logger.info("speakers_refresh %s → %s", session_id, result)
 
 
 # ──────────────────────────────────────────────────────────────────────────────

@@ -29,7 +29,6 @@ from pawn_core.database import SessionSpeakerMap, Speaker, SpeakerEnrollment
 from pawn_diarize.core.database import Embedding, get_engine, get_session, init_db
 from pawn_diarize.core.voice_embeddings import cosine_similarity
 
-
 _SLUG_RE = re.compile(r"[^a-z0-9]+")
 
 
@@ -149,6 +148,34 @@ class SpeakerGallery:
             if row is None:
                 raise ValueError(f"Unknown speaker id: {speaker_id}")
             row.display_name = display_name.strip()
+            row.updated_at = datetime.now(timezone.utc)
+            db.flush()
+            db.expunge(row)
+            return row
+
+    def update_speaker(
+        self,
+        speaker_id: str,
+        *,
+        aliases: Optional[Sequence[str]] = None,
+        notes: Optional[str] = None,
+        display_name: Optional[str] = None,
+    ) -> Speaker:
+        """Update gallery card fields (aliases / short notes / display name).
+
+        Pass ``notes=""`` to clear the short card. ``aliases`` replaces the
+        list when provided (callers merge before invoking).
+        """
+        with get_session(self._engine) as db:
+            row = db.get(Speaker, speaker_id)
+            if row is None:
+                raise ValueError(f"Unknown speaker id: {speaker_id}")
+            if display_name is not None:
+                row.display_name = display_name.strip()
+            if aliases is not None:
+                row.aliases = [str(a).strip() for a in aliases if str(a).strip()]
+            if notes is not None:
+                row.notes = notes.strip() or None
             row.updated_at = datetime.now(timezone.utc)
             db.flush()
             db.expunge(row)
@@ -367,9 +394,7 @@ class SpeakerGallery:
         with OrmSession(self._engine) as db:
             rows = list(
                 db.scalars(
-                    select(SessionSpeakerMap).where(
-                        SessionSpeakerMap.session_id == session_id
-                    )
+                    select(SessionSpeakerMap).where(SessionSpeakerMap.session_id == session_id)
                 )
             )
             out: Dict[str, SessionSpeakerMap] = {}
@@ -414,9 +439,7 @@ class SpeakerGallery:
                 total += 1
                 mid = enrollment.embedding_model or ""
                 models[mid] = models.get(mid, 0) + 1
-                dims[int(enrollment.embedding_dim)] = (
-                    dims.get(int(enrollment.embedding_dim), 0) + 1
-                )
+                dims[int(enrollment.embedding_dim)] = dims.get(int(enrollment.embedding_dim), 0) + 1
                 if enrollment.embedding_dim != probe_dim:
                     dim_mismatch += 1
                     continue
@@ -457,9 +480,7 @@ class SpeakerGallery:
 def duration_weighted_mean(embeddings: Iterable[Dict[str, Any]]) -> Optional[np.ndarray]:
     """Mean of segment embeddings weighted by duration (skips synthetic priors)."""
     usable = [
-        e
-        for e in embeddings
-        if not e.get("synthetic", False) and e.get("embedding") is not None
+        e for e in embeddings if not e.get("synthetic", False) and e.get("embedding") is not None
     ]
     if not usable:
         return None
@@ -468,9 +489,7 @@ def duration_weighted_mean(embeddings: Iterable[Dict[str, Any]]) -> Optional[np.
         dtype=np.float64,
     )
     weights = durations / durations.sum()
-    stacked = np.stack(
-        [np.asarray(e["embedding"], dtype=np.float32).flatten() for e in usable]
-    )
+    stacked = np.stack([np.asarray(e["embedding"], dtype=np.float32).flatten() for e in usable])
     mean = np.average(stacked, axis=0, weights=weights)
     norm = float(np.linalg.norm(mean))
     if norm < 1e-12:

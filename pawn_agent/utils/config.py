@@ -342,7 +342,26 @@ class CoworkerAutonomyConfig(BaseModel):
     max_self_jobs_per_event: int = 3
     max_self_jobs_per_day: int = 20
     max_depth: int = 2
+    # ``people_refresh`` allows unattended People/ note updates under limited_act.
     auto_actions: list[str] = Field(default_factory=lambda: ["research"])
+
+
+class CoworkerPeopleConfig(BaseModel):
+    """``coworker.people:`` — vault bios linked to the Speakers gallery.
+
+    Person notes live under ``people_dir`` (vault root by default). Filename is
+    always ``{speaker_id}.md`` so Obsidian wikilinks stay stable across renames.
+    Writes go through dedicated people helpers (not free ``note_write``).
+    """
+
+    # When True, session_completed also runs speakers_refresh for gallery people.
+    refresh_after_session: bool = True
+    # After interactive chat turns, propose (never auto-write) durable person facts.
+    refresh_after_chat: bool = False
+    # Create a stub People/{id}.md when a gallery speaker appears in a session.
+    create_stubs: bool = True
+    # Allow topical tags on person notes when autonomy allows the write.
+    auto_tags: bool = True
 
 
 class TaskNotesConfig(BaseModel):
@@ -395,6 +414,8 @@ class CoworkerConfig(BaseModel):
     ideas_dir: str = "Pawn/Ideas"  # unused; kept so existing yaml still loads
     reviews_dir: str = "Pawn/Reviews"
     capture_dir: str = "Pawn/Capture"
+    # Vault-root folder for person bios (sibling of Ideas/). See docs/PEOPLE.md.
+    people_dir: str = "People"
     briefing_cron: str = "0 8 * * *"
     weekly_cron: str = "0 17 * * 5"
     timezone: str = "UTC"
@@ -408,6 +429,7 @@ class CoworkerConfig(BaseModel):
     commitment_days: int = 7
     stale_days: int = 14
     embed_dim: int = 1024
+    people: CoworkerPeopleConfig = Field(default_factory=CoworkerPeopleConfig)
     autonomy: CoworkerAutonomyConfig = Field(default_factory=CoworkerAutonomyConfig)
     notify: CoworkerNotifyConfig = Field(default_factory=CoworkerNotifyConfig)
 

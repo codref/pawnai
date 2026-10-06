@@ -280,6 +280,13 @@ coworker:
   timezone: Europe/Rome
   briefing_cron: "0 8 * * *"
   weekly_cron: "0 17 * * 5"
+  # Vault-root folder for person bios (People/{speaker_id}.md). See docs/PEOPLE.md.
+  people_dir: People
+  people:
+    refresh_after_session: true
+    refresh_after_chat: false
+    create_stubs: true
+    auto_tags: true
   # Notes in these folders are extracted like a meeting. Idea notes are never
   # extracted, including anything under Ideas/ or tagged idea. Leave both empty
   # unless you want that pass on some other folder.
@@ -290,6 +297,8 @@ coworker:
   me: []
   autonomy:
     mode: suggest_only
+    # Add people_refresh under limited_act to auto-write People/ Facts.
+    auto_actions: [research]
   notify:
     ntfy_url: ""
     topic: ""

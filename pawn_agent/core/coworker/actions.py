@@ -125,6 +125,14 @@ async def apply_action(
         _rewrite_note(vault, updated or item, status="filed")
         return f"Ran research for {item['short_id']}."
 
+    if action == "approve" and item.get("kind") == "people_update":
+        return await _approve_people_update(cfg, item, vault)
+
+    if action == "reject" and item.get("kind") == "people_update":
+        updated = itemdb.update_item(cfg.db_dsn, item["id"], status="dismissed")
+        _rewrite_note(vault, updated or item, status="dismissed")
+        return f"Rejected people update {item['short_id']}."
+
     if action in {"approve", "reject"}:
         return _resolve_proposal(cfg, item, action, vault)
 
@@ -144,6 +152,20 @@ def _parse_until(arg: Optional[str]) -> datetime:
             except ValueError:
                 continue
     return now + timedelta(days=1)
+
+
+async def _approve_people_update(cfg: AgentConfig, item: dict[str, Any], vault: Any) -> str:
+    """Apply a proposed People/ note update payload."""
+    from pawn_agent.core.people.refresh import apply_people_updates  # noqa: PLC0415
+
+    payload = item.get("payload") or {}
+    updates = payload.get("updates") or []
+    if not isinstance(updates, list) or not updates:
+        return f"People update {item['short_id']} has no payload."
+    keys = apply_people_updates(cfg, updates, store=vault)
+    updated = itemdb.update_item(cfg.db_dsn, item["id"], status="filed")
+    _rewrite_note(vault, updated or item, status="filed")
+    return f"Applied people update {item['short_id']} ({len(keys)} note(s))."
 
 
 async def _spawn_task(cfg: AgentConfig, item: dict[str, Any], registry: Any) -> None:

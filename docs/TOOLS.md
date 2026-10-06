@@ -59,6 +59,9 @@ to `Pawn/Analyses/{session_id}.md` via `save_to_vault`. Free-form notes use
 | `session_analyze` | `analyze_summary` | Structured analysis (optional `--save` to vault) |
 | `session_delete` | `delete_session` | Permanently delete one session (requires `--confirm`) |
 | `session_relabel` | `session_relabel` | Rename a speaker across a session (segments + embeddings) |
+| `speakers_list` / `speakers_show` / `speakers_update` | `speaker_gallery` | Curated Speakers gallery card |
+| `speaker_enroll` / `session_reidentify` | `speaker_gallery` / `reidentify` | Manual voice enroll + rematch |
+| `people_show` / `people_ensure` / `people_append` | `people.notes` | Vault bios under `People/{speaker_id}.md` |
 | `note_read` | `notes_impl` | Read a vault Markdown note |
 | `note_search` | `notes_impl` | List/filter vault notes |
 | `note_write` | `notes_impl` | Create/overwrite a vault note (write guards) |
@@ -75,3 +78,4 @@ to `Pawn/Analyses/{session_id}.md` via `save_to_vault`. Free-form notes use
 | `pawn_core/vault.py` | `VaultStore`, frontmatter helpers, write guards |
 | `pawn_core/vault_config.py` | `vault_store_from_config` |
 | `pawn_core/vault_db.py` | `vault_notes` ORM helpers |
+| `pawn_agent/core/people/` | Person note merge, extract, `speakers_refresh` |

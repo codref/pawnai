@@ -133,6 +133,9 @@ async def run_agent_turn(
         update_agent_run(cfg.db_dsn, run_id, "completed", response=reply)
         if vault_paths:
             _publish_vault_writes(vault_paths, source=source, run_id=run_id)
+        # Optional Phase-4 hook: propose People/ facts from interactive chat.
+        if source in {"matrix", "api", "cli", "chat"} and prompt:
+            await _maybe_propose_people_from_chat(cfg, prompt, session_id or run_id)
         return AgentRunResult(run_id=run_id, response=reply)
     except Exception as exc:
         update_agent_run(cfg.db_dsn, run_id, "failed", error=str(exc))
@@ -147,3 +150,22 @@ def _publish_vault_writes(paths: list[str], *, source: str, run_id: str) -> None
         publish_vault_event(paths, source=source, run_id=run_id)
     except Exception:
         logger.exception("vault resync publish failed run_id=%s", run_id)
+
+
+async def _maybe_propose_people_from_chat(cfg: Any, prompt: str, source_ref: str) -> None:
+    """Propose People/ facts when ``refresh_after_chat`` is on.
+
+    Failures are logged only — never fails the user-facing turn. Always
+    proposes (never auto-writes) so chat remains a low-risk signal.
+    """
+    people = getattr(getattr(cfg, "coworker", None), "people", None)
+    if people is None or not getattr(people, "refresh_after_chat", False):
+        return
+    try:
+        from pawn_agent.core.people.refresh import (  # noqa: PLC0415
+            propose_people_from_chat,
+        )
+
+        await propose_people_from_chat(cfg, prompt, source_ref=source_ref)
+    except Exception:
+        logger.exception("people chat propose failed source_ref=%s", source_ref)

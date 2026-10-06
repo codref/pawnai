@@ -113,13 +113,20 @@ When a `transcribe-diarize` job finishes and the chain command is `session_compl
 2. Scores them against the active threads. A hit has to name one of those threads.
 3. Writes `Pawn/Items/{short_id}.md` and refreshes `Pawn/Today.md`.
 4. Pushes Matrix (and optional ntfy) only for interrupts.
+5. Runs `speakers_refresh` for gallery-linked people (Appearances always;
+   Facts under autonomy `people_refresh` — see [PEOPLE.md](PEOPLE.md)).
+   Approve `people_update` items with `approve <id>` like research proposals.
 
 Duplicates you already triaged, ignored fingerprints, quiet hours, and the daily cap still create the item note. They do not notify. `Pawn/Today.md` lists what needs a tap under “Needs you”, then what was filed quietly.
 
 Run one session by hand:
 
 ```bash
+# Meeting items → Pawn/Items (not People bios)
 pawn-server coworker process --session <diarization-session-id>
+
+# People bios only → People/{speaker_id}.md (not Items)
+pawn-server coworker people-refresh --session <diarization-session-id>
 ```
 
 An item note looks like this. The eight-character `short_id` is what you reply with.
@@ -301,5 +308,6 @@ Env vars use `PAWN_COWORKER__*` (`PAWN_COWORKER__ENABLED=true`, `PAWN_COWORKER__
 | `pawn-server serve --coworker-only` | Loop only, no HTTP API |
 | `pawn-server coworker status` | Enabled, paused, and autonomy mode |
 | `pawn-server coworker pause` / `resume` | Kill switch for unattended follow-ups |
-| `pawn-server coworker process --session ID` | Run the loop for one finished session |
+| `pawn-server coworker process --session ID` | Extract meeting items → `Pawn/Items` |
+| `pawn-server coworker people-refresh --session ID` | People bios only → `People/{id}.md` |
 | `pawn-server coworker reindex` | Backfill the knowledge index |
