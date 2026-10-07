@@ -35,6 +35,8 @@ export class ItemsStore {
   private offline = false;
   private debounceTimer = 0;
   private refreshing = false;
+  private flushing = false;
+  private flushLabel = "";
   kind = "";
   q = "";
   scope: ItemsScope = "open";
@@ -290,22 +292,73 @@ export class ItemsStore {
     return this.deleteAllMatching();
   }
 
+  isFlushing(): boolean {
+    return this.flushing;
+  }
+
+  flushProgress(): string {
+    return this.flushLabel;
+  }
+
   /**
    * Remove closed items from the server and trash leftover closed notes in Items/.
-   * Open items are left alone.
+   * Open items are never touched. Does not use all_open (that wrongly wiped opens
+   * when the server ignored statuses).
    */
   async flushClosed(): Promise<{ deleted: number; notes: number }> {
+    if (this.flushing) throw new Error("Flush already in progress.");
+    this.flushing = true;
+    this.flushLabel = "Collecting closed items…";
+    this.notify();
     let deleted = 0;
-    if (!this.offline && this.plugin.jobs?.online) {
-      const result = await this.plugin.client.deleteItems({
-        all_open: true,
-        statuses: CLOSED_STATUSES.join(","),
-      });
-      deleted = result.deleted;
+    try {
+      if (!this.offline && this.plugin.jobs?.online) {
+        const ids: string[] = [];
+        let offset = 0;
+        for (;;) {
+          const page = await this.plugin.client.listItems({
+            statuses: CLOSED_STATUSES.join(","),
+            limit: PAGE_SIZE,
+            offset,
+          });
+          for (const item of page.items) {
+            const status = (item.status || "").toLowerCase();
+            if (!(CLOSED_STATUSES as readonly string[]).includes(status)) continue;
+            ids.push(item.id);
+          }
+          offset += page.items.length;
+          this.flushLabel = `Collecting closed items… ${ids.length}`;
+          this.notify();
+          if (offset >= page.total || page.items.length === 0) break;
+        }
+        const batch = 40;
+        for (let i = 0; i < ids.length; i += batch) {
+          const chunk = ids.slice(i, i + batch);
+          const result = await this.plugin.client.deleteItems({ ids: chunk });
+          deleted += result.deleted;
+          this.flushLabel = `Deleting closed… ${Math.min(i + batch, ids.length)}/${ids.length}`;
+          this.notify();
+        }
+      }
+      this.flushLabel = "Trashing closed notes…";
+      this.notify();
+      const notes = await flushClosedVaultNotes(
+        this.plugin.app,
+        this.itemsDir(),
+        (done, total) => {
+          this.flushLabel = `Trashing closed notes… ${done}/${total}`;
+          this.notify();
+        },
+      );
+      this.flushLabel = "Refreshing…";
+      this.notify();
+      await this.refresh();
+      return { deleted, notes };
+    } finally {
+      this.flushing = false;
+      this.flushLabel = "";
+      this.notify();
     }
-    const notes = await flushClosedVaultNotes(this.plugin.app, this.itemsDir());
-    await this.refresh();
-    return { deleted, notes };
   }
 
   flushableCount(): number {

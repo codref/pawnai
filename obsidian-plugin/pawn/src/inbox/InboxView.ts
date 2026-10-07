@@ -278,38 +278,54 @@ export function renderInbox(parent: HTMLElement, plugin: PawnPlugin): void {
   }
 
   const flushable = plugin.items.flushableCount();
-  if (flushable > 0) {
+  const flushing = plugin.items.isFlushing();
+  if (flushable > 0 || flushing) {
     const flushRow = parent.createDiv({ cls: "pawn-inbox-flush" });
     flushRow.createSpan({
       cls: "pawn-inbox-hint",
-      text: `${vaultCount} notes in Items/ · ${openCount} open · ${flushable} can be flushed.`,
+      text: flushing
+        ? plugin.items.flushProgress() || "Flushing closed items…"
+        : `${vaultCount} notes in Items/ · ${openCount} open · ${flushable} closed can be flushed.`,
     });
     const flushBtn = flushRow.createEl("button", {
-      text: `Flush ${flushable} closed`,
-      cls: "mod-warning",
+      cls: "clickable-icon pawn-item-action",
+      attr: {
+        "aria-label": flushing ? "Flushing…" : `Flush ${flushable} closed notes`,
+        title: flushing ? "Flushing…" : `Flush ${flushable} closed notes`,
+      },
     });
-    flushBtn.onclick = () => {
-      new ConfirmModal(
-        plugin.app,
-        "Flush closed item notes?",
-        `Delete ${flushable} closed item(s) from the server and trash their notes under Items/. Open items stay.`,
-        () => {
-          void plugin.items
-            .flushClosed()
-            .then(({ deleted, notes }) => {
-              new Notice(`Flushed ${deleted} records, trashed ${notes} notes.`, 5000);
-              renderInbox(parent, plugin);
-            })
-            .catch(noticeError);
-        },
-      ).open();
-    };
+    setIcon(flushBtn, flushing ? "loader" : "trash-2");
+    flushBtn.toggleClass("is-busy", flushing);
+    flushBtn.disabled = flushing;
+    if (!flushing) {
+      flushBtn.onclick = () => {
+        new ConfirmModal(
+          plugin.app,
+          "Flush closed item notes?",
+          `Trash ${flushable} closed note(s) under Items/ and remove their server records. Open items are never deleted.`,
+          () => {
+            void plugin.items
+              .flushClosed()
+              .then(({ deleted, notes }) => {
+                new Notice(`Flushed ${deleted} records, trashed ${notes} notes.`, 5000);
+                renderInbox(parent, plugin);
+              })
+              .catch(noticeError);
+          },
+        ).open();
+      };
+    }
   }
 
   const bulk = parent.createDiv({ cls: "pawn-inbox-bulk" });
   const selectBtn = bulk.createEl("button", {
-    text: state.selectMode ? "Cancel select" : "Select",
+    cls: "clickable-icon",
+    attr: {
+      "aria-label": state.selectMode ? "Cancel select" : "Select",
+      title: state.selectMode ? "Cancel select" : "Select",
+    },
   });
+  setIcon(selectBtn, state.selectMode ? "x" : "check-square");
   selectBtn.onclick = () => {
     state.selectMode = !state.selectMode;
     state.selected.clear();
@@ -317,10 +333,14 @@ export function renderInbox(parent: HTMLElement, plugin: PawnPlugin): void {
   };
   if (state.selectMode) {
     const delSel = bulk.createEl("button", {
-      text: `Delete selected (${state.selected.size})`,
-      cls: "mod-warning",
+      cls: "clickable-icon",
+      attr: {
+        "aria-label": `Delete selected (${state.selected.size})`,
+        title: `Delete selected (${state.selected.size})`,
+      },
     });
-    delSel.disabled = state.selected.size === 0;
+    setIcon(delSel, "trash-2");
+    delSel.disabled = state.selected.size === 0 || flushing;
     delSel.onclick = () => {
       const ids = Array.from(state.selected);
       new ConfirmModal(
@@ -347,8 +367,12 @@ export function renderInbox(parent: HTMLElement, plugin: PawnPlugin): void {
       : state.scope === "closed"
         ? "Delete all closed"
         : "Delete all matching";
-  const delAll = bulk.createEl("button", { text: delLabel, cls: "mod-warning" });
-  delAll.disabled = listedCount === 0;
+  const delAll = bulk.createEl("button", {
+    cls: "clickable-icon",
+    attr: { "aria-label": delLabel, title: delLabel },
+  });
+  setIcon(delAll, "trash");
+  delAll.disabled = listedCount === 0 || flushing;
   delAll.onclick = () => {
     new ConfirmModal(
       plugin.app,

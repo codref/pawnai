@@ -768,6 +768,22 @@ button.pawn-chip-pin:hover {
   min-width: 12em;
 }
 
+.pawn-inbox-flush .is-busy,
+.pawn-item-action.is-busy {
+  opacity: 0.7;
+  pointer-events: none;
+}
+
+@keyframes pawn-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.pawn-inbox-flush .is-busy svg {
+  animation: pawn-spin 0.9s linear infinite;
+}
+
 .pawn-inbox-day {
   font-size: var(--font-ui-small);
   font-weight: var(--font-semibold);
