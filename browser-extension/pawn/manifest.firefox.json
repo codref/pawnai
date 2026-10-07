@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Pawn Capture",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Capture ordered text and image snippets into the Pawn vault.",
   "permissions": [
     "activeTab",
@@ -11,10 +11,10 @@
     "storage"
   ],
   "host_permissions": [
-    "http://127.0.0.1/*",
-    "http://localhost/*",
-    "http://*/*",
-    "https://*/*"
+    "<all_urls>"
+  ],
+  "optional_host_permissions": [
+    "<all_urls>"
   ],
   "background": {
     "scripts": ["background.js"]

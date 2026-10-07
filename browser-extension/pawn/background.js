@@ -43,6 +43,68 @@ async function openUi(tab) {
   }
 }
 
+/** Prefer the focused content tab (sidebar queries confuse currentWindow). */
+async function activeContentTab() {
+  const focused = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+  let tab = focused.find((t) => t.id != null && isCapturableUrl(t.url));
+  if (tab) return tab;
+  const active = await chrome.tabs.query({ active: true });
+  tab = active.find((t) => t.id != null && isCapturableUrl(t.url));
+  if (tab) return tab;
+  return focused[0] || active[0] || null;
+}
+
+function isCapturableUrl(url) {
+  if (!url) return false;
+  return /^(https?:|file:)/i.test(url);
+}
+
+function hostPermissionError(url, err) {
+  const msg = String(err?.message || err || "");
+  if (/host permission|missing host|cannot access/i.test(msg)) {
+    return (
+      "Missing host permission for this tab. Reload the Firefox add-on from " +
+      "pawn-capture-firefox.zip (v0.1.1+), or grant Access your data for all websites " +
+      "under about:addons → Pawn Capture → Permissions. Tab: " +
+      (url || "?")
+    );
+  }
+  return msg;
+}
+
+/** Ensure we can inject / capture on *tab* (Firefox may not grant host perms until asked). */
+async function ensureTabAccess(tab) {
+  if (!tab?.id) throw new Error("No active tab");
+  if (!isCapturableUrl(tab.url)) {
+    throw new Error(
+      "Cannot capture this page (open an http(s) tab, then use Selection / Region).",
+    );
+  }
+  if (!chrome.permissions?.contains) return;
+  try {
+    const origin = new URL(tab.url).origin + "/*";
+    const hasOrigin = await chrome.permissions.contains({ origins: [origin] });
+    const hasAll = await chrome.permissions.contains({ origins: ["<all_urls>"] });
+    if (hasOrigin || hasAll) return;
+    if (!chrome.permissions.request) {
+      throw new Error(
+        "Missing host permission. Grant it under about:addons → Pawn Capture → Permissions.",
+      );
+    }
+    const granted = await chrome.permissions.request({ origins: ["<all_urls>"] });
+    if (!granted) {
+      throw new Error(
+        "Host permission denied. Allow Access your data for all websites for Pawn Capture.",
+      );
+    }
+  } catch (err) {
+    if (/Missing host permission|Host permission denied|Cannot capture/i.test(String(err.message))) {
+      throw err;
+    }
+    // permissions API quirks — continue and let scripting fail with a clear message
+  }
+}
+
 chrome.action.onClicked.addListener(async (tab) => {
   await openUi(tab);
 });
@@ -50,17 +112,21 @@ chrome.action.onClicked.addListener(async (tab) => {
 chrome.contextMenus.onClicked.addListener(async (info, tab) => {
   if (!tab?.id) return;
   await openUi(tab);
-  if (info.menuItemId === MENU_SELECTION) {
-    await captureSelection(tab);
-  } else if (info.menuItemId === MENU_REGION) {
-    await captureRegion(tab);
+  try {
+    if (info.menuItemId === MENU_SELECTION) {
+      await captureSelection(tab);
+    } else if (info.menuItemId === MENU_REGION) {
+      await captureRegion(tab);
+    }
+  } catch (err) {
+    await pushPending({ error: hostPermissionError(tab.url, err) });
   }
 });
 
 chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   if (msg?.type === "pawn-snip-selection") {
-    chrome.tabs.query({ active: true, currentWindow: true }).then(async (tabs) => {
-      const tab = tabs[0];
+    (async () => {
+      const tab = await activeContentTab();
       if (!tab) {
         sendResponse({ ok: false, error: "No active tab" });
         return;
@@ -69,14 +135,16 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
         await captureSelection(tab);
         sendResponse({ ok: true });
       } catch (err) {
-        sendResponse({ ok: false, error: String(err?.message || err) });
+        const error = hostPermissionError(tab.url, err);
+        await pushPending({ error });
+        sendResponse({ ok: false, error });
       }
-    });
+    })();
     return true;
   }
   if (msg?.type === "pawn-snip-region") {
-    chrome.tabs.query({ active: true, currentWindow: true }).then(async (tabs) => {
-      const tab = tabs[0];
+    (async () => {
+      const tab = await activeContentTab();
       if (!tab) {
         sendResponse({ ok: false, error: "No active tab" });
         return;
@@ -85,15 +153,18 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
         await captureRegion(tab);
         sendResponse({ ok: true });
       } catch (err) {
-        sendResponse({ ok: false, error: String(err?.message || err) });
+        const error = hostPermissionError(tab.url, err);
+        await pushPending({ error });
+        sendResponse({ ok: false, error });
       }
-    });
+    })();
     return true;
   }
   return false;
 });
 
 async function captureSelection(tab) {
+  await ensureTabAccess(tab);
   const [{ result }] = await chrome.scripting.executeScript({
     target: { tabId: tab.id },
     func: () => {
@@ -118,6 +189,7 @@ async function captureSelection(tab) {
 }
 
 async function captureRegion(tab) {
+  await ensureTabAccess(tab);
   const dataUrl = await chrome.tabs.captureVisibleTab(tab.windowId, {
     format: "png",
   });

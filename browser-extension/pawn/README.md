@@ -64,11 +64,18 @@ disabled*.
 2. Unzip `pawn-capture-firefox.zip` → `pawn-capture/`.
 3. Open `about:debugging#/runtime/this-firefox`.
 4. **Load Temporary Add-on** → pick `pawn-capture/manifest.json` from that
-   unzipped folder (it already has `background.scripts`).
-5. Open the UI via the toolbar action, or **View → Sidebar → Pawn Capture**.
-6. Temporary add-ons are cleared when Firefox quits; reload after each restart
+   unzipped folder (it already has `background.scripts` and `<all_urls>`).
+5. If Selection/Region says **Missing host permission for the tab**:
+   - Remove the temporary add-on and load the new zip again (permission
+     changes need a fresh install), **or**
+   - `about:addons` → Pawn Capture → Permissions → enable **Access your data
+     for all websites**.
+6. Open an ordinary `https://` tab (not `about:`), select text, then use the
+   sidebar **Selection** button or the context menu.
+7. Open the UI via the toolbar action, or **View → Sidebar → Pawn Capture**.
+8. Temporary add-ons are cleared when Firefox quits; reload after each restart
    until you sign/publish via AMO.
-7. Firefox 121+.
+9. Firefox 121+.
 
 ## Server requirements
 
