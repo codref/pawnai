@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Pawn Capture</title>
+    <link rel="stylesheet" href="sidepanel.css" />
+  </head>
+  <body>
+    <div class="pawn-root">
+      <header class="pawn-header">
+        <div class="pawn-header-row">
+          <select id="target-kind" class="pawn-conv-select" title="Target">
+            <option value="new">New page</option>
+            <option value="capture">Recent capture…</option>
+            <option value="session">Session…</option>
+            <option value="note">Other note…</option>
+          </select>
+          <span id="status-dot" class="pawn-dot is-offline" title="Server"></span>
+        </div>
+        <div id="target-extra" class="pawn-target-extra"></div>
+        <label class="pawn-field">
+          <span>Title</span>
+          <input id="title-input" type="text" placeholder="Capture title" />
+        </label>
+        <div class="pawn-tabs">
+          <button type="button" id="btn-selection" class="is-active">Selection</button>
+          <button type="button" id="btn-region">Region</button>
+          <button type="button" id="btn-settings">Settings</button>
+        </div>
+      </header>
+
+      <section id="settings-panel" class="pawn-settings" hidden>
+        <label class="pawn-field">
+          <span>Server URL</span>
+          <input id="server-url" type="url" placeholder="http://127.0.0.1:8000" />
+        </label>
+        <label class="pawn-field">
+          <span>API token</span>
+          <input id="api-token" type="password" placeholder="Bearer token" />
+        </label>
+        <div class="pawn-toolbar">
+          <button type="button" id="btn-save-settings" class="mod-cta">Save settings</button>
+        </div>
+        <p class="pawn-hint">Same fields as the Obsidian Pawn plugin. Token is api.token from pawnai.yaml.</p>
+      </section>
+
+      <main class="pawn-body">
+        <div class="pawn-toolbar">
+          <button type="button" id="btn-save" class="mod-cta">Save</button>
+          <button type="button" id="btn-new-page">New page</button>
+          <span id="path-label" class="pawn-hint"></span>
+        </div>
+        <p id="notice" class="pawn-notice" hidden></p>
+        <div id="tray" class="pawn-tray"></div>
+        <p id="empty" class="pawn-hint">Select text or capture a region. Snippets stack here in order, then Save appends them to the target note.</p>
+      </main>
+    </div>
+    <script src="sidepanel.js"></script>
+  </body>
+</html>

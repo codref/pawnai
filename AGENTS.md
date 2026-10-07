@@ -15,6 +15,7 @@ Packages:
 - `pawn_agent/`: CLI, sallm harness, scheduler, domain tool impls + CliTool CLIs, agent DB models.
 - `pawn_server/`: HTTP API, queue listener, Matrix bot, vault watcher, scheduler CLI/server runner.
 - `obsidian-plugin/pawn/`: Obsidian desktop/mobile plugin (Copilot-style chat pane, prompt commands, background jobs, uploads). MIT, written from scratch; do not copy obsidian-copilot (AGPL) code into it.
+- `browser-extension/pawn/`: MV3 side panel that appends ordered text/image snippets to vault capture notes or session Annotations (no chat UI). See `docs/BROWSER_CAPTURE.md`.
 
 ## Setup / Commands
 
@@ -59,6 +60,7 @@ Notes: pytest defaults to `--cov=pawn_diarize --cov-report=term-missing`; pass `
   - Background jobs: `POST /v1/jobs` (+ `/upload`, `/events` SSE, `/approve`, `/cancel`, `/dismiss`). Always 202, no sync/async race. Logic in `pawn_server/core/jobs.py`; rows in `vault_tasks` (`kind` = ask | push_note | upload, `payload`, `result_text`). `ask` jobs mirror to `Pawn/Tasks/{id}.md`. Offline plugin writes `todo` task notes for `vault_watcher`. Status events: `pawn_server/core/job_events.py` (in-process only).
   - Stock obsidian-copilot → `/v1/chat/completions` + `/v1/models` (list content parts, CORS, `X-Pawn-Conversation`, streamed keep-alives/`reasoning_content` progress via `pawn_server/core/progress.py`).
   - `/v1/vault/tasks*` are deprecated aliases. Approve indexes into sallm memory. Session keys `note:{path}` / `chat:{uuid}`.
+- Browser capture (`docs/BROWSER_CAPTURE.md`): MV3 extension side panel (no chat) posts ordered text/image snippets via `GET/POST /v1/captures` and `GET /v1/sessions`. Default note is `Pawn/Captures/{date} {title}.md`; session attach splices into transcript `## Annotations` when mapped. Images under `Pawn/Captures/assets/`. Logic in `pawn_server/core/captures.py`.
 - Agent run persistence is centralized in `pawn_agent/core/agent_runner.py`.
 - Coworker loop (`coworker:` in config, off by default): after diarization, `chain_agent.command: session_completed` extracts items, scores them against `Goals.md`, writes `Pawn/Items` and `Pawn/Today.md`, and notifies only on an active-thread interrupt. Triage is `todo|file|task|delete|ignore` (plus Matrix `later`) from the plugin Inbox timeline, item-note frontmatter, `GET/POST /v1/items`, or chat. `/idea` writes one note under `Ideas/` (`status: inbox`) and does not start a model turn. The plugin Inbox is open Items (time-grouped; Add TODO / File / Delete; multi-select and delete-all); the Ideas chip lists idea notes (Keep / Goal / Task / Drop). Idea notes are not extracted. `/goal` and `/park` write `Goals.md`, and a normal prompt only drafts `Pawn/Reviews/goal-proposal.md` until `/goal apply`. Morning and weekly crons live in `pawn_server/core/coworker_worker.py`. See `docs/COWORKER.md`.
 - People bios (`docs/PEOPLE.md`): vault notes `People/{speaker_id}.md` linked to the Speakers gallery. After `session_completed`, `speakers_refresh` appends Appearances and proposes or applies Facts under autonomy `people_refresh`. Transcript Speakers tables wikilink into People notes. Tools: `people_show` / `people_ensure` / `people_append`. One-off CLI: `pawn-server coworker people-refresh --session ID` (does not create Items; use `coworker process` for Items only).
@@ -190,6 +192,7 @@ Default DB uses PostgreSQL on port `5433` and requires `pgvector`.
 - Vault: `tests/test_vault_store.py`, `tests/test_vault_transcript.py`, `tests/test_vault_tasks.py`, `tests/test_vault_watcher.py`.
 - HTTP API: `tests/test_api_chat_compat.py` (OpenAI/Copilot compat), `tests/test_api_jobs.py` (jobs + `/v1/pawn/chat`).
 - Plugin: `cd obsidian-plugin/pawn && npm run build` (bumps the `manifest.json` patch version, then `tsc -noEmit`); no JS test runner. CI sets `CI=true`, which skips the bump so an `obsidian-plugin-v*` tag still matches the manifest. `make dist` in that directory (or `make obsidian-plugin-dist` from the repo root) writes `pawn.zip` (`pawn/main.js`, `manifest.json`, `styles.css`). `.github/workflows/obsidian-plugin.yml` uploads that zip as the `pawn-obsidian-plugin` artifact and, on an `obsidian-plugin-v*` tag whose version matches `manifest.json`, publishes it on the GitHub release.
+- Browser capture extension: plain MV3 JS (no compile). `make browser-extension` verifies files; `make browser-extension-dist` writes `browser-extension/pawn/pawn-capture.zip` (`pawn-capture/{manifest.json,…}`). Load unpacked that folder in Chrome/Edge; see `docs/BROWSER_CAPTURE.md`.
 - No CI workflows are present in `.github/workflows/`.
 
 ## Constraints / Gotchas

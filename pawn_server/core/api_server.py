@@ -28,6 +28,10 @@ GET /v1/jobs/events
     Background jobs (ask / push_note / upload); always accepted with 202.
     ``/v1/vault/tasks*`` remain as deprecated aliases.
 
+GET /v1/sessions, GET /v1/captures, POST /v1/captures,
+DELETE /v1/captures/snippets/{id}
+    Browser extension snippet capture (ordered text/image blocks on a vault note).
+
 DELETE /sessions/{session_id}
     Clear all stored turns for a session (start fresh).
 
@@ -339,6 +343,41 @@ class PawnChatRequest(BaseModel):
     force_caption: bool = False
     # When false, note embeds are not read from the vault.
     include_note_images: bool = True
+
+
+class CaptureTarget(BaseModel):
+    """Where browser snippets should land."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    kind: str = "new"  # new | capture | note | session
+    path: Optional[str] = None
+    session_id: Optional[str] = None
+    title: Optional[str] = None
+    source_url: Optional[str] = None
+
+
+class CaptureSnippet(BaseModel):
+    """One ordered text or image snippet from the browser tray."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    id: str
+    kind: str = "text"  # text | image
+    text: Optional[str] = None
+    data_base64: Optional[str] = None
+    media_type: Optional[str] = None
+    source_url: Optional[str] = None
+    captured_at: Optional[str] = None
+
+
+class CaptureSaveRequest(BaseModel):
+    """POST /v1/captures — append ordered snippets to a vault note."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    target: CaptureTarget
+    snippets: List[CaptureSnippet]
 
 
 class VaultTaskCreateRequest(BaseModel):
@@ -1122,6 +1161,76 @@ async def job_events_stream(request: Request, cfg: Any = Depends(_get_cfg)) -> S
 
 
 _VAULT_POLL_MAX_SECONDS = 25.0
+
+
+@app.get("/v1/sessions", dependencies=[Depends(_require_token)])
+async def sessions_list(
+    limit: int = Query(default=20, ge=1, le=100),
+    q: str = Query(default=""),
+    cfg: Any = Depends(_get_cfg),
+) -> dict:
+    """Recent diarization sessions (for the browser capture target picker)."""
+    from pawn_server.core import captures  # noqa: PLC0415
+
+    return {
+        "object": "list",
+        "data": await asyncio.to_thread(captures.list_sessions, cfg, limit=limit, q=q),
+    }
+
+
+@app.get("/v1/captures", dependencies=[Depends(_require_token)])
+async def captures_list(
+    limit: int = Query(default=40, ge=1, le=200),
+    cfg: Any = Depends(_get_cfg),
+) -> dict:
+    """Recent capture notes under ``{agent_root}/Captures/``."""
+    from pawn_server.core import captures  # noqa: PLC0415
+
+    return {
+        "object": "list",
+        "data": await asyncio.to_thread(captures.list_captures, cfg, limit=limit),
+    }
+
+
+@app.post("/v1/captures", dependencies=[Depends(_require_token)])
+async def captures_save(body: CaptureSaveRequest, cfg: Any = Depends(_get_cfg)) -> dict:
+    """Append ordered text/image snippets to a vault note."""
+    from pawn_server.core import captures  # noqa: PLC0415
+
+    try:
+        result = await asyncio.to_thread(
+            captures.save_snippets,
+            cfg,
+            target=body.target.model_dump(),
+            snippets=[s.model_dump() for s in body.snippets],
+        )
+    except captures.CaptureError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+    return result
+
+
+@app.delete(
+    "/v1/captures/snippets/{snippet_id}",
+    dependencies=[Depends(_require_token)],
+)
+async def captures_delete_snippet(
+    snippet_id: str,
+    path: str = Query(..., description="Vault note that holds the snippet"),
+    cfg: Any = Depends(_get_cfg),
+) -> dict:
+    """Remove one snippet block from a note (and its image asset when present)."""
+    from pawn_server.core import captures  # noqa: PLC0415
+
+    try:
+        result = await asyncio.to_thread(
+            captures.delete_snippet,
+            cfg,
+            snippet_id,
+            path=path,
+        )
+    except captures.CaptureError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+    return result
 
 
 @app.get("/v1/vault/events", dependencies=[Depends(_require_token)])

@@ -22,7 +22,8 @@ CERT_CN         ?= localhost
 CERT_SAN        ?= DNS:localhost,IP:127.0.0.1
 
 .PHONY: build push run mlflow clean ssl-cert \
-	obsidian-plugin obsidian-plugin-dist obsidian-plugin-adb obsidian-plugin-list-vaults
+	obsidian-plugin obsidian-plugin-dist obsidian-plugin-adb obsidian-plugin-list-vaults \
+	browser-extension browser-extension-dist
 
 build:
 	docker build -f $(DOCKERFILE) -t $(IMAGE):$(TAG) .
@@ -46,6 +47,16 @@ obsidian-plugin-adb:
 		ADB_SERIAL="$(ADB_SERIAL)" \
 		ADB_CONFIG="$(ADB_CONFIG)" \
 		ADB_RESTART="$(ADB_RESTART)"
+
+# Browser Pawn Capture extension (MV3 side panel — no compile step).
+# Example: make browser-extension-dist
+browser-extension:
+	$(MAKE) -C browser-extension/pawn build
+
+# pawn-capture.zip for Load unpacked or sharing.
+# Unzip, then Chrome/Edge → Load unpacked → select pawn-capture/
+browser-extension-dist:
+	$(MAKE) -C browser-extension/pawn dist
 
 push:
 	docker push $(IMAGE):$(TAG)
