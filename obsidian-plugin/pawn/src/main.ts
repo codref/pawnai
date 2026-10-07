@@ -12,6 +12,8 @@ import {
 import { PromptCommand, PromptCommandRegistry, PromptPickerModal } from "./commands/PromptCommands";
 import { applyGoalsFromActiveFile } from "./inbox/ApplyGoals";
 import { InboxStore } from "./inbox/InboxView";
+import { ItemNoteBar } from "./inbox/ItemNoteBar";
+import { ItemsStore } from "./inbox/ItemsStore";
 import { captureIdea, noticeError } from "./inbox/ideas";
 import { QuickCaptureModal } from "./inbox/QuickCapture";
 import { JobStore } from "./jobs/JobStore";
@@ -33,6 +35,8 @@ export default class PawnPlugin extends Plugin {
   client!: PawnClient;
   jobs!: JobStore;
   inbox!: InboxStore;
+  items!: ItemsStore;
+  itemNoteBar!: ItemNoteBar;
   vaultSync!: VaultSync;
   prompts!: PromptCommandRegistry;
   conversations!: ConversationStore;
@@ -46,6 +50,8 @@ export default class PawnPlugin extends Plugin {
     this.conversations = new ConversationStore(this.data.conversations, () => this.persistSoon());
     this.jobs = new JobStore(this, this.client);
     this.inbox = new InboxStore(this);
+    this.items = new ItemsStore(this);
+    this.itemNoteBar = new ItemNoteBar(this);
     this.vaultSync = new VaultSync(this, this.client);
     this.prompts = new PromptCommandRegistry(this);
 
@@ -57,13 +63,15 @@ export default class PawnPlugin extends Plugin {
     this.addRibbonIcon("chess-king", "Open Pawn chat", () => void this.openChat({}));
     this.statusEl = this.addStatusBarItem();
     this.statusEl.addClass("mod-clickable");
-    this.statusEl.onclick = () => void this.openChat({ tab: "jobs" });
+    this.statusEl.onclick = () => void this.openChat({ tab: "inbox" });
 
     this.app.workspace.onLayoutReady(() => {
       this.app.workspace.detachLeavesOfType(LEGACY_PANEL_VIEW);
       void this.prompts.reload();
       this.jobs.start();
       this.inbox.start();
+      this.items.start();
+      this.itemNoteBar.start();
       this.vaultSync.start();
       this.updateStatusBar();
     });
@@ -86,6 +94,7 @@ export default class PawnPlugin extends Plugin {
   onunload(): void {
     this.jobs?.stop();
     this.inbox?.stop();
+    this.items?.stop();
     this.vaultSync?.stop();
     void this.persist();
   }
@@ -369,11 +378,13 @@ export default class PawnPlugin extends Plugin {
       text: "● ",
     });
     const { active, review } = this.jobs.counts();
-    const waiting = this.inbox?.attention() ?? 0;
+    const openItems = this.items?.attention() ?? 0;
+    const ideas = this.inbox?.attention() ?? 0;
     const parts = ["Pawn"];
     if (active) parts.push(`${active} running`);
     if (review) parts.push(`${review} to review`);
-    if (waiting) parts.push(`${waiting} inbox`);
+    if (openItems) parts.push(`${openItems} items`);
+    if (ideas) parts.push(`${ideas} ideas`);
     el.createSpan({ text: parts.join(" · ") });
     el.setAttr("aria-label", online ? "Pawn server reachable" : "Pawn server offline");
   }

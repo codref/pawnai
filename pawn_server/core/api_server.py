@@ -286,6 +286,17 @@ class ItemActionRequest(BaseModel):
     arg: Optional[str] = None
 
 
+class ItemsDeleteRequest(BaseModel):
+    """POST /v1/items/delete — dismiss one or many open items."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    ids: Optional[list[str]] = None
+    all_open: bool = False
+    kind: Optional[str] = None
+    q: Optional[str] = None
+
+
 class ContextNote(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
@@ -1197,16 +1208,66 @@ async def job_dismiss(job_id: str, cfg: Any = Depends(_get_cfg)) -> dict:
 @app.get("/v1/items", dependencies=[Depends(_require_token)])
 async def items_list(
     status: Optional[str] = None,
+    statuses: Optional[str] = None,
+    kind: Optional[str] = None,
+    q: Optional[str] = None,
     limit: int = 100,
+    offset: int = 0,
     cfg: Any = Depends(_get_cfg),
 ) -> dict:
     """List coworker inbox items, newest first."""
     from pawn_agent.core.coworker import db as itemdb  # noqa: PLC0415
 
-    rows = await asyncio.to_thread(
-        itemdb.list_items, cfg.db_dsn, status=status or None, limit=limit
+    status_list: Optional[list[str]] = None
+    if statuses:
+        status_list = [part.strip() for part in statuses.split(",") if part.strip()]
+    elif not status:
+        status_list = list(itemdb.OPEN_STATUSES)
+    capped = min(max(1, limit), 200)
+    start = max(0, offset)
+
+    def _load() -> tuple[list, int]:
+        rows = itemdb.list_items(
+            cfg.db_dsn,
+            status=status or None,
+            statuses=status_list,
+            kind=kind or None,
+            q=q or None,
+            limit=capped,
+            offset=start,
+        )
+        total = itemdb.count_items(
+            cfg.db_dsn,
+            status=status or None,
+            statuses=status_list,
+            kind=kind or None,
+            q=q or None,
+        )
+        return rows, total
+
+    rows, total = await asyncio.to_thread(_load)
+    return {"items": rows, "total": total}
+
+
+@app.post("/v1/items/delete", dependencies=[Depends(_require_token)])
+async def items_delete(
+    body: ItemsDeleteRequest,
+    cfg: Any = Depends(_get_cfg),
+) -> dict:
+    """Delete selected items or all open items matching optional filters."""
+    from pawn_agent.core.coworker.actions import delete_items  # noqa: PLC0415
+
+    if not body.all_open and not body.ids:
+        raise HTTPException(status_code=400, detail="Provide ids or all_open=true")
+    result = await delete_items(
+        cfg,
+        ids=body.ids,
+        all_open=body.all_open,
+        kind=body.kind,
+        q=body.q,
+        registry=_sallm_registry,
     )
-    return {"items": rows}
+    return result
 
 
 @app.post("/v1/items/{item_id}/action", dependencies=[Depends(_require_token)])
@@ -1215,7 +1276,7 @@ async def item_action(
     body: ItemActionRequest,
     cfg: Any = Depends(_get_cfg),
 ) -> dict:
-    """Apply file, task, later, ignore, approve, or reject to one item."""
+    """Apply file, task, todo, delete, later, ignore, approve, or reject to one item."""
     from pawn_agent.core.coworker import db as itemdb  # noqa: PLC0415
     from pawn_agent.core.coworker.actions import apply_action  # noqa: PLC0415
 

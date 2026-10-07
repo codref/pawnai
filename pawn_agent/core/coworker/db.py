@@ -147,21 +147,88 @@ def get_item(dsn: str, item_id: str) -> Optional[dict[str, Any]]:
         return item_dict(row)
 
 
+OPEN_STATUSES = ("new", "notified", "snoozed")
+
+
+def _items_filters(
+    *,
+    status: Optional[str] = None,
+    statuses: Optional[list[str]] = None,
+    kind: Optional[str] = None,
+    q: Optional[str] = None,
+):
+    """Shared WHERE clauses for list/count."""
+    from sqlalchemy import or_  # noqa: PLC0415
+
+    clauses: list[Any] = []
+    if status:
+        clauses.append(CoworkerItem.status == status)
+    if statuses:
+        clauses.append(CoworkerItem.status.in_(statuses))
+    if kind:
+        clauses.append(CoworkerItem.kind == kind)
+    needle = (q or "").strip()
+    if needle:
+        pattern = f"%{needle}%"
+        clauses.append(
+            or_(
+                CoworkerItem.text.ilike(pattern),
+                CoworkerItem.thread.ilike(pattern),
+            )
+        )
+    return clauses
+
+
 def list_items(
     dsn: str,
     *,
     status: Optional[str] = None,
     statuses: Optional[list[str]] = None,
+    kind: Optional[str] = None,
+    q: Optional[str] = None,
     limit: int = 100,
+    offset: int = 0,
 ) -> list[dict[str, Any]]:
     with Session(get_engine(dsn)) as db:
         query = select(CoworkerItem).order_by(CoworkerItem.created_at.desc())
-        if status:
-            query = query.where(CoworkerItem.status == status)
-        if statuses:
-            query = query.where(CoworkerItem.status.in_(statuses))
-        rows = db.scalars(query.limit(max(1, limit))).all()
+        for clause in _items_filters(status=status, statuses=statuses, kind=kind, q=q):
+            query = query.where(clause)
+        start = max(0, offset)
+        rows = db.scalars(query.offset(start).limit(max(1, limit))).all()
         return [item_dict(row) for row in rows]
+
+
+def count_items(
+    dsn: str,
+    *,
+    status: Optional[str] = None,
+    statuses: Optional[list[str]] = None,
+    kind: Optional[str] = None,
+    q: Optional[str] = None,
+) -> int:
+    with Session(get_engine(dsn)) as db:
+        query = select(func.count()).select_from(CoworkerItem)
+        for clause in _items_filters(status=status, statuses=statuses, kind=kind, q=q):
+            query = query.where(clause)
+        return int(db.scalar(query) or 0)
+
+
+def list_item_ids(
+    dsn: str,
+    *,
+    status: Optional[str] = None,
+    statuses: Optional[list[str]] = None,
+    kind: Optional[str] = None,
+    q: Optional[str] = None,
+    limit: int = 5000,
+) -> list[str]:
+    """Return item ids matching filters (for bulk delete)."""
+    with Session(get_engine(dsn)) as db:
+        query = select(CoworkerItem.id).order_by(CoworkerItem.created_at.desc())
+        for clause in _items_filters(status=status, statuses=statuses, kind=kind, q=q):
+            query = query.where(clause)
+        rows = db.scalars(query.limit(max(1, limit))).all()
+        return list(rows)
 
 
 def update_item(dsn: str, item_id: str, **fields: Any) -> Optional[dict[str, Any]]:

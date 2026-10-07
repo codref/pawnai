@@ -10,20 +10,24 @@ from typing import Any, Optional
 from pawn_agent.core.coworker import db as itemdb
 from pawn_agent.core.coworker.notes import append_thread_entry, render_item_note, thread_note_key
 from pawn_agent.utils.config import AgentConfig
+from pawn_core.goals import slugify
+from pawn_core.vault import dump_frontmatter
 from pawn_core.vault_config import vault_store_from_config
 
 logger = logging.getLogger(__name__)
 
 _COMMAND_RE = re.compile(
-    r"^(file|task|later|ignore|approve|reject)\s+(\S+)(?:\s+(.+))?$",
+    r"^(file|task|later|ignore|approve|reject|todo|delete)\s+(\S+)(?:\s+(.+))?$",
     re.IGNORECASE,
 )
 
-ACTIONS = frozenset({"file", "task", "later", "ignore", "approve", "reject"})
+ACTIONS = frozenset({"file", "task", "later", "ignore", "approve", "reject", "todo", "delete"})
+
+_UNSAFE = re.compile(r'[\\/:*?"<>|\x00-\x1f]')
 
 
 def parse_coworker_command(text: str) -> Optional[tuple[str, str, Optional[str]]]:
-    """Parse ``file|task|later|ignore|approve|reject <id> [arg]``."""
+    """Parse ``file|task|later|ignore|approve|reject|todo|delete <id> [arg]``."""
     match = _COMMAND_RE.match((text or "").strip())
     if not match:
         return None
@@ -58,6 +62,16 @@ def _rewrite_note(store: Any, item: dict[str, Any], *, status: str, action: str 
     store.write(key, body)
 
 
+def _delete_note(store: Any, item: dict[str, Any]) -> None:
+    key = item.get("note_key")
+    if not key or store is None:
+        return
+    try:
+        store.delete(key)
+    except Exception as exc:
+        logger.warning("could not delete item note %s: %s", key, exc)
+
+
 def _append(store: Any, cfg: AgentConfig, thread: str, heading: str, line: str) -> None:
     if not thread or store is None:
         return
@@ -67,6 +81,56 @@ def _append(store: Any, cfg: AgentConfig, thread: str, heading: str, line: str) 
     except Exception:
         existing = ""
     store.write(key, append_thread_entry(existing, heading=heading, line=line, title=thread))
+
+
+def _task_stem(title: str) -> str:
+    cleaned = _UNSAFE.sub(" ", title or "").replace("\n", " ")
+    cleaned = re.sub(r"\s+", " ", cleaned).strip().rstrip(".")
+    if len(cleaned) > 80:
+        cleaned = cleaned[:80].strip()
+    return cleaned or "task"
+
+
+def _todo_folder(cfg: AgentConfig) -> str:
+    root = (cfg.vault.agent_root or "Pawn").strip().strip("/") or "Pawn"
+    external = (cfg.tasknotes.external_tasks_dir or "TaskNotes/Tasks").strip().strip("/")
+    if external.startswith(root + "/"):
+        return external
+    return f"{root}/{external}"
+
+
+def _write_todo_note(store: Any, cfg: AgentConfig, item: dict[str, Any]) -> Optional[str]:
+    """Create a TaskNotes note for *item*. Returns the vault key."""
+    if store is None:
+        return None
+    title = " ".join((item.get("text") or "Follow up").split())
+    folder = _todo_folder(cfg)
+    stem = _task_stem(title)
+    path = f"{folder}/{stem}.md"
+    n = 2
+    while True:
+        try:
+            store.read(path)
+        except Exception:
+            break
+        path = f"{folder}/{stem} {n}.md"
+        n += 1
+    source = item.get("note_key") or ""
+    link = f"[[{source[:-3]}]]" if source.endswith(".md") else (f"[[{source}]]" if source else "")
+    body = (item.get("text") or "").strip()
+    meta: dict[str, Any] = {
+        "tags": ["task"],
+        "title": title,
+        "status": "open",
+        "priority": "normal",
+    }
+    parts = []
+    if link:
+        parts.append(f"Source: {link}")
+        parts.append("")
+    parts.append(body)
+    store.write(path, dump_frontmatter(meta, "\n".join(parts) + "\n"))
+    return path
 
 
 async def apply_action(
@@ -105,6 +169,17 @@ async def apply_action(
         _rewrite_note(vault, updated or item, status="task")
         return f"Task captured for {item['short_id']}."
 
+    if action == "todo":
+        path = _write_todo_note(vault, cfg, item)
+        payload = dict(item.get("payload") or {})
+        if path:
+            payload["todo_path"] = path
+        updated = itemdb.update_item(cfg.db_dsn, item["id"], status="task", payload=payload or None)
+        _rewrite_note(vault, updated or item, status="task")
+        if path:
+            return f"TODO {path} for {item['short_id']}."
+        return f"TODO recorded for {item['short_id']} (no vault)."
+
     if action == "later":
         until = _parse_until(arg)
         updated = itemdb.update_item(cfg.db_dsn, item["id"], status="snoozed", snooze_until=until)
@@ -116,6 +191,12 @@ async def apply_action(
         updated = itemdb.update_item(cfg.db_dsn, item["id"], status="dismissed")
         _rewrite_note(vault, updated or item, status="dismissed")
         return f"Ignored {item['short_id']}."
+
+    if action == "delete":
+        itemdb.add_suppression(cfg.db_dsn, item["fingerprint"])
+        itemdb.update_item(cfg.db_dsn, item["id"], status="dismissed")
+        _delete_note(vault, item)
+        return f"Deleted {item['short_id']}."
 
     if action == "approve" and item.get("kind") == "proposal":
         from pawn_agent.core.coworker.pipeline import _run_research  # noqa: PLC0415
@@ -137,6 +218,52 @@ async def apply_action(
         return _resolve_proposal(cfg, item, action, vault)
 
     return f"Unknown action {action!r}."
+
+
+async def delete_items(
+    cfg: AgentConfig,
+    *,
+    ids: Optional[list[str]] = None,
+    all_open: bool = False,
+    kind: Optional[str] = None,
+    q: Optional[str] = None,
+    registry: Any = None,
+    store: Any = None,
+) -> dict[str, Any]:
+    """Delete many items. Returns ``{deleted, receipts}``."""
+    del registry  # unused; kept for call-site symmetry with apply_action
+    target_ids: list[str] = []
+    if all_open:
+        target_ids = itemdb.list_item_ids(
+            cfg.db_dsn,
+            statuses=list(itemdb.OPEN_STATUSES),
+            kind=kind,
+            q=q,
+        )
+    elif ids:
+        # Resolve short_ids to canonical ids via get_item.
+        seen: set[str] = set()
+        for raw in ids:
+            item = itemdb.get_item(cfg.db_dsn, raw)
+            if item and item["id"] not in seen:
+                seen.add(item["id"])
+                target_ids.append(item["id"])
+    receipts: list[str] = []
+    for item_id in target_ids:
+        receipts.append(await apply_action(cfg, item_id, "delete", store=store))
+    return {"deleted": len(target_ids), "receipts": receipts}
+
+
+def item_note_key(
+    cfg: AgentConfig, *, short_id: str, text: str, created_at: Optional[datetime] = None
+) -> str:
+    """Readable vault key for a new item note."""
+    day = (created_at or datetime.now(timezone.utc)).date().isoformat()
+    slug = slugify(" ".join((text or "").split())[:40])
+    if slug == "thread":
+        slug = "item"
+    folder = cfg.coworker.items_dir.strip("/")
+    return f"{folder}/{day}-{slug}-{short_id}.md"
 
 
 def _parse_until(arg: Optional[str]) -> datetime:

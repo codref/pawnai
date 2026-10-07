@@ -445,7 +445,9 @@ async def _propose_people_update(
         payload={"action_kind": "people_refresh", "updates": updates},
         status="new",
     )
-    note_key = f"{cfg.coworker.items_dir.rstrip('/')}/{row['short_id']}.md"
+    from pawn_agent.core.coworker.actions import item_note_key  # noqa: PLC0415
+
+    note_key = item_note_key(cfg, short_id=row["short_id"], text=text[:4000])
     body = render_item_note(
         item_id=row["id"],
         short_id=row["short_id"],

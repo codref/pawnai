@@ -27,7 +27,7 @@ Free-standing plugin chats use `chat:{uuid}`.
 | `Pawn/Analyses/{session_id}.md` | Pawn | `session_analyze --save` |
 | `Pawn/Tasks/{id}.md` | Shared | Mirror of one `ask` job (status decides who may write) |
 | `Pawn/Notes/…` | Pawn | Free-form agent notes / scheduled output / "Save as new note" |
-| `Pawn/Items/{id}.md` | Pawn | One coworker inbox item. Set `action:` to file, task, later, or ignore |
+| `Pawn/Items/{date}-{slug}-{short_id}.md` | Pawn | One coworker inbox item. Triage from the Inbox tab or set `action:` to todo, file, task, delete, or ignore |
 | `Pawn/Threads/…` | Pawn | Filed items and open loops for one goal thread |
 | `Pawn/Today.md` | Pawn | What needs a tap, then what was filed quietly |
 | `Pawn/Daily/{date}.md` | Pawn | Morning briefing |

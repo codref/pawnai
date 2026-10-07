@@ -165,7 +165,9 @@ async def process_source(
             recurrence=recurrence,
             status="new",
         )
-        note_key = f"{cfg.coworker.items_dir.strip('/')}/{row['short_id']}.md"
+        from pawn_agent.core.coworker.actions import item_note_key  # noqa: PLC0415
+
+        note_key = item_note_key(cfg, short_id=row["short_id"], text=row.get("text") or "")
         note = render_item_note(
             item_id=row["id"],
             short_id=row["short_id"],

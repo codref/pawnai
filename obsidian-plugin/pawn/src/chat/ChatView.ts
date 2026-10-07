@@ -68,6 +68,7 @@ export class PawnChatView extends ItemView {
   private slashIndex = 0;
   private unsubscribeJobs: (() => void) | null = null;
   private unsubscribeInbox: (() => void) | null = null;
+  private unsubscribeItems: (() => void) | null = null;
   private fileInput: HTMLInputElement | null = null;
   private rereadButton: HTMLButtonElement | null = null;
   private keyboardFrame = 0;
@@ -124,6 +125,7 @@ export class PawnChatView extends ItemView {
     this.conversationId = this.defaultConversation();
     this.unsubscribeJobs = this.plugin.jobs.onChange(() => this.onJobsChanged());
     this.unsubscribeInbox = this.plugin.inbox?.onChange(() => this.onInboxChanged());
+    this.unsubscribeItems = this.plugin.items?.onChange(() => this.onInboxChanged());
     this.registerEvent(
       this.app.workspace.on("active-leaf-change", () => this.onActiveNoteChanged()),
     );
@@ -348,6 +350,7 @@ export class PawnChatView extends ItemView {
 
   async onClose(): Promise<void> {
     this.unsubscribeInbox?.();
+    this.unsubscribeItems?.();
     this.unsubscribeJobs?.();
     this.closeModelPop();
     this.pending?.abort.abort();
@@ -687,7 +690,8 @@ export class PawnChatView extends ItemView {
       .filter(Boolean)
       .join(", ");
     mk("jobs", badge ? `Jobs (${badge})` : "Jobs");
-    const waiting = this.plugin.inbox?.attention() ?? 0;
+    const waiting =
+      (this.plugin.items?.attention() ?? 0) + (this.plugin.inbox?.attention() ?? 0);
     mk("inbox", waiting ? `Inbox (${waiting})` : "Inbox");
     const dot = tabs.createSpan({
       cls: this.plugin.jobs.online ? "pawn-dot is-online" : "pawn-dot is-offline",
@@ -702,6 +706,7 @@ export class PawnChatView extends ItemView {
     if (!body) return;
     body.empty();
     if (this.tab === "inbox") {
+      void this.plugin.items?.refresh();
       renderInbox(body.createDiv({ cls: "pawn-jobs" }), this.plugin);
       return;
     }

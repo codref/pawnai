@@ -44,4 +44,25 @@ def test_parse_coworker_command():
         "abcd1234",
         "2026-10-01",
     )
+    assert parse_coworker_command("todo abcd1234") == ("todo", "abcd1234", None)
+    assert parse_coworker_command("delete abcd1234") == ("delete", "abcd1234", None)
     assert parse_coworker_command("hello") is None
+
+
+def test_item_note_key_readable():
+    from types import SimpleNamespace
+
+    from pawn_agent.core.coworker.actions import item_note_key
+
+    cfg = SimpleNamespace(coworker=SimpleNamespace(items_dir="Pawn/Items"))
+    key = item_note_key(
+        cfg,  # type: ignore[arg-type]
+        short_id="abcd1234",
+        text="Keep the recordings on our S3 through Friday.",
+        created_at=__import__("datetime").datetime(
+            2026, 10, 7, tzinfo=__import__("datetime").timezone.utc
+        ),
+    )
+    assert key.startswith("Pawn/Items/2026-10-07-")
+    assert key.endswith("-abcd1234.md")
+    assert "keep-the-recordings" in key

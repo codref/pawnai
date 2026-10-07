@@ -125,8 +125,24 @@ export interface InboxItem {
   status: string;
   interrupt: boolean;
   reason?: string | null;
+  quote?: string | null;
   note_key?: string | null;
   created_at?: string | null;
+  updated_at?: string | null;
+}
+
+export interface ListItemsParams {
+  status?: string;
+  statuses?: string;
+  kind?: string;
+  q?: string;
+  limit?: number;
+  offset?: number;
+}
+
+export interface ListItemsResult {
+  items: InboxItem[];
+  total: number;
 }
 
 export class ServerUnreachable extends Error {}
@@ -249,11 +265,21 @@ export class PawnClient {
     return resp.json as Job;
   }
 
-  async listItems(status?: string): Promise<InboxItem[]> {
-    const query = status ? `?status=${encodeURIComponent(status)}` : "";
+  async listItems(params: ListItemsParams | string = {}): Promise<ListItemsResult> {
+    const opts: ListItemsParams =
+      typeof params === "string" ? { status: params } : params ?? {};
+    const qs = new URLSearchParams();
+    if (opts.status) qs.set("status", opts.status);
+    if (opts.statuses) qs.set("statuses", opts.statuses);
+    if (opts.kind) qs.set("kind", opts.kind);
+    if (opts.q) qs.set("q", opts.q);
+    if (opts.limit != null) qs.set("limit", String(opts.limit));
+    if (opts.offset != null) qs.set("offset", String(opts.offset));
+    const query = qs.toString() ? `?${qs}` : "";
     const resp = await this.request("GET", `/v1/items${query}`);
-    const body = resp.json as { items?: InboxItem[] };
-    return body.items ?? [];
+    const body = resp.json as { items?: InboxItem[]; total?: number };
+    const items = body.items ?? [];
+    return { items, total: body.total ?? items.length };
   }
 
   async itemAction(id: string, action: string, arg?: string): Promise<string> {
@@ -262,6 +288,16 @@ export class PawnClient {
       arg,
     });
     return String((resp.json as { receipt?: string }).receipt ?? "ok");
+  }
+
+  async deleteItems(body: {
+    ids?: string[];
+    all_open?: boolean;
+    kind?: string;
+    q?: string;
+  }): Promise<{ deleted: number }> {
+    const resp = await this.request("POST", "/v1/items/delete", body);
+    return { deleted: Number((resp.json as { deleted?: number }).deleted ?? 0) };
   }
 
   async pushNote(path: string, content: string, mode: "replace" | "append"): Promise<Job> {

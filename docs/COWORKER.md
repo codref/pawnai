@@ -1,6 +1,6 @@
 # Using the coworker loop
 
-The coworker loop keeps a short list of what you are trying to move, files what comes out of meetings and notes, and interrupts you only when an active thread is affected. You triage meeting items from the item note, from Matrix, or from chat. The plugin Inbox is the list of idea notes you have not filed. The loop stays off until `coworker.enabled` is true.
+The coworker loop keeps a short list of what you are trying to move, files what comes out of meetings and notes, and interrupts you only when an active thread is affected. You triage meeting items from the plugin Inbox (time-grouped timeline), the item note, Matrix, or chat. The Inbox **Ideas** chip lists idea notes you have not filed. The loop stays off until `coworker.enabled` is true.
 
 ## Turn it on
 
@@ -111,7 +111,7 @@ When a `transcribe-diarize` job finishes and the chain command is `session_compl
 
 1. Extracts decisions, commitments, open questions, blocks, and contradictions.
 2. Scores them against the active threads. A hit has to name one of those threads.
-3. Writes `Pawn/Items/{short_id}.md` and refreshes `Pawn/Today.md`.
+3. Writes `Pawn/Items/{YYYY-MM-DD}-{slug}-{short_id}.md` and refreshes `Pawn/Today.md`.
 4. Pushes Matrix (and optional ntfy) only for interrupts.
 5. Runs `speakers_refresh` for gallery-linked people (Appearances always;
    Facts under autonomy `people_refresh` — see [PEOPLE.md](PEOPLE.md)).
@@ -129,7 +129,7 @@ pawn-server coworker process --session <diarization-session-id>
 pawn-server coworker people-refresh --session <diarization-session-id>
 ```
 
-An item note looks like this. The eight-character `short_id` is what you reply with.
+An item note looks like this. The eight-character `short_id` is what you reply with in Matrix or chat.
 
 ```markdown
 ---
@@ -155,28 +155,30 @@ A decision with no owner on Project X storage.
 
 ## Triage
 
-Use any of the three surfaces. They call the same actions.
+Use any of the surfaces. They call the same actions.
 
 | Action | Effect |
 |--------|--------|
+| `todo <id>` | Writes a TaskNotes TODO and clears the item |
 | `file <id>` | Appends the item to `Pawn/Threads/{slug}.md` |
 | `task <id>` | Records an open loop on that thread and opens an ask job |
-| `later <id> [YYYY-MM-DD]` | Snoozes until that date, or until tomorrow when the date is omitted |
-| `ignore <id>` | Dismisses it and suppresses the same fingerprint later |
-| `approve <id>` / `reject <id>` | A schedule proposal, or a research follow-up |
+| `delete <id>` | Dismisses, suppresses the fingerprint, and deletes the vault note |
+| `ignore <id>` | Dismisses and suppresses the fingerprint (note left in place) |
+| `later <id> [YYYY-MM-DD]` | Snoozes (Matrix/chat only; not shown in Obsidian) |
+| `approve <id>` / `reject <id>` | A schedule proposal, people update, or research follow-up |
 
 `<id>` is the `short_id` or the full UUID.
 
-**Obsidian.** Meeting items are triaged from the item note. The plugin Inbox tab, and **Show inbox**, list idea notes whose `status` is `inbox`. Each card has Keep, Goal, Task, and Drop. The status bar counts those notes.
+**Obsidian.** The plugin Inbox tab (and **Show inbox**) is a time-grouped timeline of open meeting items from `GET /v1/items`. Each row has **Add TODO**, **File to thread** (when threaded), **Ask Pawn**, and **Delete**. You can multi-select or **Delete all open** for noise. Expand a row for quote/source. The same buttons appear on an open item note. The **Ideas** chip lists idea notes (`status: inbox`) with Keep / Goal / Task / Drop. The status bar counts open items (and ideas) and opens the Inbox.
 
-**The item note.** Set `action:` to `file`, `task`, `later`, or `ignore` and let it sync. The vault watcher applies it on its next poll (default 15 seconds). `later` from the note is also tomorrow. A note already filed, tasked, or dismissed is left alone.
+**The item note.** Set `action:` to `todo`, `file`, `task`, `delete`, or `ignore` and let it sync. The vault watcher applies it on its next poll (default 15 seconds). A note already filed, tasked, or dismissed is left alone.
 
 **Matrix.** In a DM, send the command as the whole message. In a room, put it after `command_prefix` (default `!pawn`):
 
 ```text
 file a1b2c3d4
-later a1b2c3d4 2026-10-03
-ignore a1b2c3d4
+todo a1b2c3d4
+delete a1b2c3d4
 ```
 
 Pawn replies with a one-line receipt and does not start a chat turn.
@@ -187,16 +189,21 @@ Pawn replies with a one-line receipt and does not start a chat turn.
 curl -X POST "$PAWN_URL/v1/items/a1b2c3d4/action" \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
-  -d '{"action":"later","arg":"2026-10-03"}'
+  -d '{"action":"todo"}'
+
+curl -X POST "$PAWN_URL/v1/items/delete" \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"all_open":true}'
 ```
 
-`GET /v1/items?status=notified` lists the inbox.
+`GET /v1/items` lists open items (`new,notified,snoozed`) with `total`, filters (`kind`, `q`, `statuses`), and pagination (`limit`, `offset`).
 
 ## Capture an idea
 
 Ideas are notes under `Ideas/`. `/idea` and **Quick capture** write the note and do not start a model turn. An existing file at that path is left in place. The scanner does not extract a note under `Ideas/` or a note tagged `idea`. `coworker.watch_folders` and `coworker.watch_tags` start empty. A folder you still list is scanned, except idea notes.
 
-The plugin Inbox lists notes with `status: inbox`. Keep sets `status: later`. Goal appends a Parked thread in `Goals.md` that links the note, then sets `status: goal`. Task writes one note under `{agent root}/TaskNotes/Tasks/` and sets `status: task`. Drop sets `status: dropped`. Notes with no `status` stay in the folder and do not appear as cards.
+The Inbox **Ideas** chip lists notes with `status: inbox`. Keep sets `status: later`. Goal appends a Parked thread in `Goals.md` that links the note, then sets `status: goal`. Task writes one note under `{agent root}/TaskNotes/Tasks/` and sets `status: task`. Drop sets `status: dropped`. Notes with no `status` stay in the folder and do not appear as cards.
 
 ```markdown
 ---
