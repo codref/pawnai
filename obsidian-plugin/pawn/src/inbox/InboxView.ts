@@ -277,11 +277,33 @@ export function renderInbox(parent: HTMLElement, plugin: PawnPlugin): void {
     };
   }
 
-  if (vaultCount > openCount && state.scope === "open") {
-    parent.createDiv({
+  const flushable = plugin.items.flushableCount();
+  if (flushable > 0) {
+    const flushRow = parent.createDiv({ cls: "pawn-inbox-flush" });
+    flushRow.createSpan({
       cls: "pawn-inbox-hint",
-      text: `${vaultCount} notes in Items/ · ${openCount} still open. Use Closed or All to clean up the rest.`,
+      text: `${vaultCount} notes in Items/ · ${openCount} open · ${flushable} can be flushed.`,
     });
+    const flushBtn = flushRow.createEl("button", {
+      text: `Flush ${flushable} closed`,
+      cls: "mod-warning",
+    });
+    flushBtn.onclick = () => {
+      new ConfirmModal(
+        plugin.app,
+        "Flush closed item notes?",
+        `Delete ${flushable} closed item(s) from the server and trash their notes under Items/. Open items stay.`,
+        () => {
+          void plugin.items
+            .flushClosed()
+            .then(({ deleted, notes }) => {
+              new Notice(`Flushed ${deleted} records, trashed ${notes} notes.`, 5000);
+              renderInbox(parent, plugin);
+            })
+            .catch(noticeError);
+        },
+      ).open();
+    };
   }
 
   const bulk = parent.createDiv({ cls: "pawn-inbox-bulk" });

@@ -140,6 +140,31 @@ export function countVaultItemNotes(app: App, itemsDir: string): number {
   return app.vault.getMarkdownFiles().filter((f) => f.path.startsWith(prefix)).length;
 }
 
+/** Trash item notes that are not open (filed / task / dismissed / unknown closed). */
+export async function flushClosedVaultNotes(app: App, itemsDir: string): Promise<number> {
+  const root = normalizePath(itemsDir.replace(/\/+$/, ""));
+  const prefix = root.endsWith("/") ? root : `${root}/`;
+  const files = app.vault.getMarkdownFiles().filter((f) => f.path.startsWith(prefix));
+  let removed = 0;
+  for (const file of files) {
+    const cache = app.metadataCache.getFileCache(file);
+    const fm = cache?.frontmatter;
+    let status = "";
+    if (fm && String(fm.pawn || "") === "item") {
+      status = String(fm.status || "new").trim().toLowerCase();
+    } else {
+      const text = await app.vault.cachedRead(file);
+      const parsed = frontmatterBody(text);
+      if (!parsed || metaValue(parsed.meta, "pawn") !== "item") continue;
+      status = (metaValue(parsed.meta, "status") || "new").toLowerCase();
+    }
+    if (statusAllowed(status, "open")) continue;
+    await app.fileManager.trashFile(file);
+    removed += 1;
+  }
+  return removed;
+}
+
 /**
  * Offline list of items. Prefer metadataCache frontmatter so we avoid
  * reading hundreds of note bodies on every refresh.

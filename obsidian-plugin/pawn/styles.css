@@ -754,6 +754,20 @@ button.pawn-chip-pin:hover {
   margin-bottom: var(--size-4-2);
 }
 
+.pawn-inbox-flush {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--size-4-2);
+  margin-bottom: var(--size-4-2);
+}
+
+.pawn-inbox-flush .pawn-inbox-hint {
+  margin-bottom: 0;
+  flex: 1;
+  min-width: 12em;
+}
+
 .pawn-inbox-day {
   font-size: var(--font-ui-small);
   font-weight: var(--font-semibold);

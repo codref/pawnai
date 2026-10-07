@@ -5,7 +5,9 @@ import type PawnPlugin from "../main";
 import {
   ItemsScope,
   PAGE_SIZE,
+  CLOSED_STATUSES,
   countVaultItemNotes,
+  flushClosedVaultNotes,
   isItemNotePath,
   listItemNotes,
   statusesForScope,
@@ -286,5 +288,27 @@ export class ItemsStore {
   /** @deprecated use deleteAllMatching */
   async deleteAllOpen(): Promise<number> {
     return this.deleteAllMatching();
+  }
+
+  /**
+   * Remove closed items from the server and trash leftover closed notes in Items/.
+   * Open items are left alone.
+   */
+  async flushClosed(): Promise<{ deleted: number; notes: number }> {
+    let deleted = 0;
+    if (!this.offline && this.plugin.jobs?.online) {
+      const result = await this.plugin.client.deleteItems({
+        all_open: true,
+        statuses: CLOSED_STATUSES.join(","),
+      });
+      deleted = result.deleted;
+    }
+    const notes = await flushClosedVaultNotes(this.plugin.app, this.itemsDir());
+    await this.refresh();
+    return { deleted, notes };
+  }
+
+  flushableCount(): number {
+    return Math.max(0, this.vaultNotes - this.openTotal);
   }
 }
