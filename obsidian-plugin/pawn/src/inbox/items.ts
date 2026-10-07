@@ -140,34 +140,66 @@ export function countVaultItemNotes(app: App, itemsDir: string): number {
   return app.vault.getMarkdownFiles().filter((f) => f.path.startsWith(prefix)).length;
 }
 
-/**
- * Trash only notes whose status is explicitly closed (filed / task / dismissed).
- * Never touches new / notified / snoozed.
- */
-export async function flushClosedVaultNotes(
-  app: App,
-  itemsDir: string,
-  onProgress?: (done: number, total: number) => void,
-): Promise<number> {
+export interface ItemNoteRef {
+  path: string;
+  id: string;
+  short_id: string;
+  status: string;
+}
+
+/** List every ``pawn: item`` note under Items/ (lightweight frontmatter only). */
+export async function listVaultItemRefs(app: App, itemsDir: string): Promise<ItemNoteRef[]> {
   const root = normalizePath(itemsDir.replace(/\/+$/, ""));
   const prefix = root.endsWith("/") ? root : `${root}/`;
   const files = app.vault.getMarkdownFiles().filter((f) => f.path.startsWith(prefix));
-  const toTrash: TFile[] = [];
+  const refs: ItemNoteRef[] = [];
   for (const file of files) {
     const cache = app.metadataCache.getFileCache(file);
     const fm = cache?.frontmatter;
-    let status = "";
     if (fm && String(fm.pawn || "") === "item") {
-      status = String(fm.status || "").trim().toLowerCase();
-    } else {
-      const text = await app.vault.cachedRead(file);
-      const parsed = frontmatterBody(text);
-      if (!parsed || metaValue(parsed.meta, "pawn") !== "item") continue;
-      status = (metaValue(parsed.meta, "status") || "").toLowerCase();
+      refs.push({
+        path: file.path,
+        id: String(fm.id || "").trim(),
+        short_id: String(fm.short_id || "").trim(),
+        status: String(fm.status || "new").trim().toLowerCase(),
+      });
+      continue;
     }
-    // Explicit closed only — missing/unknown status is left alone.
-    if (!(CLOSED_STATUSES as readonly string[]).includes(status)) continue;
-    toTrash.push(file);
+    const text = await app.vault.cachedRead(file);
+    const parsed = frontmatterBody(text);
+    if (!parsed || metaValue(parsed.meta, "pawn") !== "item") continue;
+    refs.push({
+      path: file.path,
+      id: metaValue(parsed.meta, "id"),
+      short_id: metaValue(parsed.meta, "short_id"),
+      status: (metaValue(parsed.meta, "status") || "new").toLowerCase(),
+    });
+  }
+  return refs;
+}
+
+/**
+ * Trash item notes that are safe to flush:
+ * - status is explicitly closed, or
+ * - note is not among the live open items (orphan / stale note).
+ * Notes matching *keep* (open id / short_id / note_key) are never touched.
+ */
+export async function flushFlushableVaultNotes(
+  app: App,
+  itemsDir: string,
+  keep: Set<string>,
+  onProgress?: (done: number, total: number) => void,
+): Promise<number> {
+  const refs = await listVaultItemRefs(app, itemsDir);
+  const toTrash: TFile[] = [];
+  for (const ref of refs) {
+    const kept =
+      (ref.id && keep.has(ref.id)) ||
+      (ref.short_id && keep.has(ref.short_id)) ||
+      keep.has(ref.path);
+    if (kept) continue;
+    const file = app.vault.getAbstractFileByPath(ref.path);
+    if (file instanceof TFile) toTrash.push(file);
   }
   let removed = 0;
   for (const file of toTrash) {
@@ -176,6 +208,15 @@ export async function flushClosedVaultNotes(
     onProgress?.(removed, toTrash.length);
   }
   return removed;
+}
+
+/** @deprecated use flushFlushableVaultNotes */
+export async function flushClosedVaultNotes(
+  app: App,
+  itemsDir: string,
+  onProgress?: (done: number, total: number) => void,
+): Promise<number> {
+  return flushFlushableVaultNotes(app, itemsDir, new Set(), onProgress);
 }
 
 /**

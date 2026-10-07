@@ -285,13 +285,13 @@ export function renderInbox(parent: HTMLElement, plugin: PawnPlugin): void {
       cls: "pawn-inbox-hint",
       text: flushing
         ? plugin.items.flushProgress() || "Flushing closed items…"
-        : `${vaultCount} notes in Items/ · ${openCount} open · ${flushable} closed can be flushed.`,
+        : `${vaultCount} notes in Items/ · ${openCount} open · ${flushable} stale can be flushed.`,
     });
     const flushBtn = flushRow.createEl("button", {
       cls: "clickable-icon pawn-item-action",
       attr: {
-        "aria-label": flushing ? "Flushing…" : `Flush ${flushable} closed notes`,
-        title: flushing ? "Flushing…" : `Flush ${flushable} closed notes`,
+        "aria-label": flushing ? "Flushing…" : `Flush ${flushable} stale notes`,
+        title: flushing ? "Flushing…" : `Flush ${flushable} stale notes`,
       },
     });
     setIcon(flushBtn, flushing ? "loader" : "trash-2");
@@ -301,13 +301,13 @@ export function renderInbox(parent: HTMLElement, plugin: PawnPlugin): void {
       flushBtn.onclick = () => {
         new ConfirmModal(
           plugin.app,
-          "Flush closed item notes?",
-          `Trash ${flushable} closed note(s) under Items/ and remove their server records. Open items are never deleted.`,
+          "Flush stale item notes?",
+          `Trash ${flushable} note(s) under Items/ that are not in the open queue, and remove closed server records. The ${openCount} open item(s) stay.`,
           () => {
             void plugin.items
               .flushClosed()
               .then(({ deleted, notes }) => {
-                new Notice(`Flushed ${deleted} records, trashed ${notes} notes.`, 5000);
+                new Notice(`Removed ${deleted} closed records, trashed ${notes} notes.`, 5000);
                 renderInbox(parent, plugin);
               })
               .catch(noticeError);

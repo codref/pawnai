@@ -7,9 +7,10 @@ import {
   PAGE_SIZE,
   CLOSED_STATUSES,
   countVaultItemNotes,
-  flushClosedVaultNotes,
+  flushFlushableVaultNotes,
   isItemNotePath,
   listItemNotes,
+  listVaultItemRefs,
   statusesForScope,
 } from "./items";
 
@@ -29,6 +30,7 @@ export class ItemsStore {
   private total = 0;
   private openTotal = 0;
   private vaultNotes = 0;
+  private flushable = 0;
   private listeners = new Set<() => void>();
   private stopped = true;
   private generation = 0;
@@ -129,8 +131,54 @@ export class ItemsStore {
       this.total,
       this.openTotal,
       this.vaultNotes,
+      this.flushable,
       this.items.map((i) => `${i.id}:${i.status}`).join(","),
     ].join("|");
+  }
+
+  /** Live open ids / short_ids / note paths that must never be flushed. */
+  private async collectOpenKeepSet(): Promise<Set<string>> {
+    const keep = new Set<string>();
+    if (this.offline || !this.plugin.jobs?.online) {
+      const open = await listItemNotes(this.plugin.app, this.itemsDir(), "open");
+      for (const item of open) {
+        keep.add(item.id);
+        if (item.short_id) keep.add(item.short_id);
+        if (item.note_key) keep.add(item.note_key);
+      }
+      return keep;
+    }
+    let offset = 0;
+    for (;;) {
+      const page = await this.plugin.client.listItems({
+        statuses: statusesForScope("open"),
+        limit: PAGE_SIZE,
+        offset,
+      });
+      for (const item of page.items) {
+        keep.add(item.id);
+        if (item.short_id) keep.add(item.short_id);
+        if (item.note_key) keep.add(item.note_key);
+      }
+      offset += page.items.length;
+      if (offset >= page.total || page.items.length === 0) break;
+    }
+    return keep;
+  }
+
+  private async recountFlushable(keep?: Set<string>): Promise<void> {
+    this.vaultNotes = countVaultItemNotes(this.plugin.app, this.itemsDir());
+    const live = keep ?? (await this.collectOpenKeepSet());
+    const refs = await listVaultItemRefs(this.plugin.app, this.itemsDir());
+    let n = 0;
+    for (const ref of refs) {
+      const kept =
+        (ref.id && live.has(ref.id)) ||
+        (ref.short_id && live.has(ref.short_id)) ||
+        live.has(ref.path);
+      if (!kept) n += 1;
+    }
+    this.flushable = n;
   }
 
   private notify(): void {
@@ -156,7 +204,6 @@ export class ItemsStore {
     this.refreshing = true;
     const generation = ++this.generation;
     const before = this.fingerprint();
-    this.vaultNotes = countVaultItemNotes(this.plugin.app, this.itemsDir());
     try {
       try {
         const result = await this.plugin.client.listItems(this.listParams(0));
@@ -175,6 +222,9 @@ export class ItemsStore {
           if (this.stopped || generation !== this.generation) return;
           this.openTotal = open.total;
         }
+        const keep = await this.collectOpenKeepSet();
+        if (this.stopped || generation !== this.generation) return;
+        await this.recountFlushable(keep);
       } catch (e) {
         if (!(e instanceof ServerUnreachable) && this.plugin.jobs?.online) return;
         const items = await listItemNotes(this.plugin.app, this.itemsDir(), this.scope);
@@ -192,12 +242,14 @@ export class ItemsStore {
         this.items = filtered;
         this.total = filtered.length;
         this.offline = true;
+        const keep = await this.collectOpenKeepSet();
         if (this.scope === "open") {
           this.openTotal = filtered.length;
         } else {
           const openOnly = await listItemNotes(this.plugin.app, this.itemsDir(), "open");
           this.openTotal = openOnly.length;
         }
+        await this.recountFlushable(keep);
       }
       if (before !== this.fingerprint()) this.notify();
       else this.plugin.updateStatusBar();
@@ -301,17 +353,20 @@ export class ItemsStore {
   }
 
   /**
-   * Remove closed items from the server and trash leftover closed notes in Items/.
-   * Open items are never touched. Does not use all_open (that wrongly wiped opens
-   * when the server ignored statuses).
+   * Trash orphan/stale Items/ notes (anything not in the live open set) and
+   * delete closed server records. Open items are never touched.
    */
   async flushClosed(): Promise<{ deleted: number; notes: number }> {
     if (this.flushing) throw new Error("Flush already in progress.");
     this.flushing = true;
-    this.flushLabel = "Collecting closed items…";
+    this.flushLabel = "Finding open items to keep…";
     this.notify();
     let deleted = 0;
     try {
+      const keep = await this.collectOpenKeepSet();
+      this.flushLabel = `Keeping ${this.openTotal} open… collecting closed records`;
+      this.notify();
+
       if (!this.offline && this.plugin.jobs?.online) {
         const ids: string[] = [];
         let offset = 0;
@@ -327,7 +382,7 @@ export class ItemsStore {
             ids.push(item.id);
           }
           offset += page.items.length;
-          this.flushLabel = `Collecting closed items… ${ids.length}`;
+          this.flushLabel = `Collecting closed records… ${ids.length}`;
           this.notify();
           if (offset >= page.total || page.items.length === 0) break;
         }
@@ -340,13 +395,15 @@ export class ItemsStore {
           this.notify();
         }
       }
-      this.flushLabel = "Trashing closed notes…";
+
+      this.flushLabel = "Trashing orphan notes…";
       this.notify();
-      const notes = await flushClosedVaultNotes(
+      const notes = await flushFlushableVaultNotes(
         this.plugin.app,
         this.itemsDir(),
+        keep,
         (done, total) => {
-          this.flushLabel = `Trashing closed notes… ${done}/${total}`;
+          this.flushLabel = `Trashing orphan notes… ${done}/${total}`;
           this.notify();
         },
       );
@@ -362,6 +419,6 @@ export class ItemsStore {
   }
 
   flushableCount(): number {
-    return Math.max(0, this.vaultNotes - this.openTotal);
+    return this.flushable;
   }
 }
