@@ -2,7 +2,7 @@ import { MarkdownView, TFile } from "obsidian";
 import type { InboxItem } from "../api";
 import type PawnPlugin from "../main";
 import { mountItemActions } from "./InboxView";
-import { OPEN_STATUSES } from "./items";
+import { OPEN_STATUSES, isItemNotePath } from "./items";
 
 const BAR_CLS = "pawn-item-note-bar";
 
@@ -10,19 +10,23 @@ const BAR_CLS = "pawn-item-note-bar";
 export class ItemNoteBar {
   private bar: HTMLElement | null = null;
   private path = "";
+  private timer = 0;
 
   constructor(private plugin: PawnPlugin) {}
 
   start(): void {
-    this.plugin.registerEvent(
-      this.plugin.app.workspace.on("active-leaf-change", () => void this.refresh()),
-    );
-    this.plugin.registerEvent(
-      this.plugin.app.workspace.on("file-open", () => void this.refresh()),
-    );
+    const schedule = () => {
+      if (this.timer) window.clearTimeout(this.timer);
+      this.timer = window.setTimeout(() => {
+        this.timer = 0;
+        void this.refresh();
+      }, 50);
+    };
+    this.plugin.registerEvent(this.plugin.app.workspace.on("active-leaf-change", schedule));
+    this.plugin.registerEvent(this.plugin.app.workspace.on("file-open", schedule));
     this.plugin.registerEvent(
       this.plugin.app.metadataCache.on("changed", (file) => {
-        if (file.path === this.path) void this.refresh();
+        if (file.path === this.path) schedule();
       }),
     );
     void this.refresh();
@@ -34,6 +38,10 @@ export class ItemNoteBar {
     this.path = "";
   }
 
+  private itemsDir(): string {
+    return `${this.plugin.settings.agentRoot.replace(/\/+$/, "")}/Items`;
+  }
+
   async refresh(): Promise<void> {
     const view = this.plugin.app.workspace.getActiveViewOfType(MarkdownView);
     const file = view?.file;
@@ -41,8 +49,37 @@ export class ItemNoteBar {
       this.clear();
       return;
     }
-    const text = await this.plugin.app.vault.cachedRead(file);
-    const item = parseOpenItemNote(file.path, text);
+    // Cheap reject: not under Items/, or cache says not an open item.
+    if (!isItemNotePath(file.path, this.itemsDir())) {
+      this.clear();
+      return;
+    }
+    const cache = this.plugin.app.metadataCache.getFileCache(file);
+    const fm = cache?.frontmatter;
+    let item: InboxItem | null = null;
+    if (fm && String(fm.pawn || "") === "item") {
+      const status = String(fm.status || "new").trim().toLowerCase();
+      if (!(OPEN_STATUSES as readonly string[]).includes(status)) {
+        this.clear();
+        return;
+      }
+      item = {
+        id: String(fm.id || file.path),
+        short_id: String(fm.short_id || ""),
+        kind: String(fm.kind || "item"),
+        text: String(fm.thread || fm.kind || "item"),
+        thread: fm.thread != null && String(fm.thread).trim() ? String(fm.thread) : null,
+        status,
+        interrupt: false,
+        note_key: file.path,
+      };
+      // Prefer body first line when cheap.
+      const text = await this.plugin.app.vault.cachedRead(file);
+      item = parseOpenItemNote(file.path, text) ?? item;
+    } else {
+      const text = await this.plugin.app.vault.cachedRead(file);
+      item = parseOpenItemNote(file.path, text);
+    }
     if (!item) {
       this.clear();
       return;

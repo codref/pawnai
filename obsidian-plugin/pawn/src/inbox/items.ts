@@ -108,13 +108,44 @@ export function parseItemNote(path: string, text: string, mtime?: number): Inbox
   };
 }
 
+/**
+ * Offline list of open items. Prefer metadataCache frontmatter so we avoid
+ * reading hundreds of note bodies on every refresh; fall back to a short
+ * cachedRead only when status/kind are not in the cache yet.
+ */
 export async function listOpenItemNotes(app: App, itemsDir: string): Promise<InboxItem[]> {
   const root = normalizePath(itemsDir.replace(/\/+$/, ""));
   const prefix = root.endsWith("/") ? root : `${root}/`;
   const files = app.vault.getMarkdownFiles().filter((f) => f.path.startsWith(prefix));
   const items: InboxItem[] = [];
   for (const file of files) {
-    const text = await app.vault.read(file);
+    const cache = app.metadataCache.getFileCache(file);
+    const fm = cache?.frontmatter;
+    if (fm && String(fm.pawn || "") === "item") {
+      const status = String(fm.status || "new").trim().toLowerCase();
+      if (!(OPEN_STATUSES as readonly string[]).includes(status)) continue;
+      const id = String(fm.id || file.path);
+      const shortId = String(fm.short_id || id.slice(0, 8));
+      const kind = String(fm.kind || "item");
+      const thread = fm.thread != null && String(fm.thread).trim() ? String(fm.thread) : null;
+      // Body text is not in frontmatter; use basename slug as a cheap label.
+      const base = file.basename.replace(/^[0-9]{4}-[0-9]{2}-[0-9]{2}-/, "").replace(/-[a-f0-9]{8}$/i, "");
+      const label = base.replace(/-/g, " ").trim() || shortId;
+      items.push({
+        id,
+        short_id: shortId,
+        kind,
+        text: label,
+        thread,
+        status,
+        interrupt: false,
+        note_key: file.path,
+        created_at: window.moment(file.stat.mtime).toISOString(),
+      });
+      continue;
+    }
+    // Uncached / not yet indexed — one cachedRead.
+    const text = await app.vault.cachedRead(file);
     const item = parseItemNote(file.path, text, file.stat.mtime);
     if (item) items.push(item);
   }

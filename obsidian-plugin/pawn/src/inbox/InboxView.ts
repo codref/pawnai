@@ -1,7 +1,8 @@
-import { Modal, Notice, TFile } from "obsidian";
+import { Modal, Notice, TAbstractFile, TFile } from "obsidian";
 import type { InboxItem } from "../api";
 import type PawnPlugin from "../main";
 import {
+  IDEAS_FOLDER,
   IdeaCard,
   createTaskFromIdea,
   listInboxIdeas,
@@ -12,27 +13,46 @@ import {
 import { groupByDay, kindLabel } from "./items";
 import type { ItemsSection } from "./ItemsStore";
 
+const IDEAS_DEBOUNCE_MS = 400;
+
 /** Lists Ideas/ notes with status inbox for the Ideas chip and status bar. */
 export class InboxStore {
   private items: IdeaCard[] = [];
   private listeners = new Set<() => void>();
   private stopped = true;
   private generation = 0;
+  private debounceTimer = 0;
+  private signature = "";
 
   constructor(private plugin: PawnPlugin) {}
 
   start(): void {
     this.stopped = false;
-    const refresh = () => void this.refresh();
-    this.plugin.registerEvent(this.plugin.app.vault.on("create", refresh));
-    this.plugin.registerEvent(this.plugin.app.vault.on("modify", refresh));
-    this.plugin.registerEvent(this.plugin.app.vault.on("delete", refresh));
-    this.plugin.registerEvent(this.plugin.app.vault.on("rename", refresh));
+    const onVault = (file: TAbstractFile) => {
+      if (!(file instanceof TFile)) return;
+      if (!file.path.startsWith(`${IDEAS_FOLDER}/`) && file.path !== IDEAS_FOLDER) return;
+      this.scheduleRefresh();
+    };
+    this.plugin.registerEvent(this.plugin.app.vault.on("create", onVault));
+    this.plugin.registerEvent(this.plugin.app.vault.on("modify", onVault));
+    this.plugin.registerEvent(this.plugin.app.vault.on("delete", onVault));
+    this.plugin.registerEvent(
+      this.plugin.app.vault.on("rename", (file, oldPath) => {
+        if (
+          (file instanceof TFile && file.path.startsWith(`${IDEAS_FOLDER}/`)) ||
+          oldPath.startsWith(`${IDEAS_FOLDER}/`)
+        ) {
+          this.scheduleRefresh();
+        }
+      }),
+    );
     void this.refresh();
   }
 
   stop(): void {
     this.stopped = true;
+    if (this.debounceTimer) window.clearTimeout(this.debounceTimer);
+    this.debounceTimer = 0;
   }
 
   onChange(fn: () => void): () => void {
@@ -48,6 +68,15 @@ export class InboxStore {
     return this.items.length;
   }
 
+  scheduleRefresh(): void {
+    if (this.stopped) return;
+    if (this.debounceTimer) window.clearTimeout(this.debounceTimer);
+    this.debounceTimer = window.setTimeout(() => {
+      this.debounceTimer = 0;
+      void this.refresh();
+    }, IDEAS_DEBOUNCE_MS);
+  }
+
   async refresh(): Promise<void> {
     if (this.stopped) return;
     const generation = ++this.generation;
@@ -58,7 +87,13 @@ export class InboxStore {
       return;
     }
     if (this.stopped || generation !== this.generation) return;
+    const next = items.map((i) => `${i.path}:${i.title}`).join("|");
     this.items = items;
+    if (next === this.signature) {
+      this.plugin.updateStatusBar();
+      return;
+    }
+    this.signature = next;
     for (const fn of this.listeners) fn();
     this.plugin.updateStatusBar();
   }

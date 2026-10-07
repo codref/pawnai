@@ -680,8 +680,14 @@ export class PawnChatView extends ItemView {
       const b = tabs.createEl("button", { text: label });
       b.toggleClass("is-active", this.tab === id);
       b.onclick = () => {
+        const prev = this.tab;
         this.tab = id;
         if (id === "chat") this.focusJob = null;
+        // Refresh once when entering Inbox — never from renderBody (that loops).
+        if (id === "inbox" && prev !== "inbox") {
+          void this.plugin.items?.refresh();
+          void this.plugin.inbox?.refresh();
+        }
         this.render();
       };
     };
@@ -706,7 +712,6 @@ export class PawnChatView extends ItemView {
     if (!body) return;
     body.empty();
     if (this.tab === "inbox") {
-      void this.plugin.items?.refresh();
       renderInbox(body.createDiv({ cls: "pawn-jobs" }), this.plugin);
       return;
     }

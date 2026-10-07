@@ -1,7 +1,8 @@
+import { TAbstractFile, TFile } from "obsidian";
 import type { InboxItem } from "../api";
 import { ServerUnreachable } from "../api";
 import type PawnPlugin from "../main";
-import { OPEN_STATUSES, PAGE_SIZE, listOpenItemNotes } from "./items";
+import { OPEN_STATUSES, PAGE_SIZE, isItemNotePath, listOpenItemNotes } from "./items";
 
 export type ItemsSection = "items" | "ideas";
 
@@ -9,6 +10,8 @@ export interface ItemsQuery {
   kind: string;
   q: string;
 }
+
+const DEBOUNCE_MS = 400;
 
 /** Coworker Items backed by the API online, vault notes offline. */
 export class ItemsStore {
@@ -18,23 +21,45 @@ export class ItemsStore {
   private stopped = true;
   private generation = 0;
   private offline = false;
+  private debounceTimer = 0;
+  private refreshing = false;
   kind = "";
   q = "";
 
   constructor(private plugin: PawnPlugin) {}
 
+  private itemsDir(): string {
+    return `${this.plugin.settings.agentRoot.replace(/\/+$/, "")}/Items`;
+  }
+
   start(): void {
     this.stopped = false;
-    const refresh = () => void this.refresh();
-    this.plugin.registerEvent(this.plugin.app.vault.on("create", refresh));
-    this.plugin.registerEvent(this.plugin.app.vault.on("modify", refresh));
-    this.plugin.registerEvent(this.plugin.app.vault.on("delete", refresh));
-    this.plugin.registerEvent(this.plugin.app.vault.on("rename", refresh));
+    const onVault = (file: TAbstractFile) => {
+      if (!(file instanceof TFile)) return;
+      if (!isItemNotePath(file.path, this.itemsDir())) return;
+      this.scheduleRefresh();
+    };
+    this.plugin.registerEvent(this.plugin.app.vault.on("create", onVault));
+    this.plugin.registerEvent(this.plugin.app.vault.on("modify", onVault));
+    this.plugin.registerEvent(this.plugin.app.vault.on("delete", onVault));
+    this.plugin.registerEvent(
+      this.plugin.app.vault.on("rename", (file, oldPath) => {
+        const dir = this.itemsDir();
+        if (
+          (file instanceof TFile && isItemNotePath(file.path, dir)) ||
+          isItemNotePath(oldPath, dir)
+        ) {
+          this.scheduleRefresh();
+        }
+      }),
+    );
     void this.refresh();
   }
 
   stop(): void {
     this.stopped = true;
+    if (this.debounceTimer) window.clearTimeout(this.debounceTimer);
+    this.debounceTimer = 0;
   }
 
   onChange(fn: () => void): () => void {
@@ -67,49 +92,72 @@ export class ItemsStore {
     if (partial.q !== undefined) this.q = partial.q;
   }
 
+  /** Coalesce vault bursts (Sync Engine) into one refresh. */
+  scheduleRefresh(): void {
+    if (this.stopped) return;
+    if (this.debounceTimer) window.clearTimeout(this.debounceTimer);
+    this.debounceTimer = window.setTimeout(() => {
+      this.debounceTimer = 0;
+      void this.refresh();
+    }, DEBOUNCE_MS);
+  }
+
+  private fingerprint(items: InboxItem[], total: number, offline: boolean): string {
+    return `${offline}:${total}:${items.map((i) => `${i.id}:${i.status}`).join(",")}`;
+  }
+
   private notify(): void {
     for (const fn of this.listeners) fn();
     this.plugin.updateStatusBar();
   }
 
   async refresh(): Promise<void> {
-    if (this.stopped) return;
-    const generation = ++this.generation;
-    try {
-      const result = await this.plugin.client.listItems({
-        statuses: OPEN_STATUSES.join(","),
-        kind: this.kind || undefined,
-        q: this.q.trim() || undefined,
-        limit: PAGE_SIZE,
-        offset: 0,
-      });
-      if (this.stopped || generation !== this.generation) return;
-      this.items = result.items;
-      this.total = result.total;
-      this.offline = false;
-    } catch (e) {
-      if (!(e instanceof ServerUnreachable)) {
-        // Auth/server errors: keep last good list rather than pretending offline.
-        if (this.plugin.jobs?.online) return;
-      }
-      const itemsDir = `${this.plugin.settings.agentRoot.replace(/\/+$/, "")}/Items`;
-      const items = await listOpenItemNotes(this.plugin.app, itemsDir);
-      if (this.stopped || generation !== this.generation) return;
-      let filtered = items;
-      if (this.kind) filtered = filtered.filter((i) => i.kind === this.kind);
-      if (this.q.trim()) {
-        const needle = this.q.trim().toLowerCase();
-        filtered = filtered.filter(
-          (i) =>
-            (i.text || "").toLowerCase().includes(needle) ||
-            (i.thread || "").toLowerCase().includes(needle),
-        );
-      }
-      this.items = filtered;
-      this.total = filtered.length;
-      this.offline = true;
+    if (this.stopped || this.refreshing) {
+      if (this.refreshing) this.scheduleRefresh();
+      return;
     }
-    this.notify();
+    this.refreshing = true;
+    const generation = ++this.generation;
+    const before = this.fingerprint(this.items, this.total, this.offline);
+    try {
+      try {
+        const result = await this.plugin.client.listItems({
+          statuses: OPEN_STATUSES.join(","),
+          kind: this.kind || undefined,
+          q: this.q.trim() || undefined,
+          limit: PAGE_SIZE,
+          offset: 0,
+        });
+        if (this.stopped || generation !== this.generation) return;
+        this.items = result.items;
+        this.total = result.total;
+        this.offline = false;
+      } catch (e) {
+        if (!(e instanceof ServerUnreachable) && this.plugin.jobs?.online) return;
+        const items = await listOpenItemNotes(this.plugin.app, this.itemsDir());
+        if (this.stopped || generation !== this.generation) return;
+        let filtered = items;
+        if (this.kind) filtered = filtered.filter((i) => i.kind === this.kind);
+        if (this.q.trim()) {
+          const needle = this.q.trim().toLowerCase();
+          filtered = filtered.filter(
+            (i) =>
+              (i.text || "").toLowerCase().includes(needle) ||
+              (i.thread || "").toLowerCase().includes(needle),
+          );
+        }
+        this.items = filtered;
+        this.total = filtered.length;
+        this.offline = true;
+      }
+      if (before !== this.fingerprint(this.items, this.total, this.offline)) {
+        this.notify();
+      } else {
+        this.plugin.updateStatusBar();
+      }
+    } finally {
+      this.refreshing = false;
+    }
   }
 
   async loadMore(): Promise<void> {
@@ -125,11 +173,15 @@ export class ItemsStore {
       });
       if (this.stopped || generation !== this.generation) return;
       const seen = new Set(this.items.map((i) => i.id));
+      let added = false;
       for (const item of result.items) {
-        if (!seen.has(item.id)) this.items.push(item);
+        if (!seen.has(item.id)) {
+          this.items.push(item);
+          added = true;
+        }
       }
       this.total = result.total;
-      this.notify();
+      if (added) this.notify();
     } catch {
       /* keep current page */
     }
