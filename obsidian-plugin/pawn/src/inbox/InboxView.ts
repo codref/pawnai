@@ -1,4 +1,4 @@
-import { Modal, Notice, TAbstractFile, TFile } from "obsidian";
+import { Modal, Notice, TAbstractFile, TFile, setIcon } from "obsidian";
 import type { InboxItem } from "../api";
 import type PawnPlugin from "../main";
 import {
@@ -10,7 +10,7 @@ import {
   parkIdea,
   setIdeaStatus,
 } from "./ideas";
-import { groupByDay, kindLabel } from "./items";
+import { ItemsScope, groupByDay, kindClass, kindLabel } from "./items";
 import type { ItemsSection } from "./ItemsStore";
 
 const IDEAS_DEBOUNCE_MS = 400;
@@ -142,6 +142,7 @@ interface InboxUiState {
   selected: Set<string>;
   search: string;
   kind: string;
+  scope: ItemsScope;
   expanded: Set<string>;
 }
 
@@ -151,21 +152,26 @@ const uiState: InboxUiState = {
   selected: new Set(),
   search: "",
   kind: "",
+  scope: "open",
   expanded: new Set(),
 };
 
-/** Shared action buttons for an item (sidebar row or note bar). */
+/** Quiet icon actions for an item (sidebar row or note bar). */
 export function mountItemActions(
   parent: HTMLElement,
   plugin: PawnPlugin,
   item: InboxItem,
   onDone?: () => void,
 ): void {
-  const actions = parent.createDiv({ cls: "pawn-job-actions pawn-item-actions" });
-  const run = (label: string, action: string, cls?: string) => {
-    const button = actions.createEl("button", { text: label });
-    if (cls) button.addClass(cls);
-    button.onclick = () => {
+  const actions = parent.createDiv({ cls: "pawn-item-actions" });
+  const iconBtn = (icon: string, label: string, action: string) => {
+    const button = actions.createEl("button", {
+      cls: "clickable-icon pawn-item-action",
+      attr: { "aria-label": label, title: label },
+    });
+    setIcon(button, icon);
+    button.onclick = (ev) => {
+      ev.stopPropagation();
       void plugin.items
         .runAction(item.id, action)
         .then((receipt) => {
@@ -178,28 +184,33 @@ export function mountItemActions(
 
   const kind = item.kind || "";
   if (kind === "people_update" || kind === "schedule_proposal" || kind === "proposal") {
-    run("Approve", "approve", "mod-cta");
-    run("Reject", "reject", "mod-warning");
-    run("Delete", "delete", "mod-warning");
+    iconBtn("check", "Approve", "approve");
+    iconBtn("x", "Reject", "reject");
+    iconBtn("trash-2", "Delete", "delete");
     return;
   }
 
-  run("Add TODO", "todo", "mod-cta");
-  if (item.thread) run("File to thread", "file");
-  run("Ask Pawn", "task");
-  run("Delete", "delete", "mod-warning");
+  iconBtn("list-plus", "Add TODO", "todo");
+  if (item.thread) iconBtn("folder-input", "File to thread", "file");
+  iconBtn("bot", "Ask Pawn", "task");
+  iconBtn("trash-2", "Delete", "delete");
 }
 
 export function renderInbox(parent: HTMLElement, plugin: PawnPlugin): void {
   parent.empty();
   const state = uiState;
+  state.scope = plugin.items.scope || state.scope;
+  state.kind = plugin.items.kind || state.kind;
+  state.search = plugin.items.q || state.search;
 
   const toolbar = parent.createDiv({ cls: "pawn-inbox-toolbar" });
   const sections = toolbar.createDiv({ cls: "pawn-inbox-sections" });
-  const itemCount = plugin.items.attention();
+  const openCount = plugin.items.attention();
+  const listedCount = plugin.items.count();
   const ideaCount = plugin.inbox.attention();
+  const vaultCount = plugin.items.vaultNoteCount();
   for (const [id, label, count] of [
-    ["items", "Items", itemCount],
+    ["items", "Items", openCount],
     ["ideas", "Ideas", ideaCount],
   ] as const) {
     const b = sections.createEl("button", {
@@ -218,6 +229,21 @@ export function renderInbox(parent: HTMLElement, plugin: PawnPlugin): void {
   }
 
   const filters = parent.createDiv({ cls: "pawn-inbox-filters" });
+  const scopes = filters.createDiv({ cls: "pawn-inbox-scopes" });
+  for (const [scope, label] of [
+    ["open", "Open"],
+    ["closed", "Closed"],
+    ["all", "All"],
+  ] as const) {
+    const chip = scopes.createEl("button", { text: label, cls: "pawn-chip" });
+    chip.toggleClass("is-active", state.scope === scope);
+    chip.onclick = () => {
+      state.scope = scope;
+      plugin.items.setQuery({ scope });
+      void plugin.items.refresh().then(() => renderInbox(parent, plugin));
+    };
+  }
+
   const search = filters.createEl("input", {
     type: "search",
     placeholder: "Search items…",
@@ -239,13 +265,23 @@ export function renderInbox(parent: HTMLElement, plugin: PawnPlugin): void {
   const kinds = filters.createDiv({ cls: "pawn-inbox-kinds" });
   for (const kind of KINDS) {
     const label = kind ? kindLabel(kind) : "All kinds";
-    const chip = kinds.createEl("button", { text: label, cls: "pawn-chip" });
+    const chip = kinds.createEl("button", {
+      text: label,
+      cls: `pawn-chip${kind ? ` ${kindClass(kind)}` : ""}`,
+    });
     chip.toggleClass("is-active", state.kind === kind);
     chip.onclick = () => {
       state.kind = kind;
       plugin.items.setQuery({ kind });
       void plugin.items.refresh().then(() => renderInbox(parent, plugin));
     };
+  }
+
+  if (vaultCount > openCount && state.scope === "open") {
+    parent.createDiv({
+      cls: "pawn-inbox-hint",
+      text: `${vaultCount} notes in Items/ · ${openCount} still open. Use Closed or All to clean up the rest.`,
+    });
   }
 
   const bulk = parent.createDiv({ cls: "pawn-inbox-bulk" });
@@ -283,16 +319,22 @@ export function renderInbox(parent: HTMLElement, plugin: PawnPlugin): void {
       ).open();
     };
   }
-  const delAll = bulk.createEl("button", { text: "Delete all open", cls: "mod-warning" });
-  delAll.disabled = itemCount === 0;
+  const delLabel =
+    state.scope === "open"
+      ? "Delete all open"
+      : state.scope === "closed"
+        ? "Delete all closed"
+        : "Delete all matching";
+  const delAll = bulk.createEl("button", { text: delLabel, cls: "mod-warning" });
+  delAll.disabled = listedCount === 0;
   delAll.onclick = () => {
     new ConfirmModal(
       plugin.app,
-      "Delete all open items?",
-      `This removes ${itemCount} open item(s) matching the current filters.`,
+      `${delLabel}?`,
+      `This removes ${listedCount} item(s) matching the current filters.`,
       () => {
         void plugin.items
-          .deleteAllOpen()
+          .deleteAllMatching()
           .then((n) => {
             state.selected.clear();
             state.selectMode = false;
@@ -315,7 +357,10 @@ export function renderInbox(parent: HTMLElement, plugin: PawnPlugin): void {
   if (!items.length) {
     parent.createDiv({
       cls: "pawn-empty",
-      text: "No open items. Meeting extracts land here for triage.",
+      text:
+        state.scope === "open"
+          ? "No open items. Meeting extracts land here for triage."
+          : "No items match this filter.",
     });
     return;
   }
@@ -344,9 +389,9 @@ function renderItemRow(
   rerender: () => void,
 ): void {
   const card = parent.createDiv({ cls: "pawn-job-card pawn-inbox-card pawn-item-card" });
-  const head = card.createDiv({ cls: "pawn-item-head" });
+  const top = card.createDiv({ cls: "pawn-item-top" });
   if (state.selectMode) {
-    const box = head.createEl("input", { type: "checkbox", cls: "pawn-item-check" });
+    const box = top.createEl("input", { type: "checkbox", cls: "pawn-item-check" });
     box.checked = state.selected.has(item.id);
     box.onchange = () => {
       if (box.checked) state.selected.add(item.id);
@@ -354,8 +399,12 @@ function renderItemRow(
       rerender();
     };
   }
-  head.createSpan({ cls: "pawn-item-kind", text: kindLabel(item.kind) });
-  const title = head.createDiv({ cls: "pawn-inbox-title" });
+  const body = top.createDiv({ cls: "pawn-item-body" });
+  body.createDiv({
+    cls: `pawn-item-kind ${kindClass(item.kind)}`,
+    text: kindLabel(item.kind),
+  });
+  const title = body.createDiv({ cls: "pawn-inbox-title" });
   title.setText((item.text || "").replace(/\s+/g, " ").trim() || "(empty)");
   title.onclick = () => {
     const path = item.note_key;
@@ -369,18 +418,24 @@ function renderItemRow(
     rerender();
   };
 
-  const meta = card.createDiv({ cls: "pawn-job-meta" });
+  const metaRow = card.createDiv({ cls: "pawn-item-meta-row" });
+  const meta = metaRow.createDiv({ cls: "pawn-job-meta" });
   const bits = [
     item.created_at ? window.moment(item.created_at).fromNow() : "",
     item.thread || "",
     item.status,
   ].filter(Boolean);
   meta.setText(bits.join(" · "));
+  mountItemActions(metaRow, plugin, item, rerender);
 
   const expandBtn = card.createEl("button", {
-    cls: "pawn-item-expand",
-    text: state.expanded.has(item.id) ? "Hide details" : "Details",
+    cls: "pawn-item-expand clickable-icon",
+    attr: {
+      "aria-label": state.expanded.has(item.id) ? "Hide details" : "Details",
+      title: state.expanded.has(item.id) ? "Hide details" : "Details",
+    },
   });
+  setIcon(expandBtn, state.expanded.has(item.id) ? "chevron-up" : "chevron-down");
   expandBtn.onclick = () => {
     if (state.expanded.has(item.id)) state.expanded.delete(item.id);
     else state.expanded.add(item.id);
@@ -400,8 +455,6 @@ function renderItemRow(
       };
     }
   }
-
-  mountItemActions(card, plugin, item, rerender);
 }
 
 function renderIdeas(parent: HTMLElement, plugin: PawnPlugin): void {

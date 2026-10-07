@@ -225,6 +225,7 @@ async def delete_items(
     *,
     ids: Optional[list[str]] = None,
     all_open: bool = False,
+    statuses: Optional[list[str]] = None,
     kind: Optional[str] = None,
     q: Optional[str] = None,
     registry: Any = None,
@@ -234,9 +235,16 @@ async def delete_items(
     del registry  # unused; kept for call-site symmetry with apply_action
     target_ids: list[str] = []
     if all_open:
+        # None → open defaults; [] → no status filter; else explicit list.
+        if statuses is None:
+            status_arg: Optional[list[str]] = list(itemdb.OPEN_STATUSES)
+        elif len(statuses) == 0:
+            status_arg = None
+        else:
+            status_arg = statuses
         target_ids = itemdb.list_item_ids(
             cfg.db_dsn,
-            statuses=list(itemdb.OPEN_STATUSES),
+            statuses=status_arg,
             kind=kind,
             q=q,
         )

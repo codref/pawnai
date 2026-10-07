@@ -287,12 +287,14 @@ class ItemActionRequest(BaseModel):
 
 
 class ItemsDeleteRequest(BaseModel):
-    """POST /v1/items/delete — dismiss one or many open items."""
+    """POST /v1/items/delete — dismiss one or many items."""
 
     model_config = ConfigDict(extra="ignore")
 
     ids: Optional[list[str]] = None
     all_open: bool = False
+    # Comma list, or "all" for every status (when all_open).
+    statuses: Optional[str] = None
     kind: Optional[str] = None
     q: Optional[str] = None
 
@@ -1219,8 +1221,14 @@ async def items_list(
     from pawn_agent.core.coworker import db as itemdb  # noqa: PLC0415
 
     status_list: Optional[list[str]] = None
+    single = status or None
     if statuses:
-        status_list = [part.strip() for part in statuses.split(",") if part.strip()]
+        raw = statuses.strip().lower()
+        if raw in {"*", "all"}:
+            status_list = None
+            single = None
+        else:
+            status_list = [part.strip() for part in statuses.split(",") if part.strip()]
     elif not status:
         status_list = list(itemdb.OPEN_STATUSES)
     capped = min(max(1, limit), 200)
@@ -1229,7 +1237,7 @@ async def items_list(
     def _load() -> tuple[list, int]:
         rows = itemdb.list_items(
             cfg.db_dsn,
-            status=status or None,
+            status=single,
             statuses=status_list,
             kind=kind or None,
             q=q or None,
@@ -1238,7 +1246,7 @@ async def items_list(
         )
         total = itemdb.count_items(
             cfg.db_dsn,
-            status=status or None,
+            status=single,
             statuses=status_list,
             kind=kind or None,
             q=q or None,
@@ -1259,10 +1267,19 @@ async def items_delete(
 
     if not body.all_open and not body.ids:
         raise HTTPException(status_code=400, detail="Provide ids or all_open=true")
+    # None = default open; [] = every status; else explicit list.
+    status_filter: Optional[list[str]] = None
+    if body.statuses is not None:
+        raw = body.statuses.strip().lower()
+        if raw in {"*", "all", ""}:
+            status_filter = []
+        else:
+            status_filter = [part.strip() for part in body.statuses.split(",") if part.strip()]
     result = await delete_items(
         cfg,
         ids=body.ids,
         all_open=body.all_open,
+        statuses=status_filter,
         kind=body.kind,
         q=body.q,
         registry=_sallm_registry,

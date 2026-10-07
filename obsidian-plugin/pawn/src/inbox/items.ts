@@ -2,6 +2,8 @@ import { App, TFile, normalizePath } from "obsidian";
 import type { InboxItem } from "../api";
 
 export const OPEN_STATUSES = ["new", "notified", "snoozed"] as const;
+export const CLOSED_STATUSES = ["filed", "task", "dismissed"] as const;
+export type ItemsScope = "open" | "closed" | "all";
 export const PAGE_SIZE = 50;
 
 const KIND_LABEL: Record<string, string> = {
@@ -17,6 +19,25 @@ const KIND_LABEL: Record<string, string> = {
 
 export function kindLabel(kind: string): string {
   return KIND_LABEL[kind] || kind || "Item";
+}
+
+/** CSS modifier for kind chip coloring. */
+export function kindClass(kind: string): string {
+  const key = (kind || "item").replace(/_/g, "-");
+  return `is-kind-${key}`;
+}
+
+export function statusesForScope(scope: ItemsScope): string | undefined {
+  if (scope === "open") return OPEN_STATUSES.join(",");
+  if (scope === "closed") return CLOSED_STATUSES.join(",");
+  return "all";
+}
+
+export function statusAllowed(status: string, scope: ItemsScope): boolean {
+  const s = status.toLowerCase();
+  if (scope === "all") return true;
+  if (scope === "open") return (OPEN_STATUSES as readonly string[]).includes(s);
+  return (CLOSED_STATUSES as readonly string[]).includes(s);
 }
 
 export function dayKey(iso?: string | null): string {
@@ -82,12 +103,17 @@ function bodyText(rest: string): { text: string; quote: string } {
 }
 
 /** Parse a vault markdown file into an InboxItem when frontmatter is ``pawn: item``. */
-export function parseItemNote(path: string, text: string, mtime?: number): InboxItem | null {
+export function parseItemNote(
+  path: string,
+  text: string,
+  mtime?: number,
+  scope: ItemsScope = "open",
+): InboxItem | null {
   const parsed = frontmatterBody(text);
   if (!parsed) return null;
   if (metaValue(parsed.meta, "pawn") !== "item") return null;
   const status = (metaValue(parsed.meta, "status") || "new").toLowerCase();
-  if (!(OPEN_STATUSES as readonly string[]).includes(status)) return null;
+  if (!statusAllowed(status, scope)) return null;
   const id = metaValue(parsed.meta, "id") || path;
   const shortId = metaValue(parsed.meta, "short_id") || id.slice(0, 8);
   const { text: body, quote } = bodyText(parsed.rest);
@@ -108,12 +134,21 @@ export function parseItemNote(path: string, text: string, mtime?: number): Inbox
   };
 }
 
+export function countVaultItemNotes(app: App, itemsDir: string): number {
+  const root = normalizePath(itemsDir.replace(/\/+$/, ""));
+  const prefix = root.endsWith("/") ? root : `${root}/`;
+  return app.vault.getMarkdownFiles().filter((f) => f.path.startsWith(prefix)).length;
+}
+
 /**
- * Offline list of open items. Prefer metadataCache frontmatter so we avoid
- * reading hundreds of note bodies on every refresh; fall back to a short
- * cachedRead only when status/kind are not in the cache yet.
+ * Offline list of items. Prefer metadataCache frontmatter so we avoid
+ * reading hundreds of note bodies on every refresh.
  */
-export async function listOpenItemNotes(app: App, itemsDir: string): Promise<InboxItem[]> {
+export async function listItemNotes(
+  app: App,
+  itemsDir: string,
+  scope: ItemsScope = "open",
+): Promise<InboxItem[]> {
   const root = normalizePath(itemsDir.replace(/\/+$/, ""));
   const prefix = root.endsWith("/") ? root : `${root}/`;
   const files = app.vault.getMarkdownFiles().filter((f) => f.path.startsWith(prefix));
@@ -123,13 +158,14 @@ export async function listOpenItemNotes(app: App, itemsDir: string): Promise<Inb
     const fm = cache?.frontmatter;
     if (fm && String(fm.pawn || "") === "item") {
       const status = String(fm.status || "new").trim().toLowerCase();
-      if (!(OPEN_STATUSES as readonly string[]).includes(status)) continue;
+      if (!statusAllowed(status, scope)) continue;
       const id = String(fm.id || file.path);
       const shortId = String(fm.short_id || id.slice(0, 8));
       const kind = String(fm.kind || "item");
       const thread = fm.thread != null && String(fm.thread).trim() ? String(fm.thread) : null;
-      // Body text is not in frontmatter; use basename slug as a cheap label.
-      const base = file.basename.replace(/^[0-9]{4}-[0-9]{2}-[0-9]{2}-/, "").replace(/-[a-f0-9]{8}$/i, "");
+      const base = file.basename
+        .replace(/^[0-9]{4}-[0-9]{2}-[0-9]{2}-/, "")
+        .replace(/-[a-f0-9]{8}$/i, "");
       const label = base.replace(/-/g, " ").trim() || shortId;
       items.push({
         id,
@@ -144,13 +180,17 @@ export async function listOpenItemNotes(app: App, itemsDir: string): Promise<Inb
       });
       continue;
     }
-    // Uncached / not yet indexed — one cachedRead.
     const text = await app.vault.cachedRead(file);
-    const item = parseItemNote(file.path, text, file.stat.mtime);
+    const item = parseItemNote(file.path, text, file.stat.mtime, scope);
     if (item) items.push(item);
   }
   items.sort((a, b) => (b.created_at || "").localeCompare(a.created_at || ""));
   return items;
+}
+
+/** @deprecated use listItemNotes */
+export async function listOpenItemNotes(app: App, itemsDir: string): Promise<InboxItem[]> {
+  return listItemNotes(app, itemsDir, "open");
 }
 
 /** Set ``action:`` on an item note for the vault watcher (offline triage). */

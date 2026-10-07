@@ -293,6 +293,7 @@ export class PawnClient {
   async deleteItems(body: {
     ids?: string[];
     all_open?: boolean;
+    statuses?: string;
     kind?: string;
     q?: string;
   }): Promise<{ deleted: number }> {
