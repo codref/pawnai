@@ -48,13 +48,13 @@ obsidian-plugin-adb:
 		ADB_CONFIG="$(ADB_CONFIG)" \
 		ADB_RESTART="$(ADB_RESTART)"
 
-# Browser Pawn Capture extension (MV3 side panel — no compile step).
+# Browser Pawn Capture extension (MV3 — no compile step).
 # Example: make browser-extension-dist
 browser-extension:
 	$(MAKE) -C browser-extension/pawn build
 
-# pawn-capture.zip for Load unpacked or sharing.
-# Unzip, then Chrome/Edge → Load unpacked → select pawn-capture/
+# pawn-capture.zip (Chrome/Edge) + pawn-capture-firefox.zip (background.scripts).
+# Unzip, then Load unpacked / temporary add-on → pawn-capture/
 browser-extension-dist:
 	$(MAKE) -C browser-extension/pawn dist
 

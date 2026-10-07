@@ -92,20 +92,28 @@ Removes one marked block from the note and deletes its asset under
 ```bash
 # From the repo root
 make browser-extension          # verify runtime files + icons
-make browser-extension-dist     # browser-extension/pawn/pawn-capture.zip
+make browser-extension-dist     # Chrome + Firefox zips under browser-extension/pawn/
 ```
 
-Or `cd browser-extension/pawn && make dist`. The zip unwraps to
-`pawn-capture/` with `manifest.json` at the root.
+Or `cd browser-extension/pawn && make dist`.
+
+| Zip | Browser | Notes |
+|-----|---------|--------|
+| `pawn-capture.zip` | Chrome / Edge | `background.service_worker` + side panel |
+| `pawn-capture-firefox.zip` | Firefox | `background.scripts` + sidebar (required for temporary install) |
+
+Both unwrap to `pawn-capture/` with `manifest.json` at the root.
 
 **Chrome / Edge:** Developer mode → **Load unpacked** → select the
-`pawn-capture/` folder (or `browser-extension/pawn` while developing). Open
-the side panel from the toolbar action; set server URL and `api.token` under
-Settings. Reload the extension on `chrome://extensions` after updating files.
+`pawn-capture/` folder from the Chrome zip (or `browser-extension/pawn` while
+developing — that tree’s `manifest.json` is Chrome). Open the side panel from
+the toolbar action; set server URL and `api.token` under Settings.
 
-**Firefox:** `about:debugging` → **Load Temporary Add-on** → pick
-`manifest.json` inside `pawn-capture/`. Temporary until the browser quits
-(Firefox 121+ for side panel).
+**Firefox:** unzip `pawn-capture-firefox.zip`, then `about:debugging` →
+**Load Temporary Add-on** → that folder’s `manifest.json`. Do not load the
+Chrome `manifest.json` (service workers are disabled for temporary add-ons).
+Open **View → Sidebar → Pawn Capture**. Temporary until the browser quits
+(Firefox 121+).
 
 Full install notes: [browser-extension/pawn/README.md](../browser-extension/pawn/README.md).
 

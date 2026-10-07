@@ -10,19 +10,26 @@ From the repo root:
 
 ```bash
 make browser-extension          # verify files + icons
-make browser-extension-dist     # writes browser-extension/pawn/pawn-capture.zip
+make browser-extension-dist     # Chrome + Firefox zips under browser-extension/pawn/
 ```
 
 Or from this directory:
 
 ```bash
 make build
-make dist                       # pawn-capture.zip
+make dist                       # pawn-capture.zip + pawn-capture-firefox.zip
+make package-chrome             # Chrome/Edge only
+make package-firefox            # Firefox only
 make icons                      # regenerate PNG icons
 ```
 
-The zip contains `pawn-capture/` with `manifest.json` at its root (same layout
-as this source tree). There is no TypeScript/npm compile step.
+Chrome and Firefox need different manifests: Chrome uses
+`background.service_worker`; Firefox temporary installs still require
+`background.scripts` (and use `sidebar_action` instead of `side_panel`).
+`manifest.json` is Chrome; `manifest.firefox.json` is the Firefox source.
+The Firefox zip copies that file to `manifest.json` inside the package.
+
+There is no TypeScript/npm compile step.
 
 ## Deploy (Chrome / Edge)
 
@@ -43,17 +50,25 @@ folder), then click the extension’s **Reload** on `chrome://extensions`.
 
 ### From the git checkout (dev)
 
-**Load unpacked** → this directory (`browser-extension/pawn`) directly. Reload
-the extension after editing JS/CSS/HTML.
+**Load unpacked** → this directory (`browser-extension/pawn`) directly — it
+ships the Chrome `manifest.json`. Reload the extension after editing
+JS/CSS/HTML.
 
 ## Deploy (Firefox)
 
-1. Build/unzip as above so `pawn-capture/manifest.json` exists.
-2. Open `about:debugging#/runtime/this-firefox`.
-3. **Load Temporary Add-on** → pick `manifest.json` inside `pawn-capture/`.
-4. Temporary add-ons are cleared when Firefox quits; reload after each restart
+Do **not** load this source tree’s `manifest.json` into Firefox — it uses a
+service worker and will fail with *background.service_worker is currently
+disabled*.
+
+1. `make package-firefox` (or `make browser-extension-dist`).
+2. Unzip `pawn-capture-firefox.zip` → `pawn-capture/`.
+3. Open `about:debugging#/runtime/this-firefox`.
+4. **Load Temporary Add-on** → pick `pawn-capture/manifest.json` from that
+   unzipped folder (it already has `background.scripts`).
+5. Open the UI via the toolbar action, or **View → Sidebar → Pawn Capture**.
+6. Temporary add-ons are cleared when Firefox quits; reload after each restart
    until you sign/publish via AMO.
-5. Firefox 121+ is required for the side panel API used here.
+7. Firefox 121+.
 
 ## Server requirements
 

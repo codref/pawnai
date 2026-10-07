@@ -1,4 +1,7 @@
-/** Service worker: context menus, snip handoff, side panel open. */
+/** Background: context menus, snip handoff, side panel / sidebar open.
+ *
+ * Chrome MV3 loads this as a service worker; Firefox MV3 as background.scripts.
+ */
 
 const MENU_SELECTION = "pawn-capture-selection";
 const MENU_REGION = "pawn-capture-region";
@@ -21,25 +24,32 @@ chrome.runtime.onInstalled.addListener(() => {
   }
 });
 
-chrome.action.onClicked.addListener(async (tab) => {
+/** Open Chrome side panel or Firefox sidebar (best effort). */
+async function openUi(tab) {
   if (tab?.id != null && chrome.sidePanel?.open) {
     try {
       await chrome.sidePanel.open({ tabId: tab.id });
+      return;
     } catch (_) {
-      /* Firefox / unsupported */
+      /* fall through */
     }
   }
+  if (chrome.sidebarAction?.open) {
+    try {
+      await chrome.sidebarAction.open();
+    } catch (_) {
+      /* user can open View → Sidebar → Pawn Capture */
+    }
+  }
+}
+
+chrome.action.onClicked.addListener(async (tab) => {
+  await openUi(tab);
 });
 
 chrome.contextMenus.onClicked.addListener(async (info, tab) => {
   if (!tab?.id) return;
-  try {
-    if (chrome.sidePanel?.open) {
-      await chrome.sidePanel.open({ tabId: tab.id });
-    }
-  } catch (_) {
-    /* ignore */
-  }
+  await openUi(tab);
   if (info.menuItemId === MENU_SELECTION) {
     await captureSelection(tab);
   } else if (info.menuItemId === MENU_REGION) {
