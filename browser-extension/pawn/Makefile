@@ -22,7 +22,7 @@ DIST_DIRS       := content icons
 help:
 	@echo "Targets:"
 	@echo "  build            Verify extension files and icons"
-	@echo "  icons            Regenerate icons/icon-48.png and icons/icon-128.png"
+	@echo "  icons            Regenerate icons/icon-{16,48,128}.png"
 	@echo "  package-chrome   Zip Chrome/Edge build → $(DIST_ZIP)"
 	@echo "  package-firefox  Zip Firefox build → $(DIST_ZIP_FF)"
 	@echo "  dist             build + both packages"
@@ -44,6 +44,7 @@ check-dist:
 	@for d in $(DIST_DIRS); do \
 		test -d $$d || { echo "missing directory $$d"; exit 1; }; \
 	done
+	@test -f icons/icon-16.png || { echo "missing icons/icon-16.png — run make icons"; exit 1; }
 	@test -f icons/icon-48.png || { echo "missing icons/icon-48.png — run make icons"; exit 1; }
 	@test -f icons/icon-128.png || { echo "missing icons/icon-128.png — run make icons"; exit 1; }
 	@test -f content/region.js || { echo "missing content/region.js"; exit 1; }

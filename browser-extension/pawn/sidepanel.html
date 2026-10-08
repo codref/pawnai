@@ -16,18 +16,20 @@
             <option value="session">Session…</option>
             <option value="note">Other note…</option>
           </select>
+          <button
+            type="button"
+            id="btn-settings"
+            class="clickable-icon"
+            aria-label="Settings"
+            title="Settings"
+          ></button>
           <span id="status-dot" class="pawn-dot is-offline" title="Server"></span>
         </div>
         <div id="target-extra" class="pawn-target-extra"></div>
-        <label class="pawn-field">
+        <label id="title-field" class="pawn-field">
           <span>Title</span>
           <input id="title-input" type="text" placeholder="Capture title" />
         </label>
-        <div class="pawn-tabs">
-          <button type="button" id="btn-selection" class="is-active">Selection</button>
-          <button type="button" id="btn-region">Region</button>
-          <button type="button" id="btn-settings">Settings</button>
-        </div>
       </header>
 
       <section id="settings-panel" class="pawn-settings" hidden>
@@ -42,18 +44,45 @@
         <div class="pawn-toolbar">
           <button type="button" id="btn-save-settings" class="mod-cta">Save settings</button>
         </div>
-        <p class="pawn-hint">Same fields as the Obsidian Pawn plugin. Token is api.token from pawnai.yaml.</p>
+        <p class="pawn-hint">
+          Same fields as the Obsidian Pawn plugin. Token is api.token from pawnai.yaml.
+        </p>
       </section>
+
+      <p id="notice" class="pawn-notice" hidden></p>
 
       <main class="pawn-body">
         <div class="pawn-toolbar">
-          <button type="button" id="btn-save" class="mod-cta">Save</button>
-          <button type="button" id="btn-new-page">New page</button>
-          <span id="path-label" class="pawn-hint"></span>
+          <button
+            type="button"
+            id="btn-selection"
+            class="clickable-icon"
+            aria-label="Capture selection"
+            title="Capture selection"
+          ></button>
+          <button
+            type="button"
+            id="btn-region"
+            class="clickable-icon"
+            aria-label="Capture region"
+            title="Capture region"
+          ></button>
+          <span class="pawn-toolbar-sep" aria-hidden="true"></span>
+          <button type="button" id="btn-save" class="mod-cta" title="Save to vault">Save</button>
+          <button
+            type="button"
+            id="btn-new-page"
+            class="clickable-icon"
+            aria-label="New page"
+            title="New page"
+          ></button>
+          <span id="path-label" class="pawn-hint pawn-path-label"></span>
         </div>
-        <p id="notice" class="pawn-notice" hidden></p>
         <div id="tray" class="pawn-tray"></div>
-        <p id="empty" class="pawn-hint">Select text or capture a region. Snippets stack here in order, then Save appends them to the target note.</p>
+        <p id="empty" class="pawn-hint pawn-empty">
+          Select text or capture a region. Snippets stack here in order, then Save appends them to
+          the target note.
+        </p>
       </main>
     </div>
     <script src="sidepanel.js"></script>
