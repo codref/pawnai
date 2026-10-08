@@ -685,6 +685,21 @@ button.pawn-chip-pin:hover {
   min-width: 0;
 }
 
+.pawn-inbox-title.is-orphan {
+  color: var(--text-muted);
+  text-decoration: none;
+  cursor: pointer;
+  font-style: italic;
+}
+
+.pawn-item-note-missing {
+  color: var(--text-muted);
+  font-style: italic;
+  text-decoration: line-through;
+  cursor: default;
+  word-break: break-all;
+}
+
 .pawn-inbox-line {
   margin-top: 4px;
   white-space: pre-wrap;

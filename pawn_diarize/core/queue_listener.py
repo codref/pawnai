@@ -126,7 +126,9 @@ COMMAND_DEFAULTS: Dict[str, Dict[str, Any]] = {
         "no_timestamps": False,
         "verbose": False,
         "backend": "nemo",
-        "chain_agent": None,  # None = use config; True = enable; str = custom prompt; False = disable
+        # None = config fallback; False = skip (intermediate chunks);
+        # dict e.g. {"command": "session_completed"} = finalize; True/str = legacy.
+        "chain_agent": None,
     },
     "transcribe": {
         "audio_paths": [],
@@ -302,6 +304,67 @@ def _cleanup(temp_dirs: List[str]) -> None:
             pass
 
 
+def _pending_audio_paths(
+    audio_paths: List[str], processed_files: List[str]
+) -> Tuple[List[str], int]:
+    """Drop paths already listed in ``session_state.processed_files``.
+
+    Recorders finalize by re-publishing the last chunk URI with
+    ``chain_agent: {command: session_completed}``. Skipping those paths
+    avoids duplicate segments while still letting the job succeed so the
+    chain runs.
+    """
+    if not processed_files:
+        return list(audio_paths), 0
+    processed_set = {str(p) for p in processed_files}
+    pending = [p for p in audio_paths if str(p) not in processed_set]
+    return pending, len(audio_paths) - len(pending)
+
+
+def _post_session_side_effects(
+    cfg: Any,
+    session: str,
+    db_dsn: str,
+    engine: Any,
+    *,
+    time_cursor: float,
+    audio_end: Optional[float] = None,
+    assign_offsets: bool = False,
+) -> None:
+    """Screenshot vision + vault push (+ optional capture offset assign)."""
+    if assign_offsets:
+        try:
+            from .session_captures import assign_audio_offsets
+
+            end = float(time_cursor if audio_end is None else audio_end)
+            assign_audio_offsets(
+                engine,
+                session,
+                audio_start=float(time_cursor),
+                audio_end=end,
+            )
+        except Exception as exc:
+            logger.warning(
+                "session capture offsets failed for %r (non-fatal): %s",
+                session,
+                exc,
+            )
+    try:
+        from pawn_agent.core.screenshot_vision import maybe_summarize_screenshots
+
+        maybe_summarize_screenshots(cfg, session, db_dsn)
+    except Exception as exc:
+        logger.warning(
+            "screenshot vision failed for %r (non-fatal): %s",
+            session,
+            exc,
+        )
+
+    from .vault_transcript import maybe_push_transcript_to_vault
+
+    maybe_push_transcript_to_vault(session, cfg, db_dsn=db_dsn)
+
+
 def _run_transcribe_diarize(
     params: Dict[str, Any], cfg: Any, model_cache: Optional[ModelCache] = None
 ) -> None:
@@ -309,7 +372,6 @@ def _run_transcribe_diarize(
     from pathlib import Path as _Path
 
     from .combined import format_transcript_with_speakers, transcribe_with_diarization
-    from .config import DEFAULT_DB_DSN
     from .database import (
         get_engine,
         init_db,
@@ -318,59 +380,77 @@ def _run_transcribe_diarize(
         save_transcription_segments,
     )
 
-    audio_paths: List[str] = params.get("audio_paths") or []
+    audio_paths: List[str] = list(params.get("audio_paths") or [])
     if not audio_paths:
         raise ValueError("transcribe-diarize: 'audio_paths' is required")
 
+    db_dsn = _resolve_db_dsn(params, cfg)
+    session = params.get("session")
+    threshold = float(params.get("threshold", 0.7))
+    store_new = bool(params.get("store_new", False))
+    device = params.get("device", "cuda")
+    chunk_duration = params.get("chunk_duration")
+    cross_file_threshold = float(params.get("cross_file_threshold", 0.55))
+    no_timestamps = bool(params.get("no_timestamps", False))
+    verbose = bool(params.get("verbose", False))
+    backend = params.get("backend", "nemo")
+    output = params.get("output")
+
+    engine = get_engine(db_dsn)
+    init_db(engine)
+
+    prior_embeddings: Optional[Dict[str, Any]] = None
+    time_cursor: float = 0.0
+    processed_files: List[str] = []
+    prior_segment_count: int = 0
+
+    if session:
+        # load_session_state returns (embeddings, time_cursor, processed_files, segment_count)
+        prior_embeddings, time_cursor, processed_files, prior_segment_count = (
+            load_session_state(session, engine)
+        )
+        audio_paths, skipped = _pending_audio_paths(audio_paths, processed_files)
+        if skipped:
+            logger.info(
+                "session %r: skipping %d already-processed audio path(s)",
+                session,
+                skipped,
+            )
+        # Persist notes/screenshots before transcription so a retry of this
+        # message cannot duplicate them, and a later vault push still sees them.
+        # Also covers finalize re-publishes that carry leftover captures only.
+        try:
+            from datetime import datetime, timezone
+
+            from .session_captures import ingest_session_captures
+
+            ingest_session_captures(
+                engine,
+                session,
+                params,
+                chunk_audio_start=float(time_cursor),
+                received_at=datetime.now(timezone.utc),
+            )
+        except Exception as exc:
+            logger.warning(
+                "session captures ingest failed for %r (non-fatal): %s",
+                session,
+                exc,
+            )
+
+    if not audio_paths:
+        # Finalize re-publish of the last chunk URI: nothing new to diarize.
+        # Job still succeeds so chain_agent (session_completed) can run.
+        logger.info(
+            "session %r: all audio paths already processed — skipping transcription",
+            session,
+        )
+        if session:
+            _post_session_side_effects(cfg, session, db_dsn, engine, time_cursor=time_cursor)
+        return
+
     resolved, temps, path_map = _resolve_audio_paths(audio_paths, cfg)
     try:
-        db_dsn = _resolve_db_dsn(params, cfg)
-        session = params.get("session")
-        threshold = float(params.get("threshold", 0.7))
-        store_new = bool(params.get("store_new", False))
-        device = params.get("device", "cuda")
-        chunk_duration = params.get("chunk_duration")
-        cross_file_threshold = float(params.get("cross_file_threshold", 0.55))
-        no_timestamps = bool(params.get("no_timestamps", False))
-        verbose = bool(params.get("verbose", False))
-        backend = params.get("backend", "nemo")
-        output = params.get("output")
-
-        # Load session state if a session name was provided
-        engine = get_engine(db_dsn)
-        init_db(engine)
-
-        prior_embeddings: Optional[Dict[str, Any]] = None
-        time_cursor: float = 0.0
-        processed_files: List[str] = []
-        prior_segment_count: int = 0
-
-        if session:
-            # load_session_state returns (embeddings, time_cursor, processed_files, segment_count)
-            prior_embeddings, time_cursor, processed_files, prior_segment_count = (
-                load_session_state(session, engine)
-            )
-            # Persist notes/screenshots before transcription so a retry of this
-            # message cannot duplicate them, and a later vault push still sees them.
-            try:
-                from datetime import datetime, timezone
-
-                from .session_captures import ingest_session_captures
-
-                ingest_session_captures(
-                    engine,
-                    session,
-                    params,
-                    chunk_audio_start=float(time_cursor),
-                    received_at=datetime.now(timezone.utc),
-                )
-            except Exception as exc:
-                logger.warning(
-                    "session captures ingest failed for %r (non-fatal): %s",
-                    session,
-                    exc,
-                )
-
         result = transcribe_with_diarization(
             audio_path=resolved if len(resolved) > 1 else resolved[0],
             db_dsn=db_dsn,
@@ -427,37 +507,16 @@ def _run_transcribe_diarize(
             logger.info("Transcript:\n%s", text)
 
         if session:
-            try:
-                from .session_captures import assign_audio_offsets
-
-                raw_end = result.get("new_time_cursor") if result else None
-                audio_end = float(time_cursor if raw_end is None else raw_end)
-                assign_audio_offsets(
-                    engine,
-                    session,
-                    audio_start=float(time_cursor),
-                    audio_end=audio_end,
-                )
-            except Exception as exc:
-                logger.warning(
-                    "session capture offsets failed for %r (non-fatal): %s",
-                    session,
-                    exc,
-                )
-            try:
-                from pawn_agent.core.screenshot_vision import maybe_summarize_screenshots
-
-                maybe_summarize_screenshots(cfg, session, db_dsn)
-            except Exception as exc:
-                logger.warning(
-                    "screenshot vision failed for %r (non-fatal): %s",
-                    session,
-                    exc,
-                )
-
-            from .vault_transcript import maybe_push_transcript_to_vault
-
-            maybe_push_transcript_to_vault(session, cfg, db_dsn=db_dsn)
+            raw_end = result.get("new_time_cursor") if result else None
+            _post_session_side_effects(
+                cfg,
+                session,
+                db_dsn,
+                engine,
+                time_cursor=time_cursor,
+                audio_end=float(raw_end) if raw_end is not None else None,
+                assign_offsets=True,
+            )
 
     finally:
         _cleanup(temps)
@@ -637,11 +696,17 @@ def _resolve_chain_cfg(
     """Return effective chain-agent config, or *None* to skip chaining.
 
     Resolution order (first match wins):
-    - ``params["chain_agent"] is False``  → skip
+    - ``params["chain_agent"] is False``  → skip (intermediate recorder chunks)
+    - ``params["chain_agent"]`` is a dict → use it (finalize:
+      ``{"command": "session_completed"}``)
     - ``params["chain_agent"]`` is a str  → use as prompt
     - ``params["chain_agent"] is True``   → use config default prompt
     - ``params["chain_agent"] is None``   → fall back to ``queue_cfg["chain_agent"]``
     - ``queue_cfg["chain_agent"]["enabled"]`` is falsy → skip
+
+    Chunked recorders should send ``false`` on every per-chunk upload and only
+    attach ``{"command": "session_completed"}`` on stop/finalize. One-shot
+    uploads may chain on the single message.
     """
     msg_override = params.get("chain_agent")
     config_chain: Dict[str, Any] = queue_cfg.get("chain_agent") or {}

@@ -30,7 +30,17 @@ coworker:
     - Davide
 ```
 
-`chain_agent.command: session_completed` replaces the free-form “analyze this conversation” prompt. `command: run` still does that older path. Both need `chain_agent.enabled: true`.
+`chain_agent.command: session_completed` replaces the free-form “analyze this conversation” prompt. `command: run` still does that older path. Config chaining needs `chain_agent.enabled: true`, but a per-message dict such as `{"command": "session_completed"}` always chains, and `chain_agent: false` always skips.
+
+### Chunked recordings
+
+The recorder owns when items analysis runs:
+
+1. **Per-chunk** uploads publish `transcribe-diarize` with `"chain_agent": false` (diarize appends; no extract).
+2. **On stop**, it re-publishes the last chunk URI once with `"chain_agent": {"command": "session_completed"}` (plus any leftover notes/screenshots).
+3. **One-shot** / end-of-session single files chain `session_completed` on that message.
+
+Pawn skips audio paths already in `session_state.processed_files`, so the finalize re-publish does not duplicate segments. Duplicate `session_completed` for the same segment count is ignored (use `force: true` or `pawn-server coworker process --session <id>` to re-run). If the recorder crashes without finalize, items stay pending until a later finalize or that CLI.
 
 `coworker.me` is the names the morning briefing treats as yours when it looks for overdue commitments. `timezone` is used for quiet hours, the daily cap, and the cron clocks when `Goals.md` does not set its own timezone.
 
@@ -107,7 +117,7 @@ Attention rules:
 
 ## What you see after a meeting
 
-When a `transcribe-diarize` job finishes and the chain command is `session_completed`, the server:
+When a `transcribe-diarize` job finishes and chaining resolves to `session_completed` (finalize or one-shot, not an intermediate chunk), the server:
 
 1. Extracts decisions, commitments, open questions, blocks, and contradictions.
 2. Scores them against the active threads. A hit has to name one of those threads.
@@ -169,7 +179,7 @@ Use any of the surfaces. They call the same actions.
 
 `<id>` is the `short_id` or the full UUID.
 
-**Obsidian.** The plugin Inbox tab (and **Show inbox**) is a time-grouped timeline of open meeting items from `GET /v1/items`. Each row has **Add TODO**, **File to thread** (when threaded), **Ask Pawn**, and **Delete**. You can multi-select or **Delete all open** for noise. Expand a row for quote/source. The same buttons appear on an open item note. The **Ideas** chip lists idea notes (`status: inbox`) with Keep / Goal / Task / Drop. The status bar counts open items (and ideas) and opens the Inbox.
+**Obsidian.** The plugin Inbox tab (and **Show inbox**) is a time-grouped timeline of open meeting items from `GET /v1/items`. Each row has **Done** (ignore/dismiss), **Add TODO**, **File to thread** (when threaded), **Ask Pawn**, and **Delete**. Select mode plus **Select all**, then **Delete**, clears noise. A missing item note shows as an orphan (title/link disabled). Expand a row for quote/source. The same action buttons appear on an open item note. The **Ideas** chip lists idea notes (`status: inbox`) with Keep / Goal / Task / Drop. The status bar counts open items (and ideas) and opens the Inbox.
 
 **The item note.** Set `action:` to `todo`, `file`, `task`, `delete`, or `ignore` and let it sync. The vault watcher applies it on its next poll (default 15 seconds). A note already filed, tasked, or dismissed is left alone.
 
@@ -245,9 +255,9 @@ With no flags, both notes and transcripts are indexed.
 
 ## Phone audio
 
-Set `coworker.capture_audio_dir` to a vault folder your phone recorder syncs into, for example `Pawn/Capture/audio`. New `m4a`, `webm`, `wav`, `mp3`, `ogg`, and `flac` files are copied onto the diarize queue with `chain_agent.command: session_completed`. Pawn leaves a stub at `Pawn/Capture/{session}.md`. An empty `capture_audio_dir` disables this.
+Set `coworker.capture_audio_dir` to a vault folder your phone recorder syncs into, for example `Pawn/Capture/audio`. New `m4a`, `webm`, `wav`, `mp3`, `ogg`, and `flac` files are treated as **one-shot** takes: each file gets its own session and is queued with `chain_agent: {command: session_completed}`. Pawn leaves a stub at `Pawn/Capture/{session}.md`. An empty `capture_audio_dir` disables this.
 
-The same chain is attached when the plugin uploads audio and the coworker loop is enabled.
+Plugin audio upload is the same one-shot path when the coworker loop is enabled. Continuous multi-chunk sessions should use the recorder queue producer (per-chunk `chain_agent: false`, finalize on stop) instead of dropping many files into `capture_audio_dir`.
 
 ## Morning and Friday
 

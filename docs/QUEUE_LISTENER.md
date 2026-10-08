@@ -140,6 +140,34 @@ Every message sent to the queue must be a JSON object with a `command` key.  All
 }
 ```
 
+### Chunked recorder + coworker chain
+
+Intermediate chunks must not run items extract. Per-chunk:
+
+```json
+{
+  "command": "transcribe-diarize",
+  "audio_paths": ["s3://bucket/session/chunk-003.flac"],
+  "session": "tom-20260305",
+  "chain_agent": false
+}
+```
+
+On stop, re-publish the last chunk URI (already processed paths are skipped) with finalize:
+
+```json
+{
+  "command": "transcribe-diarize",
+  "audio_paths": ["s3://bucket/session/chunk-003.flac"],
+  "session": "tom-20260305",
+  "chain_agent": {"command": "session_completed"},
+  "annotations": [],
+  "screenshots": []
+}
+```
+
+`chain_agent: false` always skips the agent chain. A dict override always chains (even when `diarize_queue.chain_agent.enabled` is false). When the field is omitted, the YAML `chain_agent` block is the fallback.
+
 `annotations` and `screenshots` are optional on `transcribe-diarize` only.
 Each item has a stable `id` and an `at` timestamp. Notes are merged into the
 vault Annotations section. Screenshot bytes are copied beside the transcript

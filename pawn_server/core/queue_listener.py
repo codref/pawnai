@@ -54,7 +54,7 @@ COMMAND_DEFAULTS: Dict[str, Dict[str, Any]] = {
         "model": None,
         "request_id": None,
     },
-    "session_completed": {"session_id": None},
+    "session_completed": {"session_id": None, "force": False},
     # Gallery-linked People/ note refresh (appearances + optional facts).
     "speakers_refresh": {"session_id": None, "force": False},
 }
@@ -193,6 +193,64 @@ def _reject_self_run(cfg: Any, params: Dict[str, Any]) -> Optional[str]:
     return reason
 
 
+def _session_segment_count(cfg: Any, session_id: str) -> int:
+    """Current transcription segment count for *session_id* (0 if unknown)."""
+    try:
+        from pawn_diarize.core.database import get_engine, init_db, load_session_state
+
+        engine = get_engine(cfg.db_dsn)
+        init_db(engine)
+        *_rest, segment_count = load_session_state(session_id, engine)
+        return int(segment_count)
+    except Exception as exc:
+        logger.debug("segment count for %s unavailable: %s", session_id, exc)
+        return 0
+
+
+def _already_session_completed(
+    cfg: Any, session_id: str, segment_count: int
+) -> bool:
+    """True when a completed/running extract already covers this segment count.
+
+    Guards duplicate finalize redelivery and overlapping queue workers. A later
+    chunk that grows the transcript (higher segment count) is allowed through.
+    """
+    from datetime import datetime, timedelta, timezone
+
+    from sqlalchemy import select
+    from sqlalchemy.orm import Session
+
+    from pawn_agent.utils.db import AgentRun
+    from pawn_core.database import get_engine
+
+    marker = f"segments={segment_count}"
+    stale_before = datetime.now(timezone.utc) - timedelta(hours=1)
+    with Session(get_engine(cfg.db_dsn)) as db:
+        rows = db.scalars(
+            select(AgentRun)
+            .where(
+                AgentRun.session_id == session_id,
+                AgentRun.command == "session_completed",
+                AgentRun.status.in_(("completed", "running")),
+            )
+            .order_by(AgentRun.created_at.desc())
+            .limit(20)
+        ).all()
+    for row in rows:
+        blob = f"{row.prompt or ''}\n{row.response or ''}"
+        if row.status == "completed" and marker in blob:
+            return True
+        if row.status == "running":
+            started = row.started_at or row.created_at
+            if started is not None:
+                if started.tzinfo is None:
+                    started = started.replace(tzinfo=timezone.utc)
+                if started >= stale_before:
+                    # Another worker is mid-extract — avoid overlap.
+                    return True
+    return False
+
+
 async def _session_completed(params: Dict[str, Any], cfg: Any) -> None:
     session_id = params.get("session_id") or None
     if not session_id:
@@ -200,9 +258,51 @@ async def _session_completed(params: Dict[str, Any], cfg: Any) -> None:
     if not getattr(cfg.coworker, "enabled", False):
         logger.info("session_completed for %s ignored; coworker disabled", session_id)
         return
-    from pawn_agent.core.coworker.pipeline import process_session  # noqa: PLC0415
 
-    await process_session(cfg, session_id)
+    force = bool(params.get("force"))
+    segment_count = _session_segment_count(cfg, session_id)
+    if not force and _already_session_completed(cfg, session_id, segment_count):
+        logger.info(
+            "session_completed for %s skipped; already covered at %d segment(s)",
+            session_id,
+            segment_count,
+        )
+        try:
+            await _speakers_refresh({"session_id": session_id}, cfg)
+        except Exception as exc:
+            logger.error(
+                "speakers_refresh after skipped session_completed failed: %s",
+                exc,
+                exc_info=True,
+            )
+        return
+
+    from pawn_agent.core.coworker.pipeline import process_session  # noqa: PLC0415
+    from pawn_agent.utils.db import create_agent_run, update_agent_run  # noqa: PLC0415
+
+    marker = f"segments={segment_count}"
+    run_id = create_agent_run(
+        cfg.db_dsn,
+        source="queue",
+        command="session_completed",
+        prompt=marker,
+        session_id=session_id,
+        model=getattr(cfg, "chat_model_id", None) or "coworker",
+    )
+    update_agent_run(cfg.db_dsn, run_id, "running")
+    try:
+        result = await process_session(cfg, session_id)
+        items = result.get("items") if isinstance(result, dict) else None
+        update_agent_run(
+            cfg.db_dsn,
+            run_id,
+            "completed",
+            response=f"{marker} items={items}",
+        )
+    except Exception as exc:
+        update_agent_run(cfg.db_dsn, run_id, "failed", error=str(exc)[:2000])
+        raise
+
     # People bios refresh after the item extract pass (same event, isolated try).
     try:
         await _speakers_refresh({"session_id": session_id}, cfg)

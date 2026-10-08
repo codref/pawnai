@@ -186,10 +186,12 @@ export function mountItemActions(
   if (kind === "people_update" || kind === "schedule_proposal" || kind === "proposal") {
     iconBtn("check", "Approve", "approve");
     iconBtn("x", "Reject", "reject");
+    iconBtn("circle-check", "Done", "ignore");
     iconBtn("trash-2", "Delete", "delete");
     return;
   }
 
+  iconBtn("circle-check", "Done", "ignore");
   iconBtn("list-plus", "Add TODO", "todo");
   if (item.thread) iconBtn("folder-input", "File to thread", "file");
   iconBtn("bot", "Ask Pawn", "task");
@@ -206,7 +208,6 @@ export function renderInbox(parent: HTMLElement, plugin: PawnPlugin): void {
   const toolbar = parent.createDiv({ cls: "pawn-inbox-toolbar" });
   const sections = toolbar.createDiv({ cls: "pawn-inbox-sections" });
   const openCount = plugin.items.attention();
-  const listedCount = plugin.items.count();
   const ideaCount = plugin.inbox.attention();
   const vaultCount = plugin.items.vaultNoteCount();
   for (const [id, label, count] of [
@@ -294,7 +295,7 @@ export function renderInbox(parent: HTMLElement, plugin: PawnPlugin): void {
         title: flushing ? "Flushing…" : `Flush ${flushable} stale notes`,
       },
     });
-    setIcon(flushBtn, flushing ? "loader" : "trash-2");
+    setIcon(flushBtn, flushing ? "loader" : "archive");
     flushBtn.toggleClass("is-busy", flushing);
     flushBtn.disabled = flushing;
     if (!flushing) {
@@ -317,6 +318,9 @@ export function renderInbox(parent: HTMLElement, plugin: PawnPlugin): void {
     }
   }
 
+  const listedIds = plugin.items.all().map((i) => i.id);
+  const allSelected =
+    listedIds.length > 0 && listedIds.every((id) => state.selected.has(id));
   const bulk = parent.createDiv({ cls: "pawn-inbox-bulk" });
   const selectBtn = bulk.createEl("button", {
     cls: "clickable-icon",
@@ -331,56 +335,46 @@ export function renderInbox(parent: HTMLElement, plugin: PawnPlugin): void {
     state.selected.clear();
     renderInbox(parent, plugin);
   };
-  if (state.selectMode) {
-    const delSel = bulk.createEl("button", {
-      cls: "clickable-icon",
-      attr: {
-        "aria-label": `Delete selected (${state.selected.size})`,
-        title: `Delete selected (${state.selected.size})`,
-      },
-    });
-    setIcon(delSel, "trash-2");
-    delSel.disabled = state.selected.size === 0 || flushing;
-    delSel.onclick = () => {
-      const ids = Array.from(state.selected);
-      new ConfirmModal(
-        plugin.app,
-        "Delete selected items?",
-        `Delete ${ids.length} item(s). They will not come back.`,
-        () => {
-          void plugin.items
-            .deleteIds(ids)
-            .then((n) => {
-              state.selected.clear();
-              state.selectMode = false;
-              new Notice(`Deleted ${n}.`, 4000);
-              renderInbox(parent, plugin);
-            })
-            .catch(noticeError);
-        },
-      ).open();
-    };
-  }
-  const delLabel =
-    state.scope === "open"
-      ? "Delete all open"
-      : state.scope === "closed"
-        ? "Delete all closed"
-        : "Delete all matching";
-  const delAll = bulk.createEl("button", {
+  const selectAllLabel = allSelected ? "Clear selection" : "Select all";
+  const selectAllBtn = bulk.createEl("button", {
     cls: "clickable-icon",
-    attr: { "aria-label": delLabel, title: delLabel },
+    attr: { "aria-label": selectAllLabel, title: selectAllLabel },
   });
-  setIcon(delAll, "trash");
-  delAll.disabled = listedCount === 0 || flushing;
-  delAll.onclick = () => {
+  setIcon(selectAllBtn, "list-checks");
+  selectAllBtn.disabled = listedIds.length === 0 || flushing;
+  selectAllBtn.onclick = () => {
+    if (allSelected) {
+      state.selected.clear();
+    } else {
+      state.selectMode = true;
+      state.selected = new Set(listedIds);
+    }
+    renderInbox(parent, plugin);
+  };
+  const delSel = bulk.createEl("button", {
+    cls: "clickable-icon",
+    attr: {
+      "aria-label":
+        state.selected.size > 0
+          ? `Delete selected (${state.selected.size})`
+          : "Delete selected",
+      title:
+        state.selected.size > 0
+          ? `Delete selected (${state.selected.size})`
+          : "Delete selected",
+    },
+  });
+  setIcon(delSel, "trash-2");
+  delSel.disabled = state.selected.size === 0 || flushing;
+  delSel.onclick = () => {
+    const ids = Array.from(state.selected);
     new ConfirmModal(
       plugin.app,
-      `${delLabel}?`,
-      `This removes ${listedCount} item(s) matching the current filters.`,
+      "Delete selected items?",
+      `Delete ${ids.length} item(s). They will not come back.`,
       () => {
         void plugin.items
-          .deleteAllMatching()
+          .deleteIds(ids)
           .then((n) => {
             state.selected.clear();
             state.selectMode = false;
@@ -435,6 +429,12 @@ function renderItemRow(
   rerender: () => void,
 ): void {
   const card = parent.createDiv({ cls: "pawn-job-card pawn-inbox-card pawn-item-card" });
+  const noteFile = item.note_key
+    ? plugin.app.vault.getAbstractFileByPath(item.note_key)
+    : null;
+  const hasNote = noteFile instanceof TFile;
+  const orphaned = !hasNote;
+
   const top = card.createDiv({ cls: "pawn-item-top" });
   if (state.selectMode) {
     const box = top.createEl("input", { type: "checkbox", cls: "pawn-item-check" });
@@ -450,15 +450,19 @@ function renderItemRow(
     cls: `pawn-item-kind ${kindClass(item.kind)}`,
     text: kindLabel(item.kind),
   });
-  const title = body.createDiv({ cls: "pawn-inbox-title" });
+  const title = body.createDiv({
+    cls: orphaned ? "pawn-inbox-title is-orphan" : "pawn-inbox-title",
+  });
   title.setText((item.text || "").replace(/\s+/g, " ").trim() || "(empty)");
+  if (orphaned) {
+    title.setAttr("title", item.note_key ? "Item note missing" : "No item note");
+  }
   title.onclick = () => {
-    const path = item.note_key;
-    const file = path ? plugin.app.vault.getAbstractFileByPath(path) : null;
-    if (file instanceof TFile) {
-      void plugin.app.workspace.getLeaf(false).openFile(file);
+    if (hasNote) {
+      void plugin.app.workspace.getLeaf(false).openFile(noteFile);
       return;
     }
+    if (item.note_key) new Notice("Item note missing.", 3000);
     if (state.expanded.has(item.id)) state.expanded.delete(item.id);
     else state.expanded.add(item.id);
     rerender();
@@ -493,12 +497,19 @@ function renderItemRow(
     if (item.quote) detail.createEl("blockquote", { text: item.quote });
     if (item.reason) detail.createDiv({ text: item.reason, cls: "pawn-item-reason" });
     if (item.note_key) {
-      const link = detail.createEl("a", { text: item.note_key, cls: "internal-link" });
-      link.onclick = (ev) => {
-        ev.preventDefault();
-        const file = plugin.app.vault.getAbstractFileByPath(item.note_key!);
-        if (file instanceof TFile) void plugin.app.workspace.getLeaf(false).openFile(file);
-      };
+      if (hasNote) {
+        const link = detail.createEl("a", { text: item.note_key, cls: "internal-link" });
+        link.onclick = (ev) => {
+          ev.preventDefault();
+          void plugin.app.workspace.getLeaf(false).openFile(noteFile);
+        };
+      } else {
+        const missing = detail.createDiv({
+          cls: "pawn-item-note-missing",
+          text: item.note_key,
+        });
+        missing.setAttr("title", "Item note missing");
+      }
     }
   }
 }

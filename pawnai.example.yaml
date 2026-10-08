@@ -267,8 +267,14 @@ diarize_queue:
 
   chain_agent:
     # When enabled, successful transcribe-diarize jobs enqueue a pawn-agent
-    # message. command "run" keeps the free-form prompt; "session_completed"
+    # message unless the payload sets chain_agent: false.
+    # Chunked recorders: per-chunk uploads send chain_agent: false; on stop they
+    # re-publish the last chunk URI with chain_agent: {command: session_completed}.
+    # Already-processed audio paths are skipped so finalize does not duplicate
+    # segments. command "run" keeps the free-form prompt; "session_completed"
     # runs the coworker extract/score loop (requires coworker.enabled).
+    # Crash/never-stop: items stay pending until a later finalize or
+    # `pawn-server coworker process --session <id>`.
     enabled: false
     topic: pawn-agent-jobs
     command: run
