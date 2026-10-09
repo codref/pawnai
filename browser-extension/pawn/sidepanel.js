@@ -54,8 +54,15 @@ const state = {
   settingsOpen: false,
 };
 
+const TARGET_KIND_OPTIONS = [
+  { value: "new", label: "New page" },
+  { value: "capture", label: "Recent capture…" },
+  { value: "session", label: "Session…" },
+  { value: "note", label: "Other note…" },
+];
+
 const el = {
-  targetKind: document.getElementById("target-kind"),
+  targetKind: null,
   targetExtra: document.getElementById("target-extra"),
   title: document.getElementById("title-input"),
   titleField: document.getElementById("title-field"),
@@ -80,6 +87,7 @@ init();
 
 async function init() {
   mountChromeIcons();
+  el.targetKind = mountTargetKindSelect(document.getElementById("target-kind"));
   await loadSettings();
   await loadTray();
   bind();
@@ -93,6 +101,158 @@ async function init() {
       void drainPending();
     }
   });
+}
+
+/**
+ * DOM combobox instead of native <select>.
+ * Edge/Chromium side panels often never show the OS select popup (no console error).
+ */
+function mountTargetKindSelect(host) {
+  if (!host) {
+    return {
+      value: "new",
+      addEventListener() {},
+    };
+  }
+
+  const trigger = document.createElement("button");
+  trigger.type = "button";
+  trigger.className = "pawn-select-trigger";
+  trigger.setAttribute("aria-haspopup", "listbox");
+  trigger.setAttribute("aria-expanded", "false");
+  trigger.title = host.getAttribute("title") || "Target";
+
+  const valueEl = document.createElement("span");
+  valueEl.className = "pawn-select-value";
+  const chevron = document.createElement("span");
+  chevron.className = "clickable-icon";
+  chevron.setAttribute("aria-hidden", "true");
+  setIcon(chevron, "chevron-down");
+  trigger.append(valueEl, chevron);
+
+  const menu = document.createElement("div");
+  menu.className = "pawn-select-menu";
+  menu.hidden = true;
+  menu.setAttribute("role", "listbox");
+
+  for (const opt of TARGET_KIND_OPTIONS) {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "pawn-select-option";
+    btn.setAttribute("role", "option");
+    btn.dataset.value = opt.value;
+    btn.textContent = opt.label;
+    btn.addEventListener("click", (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      setValue(opt.value, true);
+      closeMenu();
+    });
+    menu.appendChild(btn);
+  }
+
+  host.replaceChildren(trigger, menu);
+
+  let current = "new";
+  let onChange = null;
+  let activeIndex = 0;
+
+  const syncLabel = () => {
+    const hit = TARGET_KIND_OPTIONS.find((o) => o.value === current);
+    valueEl.textContent = hit?.label || current;
+    const options = [...menu.querySelectorAll(".pawn-select-option")];
+    options.forEach((btn, i) => {
+      const selected = btn.dataset.value === current;
+      btn.classList.toggle("is-selected", selected);
+      btn.classList.toggle("is-active", i === activeIndex);
+      btn.setAttribute("aria-selected", selected ? "true" : "false");
+    });
+  };
+
+  const closeMenu = () => {
+    if (menu.hidden) return;
+    menu.hidden = true;
+    trigger.setAttribute("aria-expanded", "false");
+    setIcon(chevron, "chevron-down");
+    document.removeEventListener("pointerdown", onOutside, true);
+    document.removeEventListener("keydown", onDocKey, true);
+  };
+
+  const openMenu = () => {
+    if (!menu.hidden) return;
+    activeIndex = Math.max(
+      0,
+      TARGET_KIND_OPTIONS.findIndex((o) => o.value === current),
+    );
+    syncLabel();
+    menu.hidden = false;
+    trigger.setAttribute("aria-expanded", "true");
+    setIcon(chevron, "chevron-up");
+    document.addEventListener("pointerdown", onOutside, true);
+    document.addEventListener("keydown", onDocKey, true);
+  };
+
+  const onOutside = (ev) => {
+    if (!host.contains(ev.target)) closeMenu();
+  };
+
+  const onDocKey = (ev) => {
+    if (menu.hidden) return;
+    const options = TARGET_KIND_OPTIONS;
+    if (ev.key === "Escape") {
+      ev.preventDefault();
+      closeMenu();
+      return;
+    }
+    if (ev.key === "ArrowDown") {
+      ev.preventDefault();
+      activeIndex = Math.min(activeIndex + 1, options.length - 1);
+      syncLabel();
+      return;
+    }
+    if (ev.key === "ArrowUp") {
+      ev.preventDefault();
+      activeIndex = Math.max(activeIndex - 1, 0);
+      syncLabel();
+      return;
+    }
+    if (ev.key === "Enter" || ev.key === " ") {
+      ev.preventDefault();
+      const opt = options[activeIndex];
+      if (opt) {
+        setValue(opt.value, true);
+        closeMenu();
+      }
+    }
+  };
+
+  const setValue = (v, fire) => {
+    const next = TARGET_KIND_OPTIONS.some((o) => o.value === v) ? v : "new";
+    const changed = current !== next;
+    current = next;
+    syncLabel();
+    if (fire && changed && typeof onChange === "function") onChange();
+  };
+
+  trigger.addEventListener("click", (ev) => {
+    ev.preventDefault();
+    if (menu.hidden) openMenu();
+    else closeMenu();
+  });
+
+  syncLabel();
+
+  return {
+    get value() {
+      return current;
+    },
+    set value(v) {
+      setValue(v, false);
+    },
+    addEventListener(type, fn) {
+      if (type === "change") onChange = fn;
+    },
+  };
 }
 
 function mountChromeIcons() {

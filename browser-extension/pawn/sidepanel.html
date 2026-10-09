@@ -10,12 +10,8 @@
     <div class="pawn-root">
       <header class="pawn-header">
         <div class="pawn-header-row">
-          <select id="target-kind" class="pawn-conv-select" title="Target">
-            <option value="new">New page</option>
-            <option value="capture">Recent capture…</option>
-            <option value="session">Session…</option>
-            <option value="note">Other note…</option>
-          </select>
+          <!-- Custom select: native <select> popups often fail to open in Edge/Chrome side panels. -->
+          <div id="target-kind" class="pawn-select" title="Target"></div>
           <button
             type="button"
             id="btn-settings"

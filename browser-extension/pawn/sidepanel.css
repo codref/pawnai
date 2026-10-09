@@ -58,10 +58,13 @@ body {
 }
 
 .pawn-header {
+  position: relative;
+  z-index: 10;
   flex-shrink: 0;
   padding: var(--size-4-3) var(--size-4-3) var(--size-4-2);
   border-bottom: 1px solid var(--background-modifier-border);
   background: var(--background-secondary);
+  overflow: visible;
 }
 
 .pawn-header-row {
@@ -70,15 +73,87 @@ body {
   gap: var(--size-4-2);
 }
 
-.pawn-conv-select {
+.pawn-select {
   flex: 1;
   min-width: 0;
+  position: relative;
+  z-index: 20;
+}
+
+.pawn-select-trigger {
+  display: flex;
+  align-items: center;
+  gap: var(--size-4-1);
+  width: 100%;
   padding: 6px 8px;
   border: 1px solid var(--background-modifier-border);
   border-radius: var(--radius-s);
   background: var(--background-primary);
   color: var(--text-normal);
+  text-align: left;
+  cursor: pointer;
   font: inherit;
+}
+
+.pawn-select-trigger:hover {
+  background: var(--background-modifier-hover);
+}
+
+.pawn-select-value {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pawn-select-trigger .clickable-icon {
+  width: 22px;
+  height: 22px;
+  pointer-events: none;
+}
+
+.pawn-select-trigger .clickable-icon svg {
+  width: 14px;
+  height: 14px;
+}
+
+.pawn-select-menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  right: 0;
+  z-index: 30;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: var(--size-4-1);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--radius-s);
+  background: var(--background-primary);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.18);
+}
+
+.pawn-select-option {
+  display: block;
+  width: 100%;
+  padding: 6px 8px;
+  border: none;
+  border-radius: var(--radius-s);
+  background: transparent;
+  color: var(--text-normal);
+  text-align: left;
+  cursor: pointer;
+  font: inherit;
+}
+
+.pawn-select-option:hover,
+.pawn-select-option.is-active {
+  background: var(--background-modifier-hover);
+}
+
+.pawn-select-option.is-selected {
+  color: var(--interactive-accent);
 }
 
 .pawn-dot {
@@ -116,9 +191,7 @@ body {
 }
 
 .pawn-field input,
-.pawn-field select,
-.pawn-target-extra input,
-.pawn-target-extra select {
+.pawn-target-extra input {
   padding: 6px 8px;
   border: 1px solid var(--background-modifier-border);
   border-radius: var(--radius-s);
