@@ -590,6 +590,16 @@ def claim_vault_task(dsn: str, task_id: str) -> bool:
         return True
 
 
+def delete_vault_task(dsn: str, task_id: str) -> bool:
+    """Delete one vault task row. Returns True if a row was removed."""
+    with _get_session(dsn) as db:
+        row = db.get(VaultTask, task_id)
+        if row is None:
+            return False
+        db.delete(row)
+        return True
+
+
 # ---------------------------------------------------------------------------
 # API IP blacklist helpers
 # ---------------------------------------------------------------------------

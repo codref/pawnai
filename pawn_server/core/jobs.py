@@ -21,6 +21,7 @@ from pawn_agent.tools.push_queue_message import push_queue_message_impl
 from pawn_agent.utils.db import (
     VaultTask,
     claim_vault_task,
+    delete_vault_task,
     get_vault_task,
     list_vault_tasks,
     update_vault_task,
@@ -29,6 +30,7 @@ from pawn_agent.utils.db import (
 from pawn_core.vault import VaultError, VaultWriteDenied, normalize_vault_key
 from pawn_core.vault_config import vault_store_from_config
 from pawn_server.core.job_events import publish_job_event
+from pawn_server.core.vault_events import publish_vault_event
 from pawn_server.core.vault_protocol import instruction_hash, parse_task_note, render_task_note
 from pawn_server.core.vault_tasks import (
     effective_conversation,
@@ -42,6 +44,10 @@ logger = logging.getLogger(__name__)
 
 JOB_KINDS = ("ask", "push_note", "upload", "capture_enrich")
 TERMINAL_STATUSES = frozenset({"review", "done", "blocked"})
+# Finished enough to remove from the Jobs UI (running jobs must cancel first).
+DELETABLE_STATUSES = frozenset({"review", "done", "blocked"})
+# Stale history safe to flush without user triage.
+FLUSHABLE_STATUSES = frozenset({"done", "blocked"})
 
 _AUDIO_EXTENSIONS = frozenset(
     {".wav", ".mp3", ".m4a", ".ogg", ".opus", ".flac", ".webm", ".aac", ".mp4"}
@@ -694,6 +700,94 @@ async def dismiss_job(cfg: Any, job_id: str) -> dict[str, Any]:
     out = get_job(cfg, job_id)
     assert out is not None
     return out
+
+
+def _purge_ask_note(cfg: Any, key: str) -> Optional[str]:
+    """Delete a ``Pawn/Tasks/{id}.md`` mirror when present. Returns the key if removed."""
+    store = _vault_store_or_none(cfg)
+    if store is None or not key:
+        return None
+    try:
+        store.delete(key)
+        return key
+    except Exception as exc:
+        logger.debug("Could not delete task note %s: %s", key, exc)
+        return None
+
+
+async def delete_job(cfg: Any, job_id: str) -> dict[str, Any]:
+    """Permanently remove a finished job (and its ask task note when present)."""
+    row = get_vault_task(cfg.db_dsn, job_id)
+    if row is None:
+        raise JobError("job not found", status_code=404)
+    if row.status not in DELETABLE_STATUSES:
+        raise JobError(
+            f"job is {row.status}; cancel it before deleting",
+            status_code=409,
+        )
+    kind = row.kind or "ask"
+    key = row.key
+    if not delete_vault_task(cfg.db_dsn, job_id):
+        raise JobError("job not found", status_code=404)
+    removed_note: Optional[str] = None
+    if kind == "ask":
+        removed_note = await asyncio.to_thread(_purge_ask_note, cfg, key)
+        if removed_note:
+            publish_vault_event([removed_note], source="job")
+    publish_job_event(job_id, "deleted", kind=kind, conversation=row.conversation_id)
+    return {
+        "id": job_id,
+        "deleted": True,
+        "task_key": removed_note,
+    }
+
+
+async def delete_jobs(
+    cfg: Any,
+    *,
+    ids: Optional[Sequence[str]] = None,
+    flush_terminal: bool = False,
+) -> dict[str, Any]:
+    """Delete selected finished jobs, or flush all done/blocked history."""
+    if flush_terminal:
+        rows = list_vault_tasks(
+            cfg.db_dsn,
+            statuses=list(FLUSHABLE_STATUSES),
+            newest_first=True,
+            limit=2000,
+        )
+        target_ids = [r.id for r in rows]
+    elif ids:
+        target_ids = [str(i).strip() for i in ids if str(i).strip()]
+    else:
+        raise JobError("ids or flush_terminal is required", status_code=422)
+
+    deleted: list[str] = []
+    skipped: list[str] = []
+    notes: list[str] = []
+    for jid in target_ids:
+        row = get_vault_task(cfg.db_dsn, jid)
+        if row is None:
+            skipped.append(jid)
+            continue
+        allowed = FLUSHABLE_STATUSES if flush_terminal else DELETABLE_STATUSES
+        if row.status not in allowed:
+            skipped.append(jid)
+            continue
+        try:
+            result = await delete_job(cfg, jid)
+        except JobError:
+            skipped.append(jid)
+            continue
+        deleted.append(jid)
+        if result.get("task_key"):
+            notes.append(str(result["task_key"]))
+    return {
+        "deleted": len(deleted),
+        "ids": deleted,
+        "skipped": skipped,
+        "notes": notes,
+    }
 
 
 async def recover_abandoned_jobs(cfg: Any, registry: SallmSessionRegistry) -> dict[str, int]:

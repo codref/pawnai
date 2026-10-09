@@ -2,7 +2,7 @@ import { Platform, requestUrl, RequestUrlResponse } from "obsidian";
 import type { PawnSettings } from "./settings";
 import { parseSseText, SseEvent, SseParser } from "./sse";
 
-export type JobKind = "ask" | "push_note" | "upload";
+export type JobKind = "ask" | "push_note" | "upload" | "capture_enrich";
 export type JobStatus =
   | "todo"
   | "queued"
@@ -10,7 +10,8 @@ export type JobStatus =
   | "running"
   | "review"
   | "done"
-  | "blocked";
+  | "blocked"
+  | "deleted";
 
 export interface VaultEvent {
   seq: number;
@@ -403,6 +404,19 @@ export class PawnClient {
   async dismissJob(id: string): Promise<Job> {
     const resp = await this.request("POST", `/v1/jobs/${encodeURIComponent(id)}/dismiss`, {});
     return resp.json as Job;
+  }
+
+  async deleteJob(id: string): Promise<{ id: string; deleted: boolean }> {
+    const resp = await this.request("DELETE", `/v1/jobs/${encodeURIComponent(id)}`);
+    return resp.json as { id: string; deleted: boolean };
+  }
+
+  async deleteJobs(body: {
+    ids?: string[];
+    flush_terminal?: boolean;
+  }): Promise<{ deleted: number; ids: string[]; skipped: string[] }> {
+    const resp = await this.request("POST", "/v1/jobs/delete", body);
+    return resp.json as { deleted: number; ids: string[]; skipped: string[] };
   }
 
   /** Long-poll vault writes. Empty ``events`` means the timeout elapsed. */

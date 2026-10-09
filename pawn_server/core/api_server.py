@@ -24,8 +24,9 @@ POST /v1/pawn/chat
 
 POST /v1/jobs, POST /v1/jobs/upload, GET /v1/jobs, GET /v1/jobs/{id},
 POST /v1/jobs/{id}/approve, POST /v1/jobs/{id}/cancel, POST /v1/jobs/{id}/dismiss,
-GET /v1/jobs/events
-    Background jobs (ask / push_note / upload); always accepted with 202.
+DELETE /v1/jobs/{id}, POST /v1/jobs/delete, GET /v1/jobs/events
+    Background jobs (ask / push_note / upload / capture_enrich); always accepted with 202.
+    Delete removes finished jobs (and ask task notes). ``flush_terminal`` clears done/blocked.
     ``/v1/vault/tasks*`` remain as deprecated aliases.
 
 GET /v1/sessions, GET /v1/captures, GET /v1/captures/collections,
@@ -280,6 +281,15 @@ class JobApproveRequest(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
     result: Optional[str] = None
+
+
+class JobsDeleteRequest(BaseModel):
+    """POST /v1/jobs/delete — remove finished jobs (or flush done/blocked)."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    ids: Optional[list[str]] = None
+    flush_terminal: bool = False
 
 
 class ItemActionRequest(BaseModel):
@@ -1168,7 +1178,21 @@ async def job_events_stream(request: Request, cfg: Any = Depends(_get_cfg)) -> S
                 if event is SHUTDOWN_EVENT:
                     break
                 job = await asyncio.to_thread(jobs.get_job, cfg, event["job_id"])
-                yield _sse_event("job", job or event)
+                if job is not None:
+                    yield _sse_event("job", job)
+                elif event.get("status") == "deleted":
+                    yield _sse_event(
+                        "job",
+                        {
+                            "id": event["job_id"],
+                            "status": "deleted",
+                            "kind": event.get("kind") or "ask",
+                            "title": "",
+                            "instruction": "",
+                            "conversation": event.get("conversation") or "",
+                            "approved": False,
+                        },
+                    )
         finally:
             job_events.unsubscribe(queue)
 
@@ -1362,6 +1386,32 @@ async def job_cancel(job_id: str, cfg: Any = Depends(_get_cfg)) -> dict:
     try:
         return await jobs.cancel_job(cfg, job_id)
     except Exception as exc:
+        raise _job_error(exc) from exc
+
+
+@app.delete("/v1/jobs/{job_id}", dependencies=[Depends(_require_token)])
+async def job_delete(job_id: str, cfg: Any = Depends(_get_cfg)) -> dict:
+    """Permanently remove a finished job (review/done/blocked)."""
+    from pawn_server.core import jobs  # noqa: PLC0415
+
+    try:
+        return await jobs.delete_job(cfg, job_id)
+    except jobs.JobError as exc:
+        raise _job_error(exc) from exc
+
+
+@app.post("/v1/jobs/delete", dependencies=[Depends(_require_token)])
+async def jobs_delete(body: JobsDeleteRequest, cfg: Any = Depends(_get_cfg)) -> dict:
+    """Delete selected finished jobs, or flush all done/blocked history."""
+    from pawn_server.core import jobs  # noqa: PLC0415
+
+    try:
+        return await jobs.delete_jobs(
+            cfg,
+            ids=body.ids,
+            flush_terminal=body.flush_terminal,
+        )
+    except jobs.JobError as exc:
         raise _job_error(exc) from exc
 
 

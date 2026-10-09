@@ -13,7 +13,7 @@ import { ChatImage, ModelChoice, NoteContext, ServerUnreachable } from "../api";
 import { PromptCommand, renderPrompt } from "../commands/PromptCommands";
 import { renderInbox } from "../inbox/InboxView";
 import { captureIdea, noticeError } from "../inbox/ideas";
-import { JobFilter, renderJobCard, renderJobsList } from "../jobs/JobsView";
+import { renderJobCard, renderJobsList } from "../jobs/JobsView";
 import type PawnPlugin from "../main";
 import { ContextBar, ContextSnapshot, resolveDroppedNote } from "./ContextBar";
 import { exportExcalidrawImage, fileIsExcalidraw } from "./excalidraw";
@@ -57,7 +57,6 @@ export class PawnChatView extends ItemView {
   private pinned = false;
   private background = false;
   private pending: Pending | null = null;
-  private jobsFilter: JobFilter = "all";
   private focusJob: string | null = null;
   private context: ContextBar;
   private threadEl: HTMLElement | null = null;
@@ -464,7 +463,7 @@ export class PawnChatView extends ItemView {
     if (opts.tab) this.tab = opts.tab;
     if (opts.focusJob) {
       this.focusJob = opts.focusJob;
-      this.jobsFilter = "all";
+      this.plugin.jobs.setQuery({ scope: "all", conversationOnly: false });
     }
     if (opts.prefill != null) this.draftText = opts.prefill;
     this.render();
@@ -721,13 +720,9 @@ export class PawnChatView extends ItemView {
     if (this.tab === "jobs") {
       const jobs = body.createDiv({ cls: "pawn-jobs" });
       renderJobsList(jobs, this.plugin, this.freshScope(), {
-        filter: this.jobsFilter,
         conversation: this.conversationId,
         focusJob: this.focusJob,
-        onFilter: (f) => {
-          this.jobsFilter = f;
-          this.renderBody();
-        },
+        onFilter: () => this.renderBody(),
         onOpenConversation: (conv) => {
           this.switchConversation(conv, true);
           this.tab = "chat";
