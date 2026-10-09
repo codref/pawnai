@@ -11,7 +11,7 @@ import {
 } from "./chat/conversations";
 import { PromptCommand, PromptCommandRegistry, PromptPickerModal } from "./commands/PromptCommands";
 import { applyGoalsFromActiveFile } from "./inbox/ApplyGoals";
-import { InboxStore } from "./inbox/InboxView";
+import { CapturesStore, InboxStore } from "./inbox/InboxView";
 import { ItemNoteBar } from "./inbox/ItemNoteBar";
 import { ItemsStore } from "./inbox/ItemsStore";
 import { captureIdea, noticeError } from "./inbox/ideas";
@@ -35,6 +35,7 @@ export default class PawnPlugin extends Plugin {
   client!: PawnClient;
   jobs!: JobStore;
   inbox!: InboxStore;
+  captures!: CapturesStore;
   items!: ItemsStore;
   itemNoteBar!: ItemNoteBar;
   vaultSync!: VaultSync;
@@ -50,6 +51,7 @@ export default class PawnPlugin extends Plugin {
     this.conversations = new ConversationStore(this.data.conversations, () => this.persistSoon());
     this.jobs = new JobStore(this, this.client);
     this.inbox = new InboxStore(this);
+    this.captures = new CapturesStore(this);
     this.items = new ItemsStore(this);
     this.itemNoteBar = new ItemNoteBar(this);
     this.vaultSync = new VaultSync(this, this.client);
@@ -70,6 +72,7 @@ export default class PawnPlugin extends Plugin {
       void this.prompts.reload();
       this.jobs.start();
       this.inbox.start();
+      this.captures.start();
       this.items.start();
       this.itemNoteBar.start();
       this.vaultSync.start();
@@ -94,6 +97,7 @@ export default class PawnPlugin extends Plugin {
   onunload(): void {
     this.jobs?.stop();
     this.inbox?.stop();
+    this.captures?.stop();
     this.items?.stop();
     this.vaultSync?.stop();
     void this.persist();
@@ -380,11 +384,13 @@ export default class PawnPlugin extends Plugin {
     const { active, review } = this.jobs.counts();
     const openItems = this.items?.attention() ?? 0;
     const ideas = this.inbox?.attention() ?? 0;
+    const captures = this.captures?.attention() ?? 0;
     const parts = ["Pawn"];
     if (active) parts.push(`${active} running`);
     if (review) parts.push(`${review} to review`);
     if (openItems) parts.push(`${openItems} items`);
     if (ideas) parts.push(`${ideas} ideas`);
+    if (captures) parts.push(`${captures} captures`);
     el.createSpan({ text: parts.join(" · ") });
     el.setAttr("aria-label", online ? "Pawn server reachable" : "Pawn server offline");
   }

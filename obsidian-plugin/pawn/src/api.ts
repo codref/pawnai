@@ -290,6 +290,17 @@ export class PawnClient {
     return String((resp.json as { receipt?: string }).receipt ?? "ok");
   }
 
+  async fileCapture(body: {
+    path: string;
+    collection?: string;
+    entity?: string;
+    tags?: string[];
+    ignore?: boolean;
+  }): Promise<{ path: string; status: string; entity_path?: string | null }> {
+    const resp = await this.request("POST", "/v1/captures/file", body);
+    return resp.json as { path: string; status: string; entity_path?: string | null };
+  }
+
   async deleteItems(body: {
     ids?: string[];
     all_open?: boolean;

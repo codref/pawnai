@@ -2,6 +2,7 @@
 
 Used by the Pawn browser extension (no chat). Capture notes live under
 ``{agent_root}/Captures/``. Images go to ``{agent_root}/Captures/assets/``.
+Research mode writes one inbox atom per snippet under ``capture.inbox_dir``.
 Attaching to a diarization session splices into that transcript's Annotations
 section when a vault mapping exists.
 """
@@ -28,6 +29,7 @@ from pawn_core.vault import (
 )
 from pawn_core.vault_config import vault_store_from_config
 from pawn_core.vault_db import get_vault_note
+from pawn_server.core import capture_config as capcfg
 from pawn_server.core.vault_events import publish_vault_event
 
 logger = logging.getLogger(__name__)
@@ -40,8 +42,13 @@ _ANNOTATIONS_RE = re.compile(
     r"(?is)^##\s*Annotations\s*\n+(.*?)(?=^##\s|\Z)",
     re.MULTILINE,
 )
-TARGET_KINDS = frozenset({"new", "capture", "note", "session"})
+_CAPTURES_SECTION_RE = re.compile(
+    r"(?is)^##\s*Captures\s*\n+(.*?)(?=^##\s|\Z)",
+    re.MULTILINE,
+)
+TARGET_KINDS = frozenset({"new", "capture", "note", "session", "research"})
 SNIPPET_KINDS = frozenset({"text", "image"})
+CAPTURE_STATUSES = frozenset({"inbox", "proposed", "filed", "ignored"})
 
 
 class CaptureError(Exception):
@@ -330,9 +337,11 @@ def _resolve_target(
     kind = (kind or "").strip().lower()
     if kind not in TARGET_KINDS:
         raise CaptureError(
-            f"unknown target kind {kind!r} (use new, capture, note, session)",
+            f"unknown target kind {kind!r} (use new, capture, note, session, research)",
             status_code=422,
         )
+    if kind == "research":
+        raise CaptureError("research targets use save_research_snippets", status_code=500)
     if kind == "new":
         key = normalize_vault_key(path) if path.strip() else ""
         if key and not key.lower().endswith(".md"):
@@ -447,6 +456,400 @@ def _append_blocks(existing: str, blocks: list[str], *, mode: str) -> str:
     return text
 
 
+def _research_atom_path(
+    cfg: Any,
+    *,
+    title: str,
+    snippet_id: str,
+    store: Any,
+) -> str:
+    day = _today(cfg)
+    stem = idea_filename_title(title or "capture")
+    folder = capcfg.inbox_dir(cfg)
+    base = f"{folder}/{day} {stem}-{snippet_id}.md"
+    if not store.exists(base):
+        return base
+    # Same snippet id already has a note — reuse for idempotency.
+    return base
+
+
+def _render_research_atom(
+    *,
+    title: str,
+    snippet_id: str,
+    kind: str,
+    source_url: str = "",
+    collection: str = "",
+    hint: str = "",
+    captured_at: str = "",
+    image_key: str = "",
+    text: str = "",
+) -> str:
+    heading = idea_filename_title(title or "capture")
+    meta: dict[str, Any] = {
+        "pawn": "capture",
+        "status": "inbox",
+        "tags": ["pawn/capture"],
+        "snippet_id": snippet_id,
+        "kind": kind,
+        "created": _now_iso(),
+        "collection": (collection or "").strip(),
+        "hint": (hint or "").strip(),
+        "entity": "",
+        "type": "",
+        "caption": "",
+        "proposed_tags": [],
+        "enriched_at": "",
+    }
+    if source_url.strip():
+        meta["source_url"] = source_url.strip()
+    if captured_at.strip():
+        meta["captured_at"] = captured_at.strip()
+    block = render_snippet_block(
+        snippet_id=snippet_id,
+        kind=kind,
+        text=text,
+        image_key=image_key,
+        source_url=source_url,
+        captured_at=captured_at,
+    )
+    lines = [f"# {heading}", ""]
+    if source_url.strip():
+        lines.extend([f"Source: {source_url.strip()}", ""])
+    if hint.strip():
+        lines.extend([f"Hint: {hint.strip()}", ""])
+    lines.append("## Snippets")
+    lines.append("")
+    lines.append(block.rstrip())
+    lines.append("")
+    return dump_frontmatter(meta, "\n".join(lines))
+
+
+def list_collections(cfg: Any, *, store: Any = None) -> list[dict[str, Any]]:
+    """Discover existing collection folders under ``capture.enriched_dir``."""
+    if store is None:
+        store = vault_store_from_config(cfg)
+    root = capcfg.enriched_dir(cfg)
+    prefix = root.rstrip("/") + "/"
+    names: set[str] = set()
+    try:
+        keys = store.list(root)
+    except Exception as exc:
+        logger.debug("list collections under %s failed: %s", root, exc)
+        keys = []
+    for key in keys:
+        rel = normalize_vault_key(key)
+        if not rel.startswith(prefix):
+            continue
+        rest = rel.removeprefix(prefix)
+        part = rest.split("/", 1)[0].strip()
+        if part and part.lower() != "assets":
+            names.add(part)
+    out = [
+        {"id": name, "title": name.replace("-", " ").replace("_", " ").title()}
+        for name in sorted(names)
+    ]
+    return out
+
+
+def find_inbox_note_for_snippet(
+    cfg: Any,
+    snippet_id: str,
+    *,
+    store: Any = None,
+) -> str | None:
+    """Return an existing inbox path that already holds *snippet_id*, if any."""
+    if store is None:
+        store = vault_store_from_config(cfg)
+    folder = capcfg.inbox_dir(cfg)
+    try:
+        keys = store.list(folder)
+    except Exception:
+        return None
+    needle = _snippet_marker(snippet_id)
+    for key in keys:
+        if f"-{snippet_id}.md" in key or key.endswith(f"{snippet_id}.md"):
+            try:
+                if needle in store.read(key):
+                    return key
+            except Exception:
+                continue
+    return None
+
+
+def save_research_snippets(
+    cfg: Any,
+    *,
+    target: dict[str, Any],
+    snippets: list[dict[str, Any]],
+    store: Any = None,
+) -> dict[str, Any]:
+    """Write one inbox atom per snippet. Returns paths and written ids."""
+    if store is None:
+        store = vault_store_from_config(cfg)
+    if not snippets:
+        raise CaptureError("snippets must be a non-empty list", status_code=422)
+
+    title = str(target.get("title") or "capture")
+    source_url = str(target.get("source_url") or "")
+    collection_raw = str(target.get("collection") or "").strip()
+    collection = capcfg.slugify(collection_raw) if collection_raw else ""
+    hint = str(target.get("hint") or "").strip()
+
+    written: list[str] = []
+    skipped: list[str] = []
+    paths: list[str] = []
+    enrich_paths: list[str] = []
+    image_keys: list[str] = []
+
+    for raw in snippets:
+        snippet_id = str(raw.get("id") or "").strip()
+        if not snippet_id or not _SNIPPET_ID_RE.match(snippet_id):
+            raise CaptureError(
+                f"invalid snippet id {snippet_id!r}",
+                status_code=422,
+            )
+        skind = str(raw.get("kind") or "text").strip().lower()
+        if skind not in SNIPPET_KINDS:
+            raise CaptureError(f"unknown snippet kind {skind!r}", status_code=422)
+
+        existing_path = find_inbox_note_for_snippet(cfg, snippet_id, store=store)
+        if existing_path:
+            skipped.append(snippet_id)
+            paths.append(existing_path)
+            continue
+
+        key = _research_atom_path(cfg, title=title, snippet_id=snippet_id, store=store)
+        if store.exists(key):
+            try:
+                if note_has_snippet(store.read(key), snippet_id):
+                    skipped.append(snippet_id)
+                    paths.append(key)
+                    continue
+            except Exception:
+                pass
+
+        image_key = ""
+        if skind == "image":
+            data = _decode_image(str(raw.get("data_base64") or ""))
+            suffix = _image_suffix(str(raw.get("media_type") or ""))
+            image_key = f"{assets_dir(cfg)}/{snippet_id}{suffix}"
+            store.write_bytes(image_key, data, content_type=_content_type(suffix))
+            image_keys.append(image_key)
+
+        body = _render_research_atom(
+            title=title,
+            snippet_id=snippet_id,
+            kind=skind,
+            source_url=str(raw.get("source_url") or source_url),
+            collection=collection,
+            hint=hint,
+            captured_at=str(raw.get("captured_at") or ""),
+            image_key=image_key,
+            text=str(raw.get("text") or ""),
+        )
+        try:
+            store.write(key, body)
+        except VaultWriteDenied as exc:
+            raise CaptureError(str(exc), status_code=403) from exc
+        written.append(snippet_id)
+        paths.append(key)
+        enrich_paths.append(key)
+
+    publish_paths = list(dict.fromkeys([*paths, *image_keys]))
+    if publish_paths:
+        publish_vault_event(publish_paths, source="capture")
+
+    return {
+        "path": paths[0] if paths else "",
+        "paths": paths,
+        "enrich_paths": enrich_paths,
+        "mode": "research",
+        "written": written,
+        "skipped": skipped,
+        "images": image_keys,
+        "enrich": bool(enrich_paths) and capcfg.auto_enrich_enabled(cfg),
+    }
+
+
+def _replace_captures_section(markdown: str, captures_body: str) -> str:
+    body = captures_body.strip()
+    if body and not body.endswith("\n"):
+        body += "\n"
+    match = _CAPTURES_SECTION_RE.search(markdown or "")
+    if match:
+        start, end = match.span(1)
+        return (markdown or "")[:start] + body + (markdown or "")[end:]
+    section = f"\n## Captures\n{body or ''}\n"
+    notes_idx = (markdown or "").find("## Notes")
+    if notes_idx >= 0:
+        return (
+            (markdown or "")[:notes_idx].rstrip()
+            + "\n"
+            + section
+            + "\n"
+            + (markdown or "")[notes_idx:]
+        )
+    text = markdown or ""
+    if text and not text.endswith("\n"):
+        text += "\n"
+    return text + section
+
+
+def _entity_link_line(capture_path: str, *, cap_type: str = "", when: str = "") -> str:
+    link = normalize_vault_key(capture_path).removesuffix(".md")
+    bits = [bit for bit in (cap_type.strip(), when.strip()) if bit]
+    suffix = f" — {' · '.join(bits)}" if bits else ""
+    return f"- [[{link}]]{suffix}"
+
+
+def _ensure_entity_note(
+    cfg: Any,
+    store: Any,
+    *,
+    collection: str,
+    entity: str,
+    title: str = "",
+    tags: list[str] | None = None,
+) -> str:
+    coll = capcfg.slugify(collection)
+    ent = capcfg.slugify(entity)
+    if not coll or not ent:
+        raise CaptureError("collection and entity are required to file", status_code=422)
+    key = capcfg.entity_path(cfg, collection=coll, entity=ent)
+    display = (title or entity or ent).strip() or ent
+    try:
+        store.read(key)
+        return key
+    except VaultNotFound:
+        pass
+    meta = {
+        "pawn": "entity",
+        "collection": coll,
+        "aliases": [],
+        "tags": list(tags or []),
+        "updated": _now_iso(),
+    }
+    body = dump_frontmatter(
+        meta,
+        "\n".join(
+            [
+                f"# {display}",
+                "",
+                "## Summary",
+                "",
+                "",
+                "## Captures",
+                "",
+                "## Notes",
+                "",
+                "(user-owned)",
+                "",
+            ]
+        ),
+    )
+    try:
+        store.write(key, body)
+    except VaultWriteDenied as exc:
+        raise CaptureError(str(exc), status_code=403) from exc
+    return key
+
+
+def file_capture(
+    cfg: Any,
+    *,
+    path: str,
+    collection: str = "",
+    entity: str = "",
+    tags: list[str] | None = None,
+    ignore: bool = False,
+    store: Any = None,
+) -> dict[str, Any]:
+    """Mark an inbox capture filed or ignored; link entity when filing."""
+    if store is None:
+        store = vault_store_from_config(cfg)
+    key = normalize_vault_key(path)
+    if not key:
+        raise CaptureError("path is required", status_code=422)
+    if not key.lower().endswith(".md"):
+        key = f"{key}.md"
+    try:
+        text = store.read(key)
+    except VaultNotFound as exc:
+        raise CaptureError(f"note not found: {key}", status_code=404) from exc
+
+    meta, body = parse_frontmatter(text)
+    if ignore:
+        meta["status"] = "ignored"
+        updated = dump_frontmatter(meta, body)
+        try:
+            store.write(key, updated)
+        except VaultWriteDenied as exc:
+            raise CaptureError(str(exc), status_code=403) from exc
+        publish_vault_event([key], source="capture")
+        return {"path": key, "status": "ignored", "entity_path": None}
+
+    coll = (collection or str(meta.get("collection") or "")).strip()
+    ent = (entity or str(meta.get("entity") or "")).strip()
+    if not coll or not ent:
+        raise CaptureError(
+            "collection and entity are required to file (set on the note or in the request)",
+            status_code=422,
+        )
+    tag_list = list(tags) if tags is not None else []
+    if not tag_list:
+        proposed = meta.get("proposed_tags")
+        if isinstance(proposed, list):
+            tag_list = [str(t).strip() for t in proposed if str(t).strip()]
+
+    entity_key = _ensure_entity_note(
+        cfg,
+        store,
+        collection=coll,
+        entity=ent,
+        title=ent.replace("-", " ").title(),
+        tags=tag_list,
+    )
+    entity_text = store.read(entity_key)
+    link_line = _entity_link_line(
+        key,
+        cap_type=str(meta.get("type") or ""),
+        when=str(meta.get("captured_at") or meta.get("created") or "")[:10],
+    )
+    section_match = _CAPTURES_SECTION_RE.search(entity_text)
+    section_body = section_match.group(1) if section_match else ""
+    if normalize_vault_key(key).removesuffix(".md") not in section_body:
+        if section_body and not section_body.endswith("\n"):
+            section_body += "\n"
+        section_body += link_line + "\n"
+        entity_text = _replace_captures_section(entity_text, section_body)
+        emeta, ebody = parse_frontmatter(entity_text)
+        emeta["updated"] = _now_iso()
+        emeta["collection"] = capcfg.slugify(coll)
+        if tag_list:
+            existing_tags = emeta.get("tags") if isinstance(emeta.get("tags"), list) else []
+            merged = list(dict.fromkeys([*(str(t) for t in existing_tags), *tag_list]))
+            emeta["tags"] = merged
+        entity_text = dump_frontmatter(emeta, ebody)
+        try:
+            store.write(entity_key, entity_text)
+        except VaultWriteDenied as exc:
+            raise CaptureError(str(exc), status_code=403) from exc
+
+    meta["status"] = "filed"
+    meta["collection"] = capcfg.slugify(coll)
+    meta["entity"] = capcfg.slugify(ent)
+    if tag_list:
+        meta["proposed_tags"] = tag_list
+    updated = dump_frontmatter(meta, body)
+    try:
+        store.write(key, updated)
+    except VaultWriteDenied as exc:
+        raise CaptureError(str(exc), status_code=403) from exc
+    publish_vault_event([key, entity_key], source="capture")
+    return {"path": key, "status": "filed", "entity_path": entity_key}
+
+
 def save_snippets(
     cfg: Any,
     *,
@@ -460,7 +863,10 @@ def save_snippets(
     if not snippets:
         raise CaptureError("snippets must be a non-empty list", status_code=422)
 
-    kind = str(target.get("kind") or "new")
+    kind = str(target.get("kind") or "new").strip().lower()
+    if kind == "research":
+        return save_research_snippets(cfg, target=target, snippets=snippets, store=store)
+
     path = str(target.get("path") or "")
     session_id = str(target.get("session_id") or "")
     title = str(target.get("title") or "")

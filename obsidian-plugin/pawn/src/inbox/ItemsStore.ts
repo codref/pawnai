@@ -14,7 +14,7 @@ import {
   statusesForScope,
 } from "./items";
 
-export type ItemsSection = "items" | "ideas";
+export type ItemsSection = "items" | "ideas" | "captures";
 
 export interface ItemsQuery {
   kind: string;

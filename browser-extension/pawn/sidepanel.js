@@ -48,14 +48,18 @@ const state = {
   sessionId: "",
   title: "",
   sourceUrl: "",
+  collection: "",
+  hint: "",
   captures: [],
   sessions: [],
+  collections: [],
   tray: [],
   settingsOpen: false,
 };
 
 const TARGET_KIND_OPTIONS = [
   { value: "new", label: "New page" },
+  { value: "research", label: "Research…" },
   { value: "capture", label: "Recent capture…" },
   { value: "session", label: "Session…" },
   { value: "note", label: "Other note…" },
@@ -274,7 +278,7 @@ function syncSettingsUi() {
 function bind() {
   el.targetKind.addEventListener("change", async () => {
     state.targetKind = el.targetKind.value;
-    if (state.targetKind === "new") {
+    if (state.targetKind === "new" || state.targetKind === "research") {
       state.stickyPath = "";
       state.sessionId = "";
     }
@@ -282,7 +286,7 @@ function bind() {
     await loadPickerData();
     renderTargetExtra();
     render();
-    if (state.targetKind !== "new") {
+    if (state.targetKind !== "new" && state.targetKind !== "research") {
       void openTargetPicker();
     }
   });
@@ -338,6 +342,8 @@ async function loadSettings() {
   state.sessionId = t.sessionId || "";
   state.title = t.title || "";
   state.sourceUrl = t.sourceUrl || "";
+  state.collection = t.collection || "";
+  state.hint = t.hint || "";
   el.targetKind.value = state.targetKind;
   el.title.value = state.title;
   await loadPickerData();
@@ -352,6 +358,8 @@ async function persistTarget() {
       sessionId: state.sessionId,
       title: state.title,
       sourceUrl: state.sourceUrl,
+      collection: state.collection,
+      hint: state.hint,
     },
   });
 }
@@ -367,6 +375,10 @@ async function persistTray() {
 }
 
 function trayKey() {
+  if (state.targetKind === "research") {
+    const coll = (state.collection || "").trim() || "_";
+    return `tray:research:${coll}`;
+  }
   if (state.targetKind === "session" && state.sessionId) {
     return `tray:session:${state.sessionId}`;
   }
@@ -483,11 +495,63 @@ async function loadPickerData() {
       showNotice(String(err.message || err), true);
     }
   }
+  if (state.targetKind === "research") {
+    try {
+      const data = await api("GET", "/v1/captures/collections");
+      state.collections = data.data || [];
+    } catch (_) {
+      state.collections = [];
+    }
+  }
 }
 
 function renderTargetExtra() {
   el.targetExtra.innerHTML = "";
   if (state.targetKind === "new") return;
+
+  if (state.targetKind === "research") {
+    const collField = document.createElement("label");
+    collField.className = "pawn-field";
+    const collSpan = document.createElement("span");
+    collSpan.textContent = "Collection (optional)";
+    const collRow = document.createElement("div");
+    collRow.className = "pawn-research-row";
+    const collInput = document.createElement("input");
+    collInput.type = "text";
+    collInput.placeholder = "Leave blank — Pawn proposes";
+    collInput.value = state.collection;
+    collInput.addEventListener("input", () => {
+      state.collection = collInput.value.trim();
+      void persistTarget();
+      render();
+    });
+    const pickBtn = document.createElement("button");
+    pickBtn.type = "button";
+    pickBtn.className = "clickable-icon";
+    pickBtn.title = "Pick existing collection";
+    pickBtn.setAttribute("aria-label", "Pick existing collection");
+    setIcon(pickBtn, "search");
+    pickBtn.addEventListener("click", () => void openCollectionPicker());
+    collRow.append(collInput, pickBtn);
+    collField.append(collSpan, collRow);
+
+    const hintField = document.createElement("label");
+    hintField.className = "pawn-field";
+    const hintSpan = document.createElement("span");
+    hintSpan.textContent = "Hint (optional)";
+    const hintInput = document.createElement("input");
+    hintInput.type = "text";
+    hintInput.placeholder = "e.g. Blade Runner";
+    hintInput.value = state.hint;
+    hintInput.addEventListener("input", () => {
+      state.hint = hintInput.value;
+      void persistTarget();
+    });
+    hintField.append(hintSpan, hintInput);
+
+    el.targetExtra.append(collField, hintField);
+    return;
+  }
 
   const trigger = document.createElement("button");
   trigger.type = "button";
@@ -516,6 +580,27 @@ function pickPlaceholder() {
   return "Choose a note path…";
 }
 
+async function openCollectionPicker() {
+  await loadPickerData();
+  const items = state.collections.map((row) => ({
+    id: row.id,
+    title: row.title || row.id,
+    detail: row.id,
+    value: row.id,
+  }));
+  openSuggestModal({
+    placeholder: "Find a collection…",
+    items,
+    emptyText: "No collections yet — type a new name or leave blank",
+    onChoose: async (item) => {
+      state.collection = item.value;
+      await persistTarget();
+      renderTargetExtra();
+      render();
+    },
+  });
+}
+
 function currentPickLabel() {
   if (state.targetKind === "capture") {
     if (!state.stickyPath) return "";
@@ -532,7 +617,7 @@ function currentPickLabel() {
 }
 
 async function openTargetPicker() {
-  if (state.targetKind === "new") return;
+  if (state.targetKind === "new" || state.targetKind === "research") return;
   await loadPickerData();
   if (state.targetKind === "capture") {
     const items = state.captures.map((row) => ({
@@ -773,13 +858,27 @@ function fuzzySubsequence(query, text) {
 }
 
 function render() {
-  el.pathLabel.textContent = state.stickyPath
-    ? state.stickyPath
-    : state.targetKind === "session" && state.sessionId
-      ? `session:${state.sessionId}`
-      : "New capture on save";
+  if (state.targetKind === "research") {
+    const coll = (state.collection || "").trim();
+    el.pathLabel.textContent = coll
+      ? `Research · ${coll}`
+      : "Research · Inbox (Pawn proposes collection)";
+  } else {
+    el.pathLabel.textContent = state.stickyPath
+      ? state.stickyPath
+      : state.targetKind === "session" && state.sessionId
+        ? `session:${state.sessionId}`
+        : "New capture on save";
+  }
   el.tray.innerHTML = "";
   el.empty.hidden = state.tray.length > 0;
+  if (el.empty && state.tray.length === 0 && state.targetKind === "research") {
+    el.empty.textContent =
+      "Select text or capture a region. Save writes one inbox note per snippet and queues enrich.";
+  } else if (el.empty && state.tray.length === 0) {
+    el.empty.textContent =
+      "Select text or capture a region. Snippets stack here in order, then Save appends them to the target note.";
+  }
   state.tray.forEach((snip, index) => {
     el.tray.appendChild(renderCard(snip, index));
   });
@@ -866,6 +965,15 @@ async function removeSnippet(index) {
 }
 
 function buildTarget() {
+  if (state.targetKind === "research") {
+    return {
+      kind: "research",
+      title: state.title || "capture",
+      source_url: state.sourceUrl,
+      collection: state.collection || undefined,
+      hint: state.hint || undefined,
+    };
+  }
   if (state.targetKind === "session") {
     return {
       kind: "session",
@@ -933,7 +1041,9 @@ async function saveTray() {
       })),
     };
     const result = await api("POST", "/v1/captures", payload);
-    state.stickyPath = result.path;
+    if (state.targetKind !== "research") {
+      state.stickyPath = result.path;
+    }
     const written = new Set(result.written || []);
     const skipped = new Set(result.skipped || []);
     for (const s of state.tray) {
@@ -941,8 +1051,19 @@ async function saveTray() {
     }
     await persistTarget();
     await persistTray();
-    const mode = result.mode === "annotations" ? "annotations" : "note";
-    showNotice(`Saved ${written.size} → ${result.path} (${mode})`);
+    if (result.mode === "research") {
+      const n = written.size;
+      const jobs = (result.jobs || []).length;
+      const where = (result.paths && result.paths[0]) || result.path || "Inbox";
+      showNotice(
+        jobs
+          ? `Saved ${n} → Inbox (enriching ${jobs}…)`
+          : `Saved ${n} → ${where}`,
+      );
+    } else {
+      const mode = result.mode === "annotations" ? "annotations" : "note";
+      showNotice(`Saved ${written.size} → ${result.path} (${mode})`);
+    }
     render();
   } catch (err) {
     showNotice(String(err.message || err), true);
@@ -955,6 +1076,13 @@ async function saveTray() {
 }
 
 async function startNewPage() {
+  if (state.targetKind === "research") {
+    state.tray = [];
+    await persistTray();
+    render();
+    showNotice("Tray cleared — next Save creates fresh inbox atoms");
+    return;
+  }
   state.targetKind = "new";
   state.stickyPath = "";
   state.sessionId = "";

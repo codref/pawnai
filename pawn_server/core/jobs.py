@@ -2,9 +2,9 @@
 
 Every job is accepted immediately and runs as an asyncio task in the server
 process. Rows live in ``vault_tasks`` (``kind`` = ``ask`` | ``push_note`` |
-``upload``). ``ask`` jobs also get a ``Pawn/Tasks/{id}.md`` note on S3 so
-devices that are offline or on mobile see status and result through Sync
-Engine, and the vault watcher can resume them.
+``upload`` | ``capture_enrich``). ``ask`` jobs also get a ``Pawn/Tasks/{id}.md``
+note on S3 so devices that are offline or on mobile see status and result
+through Sync Engine, and the vault watcher can resume them.
 """
 
 from __future__ import annotations
@@ -40,7 +40,7 @@ from pawn_server.core.vault_tasks import (
 
 logger = logging.getLogger(__name__)
 
-JOB_KINDS = ("ask", "push_note", "upload")
+JOB_KINDS = ("ask", "push_note", "upload", "capture_enrich")
 TERMINAL_STATUSES = frozenset({"review", "done", "blocked"})
 
 _AUDIO_EXTENSIONS = frozenset(
@@ -484,6 +484,91 @@ async def create_upload_job(
             index=index,
             registry=registry,
         ),
+    )
+    row = get_vault_task(cfg.db_dsn, effective_id)
+    assert row is not None
+    return row
+
+
+# ── capture_enrich ─────────────────────────────────────────────────────────
+
+
+async def _run_capture_enrich(
+    cfg: Any,
+    job_id: str,
+    path: str,
+    registry: SallmSessionRegistry,
+) -> None:
+    from pawn_server.core.capture_enrich import run_capture_enrich  # noqa: PLC0415
+
+    row = get_vault_task(cfg.db_dsn, job_id)
+    conv = row.conversation_id if row else f"note:{path}"
+    update_vault_task(cfg.db_dsn, job_id, status="running")
+    publish_job_event(job_id, "running", kind="capture_enrich", conversation=conv)
+    try:
+        reply = await run_capture_enrich(cfg, path=path, registry=registry)
+    except FileNotFoundError as exc:
+        _finish(
+            cfg,
+            job_id,
+            "blocked",
+            "capture_enrich",
+            conv,
+            str(exc)[:2000],
+            "not_found",
+        )
+        return
+    except Exception as exc:
+        logger.error("capture_enrich %s failed: %s", job_id, exc, exc_info=True)
+        _finish(
+            cfg,
+            job_id,
+            "blocked",
+            "capture_enrich",
+            conv,
+            str(exc)[:2000],
+            "enrich_failed",
+        )
+        return
+    _finish(
+        cfg,
+        job_id,
+        "done",
+        "capture_enrich",
+        conv,
+        (reply or "enriched")[:4000],
+    )
+
+
+async def create_capture_enrich_job(
+    cfg: Any,
+    *,
+    registry: SallmSessionRegistry,
+    path: str,
+    job_id: Optional[str] = None,
+) -> VaultTask:
+    """Enqueue a research-capture enrich ReAct turn for one inbox note."""
+    from pawn_server.core.capture_enrich import new_enrich_job_id  # noqa: PLC0415
+
+    key = normalize_vault_key(path)
+    if not key:
+        raise JobError("path is required", status_code=422)
+    if not key.lower().endswith(".md"):
+        key = f"{key}.md"
+    effective = job_id or new_enrich_job_id()
+    conv = f"note:{key}"
+    effective_id = _new_side_job(
+        cfg,
+        job_id=effective,
+        kind="capture_enrich",
+        title=f"Enrich {key}",
+        conversation=conv,
+        note_path=key,
+        payload={"path": key},
+    )
+    _spawn(
+        effective_id,
+        _run_capture_enrich(cfg, effective_id, key, registry),
     )
     row = get_vault_task(cfg.db_dsn, effective_id)
     assert row is not None

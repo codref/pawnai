@@ -28,9 +28,10 @@ GET /v1/jobs/events
     Background jobs (ask / push_note / upload); always accepted with 202.
     ``/v1/vault/tasks*`` remain as deprecated aliases.
 
-GET /v1/sessions, GET /v1/captures, POST /v1/captures,
-DELETE /v1/captures/snippets/{id}
+GET /v1/sessions, GET /v1/captures, GET /v1/captures/collections,
+POST /v1/captures, POST /v1/captures/file, DELETE /v1/captures/snippets/{id}
     Browser extension snippet capture (ordered text/image blocks on a vault note).
+    Research mode writes inbox atoms and may enqueue capture_enrich jobs.
 
 DELETE /sessions/{session_id}
     Clear all stored turns for a session (start fresh).
@@ -350,11 +351,13 @@ class CaptureTarget(BaseModel):
 
     model_config = ConfigDict(extra="ignore")
 
-    kind: str = "new"  # new | capture | note | session
+    kind: str = "new"  # new | capture | note | session | research
     path: Optional[str] = None
     session_id: Optional[str] = None
     title: Optional[str] = None
     source_url: Optional[str] = None
+    collection: Optional[str] = None
+    hint: Optional[str] = None
 
 
 class CaptureSnippet(BaseModel):
@@ -378,6 +381,18 @@ class CaptureSaveRequest(BaseModel):
 
     target: CaptureTarget
     snippets: List[CaptureSnippet]
+
+
+class CaptureFileRequest(BaseModel):
+    """POST /v1/captures/file — file or ignore a research inbox capture."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    path: str
+    collection: Optional[str] = None
+    entity: Optional[str] = None
+    tags: List[str] = Field(default_factory=list)
+    ignore: bool = False
 
 
 class VaultTaskCreateRequest(BaseModel):
@@ -1192,10 +1207,22 @@ async def captures_list(
     }
 
 
+@app.get("/v1/captures/collections", dependencies=[Depends(_require_token)])
+async def captures_collections(cfg: Any = Depends(_get_cfg)) -> dict:
+    """Existing collection folders under ``capture.enriched_dir`` (discovered)."""
+    from pawn_server.core import captures  # noqa: PLC0415
+
+    return {
+        "object": "list",
+        "data": await asyncio.to_thread(captures.list_collections, cfg),
+    }
+
+
 @app.post("/v1/captures", dependencies=[Depends(_require_token)])
 async def captures_save(body: CaptureSaveRequest, cfg: Any = Depends(_get_cfg)) -> dict:
     """Append ordered text/image snippets to a vault note."""
     from pawn_server.core import captures  # noqa: PLC0415
+    from pawn_server.core.jobs import create_capture_enrich_job  # noqa: PLC0415
 
     try:
         result = await asyncio.to_thread(
@@ -1206,7 +1233,40 @@ async def captures_save(body: CaptureSaveRequest, cfg: Any = Depends(_get_cfg)) 
         )
     except captures.CaptureError as exc:
         raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+
+    job_ids: list[str] = []
+    if result.get("enrich"):
+        for path in list(result.get("enrich_paths") or []):
+            try:
+                row = await create_capture_enrich_job(
+                    cfg,
+                    registry=get_sallm_registry(),
+                    path=path,
+                )
+                job_ids.append(row.id)
+            except Exception as exc:
+                logger.warning("capture enrich enqueue failed for %s: %s", path, exc)
+        result = {**result, "jobs": job_ids}
     return result
+
+
+@app.post("/v1/captures/file", dependencies=[Depends(_require_token)])
+async def captures_file(body: CaptureFileRequest, cfg: Any = Depends(_get_cfg)) -> dict:
+    """File (or ignore) a research capture inbox note."""
+    from pawn_server.core import captures  # noqa: PLC0415
+
+    try:
+        return await asyncio.to_thread(
+            captures.file_capture,
+            cfg,
+            path=body.path,
+            collection=body.collection or "",
+            entity=body.entity or "",
+            tags=list(body.tags or []),
+            ignore=bool(body.ignore),
+        )
+    except captures.CaptureError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
 
 
 @app.delete(

@@ -12,7 +12,7 @@ import sqlalchemy as sa
 from fastapi.testclient import TestClient
 
 from pawn_agent.core.session_candidates import SessionCandidate
-from pawn_agent.utils.config import ApiSection
+from pawn_agent.utils.config import ApiSection, CaptureConfig
 from pawn_agent.utils.db import AgentRun, VaultTask
 from pawn_core.config import VaultConfig
 from pawn_core.database import Base, VaultNote
@@ -53,6 +53,8 @@ def env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace:
         vault=VaultConfig(agent_root="Pawn"),
         coworker=SimpleNamespace(timezone="UTC"),
         vault_watcher=SimpleNamespace(matrix_target="matrix"),
+        capture=CaptureConfig(auto_enrich=False),
+        agent=SimpleNamespace(default=""),
     )
     store = VaultStore(bucket="b", agent_root="Pawn", client=FakeS3Client())
     store.write(
@@ -321,3 +323,180 @@ def test_replace_annotations_helper() -> None:
     out = replace_annotations(md, "new ann\n")
     assert extract_annotations(out).strip() == "new ann"
     assert "## Transcript" in out
+
+
+def test_research_one_note_per_snippet(env: SimpleNamespace) -> None:
+    with TestClient(api_server.create_app(env.cfg)) as client:
+        resp = client.post(
+            "/v1/captures",
+            headers=AUTH,
+            json={
+                "target": {
+                    "kind": "research",
+                    "title": "Film stills",
+                    "hint": "Blade Runner",
+                    "source_url": "https://example.com/br",
+                },
+                "snippets": [
+                    {"id": "r1", "kind": "text", "text": "Tears in rain"},
+                    {"id": "r2", "kind": "text", "text": "Like tears"},
+                ],
+            },
+        )
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert body["mode"] == "research"
+        assert body["written"] == ["r1", "r2"]
+        assert body["enrich"] is False
+        assert len(body["paths"]) == 2
+        for path in body["paths"]:
+            assert path.startswith("Pawn/Captures/Inbox/")
+            note = env.store.read(path)
+            assert "status: inbox" in note
+            assert "hint: Blade Runner" in note or 'hint: "Blade Runner"' in note
+            assert "pawn: capture" in note or "pawn:capture" in note.replace(" ", "")
+
+        again = client.post(
+            "/v1/captures",
+            headers=AUTH,
+            json={
+                "target": {"kind": "research", "title": "Film stills"},
+                "snippets": [{"id": "r1", "kind": "text", "text": "dup"}],
+            },
+        )
+        assert again.status_code == 200
+        assert again.json()["skipped"] == ["r1"]
+        assert again.json()["written"] == []
+
+
+def test_research_with_collection_and_file(env: SimpleNamespace) -> None:
+    with TestClient(api_server.create_app(env.cfg)) as client:
+        resp = client.post(
+            "/v1/captures",
+            headers=AUTH,
+            json={
+                "target": {
+                    "kind": "research",
+                    "title": "Quote",
+                    "collection": "Movies",
+                    "hint": "Blade Runner",
+                },
+                "snippets": [{"id": "q1", "kind": "text", "text": "I've seen things"}],
+            },
+        )
+        assert resp.status_code == 200, resp.text
+        path = resp.json()["path"]
+        note = env.store.read(path)
+        assert "collection: movies" in note
+
+        # Simulate enrich proposal on the note
+        from pawn_core.vault import dump_frontmatter, parse_frontmatter
+
+        meta, body = parse_frontmatter(note)
+        meta["entity"] = "blade-runner"
+        meta["type"] = "quote"
+        meta["status"] = "proposed"
+        meta["proposed_tags"] = ["sf", "noir"]
+        env.store.write(path, dump_frontmatter(meta, body), skip_guards=True)
+
+        filed = client.post(
+            "/v1/captures/file",
+            headers=AUTH,
+            json={"path": path, "collection": "movies", "entity": "blade-runner"},
+        )
+        assert filed.status_code == 200, filed.text
+        data = filed.json()
+        assert data["status"] == "filed"
+        assert data["entity_path"] == "Pawn/Research/movies/blade-runner.md"
+        entity = env.store.read(data["entity_path"])
+        assert "pawn: entity" in entity or "pawn:entity" in entity.replace(" ", "")
+        assert path.removesuffix(".md") in entity or "[[Pawn/Captures/Inbox/" in entity
+        assert "status: filed" in env.store.read(path)
+
+        ignored = client.post(
+            "/v1/captures",
+            headers=AUTH,
+            json={
+                "target": {"kind": "research", "title": "Skip"},
+                "snippets": [{"id": "ig1", "kind": "text", "text": "noise"}],
+            },
+        )
+        ig_path = ignored.json()["path"]
+        drop = client.post(
+            "/v1/captures/file",
+            headers=AUTH,
+            json={"path": ig_path, "ignore": True},
+        )
+        assert drop.status_code == 200
+        assert drop.json()["status"] == "ignored"
+        assert "status: ignored" in env.store.read(ig_path)
+
+
+def test_list_collections_discovered(env: SimpleNamespace) -> None:
+    env.store.write(
+        "Pawn/Research/movies/blade-runner.md",
+        "---\npawn: entity\ncollection: movies\n---\n# Blade Runner\n",
+        skip_guards=True,
+    )
+    env.store.write(
+        "Pawn/Research/papers/attention.md",
+        "---\npawn: entity\ncollection: papers\n---\n# Attention\n",
+        skip_guards=True,
+    )
+    with TestClient(api_server.create_app(env.cfg)) as client:
+        resp = client.get("/v1/captures/collections", headers=AUTH)
+        assert resp.status_code == 200
+        ids = [row["id"] for row in resp.json()["data"]]
+        assert ids == ["movies", "papers"]
+
+
+def test_research_enqueues_enrich_when_enabled(
+    env: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    env.cfg.capture = CaptureConfig(auto_enrich=True)
+    called: list[str] = []
+
+    class FakeRow:
+        id = "job-1"
+
+    async def fake_create(cfg, *, registry, path, job_id=None):
+        called.append(path)
+        return FakeRow()
+
+    monkeypatch.setattr(
+        "pawn_server.core.jobs.create_capture_enrich_job",
+        fake_create,
+    )
+    with TestClient(api_server.create_app(env.cfg)) as client:
+        resp = client.post(
+            "/v1/captures",
+            headers=AUTH,
+            json={
+                "target": {"kind": "research", "title": "Auto"},
+                "snippets": [{"id": "ae1", "kind": "text", "text": "hello"}],
+            },
+        )
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert body["enrich"] is True
+        assert body["jobs"] == ["job-1"]
+        assert called == body["enrich_paths"]
+
+
+def test_capture_config_path_helpers() -> None:
+    from pawn_server.core import capture_config as capcfg
+
+    cfg = SimpleNamespace(
+        vault=VaultConfig(agent_root="Pawn"),
+        capture=CaptureConfig(
+            inbox_dir="{agent_root}/Captures/Inbox",
+            enriched_dir="{agent_root}/Research",
+        ),
+    )
+    assert capcfg.inbox_dir(cfg) == "Pawn/Captures/Inbox"
+    assert capcfg.enriched_dir(cfg) == "Pawn/Research"
+    assert (
+        capcfg.entity_path(cfg, collection="Movies!", entity="Blade Runner")
+        == "Pawn/Research/movies/blade-runner.md"
+    )
+    assert capcfg.slugify("Blade Runner") == "blade-runner"

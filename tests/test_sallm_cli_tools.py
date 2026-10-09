@@ -57,6 +57,7 @@ def test_build_pawn_skills_includes_sessions() -> None:
     assert "converse" in registry.names()
     assert "sessions" in registry.names()
     assert "vault_tasks" in registry.names()
+    assert "research_capture" in registry.names()
     sessions = registry.get("sessions")
     assert sessions.tools is not None
     assert "sessions_list" in sessions.tools

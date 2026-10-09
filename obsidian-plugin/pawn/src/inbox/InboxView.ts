@@ -2,6 +2,11 @@ import { Modal, Notice, TAbstractFile, TFile, setIcon } from "obsidian";
 import type { InboxItem } from "../api";
 import type PawnPlugin from "../main";
 import {
+  CAPTURES_INBOX_FOLDER,
+  CaptureCard,
+  listInboxCaptures,
+} from "./captures";
+import {
   IDEAS_FOLDER,
   IdeaCard,
   createTaskFromIdea,
@@ -88,6 +93,91 @@ export class InboxStore {
     }
     if (this.stopped || generation !== this.generation) return;
     const next = items.map((i) => `${i.path}:${i.title}`).join("|");
+    this.items = items;
+    if (next === this.signature) {
+      this.plugin.updateStatusBar();
+      return;
+    }
+    this.signature = next;
+    for (const fn of this.listeners) fn();
+    this.plugin.updateStatusBar();
+  }
+}
+
+/** Research capture inbox atoms (status inbox|proposed). */
+export class CapturesStore {
+  private items: CaptureCard[] = [];
+  private listeners = new Set<() => void>();
+  private stopped = true;
+  private generation = 0;
+  private debounceTimer = 0;
+  private signature = "";
+
+  constructor(private plugin: PawnPlugin) {}
+
+  start(): void {
+    this.stopped = false;
+    const folder = CAPTURES_INBOX_FOLDER;
+    const onVault = (file: TAbstractFile) => {
+      if (!(file instanceof TFile)) return;
+      if (!file.path.startsWith(`${folder}/`) && file.path !== folder) return;
+      this.scheduleRefresh();
+    };
+    this.plugin.registerEvent(this.plugin.app.vault.on("create", onVault));
+    this.plugin.registerEvent(this.plugin.app.vault.on("modify", onVault));
+    this.plugin.registerEvent(this.plugin.app.vault.on("delete", onVault));
+    this.plugin.registerEvent(
+      this.plugin.app.vault.on("rename", (file, oldPath) => {
+        if (
+          (file instanceof TFile && file.path.startsWith(`${folder}/`)) ||
+          oldPath.startsWith(`${folder}/`)
+        ) {
+          this.scheduleRefresh();
+        }
+      }),
+    );
+    void this.refresh();
+  }
+
+  stop(): void {
+    this.stopped = true;
+    if (this.debounceTimer) window.clearTimeout(this.debounceTimer);
+    this.debounceTimer = 0;
+  }
+
+  onChange(fn: () => void): () => void {
+    this.listeners.add(fn);
+    return () => this.listeners.delete(fn);
+  }
+
+  all(): CaptureCard[] {
+    return this.items;
+  }
+
+  attention(): number {
+    return this.items.length;
+  }
+
+  scheduleRefresh(): void {
+    if (this.stopped) return;
+    if (this.debounceTimer) window.clearTimeout(this.debounceTimer);
+    this.debounceTimer = window.setTimeout(() => {
+      this.debounceTimer = 0;
+      void this.refresh();
+    }, IDEAS_DEBOUNCE_MS);
+  }
+
+  async refresh(): Promise<void> {
+    if (this.stopped) return;
+    const generation = ++this.generation;
+    let items: CaptureCard[] = [];
+    try {
+      items = await listInboxCaptures(this.plugin.app);
+    } catch {
+      return;
+    }
+    if (this.stopped || generation !== this.generation) return;
+    const next = items.map((i) => `${i.path}:${i.status}:${i.title}`).join("|");
     this.items = items;
     if (next === this.signature) {
       this.plugin.updateStatusBar();
@@ -209,10 +299,12 @@ export function renderInbox(parent: HTMLElement, plugin: PawnPlugin): void {
   const sections = toolbar.createDiv({ cls: "pawn-inbox-sections" });
   const openCount = plugin.items.attention();
   const ideaCount = plugin.inbox.attention();
+  const captureCount = plugin.captures.attention();
   const vaultCount = plugin.items.vaultNoteCount();
   for (const [id, label, count] of [
     ["items", "Items", openCount],
     ["ideas", "Ideas", ideaCount],
+    ["captures", "Captures", captureCount],
   ] as const) {
     const b = sections.createEl("button", {
       text: count ? `${label} (${count})` : label,
@@ -226,6 +318,10 @@ export function renderInbox(parent: HTMLElement, plugin: PawnPlugin): void {
 
   if (state.section === "ideas") {
     renderIdeas(parent, plugin);
+    return;
+  }
+  if (state.section === "captures") {
+    renderCaptures(parent, plugin);
     return;
   }
 
@@ -560,6 +656,62 @@ function renderIdeas(parent: HTMLElement, plugin: PawnPlugin): void {
     add("Drop", async () => {
       await setIdeaStatus(plugin.app, item.file, "dropped");
       new Notice("Dropped.", 4000);
+    });
+  }
+}
+
+function renderCaptures(parent: HTMLElement, plugin: PawnPlugin): void {
+  const items = plugin.captures.all();
+  if (!items.length) {
+    parent.createDiv({
+      cls: "pawn-empty",
+      text: "No research captures waiting. Use the browser extension Research target.",
+    });
+    return;
+  }
+  for (const item of items) {
+    const card = parent.createDiv({ cls: "pawn-job-card pawn-inbox-card" });
+    const title = card.createDiv({ cls: "pawn-inbox-title", text: item.title });
+    title.onclick = () => {
+      if (item.file instanceof TFile) void plugin.app.workspace.getLeaf(false).openFile(item.file);
+    };
+    const meta = [item.status, item.collection, item.entity, item.type, item.hint]
+      .filter(Boolean)
+      .join(" · ");
+    if (meta) card.createDiv({ cls: "pawn-inbox-line", text: meta });
+    const actions = card.createDiv({ cls: "pawn-job-actions" });
+    const add = (label: string, run: () => Promise<void>) => {
+      const button = actions.createEl("button", { text: label });
+      button.onclick = () => void run().catch(noticeError);
+    };
+    add("File", async () => {
+      if (!item.collection || !item.entity) {
+        new Notice("Open the note and set collection + entity, then File again.", 5000);
+        if (item.file instanceof TFile) {
+          void plugin.app.workspace.getLeaf(false).openFile(item.file);
+        }
+        return;
+      }
+      const result = await plugin.client.fileCapture({
+        path: item.path,
+        collection: item.collection,
+        entity: item.entity,
+      });
+      new Notice(
+        result.entity_path ? `Filed → ${result.entity_path}` : `Filed ${result.path}`,
+        4000,
+      );
+      await plugin.captures.refresh();
+    });
+    add("Ignore", async () => {
+      await plugin.client.fileCapture({ path: item.path, ignore: true });
+      new Notice("Ignored.", 4000);
+      await plugin.captures.refresh();
+    });
+    add("Open", async () => {
+      if (item.file instanceof TFile) {
+        await plugin.app.workspace.getLeaf(false).openFile(item.file);
+      }
     });
   }
 }

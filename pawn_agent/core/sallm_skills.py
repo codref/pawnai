@@ -351,6 +351,33 @@ COWORKER = Skill(
     ),
 )
 
+RESEARCH_CAPTURE = Skill(
+    name="research_capture",
+    description=(
+        "Background research capture enrich: catalogue a browser-capture inbox "
+        "note (propose collection/entity, update frontmatter, optionally file)."
+    ),
+    prompt=(
+        "Active skill: research_capture.\n"
+        "You are enriching one research capture inbox note.\n"
+        "Use note_read / note_search / note_write / note_append only.\n"
+        "Propose a collection slug when missing; prefer an existing folder "
+        "under the enriched Research dir. Create or update an entity note "
+        "(pawn: entity) under {enriched_dir}/{collection}/{entity}.md.\n"
+        "Update capture frontmatter (collection, entity, type, caption, "
+        "proposed_tags, enriched_at). Keep the snippet block intact.\n"
+        "File (status: filed + ## Captures link) only when auto_file is true "
+        "and the match is clear; otherwise status: proposed.\n"
+        "Never dump tool errors into notes. Never touch .obsidian/."
+    ),
+    tools=(
+        "note_read",
+        "note_search",
+        "note_write",
+        "note_append",
+    ),
+)
+
 VAULT_TASKS = Skill(
     name="vault_tasks",
     description=(
@@ -392,5 +419,15 @@ VAULT_TASKS = Skill(
 def build_pawn_skills() -> SkillRegistry:
     """Return the pawn skill registry (converse is registered explicitly)."""
     return SkillRegistry(
-        [CONVERSE, SESSIONS, NOTES, SCHEDULING, OPS, TASKNOTES, COWORKER, VAULT_TASKS]
+        [
+            CONVERSE,
+            SESSIONS,
+            NOTES,
+            SCHEDULING,
+            OPS,
+            TASKNOTES,
+            COWORKER,
+            RESEARCH_CAPTURE,
+            VAULT_TASKS,
+        ]
     )

@@ -402,6 +402,22 @@ class CoworkerNotifyConfig(BaseModel):
     token: str = ""
 
 
+class CaptureConfig(BaseModel):
+    """``capture:`` — browser research capture inbox and enrich.
+
+    Collections are not declared here. They emerge as folders under
+    ``enriched_dir`` when the enrich agent (or the user) files a capture.
+    """
+
+    inbox_dir: str = "{agent_root}/Captures/Inbox"
+    enriched_dir: str = "{agent_root}/Research"
+    entity_path_template: str = "{enriched_dir}/{collection}/{entity}.md"
+    model: str = ""
+    auto_enrich: bool = True
+    auto_file: bool = False
+    instructions: str = ""
+
+
 class CoworkerConfig(BaseModel):
     """``coworker:`` — goal-driven inbox, briefings, and bounded autonomy."""
 
@@ -470,6 +486,7 @@ class AgentConfig(PawnConfig):
     vault_watcher: VaultWatcherConfig = Field(default_factory=VaultWatcherConfig)
     coworker: CoworkerConfig = Field(default_factory=CoworkerConfig)
     tasknotes: TaskNotesConfig = Field(default_factory=TaskNotesConfig)
+    capture: CaptureConfig = Field(default_factory=CaptureConfig)
 
     # ── Flat property aliases (old flat-field names used throughout pawn_agent) ─
 

@@ -11,8 +11,10 @@ Matrix after Sync Engine pulls the note.
 2. Capture a **selection** or drag a **region** on the active tab. Items stack in
    the tray (reorder / delete before save).
 3. **Save** appends unsaved items, in tray order, to the current target. The
-   target stays selected so the next batch continues the same note.
-4. **New page** clears the sticky path and starts a fresh capture note.
+   target stays selected so the next batch continues the same note (except
+   Research, which writes one inbox atom per snippet).
+4. **New page** clears the sticky path and starts a fresh capture note (in
+   Research mode it only clears the tray).
 
 The panel does not guess which meeting you are in. Pick a diarization session
 from the list when you want snippets on that transcript.
@@ -22,6 +24,7 @@ from the list when you want snippets on that transcript.
 | Target | What happens |
 |--------|----------------|
 | New page (default) | Creates `Pawn/Captures/{YYYY-MM-DD} {title}.md` with `pawn: capture`. Later saves append to the same path. |
+| Research… | One inbox note per snippet under `capture.inbox_dir` (default `Pawn/Captures/Inbox/`). Optional collection + hint. When `capture.auto_enrich` is true, enqueues a `capture_enrich` job per new note. |
 | Recent capture | Append to an existing note under `Pawn/Captures/`. |
 | Session | If `vault_notes` maps the session to a transcript, snippets are spliced into that note’s `## Annotations` section (preserved on transcript push). Otherwise a capture note is created with `session_id` in frontmatter. |
 | Other note | Append to a vault path. Allowed under `Pawn/`; outside that root the note needs `pawn: editable`. |
@@ -31,8 +34,32 @@ and embedded with Obsidian wikilinks. Each block is wrapped in
 `<!-- pawn-snippet:{id} -->` … `<!-- /pawn-snippet:{id} -->` so retries are
 idempotent and the panel can delete a saved row.
 
-Coworker does not extract these notes. The vault scanner skips the agent root,
-and capture does not call `process_source`.
+Coworker does not extract dump capture notes. Research enrich is a separate
+`capture_enrich` job (sallm ReAct with the `research_capture` skill).
+
+## Research enrich
+
+Config (`capture:` in `pawnai.yaml`):
+
+```yaml
+capture:
+  inbox_dir: "{agent_root}/Captures/Inbox"
+  enriched_dir: "{agent_root}/Research"
+  entity_path_template: "{enriched_dir}/{collection}/{entity}.md"
+  model: ""            # catalog id; empty → background / agent.default
+  auto_enrich: true
+  auto_file: false     # true → agent may set status: filed when confident
+  instructions: ""
+```
+
+Collections are **not** declared in config. They emerge as folders under
+`enriched_dir`. The extension may leave collection blank (agent proposes) or
+pick an existing folder from `GET /v1/captures/collections`.
+
+After enrich, inbox notes have `status: proposed` (or `filed` when auto_file
+succeeds). Triage in the Obsidian Inbox **Captures** chip: **File** / **Ignore**
+(`POST /v1/captures/file`). Filing links the capture under the entity note’s
+`## Captures` section without moving the inbox file.
 
 ## HTTP API
 
@@ -47,6 +74,11 @@ mapped in `vault_notes`.
 
 Recent markdown notes under `{agent_root}/Captures/` (assets excluded).
 
+### `GET /v1/captures/collections`
+
+Existing collection folder names under `capture.enriched_dir` (discovered from
+the vault, not from config).
+
 ### `POST /v1/captures`
 
 ```json
@@ -56,7 +88,9 @@ Recent markdown notes under `{agent_root}/Captures/` (assets excluded).
     "title": "Teams agenda",
     "source_url": "https://…",
     "path": null,
-    "session_id": null
+    "session_id": null,
+    "collection": null,
+    "hint": null
   },
   "snippets": [
     {
@@ -77,10 +111,22 @@ Recent markdown notes under `{agent_root}/Captures/` (assets excluded).
 }
 ```
 
-`kind` on the target: `new` | `capture` | `note` | `session`. Response includes
-`path`, `mode` (`append` or `annotations`), `written`, `skipped`, and `images`.
+`kind` on the target: `new` | `capture` | `note` | `session` | `research`.
+Response includes `path`, `mode` (`append`, `annotations`, or `research`),
+`written`, `skipped`, and `images`. Research also returns `paths`,
+`enrich_paths`, `enrich`, and optionally `jobs`.
 
 Image payloads are capped at 4MB (same as chat vision).
+
+### `POST /v1/captures/file`
+
+File or ignore a research inbox note:
+
+```json
+{ "path": "Pawn/Captures/Inbox/…md", "collection": "movies", "entity": "blade-runner" }
+```
+
+Or `{ "path": "…", "ignore": true }`.
 
 ### `DELETE /v1/captures/snippets/{id}?path=`
 
@@ -119,7 +165,12 @@ Full install notes: [browser-extension/pawn/README.md](../browser-extension/pawn
 
 ## Implementation
 
-- Server: [`pawn_server/core/captures.py`](../pawn_server/core/captures.py)
+- Server: [`pawn_server/core/captures.py`](../pawn_server/core/captures.py),
+  [`pawn_server/core/capture_config.py`](../pawn_server/core/capture_config.py),
+  [`pawn_server/core/capture_enrich.py`](../pawn_server/core/capture_enrich.py)
+- Config: `CaptureConfig` on `AgentConfig` (`pawn_agent/utils/config.py`)
+- Skill: `research_capture` in [`pawn_agent/core/sallm_skills.py`](../pawn_agent/core/sallm_skills.py)
 - Routes: [`pawn_server/core/api_server.py`](../pawn_server/core/api_server.py)
 - Tests: [`tests/test_captures_api.py`](../tests/test_captures_api.py)
 - Extension: [`browser-extension/pawn/`](../browser-extension/pawn/)
+- Obsidian Captures chip: [`obsidian-plugin/pawn/src/inbox/`](../obsidian-plugin/pawn/src/inbox/)

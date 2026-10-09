@@ -200,6 +200,25 @@ body {
   font: inherit;
 }
 
+.pawn-research-row {
+  display: flex;
+  align-items: center;
+  gap: var(--size-4-2);
+}
+
+.pawn-research-row input {
+  flex: 1;
+  min-width: 0;
+}
+
+.pawn-target-extra .pawn-field {
+  margin-top: var(--size-4-2);
+}
+
+.pawn-target-extra .pawn-field:first-child {
+  margin-top: 0;
+}
+
 .pawn-body {
   flex: 1;
   display: flex;

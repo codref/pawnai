@@ -68,6 +68,7 @@ export class PawnChatView extends ItemView {
   private slashIndex = 0;
   private unsubscribeJobs: (() => void) | null = null;
   private unsubscribeInbox: (() => void) | null = null;
+  private unsubscribeCaptures: (() => void) | null = null;
   private unsubscribeItems: (() => void) | null = null;
   private fileInput: HTMLInputElement | null = null;
   private rereadButton: HTMLButtonElement | null = null;
@@ -125,6 +126,7 @@ export class PawnChatView extends ItemView {
     this.conversationId = this.defaultConversation();
     this.unsubscribeJobs = this.plugin.jobs.onChange(() => this.onJobsChanged());
     this.unsubscribeInbox = this.plugin.inbox?.onChange(() => this.onInboxChanged());
+    this.unsubscribeCaptures = this.plugin.captures?.onChange(() => this.onInboxChanged());
     this.unsubscribeItems = this.plugin.items?.onChange(() => this.onInboxChanged());
     this.registerEvent(
       this.app.workspace.on("active-leaf-change", () => this.onActiveNoteChanged()),
@@ -350,6 +352,7 @@ export class PawnChatView extends ItemView {
 
   async onClose(): Promise<void> {
     this.unsubscribeInbox?.();
+    this.unsubscribeCaptures?.();
     this.unsubscribeItems?.();
     this.unsubscribeJobs?.();
     this.closeModelPop();
