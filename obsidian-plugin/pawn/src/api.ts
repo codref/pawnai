@@ -301,6 +301,22 @@ export class PawnClient {
     return resp.json as { path: string; status: string; entity_path?: string | null };
   }
 
+  async deleteCaptureSnippet(
+    snippetId: string,
+    path: string,
+  ): Promise<{ path: string; deleted: boolean; removed_assets?: string[] }> {
+    const q = `path=${encodeURIComponent(path)}`;
+    const resp = await this.request(
+      "DELETE",
+      `/v1/captures/snippets/${encodeURIComponent(snippetId)}?${q}`,
+    );
+    return resp.json as {
+      path: string;
+      deleted: boolean;
+      removed_assets?: string[];
+    };
+  }
+
   async deleteItems(body: {
     ids?: string[];
     all_open?: boolean;

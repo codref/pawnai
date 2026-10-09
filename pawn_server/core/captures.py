@@ -974,8 +974,24 @@ def delete_snippet(
     except VaultNotFound as exc:
         raise CaptureError(f"note not found: {key}", status_code=404) from exc
 
+    removed_assets: list[str] = []
+    for suffix in (".png", ".jpg", ".jpeg", ".gif", ".webp"):
+        asset = f"{assets_dir(cfg)}/{sid}{suffix}"
+        try:
+            store.delete(asset)
+            removed_assets.append(asset)
+        except Exception:
+            continue
+
     if not note_has_snippet(existing, sid):
-        return {"path": key, "deleted": False, "snippet_id": sid}
+        if removed_assets:
+            publish_vault_event(removed_assets, source="capture")
+        return {
+            "path": key,
+            "deleted": False,
+            "snippet_id": sid,
+            "removed_assets": removed_assets,
+        }
 
     # Prefer annotations splice when the marker lives there
     ann = extract_annotations(existing)
@@ -988,15 +1004,6 @@ def delete_snippet(
         store.write(key, updated)
     except VaultWriteDenied as exc:
         raise CaptureError(str(exc), status_code=403) from exc
-
-    removed_assets: list[str] = []
-    for suffix in (".png", ".jpg", ".jpeg", ".gif", ".webp"):
-        asset = f"{assets_dir(cfg)}/{sid}{suffix}"
-        try:
-            store.delete(asset)
-            removed_assets.append(asset)
-        except Exception:
-            continue
 
     publish_vault_event([key, *removed_assets], source="capture")
     return {

@@ -1016,3 +1016,58 @@ button.pawn-chip-pin:hover {
   --callout-color: 120, 160, 255;
   --callout-icon: chess-king;
 }
+
+/* ── Capture snippet markers (source editor) ───────────────────────────── */
+
+.pawn-snippet-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25em;
+  margin: 0.15em 0;
+  padding: 0.1em 0.35em 0.1em 0.5em;
+  border-radius: 999px;
+  border: 1px solid var(--background-modifier-border);
+  background: var(--background-secondary);
+  color: var(--text-muted);
+  font-size: 0.75em;
+  line-height: 1.4;
+  vertical-align: middle;
+  user-select: none;
+  cursor: default;
+}
+
+.pawn-snippet-chip-label {
+  font-family: var(--font-monospace);
+  letter-spacing: 0.02em;
+}
+
+.pawn-snippet-chip-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.35em;
+  height: 1.35em;
+  padding: 0;
+  margin: 0;
+  border: none;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 1.1em;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.pawn-snippet-chip-btn:hover {
+  background: var(--background-modifier-hover);
+  color: var(--text-normal);
+}
+
+.pawn-snippet-end {
+  display: inline-block;
+  margin-left: 0.15em;
+  color: var(--text-faint);
+  font-size: 0.85em;
+  user-select: none;
+  vertical-align: middle;
+}

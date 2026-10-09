@@ -138,7 +138,10 @@ Or `{ "path": "…", "ignore": true }`.
 ### `DELETE /v1/captures/snippets/{id}?path=`
 
 Removes one marked block from the note and deletes its asset under
-`Pawn/Captures/assets/` when present.
+`Pawn/Captures/assets/` when present. The Obsidian plugin replaces
+`<!-- pawn-snippet:… -->` markers in the source editor with a chip that
+calls this endpoint (local edit first; asset cleanup still runs if the
+markers are already gone).
 
 ## Build and deploy
 

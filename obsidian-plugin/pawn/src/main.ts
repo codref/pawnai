@@ -16,6 +16,7 @@ import { ItemNoteBar } from "./inbox/ItemNoteBar";
 import { ItemsStore } from "./inbox/ItemsStore";
 import { captureIdea, noticeError } from "./inbox/ideas";
 import { QuickCaptureModal } from "./inbox/QuickCapture";
+import { snippetDecorationsExtension } from "./editor/snippetDecorations";
 import { JobStore } from "./jobs/JobStore";
 import { DEFAULT_SETTINGS, PawnSettings, PawnSettingTab } from "./settings";
 import { VaultSync } from "./vaultSync";
@@ -59,6 +60,7 @@ export default class PawnPlugin extends Plugin {
 
     this.addSettingTab(new PawnSettingTab(this.app, this));
     this.registerView(PAWN_CHAT_VIEW, (leaf) => new PawnChatView(leaf, this));
+    this.registerEditorExtension(snippetDecorationsExtension(this));
     this.registerCommands();
     this.registerMenus();
 
