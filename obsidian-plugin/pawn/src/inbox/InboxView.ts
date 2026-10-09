@@ -5,6 +5,9 @@ import {
   CAPTURES_INBOX_FOLDER,
   CaptureCard,
   captureCreatedAt,
+  captureKindKey,
+  captureKindOptions,
+  captureMatchesQuery,
   captureTypeClass,
   captureTypeLabel,
   groupCapturesByDay,
@@ -108,6 +111,8 @@ export class InboxStore {
   }
 }
 
+export type CapturesStatusScope = "inbox" | "proposed" | "all";
+
 /** Research capture inbox atoms (status inbox|proposed). */
 export class CapturesStore {
   private items: CaptureCard[] = [];
@@ -116,6 +121,9 @@ export class CapturesStore {
   private generation = 0;
   private debounceTimer = 0;
   private signature = "";
+  q = "";
+  kind = "";
+  scope: CapturesStatusScope = "all";
 
   constructor(private plugin: PawnPlugin) {}
 
@@ -158,6 +166,25 @@ export class CapturesStore {
     return this.items;
   }
 
+  /** Inbox atoms after status / kind / search filters. */
+  filtered(): CaptureCard[] {
+    return this.items.filter((card) => {
+      if (this.scope !== "all" && card.status !== this.scope) return false;
+      if (this.kind && captureKindKey(card) !== this.kind) return false;
+      return captureMatchesQuery(card, this.q);
+    });
+  }
+
+  setQuery(partial: {
+    q?: string;
+    kind?: string;
+    scope?: CapturesStatusScope;
+  }): void {
+    if (partial.q !== undefined) this.q = partial.q;
+    if (partial.kind !== undefined) this.kind = partial.kind;
+    if (partial.scope !== undefined) this.scope = partial.scope;
+  }
+
   attention(): number {
     return this.items.length;
   }
@@ -190,6 +217,24 @@ export class CapturesStore {
     this.signature = next;
     for (const fn of this.listeners) fn();
     this.plugin.updateStatusBar();
+  }
+
+  async deletePaths(paths: string[]): Promise<number> {
+    let n = 0;
+    for (const path of paths) {
+      const file = this.plugin.app.vault.getAbstractFileByPath(path);
+      if (!(file instanceof TFile)) continue;
+      try {
+        await this.plugin.app.vault.trash(file, true);
+        n += 1;
+      } catch {
+        // skip failures; refresh will reconcile
+      }
+    }
+    this.items = this.items.filter((i) => !paths.includes(i.path));
+    this.signature = "";
+    await this.refresh();
+    return n;
   }
 }
 
@@ -315,6 +360,10 @@ export function renderInbox(parent: HTMLElement, plugin: PawnPlugin): void {
     });
     b.toggleClass("is-active", state.section === id);
     b.onclick = () => {
+      if (state.section !== id) {
+        state.selectMode = false;
+        state.selected.clear();
+      }
       state.section = id;
       renderInbox(parent, plugin);
     };
@@ -714,6 +763,11 @@ function mountCaptureActions(
       await plugin.app.workspace.getLeaf(false).openFile(item.file);
     }
   });
+  iconBtn("trash-2", "Delete", async () => {
+    const n = await plugin.captures.deletePaths([item.path]);
+    new Notice(n ? "Deleted." : "Already gone.", 4000);
+    onDone?.();
+  });
 }
 
 function renderCaptureRow(
@@ -729,6 +783,19 @@ function renderCaptureRow(
   const needsFiling = !item.collection || !item.entity;
 
   const top = card.createDiv({ cls: "pawn-item-top" });
+  if (state.selectMode) {
+    const check = top.createEl("input", {
+      type: "checkbox",
+      cls: "pawn-item-check",
+    });
+    check.checked = state.selected.has(item.path);
+    check.onclick = (ev) => ev.stopPropagation();
+    check.onchange = () => {
+      if (check.checked) state.selected.add(item.path);
+      else state.selected.delete(item.path);
+      rerender();
+    };
+  }
   const body = top.createDiv({ cls: "pawn-item-body" });
   body.createDiv({
     cls: `pawn-item-kind ${captureTypeClass(item.type, item.snippet_kind)}`,
@@ -742,6 +809,12 @@ function renderCaptureRow(
     title.setAttr("title", "Set collection + entity before filing");
   }
   title.onclick = () => {
+    if (state.selectMode) {
+      if (state.selected.has(item.path)) state.selected.delete(item.path);
+      else state.selected.add(item.path);
+      rerender();
+      return;
+    }
     if (item.file instanceof TFile) {
       void plugin.app.workspace.getLeaf(false).openFile(item.file);
     }
@@ -804,19 +877,142 @@ function renderCaptureRow(
 }
 
 function renderCaptures(parent: HTMLElement, plugin: PawnPlugin): void {
-  const items = plugin.captures.all();
-  if (!items.length) {
+  const state = uiState;
+  const refresh = () => renderInbox(parent, plugin);
+
+  const filters = parent.createDiv({ cls: "pawn-inbox-filters" });
+  const scopes = filters.createDiv({ cls: "pawn-inbox-scopes" });
+  for (const [scope, label] of [
+    ["inbox", "Inbox"],
+    ["proposed", "Proposed"],
+    ["all", "All"],
+  ] as const) {
+    const chip = scopes.createEl("button", { text: label, cls: "pawn-chip" });
+    chip.toggleClass("is-active", plugin.captures.scope === scope);
+    chip.onclick = () => {
+      plugin.captures.setQuery({ scope });
+      refresh();
+    };
+  }
+
+  const search = filters.createEl("input", {
+    type: "search",
+    placeholder: "Search captures…",
+    cls: "pawn-inbox-search",
+  });
+  search.value = plugin.captures.q;
+  search.oninput = () => {
+    plugin.captures.setQuery({ q: search.value });
+  };
+  const applySearch = () => {
+    plugin.captures.setQuery({ q: search.value });
+    refresh();
+  };
+  search.onchange = applySearch;
+  search.onkeydown = (ev) => {
+    if (ev.key === "Enter") applySearch();
+  };
+
+  const kinds = filters.createDiv({ cls: "pawn-inbox-kinds" });
+  for (const kind of captureKindOptions(plugin.captures.all())) {
+    const label = kind ? captureTypeLabel(kind, kind) : "All kinds";
+    const chip = kinds.createEl("button", {
+      text: label,
+      cls: `pawn-chip${kind ? ` ${captureTypeClass(kind, kind)}` : ""}`,
+    });
+    chip.toggleClass("is-active", plugin.captures.kind === kind);
+    chip.onclick = () => {
+      plugin.captures.setQuery({ kind });
+      refresh();
+    };
+  }
+
+  const listed = plugin.captures.filtered();
+  const listedPaths = listed.map((i) => i.path);
+  const allSelected =
+    listedPaths.length > 0 && listedPaths.every((p) => state.selected.has(p));
+  const bulk = parent.createDiv({ cls: "pawn-inbox-bulk" });
+  const selectBtn = bulk.createEl("button", {
+    cls: "clickable-icon",
+    attr: {
+      "aria-label": state.selectMode ? "Cancel select" : "Select",
+      title: state.selectMode ? "Cancel select" : "Select",
+    },
+  });
+  setIcon(selectBtn, state.selectMode ? "x" : "check-square");
+  selectBtn.onclick = () => {
+    state.selectMode = !state.selectMode;
+    state.selected.clear();
+    refresh();
+  };
+  const selectAllLabel = allSelected ? "Clear selection" : "Select all";
+  const selectAllBtn = bulk.createEl("button", {
+    cls: "clickable-icon",
+    attr: { "aria-label": selectAllLabel, title: selectAllLabel },
+  });
+  setIcon(selectAllBtn, "list-checks");
+  selectAllBtn.disabled = listedPaths.length === 0;
+  selectAllBtn.onclick = () => {
+    if (allSelected) {
+      state.selected.clear();
+    } else {
+      state.selectMode = true;
+      state.selected = new Set(listedPaths);
+    }
+    refresh();
+  };
+  const delSel = bulk.createEl("button", {
+    cls: "clickable-icon",
+    attr: {
+      "aria-label":
+        state.selected.size > 0
+          ? `Delete selected (${state.selected.size})`
+          : "Delete selected",
+      title:
+        state.selected.size > 0
+          ? `Delete selected (${state.selected.size})`
+          : "Delete selected",
+    },
+  });
+  setIcon(delSel, "trash-2");
+  delSel.disabled = state.selected.size === 0;
+  delSel.onclick = () => {
+    const paths = Array.from(state.selected);
+    new ConfirmModal(
+      plugin.app,
+      "Delete selected captures?",
+      `Trash ${paths.length} capture note(s). They will not come back from the inbox.`,
+      () => {
+        void plugin.captures
+          .deletePaths(paths)
+          .then((n) => {
+            state.selected.clear();
+            state.selectMode = false;
+            new Notice(`Deleted ${n}.`, 4000);
+            refresh();
+          })
+          .catch(noticeError);
+      },
+    ).open();
+  };
+
+  if (!plugin.captures.all().length) {
     parent.createDiv({
       cls: "pawn-empty",
       text: "No research captures waiting. Use the browser extension Research target.",
     });
     return;
   }
-  const list = parent.createDiv({ cls: "pawn-inbox-list" });
-  const state = uiState;
-  const refresh = () => renderInbox(parent, plugin);
+  if (!listed.length) {
+    parent.createDiv({
+      cls: "pawn-empty",
+      text: "No captures match this filter.",
+    });
+    return;
+  }
 
-  for (const group of groupCapturesByDay(items)) {
+  const list = parent.createDiv({ cls: "pawn-inbox-list" });
+  for (const group of groupCapturesByDay(listed)) {
     list.createDiv({ cls: "pawn-inbox-day", text: group.label });
     for (const item of group.items) {
       renderCaptureRow(list, plugin, item, state, refresh);

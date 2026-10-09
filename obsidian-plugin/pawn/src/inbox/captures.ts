@@ -63,6 +63,46 @@ export function captureCreatedAt(card: CaptureCard): string {
   return card.created || card.captured_at || "";
 }
 
+/** Effective kind key used for filter chips (type, else snippet kind). */
+export function captureKindKey(card: CaptureCard): string {
+  const t = (card.type || "").trim().toLowerCase();
+  if (t) return t;
+  return (card.snippet_kind || "").trim().toLowerCase();
+}
+
+export function captureMatchesQuery(card: CaptureCard, q: string): boolean {
+  const needle = q.trim().toLowerCase();
+  if (!needle) return true;
+  const hay = [
+    card.title,
+    card.caption,
+    card.hint,
+    card.collection,
+    card.entity,
+    card.source_url,
+    card.path,
+    card.type,
+    card.snippet_kind,
+  ]
+    .join("\n")
+    .toLowerCase();
+  return hay.includes(needle);
+}
+
+/** Distinct kind keys present in *cards*, with text/image first when seen. */
+export function captureKindOptions(cards: CaptureCard[]): string[] {
+  const seen = new Set<string>();
+  for (const card of cards) {
+    const key = captureKindKey(card);
+    if (key) seen.add(key);
+  }
+  const preferred = ["text", "image"];
+  const rest = Array.from(seen)
+    .filter((k) => !preferred.includes(k))
+    .sort((a, b) => a.localeCompare(b));
+  return ["", ...preferred.filter((k) => seen.has(k)), ...rest];
+}
+
 export function groupCapturesByDay(
   items: CaptureCard[],
 ): { key: string; label: string; items: CaptureCard[] }[] {

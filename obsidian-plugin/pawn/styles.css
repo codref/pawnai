@@ -890,21 +890,27 @@ button.pawn-chip-pin:hover {
 }
 
 .pawn-item-kind.is-capture-image,
-.pawn-item-kind.is-capture-still {
+.pawn-item-kind.is-capture-still,
+.pawn-chip.is-capture-image.is-active,
+.pawn-chip.is-capture-still.is-active {
   background: rgba(59, 130, 246, 0.18);
   color: #60a5fa;
   border-color: transparent;
 }
 
 .pawn-item-kind.is-capture-text,
-.pawn-item-kind.is-capture-quote {
+.pawn-item-kind.is-capture-quote,
+.pawn-chip.is-capture-text.is-active,
+.pawn-chip.is-capture-quote.is-active {
   background: rgba(16, 185, 129, 0.18);
   color: #34d399;
   border-color: transparent;
 }
 
 .pawn-item-kind.is-capture-note,
-.pawn-item-kind.is-capture-inbox {
+.pawn-item-kind.is-capture-inbox,
+.pawn-chip.is-capture-note.is-active,
+.pawn-chip.is-capture-inbox.is-active {
   background: rgba(139, 92, 246, 0.18);
   color: #a78bfa;
   border-color: transparent;
