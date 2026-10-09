@@ -145,7 +145,12 @@ async def process_source(
         try:
             from pawn_agent.core.coworker.link import related_lines  # noqa: PLC0415
 
-            related, recurrence = related_lines(cfg, item.get("text") or "", source_ref)
+            related, recurrence = related_lines(
+                cfg,
+                item.get("text") or "",
+                source_ref,
+                quote=item.get("quote") or "",
+            )
         except Exception as exc:
             logger.debug("coworker link skipped: %s", exc)
         row = itemdb.insert_item(
@@ -187,6 +192,23 @@ async def process_source(
             row["note_key"] = note_key
         except Exception as exc:
             logger.warning("could not write item note %s: %s", note_key, exc)
+        else:
+            try:
+                from pawn_core.knowledge_index import index_text  # noqa: PLC0415
+
+                index_body = "\n".join(
+                    part
+                    for part in (row.get("text") or "", item.get("quote") or "")
+                    if (part or "").strip()
+                )
+                index_text(
+                    cfg,
+                    source_kind="item",
+                    source_ref=note_key,
+                    text=index_body,
+                )
+            except Exception as exc:
+                logger.debug("item knowledge index skipped: %s", exc)
         if thread:
             try:
                 itemdb.upsert_thread(

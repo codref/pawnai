@@ -62,7 +62,7 @@ def _rewrite_note(store: Any, item: dict[str, Any], *, status: str, action: str 
     store.write(key, body)
 
 
-def _delete_note(store: Any, item: dict[str, Any]) -> None:
+def _delete_note(store: Any, item: dict[str, Any], *, dsn: str = "") -> None:
     key = item.get("note_key")
     if not key or store is None:
         return
@@ -70,6 +70,13 @@ def _delete_note(store: Any, item: dict[str, Any]) -> None:
         store.delete(key)
     except Exception as exc:
         logger.warning("could not delete item note %s: %s", key, exc)
+    if dsn:
+        try:
+            from pawn_core.knowledge_index import delete_source  # noqa: PLC0415
+
+            delete_source(dsn, key)
+        except Exception as exc:
+            logger.debug("item knowledge index delete skipped: %s", exc)
 
 
 def _append(store: Any, cfg: AgentConfig, thread: str, heading: str, line: str) -> None:
@@ -195,7 +202,7 @@ async def apply_action(
     if action == "delete":
         itemdb.add_suppression(cfg.db_dsn, item["fingerprint"])
         itemdb.update_item(cfg.db_dsn, item["id"], status="dismissed")
-        _delete_note(vault, item)
+        _delete_note(vault, item, dsn=cfg.db_dsn)
         return f"Deleted {item['short_id']}."
 
     if action == "approve" and item.get("kind") == "proposal":

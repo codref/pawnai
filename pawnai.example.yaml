@@ -301,6 +301,11 @@ coworker:
   # Folder where the phone's audio recorder drops files. Empty disables capture.
   capture_audio_dir: ""
   me: []
+  # Related links on item notes: instruct-query embeddings + distance floor.
+  # Cosine distance 0 = identical; raise related_max_distance to show more.
+  related_limit: 5
+  related_max_distance: 0.45
+  related_fetch_multiplier: 6
   autonomy:
     mode: suggest_only
     # Add people_refresh under limited_act to auto-write People/ Facts.

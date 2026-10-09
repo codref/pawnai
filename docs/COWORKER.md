@@ -161,7 +161,13 @@ Source: [[Pawn/Transcripts/2026-09-28 session-id.md]]
 ## Why you were notified
 
 A decision with no owner on Project X storage.
+
+## Related
+
+- [[Pawn/Items/2026-09-20-keep-recordings-on-s3-b2c3d4e5.md]]
 ```
+
+`## Related` is filled from the shared knowledge index (same embedding model as sallm). Queries use sallm's instruct template; neighbors must clear `coworker.related_max_distance` (cosine distance). Transcript hits also need a proper-noun overlap with the item summary/quote when one exists. Prior item notes rank above raw meeting windows; empty Related is omitted.
 
 ## Triage
 

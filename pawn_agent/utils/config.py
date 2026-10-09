@@ -445,6 +445,10 @@ class CoworkerConfig(BaseModel):
     commitment_days: int = 7
     stale_days: int = 14
     embed_dim: int = 1024
+    # Related links on item notes (pgvector cosine distance; 0 = identical).
+    related_limit: int = 5
+    related_max_distance: float = 0.45
+    related_fetch_multiplier: int = 6
     people: CoworkerPeopleConfig = Field(default_factory=CoworkerPeopleConfig)
     autonomy: CoworkerAutonomyConfig = Field(default_factory=CoworkerAutonomyConfig)
     notify: CoworkerNotifyConfig = Field(default_factory=CoworkerNotifyConfig)
