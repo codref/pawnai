@@ -39,6 +39,7 @@ def test_build_pawn_clitools_names() -> None:
         "note_search",
         "note_write",
         "note_append",
+        "capture_update",
         "task_update",
         "schedule_propose",
         "knowledge_search",

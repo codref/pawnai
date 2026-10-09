@@ -9,7 +9,21 @@ const KIND_ICON: Record<string, string> = {
   ask: "bot",
   push_note: "file-up",
   upload: "upload",
+  capture_enrich: "tags",
 };
+
+/** Drop the ``[tool] …`` trail that enrich jobs used to persist (mirrors server strip_tool_trail). */
+function stripToolTrail(raw: string): string {
+  const text = (raw || "").trim();
+  if (!text.startsWith("[tool]")) return text;
+  const parts = text.split("\n\n");
+  if (parts.length >= 2) {
+    const rest = parts.slice(1).join("\n\n").trim();
+    if (rest) return rest;
+  }
+  const kept = text.split("\n").filter((ln) => !ln.startsWith("[tool]"));
+  return kept.join("\n").trim() || text;
+}
 
 const STATUS_LABEL: Record<string, string> = {
   todo: "waiting for sync",
@@ -57,7 +71,7 @@ export function renderJobCard(
   if (job.offline) bits.push("offline task note");
   meta.setText(bits.filter(Boolean).join(" · "));
 
-  const result = (job.result ?? "").trim();
+  const result = stripToolTrail(job.result ?? "");
   if (result && !isActive(job)) {
     const body = card.createDiv({ cls: "pawn-job-result markdown-rendered" });
     if (job.status === "blocked") body.addClass("is-error");

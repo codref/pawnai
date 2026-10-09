@@ -4,6 +4,10 @@ import type PawnPlugin from "../main";
 import {
   CAPTURES_INBOX_FOLDER,
   CaptureCard,
+  captureCreatedAt,
+  captureTypeClass,
+  captureTypeLabel,
+  groupCapturesByDay,
   listInboxCaptures,
 } from "./captures";
 import {
@@ -660,6 +664,145 @@ function renderIdeas(parent: HTMLElement, plugin: PawnPlugin): void {
   }
 }
 
+function mountCaptureActions(
+  parent: HTMLElement,
+  plugin: PawnPlugin,
+  item: CaptureCard,
+  onDone?: () => void,
+): void {
+  const actions = parent.createDiv({ cls: "pawn-item-actions" });
+  const iconBtn = (icon: string, label: string, run: () => Promise<void>) => {
+    const button = actions.createEl("button", {
+      cls: "clickable-icon pawn-item-action",
+      attr: { "aria-label": label, title: label },
+    });
+    setIcon(button, icon);
+    button.onclick = (ev) => {
+      ev.stopPropagation();
+      void run().catch(noticeError);
+    };
+  };
+
+  iconBtn("folder-input", "File", async () => {
+    if (!item.collection || !item.entity) {
+      new Notice("Open the note and set collection + entity, then File again.", 5000);
+      if (item.file instanceof TFile) {
+        void plugin.app.workspace.getLeaf(false).openFile(item.file);
+      }
+      return;
+    }
+    const result = await plugin.client.fileCapture({
+      path: item.path,
+      collection: item.collection,
+      entity: item.entity,
+    });
+    new Notice(
+      result.entity_path ? `Filed → ${result.entity_path}` : `Filed ${result.path}`,
+      4000,
+    );
+    await plugin.captures.refresh();
+    onDone?.();
+  });
+  iconBtn("eye-off", "Ignore", async () => {
+    await plugin.client.fileCapture({ path: item.path, ignore: true });
+    new Notice("Ignored.", 4000);
+    await plugin.captures.refresh();
+    onDone?.();
+  });
+  iconBtn("file", "Open", async () => {
+    if (item.file instanceof TFile) {
+      await plugin.app.workspace.getLeaf(false).openFile(item.file);
+    }
+  });
+}
+
+function renderCaptureRow(
+  parent: HTMLElement,
+  plugin: PawnPlugin,
+  item: CaptureCard,
+  state: InboxUiState,
+  rerender: () => void,
+): void {
+  const card = parent.createDiv({
+    cls: "pawn-job-card pawn-inbox-card pawn-item-card pawn-capture-card",
+  });
+  const needsFiling = !item.collection || !item.entity;
+
+  const top = card.createDiv({ cls: "pawn-item-top" });
+  const body = top.createDiv({ cls: "pawn-item-body" });
+  body.createDiv({
+    cls: `pawn-item-kind ${captureTypeClass(item.type, item.snippet_kind)}`,
+    text: captureTypeLabel(item.type, item.snippet_kind),
+  });
+  const title = body.createDiv({
+    cls: needsFiling ? "pawn-inbox-title is-orphan" : "pawn-inbox-title",
+  });
+  title.setText(item.title || "(empty)");
+  if (needsFiling) {
+    title.setAttr("title", "Set collection + entity before filing");
+  }
+  title.onclick = () => {
+    if (item.file instanceof TFile) {
+      void plugin.app.workspace.getLeaf(false).openFile(item.file);
+    }
+  };
+
+  const metaRow = card.createDiv({ cls: "pawn-item-meta-row" });
+  const meta = metaRow.createDiv({ cls: "pawn-job-meta" });
+  const created = captureCreatedAt(item);
+  const place =
+    item.collection && item.entity
+      ? `${item.collection} › ${item.entity}`
+      : item.collection || item.entity || "";
+  const bits = [
+    created ? window.moment(created).fromNow() : "",
+    place,
+    item.status,
+  ].filter(Boolean);
+  meta.setText(bits.join(" · "));
+  mountCaptureActions(metaRow, plugin, item, () => {
+    void plugin.captures.refresh().then(rerender);
+  });
+
+  const expandBtn = card.createEl("button", {
+    cls: "pawn-item-expand clickable-icon",
+    attr: {
+      "aria-label": state.expanded.has(item.path) ? "Hide details" : "Details",
+      title: state.expanded.has(item.path) ? "Hide details" : "Details",
+    },
+  });
+  setIcon(expandBtn, state.expanded.has(item.path) ? "chevron-up" : "chevron-down");
+  expandBtn.onclick = () => {
+    if (state.expanded.has(item.path)) state.expanded.delete(item.path);
+    else state.expanded.add(item.path);
+    rerender();
+  };
+
+  if (state.expanded.has(item.path)) {
+    const detail = card.createDiv({ cls: "pawn-item-detail" });
+    if (item.caption) detail.createEl("blockquote", { text: item.caption });
+    if (item.hint) detail.createDiv({ text: `Hint: ${item.hint}`, cls: "pawn-item-reason" });
+    if (item.source_url) {
+      const link = detail.createEl("a", {
+        text: item.source_url,
+        cls: "external-link",
+        attr: { href: item.source_url },
+      });
+      link.onclick = (ev) => {
+        ev.preventDefault();
+        window.open(item.source_url, "_blank");
+      };
+    }
+    const pathLink = detail.createEl("a", { text: item.path, cls: "internal-link" });
+    pathLink.onclick = (ev) => {
+      ev.preventDefault();
+      if (item.file instanceof TFile) {
+        void plugin.app.workspace.getLeaf(false).openFile(item.file);
+      }
+    };
+  }
+}
+
 function renderCaptures(parent: HTMLElement, plugin: PawnPlugin): void {
   const items = plugin.captures.all();
   if (!items.length) {
@@ -669,49 +812,14 @@ function renderCaptures(parent: HTMLElement, plugin: PawnPlugin): void {
     });
     return;
   }
-  for (const item of items) {
-    const card = parent.createDiv({ cls: "pawn-job-card pawn-inbox-card" });
-    const title = card.createDiv({ cls: "pawn-inbox-title", text: item.title });
-    title.onclick = () => {
-      if (item.file instanceof TFile) void plugin.app.workspace.getLeaf(false).openFile(item.file);
-    };
-    const meta = [item.status, item.collection, item.entity, item.type, item.hint]
-      .filter(Boolean)
-      .join(" · ");
-    if (meta) card.createDiv({ cls: "pawn-inbox-line", text: meta });
-    const actions = card.createDiv({ cls: "pawn-job-actions" });
-    const add = (label: string, run: () => Promise<void>) => {
-      const button = actions.createEl("button", { text: label });
-      button.onclick = () => void run().catch(noticeError);
-    };
-    add("File", async () => {
-      if (!item.collection || !item.entity) {
-        new Notice("Open the note and set collection + entity, then File again.", 5000);
-        if (item.file instanceof TFile) {
-          void plugin.app.workspace.getLeaf(false).openFile(item.file);
-        }
-        return;
-      }
-      const result = await plugin.client.fileCapture({
-        path: item.path,
-        collection: item.collection,
-        entity: item.entity,
-      });
-      new Notice(
-        result.entity_path ? `Filed → ${result.entity_path}` : `Filed ${result.path}`,
-        4000,
-      );
-      await plugin.captures.refresh();
-    });
-    add("Ignore", async () => {
-      await plugin.client.fileCapture({ path: item.path, ignore: true });
-      new Notice("Ignored.", 4000);
-      await plugin.captures.refresh();
-    });
-    add("Open", async () => {
-      if (item.file instanceof TFile) {
-        await plugin.app.workspace.getLeaf(false).openFile(item.file);
-      }
-    });
+  const list = parent.createDiv({ cls: "pawn-inbox-list" });
+  const state = uiState;
+  const refresh = () => renderInbox(parent, plugin);
+
+  for (const group of groupCapturesByDay(items)) {
+    list.createDiv({ cls: "pawn-inbox-day", text: group.label });
+    for (const item of group.items) {
+      renderCaptureRow(list, plugin, item, state, refresh);
+    }
   }
 }

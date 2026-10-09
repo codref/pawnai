@@ -73,8 +73,8 @@ Migrated CliTools: `sessions_list`, `session_transcript`, `session_analyze`,
 `session_screenshots`, `session_delete`, `session_relabel`, `speakers_list`,
 `speakers_show`, `speakers_update`, `speaker_enroll`, `session_reidentify`,
 `people_show`, `people_ensure`, `people_append`, `note_read`, `note_search`,
-`note_write`, `note_append`, `task_update`, `schedule_propose`, `queue_push`,
-`goal_propose`.
+`note_write`, `note_append`, `capture_update`, `task_update`, `schedule_propose`,
+`queue_push`, `goal_propose`.
 
 `session_analyze --save` / `note_write`: prefer `--save` for analysis Markdown
 under `Pawn/Analyses/`. Free-form notes use `note_write --content-file @note`

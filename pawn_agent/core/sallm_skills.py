@@ -360,21 +360,29 @@ RESEARCH_CAPTURE = Skill(
     prompt=(
         "Active skill: research_capture.\n"
         "You are enriching one research capture inbox note.\n"
-        "Use note_read / note_search / note_write / note_append only.\n"
+        "Use note_read / note_search / capture_update / note_append only. "
+        "Never call note_write on the capture atom — that breaks Obsidian "
+        "frontmatter when captions contain ':' .\n"
         "Propose a collection slug when missing; prefer an existing folder "
-        "under the enriched Research dir. Create or update an entity note "
-        "(pawn: entity) under {enriched_dir}/{collection}/{entity}.md.\n"
-        "Update capture frontmatter (collection, entity, type, caption, "
-        "proposed_tags, enriched_at). Keep the snippet block intact.\n"
-        "File (status: filed + ## Captures link) only when auto_file is true "
-        "and the match is clear; otherwise status: proposed.\n"
+        "under the enriched Research dir. Create a new entity note with "
+        "note_write ONLY for a missing entity path "
+        "(pawn: entity under {enriched_dir}/{collection}/{entity}.md); "
+        "never note_write the capture inbox atom. Append to ## Captures with "
+        "note_append.\n"
+        "Update capture frontmatter with capture_update --path … "
+        "--collection --entity --type --caption --proposed-tags "
+        "--status proposed (or filed). Entity and collection are slugified. "
+        "Keep the snippet block intact.\n"
+        "File (status: filed + ## Captures link via note_append) only when "
+        "auto_file is true and the match is clear; otherwise status: proposed.\n"
         "Never dump tool errors into notes. Never touch .obsidian/."
     ),
     tools=(
         "note_read",
         "note_search",
-        "note_write",
+        "capture_update",
         "note_append",
+        "note_write",
     ),
 )
 

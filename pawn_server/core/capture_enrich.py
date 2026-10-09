@@ -72,11 +72,14 @@ def build_enrich_prompt(cfg: Any, path: str, note_text: str) -> str:
             "prefer an existing folder under the enriched dir when it fits.",
             "4) Find or create the entity note under the enriched dir "
             "(pawn: entity, ## Captures, ## Notes left for the user).",
-            "5) Update the capture note frontmatter: collection, entity, type, "
-            "caption, proposed_tags, enriched_at (ISO UTC). Keep the snippet block intact.",
-            "6) If auto_file is true and the match is clear: append a wikilink under "
-            "the entity ## Captures section and set capture status: filed. "
-            "Otherwise set status: proposed and stop — do not invent confident filing.",
+            "5) Update the capture note ONLY via capture_update "
+            f"(e.g. capture_update --path {path} --collection SLUG --entity SLUG "
+            "--type still|quote|note --caption '…' --proposed-tags a,b "
+            "--status proposed). Never note_write the capture atom — captions "
+            "with ':' break Obsidian frontmatter. Entity/collection are slugified.",
+            "6) If auto_file is true and the match is clear: note_append a wikilink "
+            "under the entity ## Captures section and capture_update --status filed. "
+            "Otherwise capture_update --status proposed and stop.",
             "7) Only write under the inbox dir and enriched dir. Never dump tool errors "
             "into notes. Answer with a one-line summary of collection/entity/status.",
         ]

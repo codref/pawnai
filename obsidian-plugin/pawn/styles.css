@@ -889,6 +889,32 @@ button.pawn-chip-pin:hover {
   border-color: transparent;
 }
 
+.pawn-item-kind.is-capture-image,
+.pawn-item-kind.is-capture-still {
+  background: rgba(59, 130, 246, 0.18);
+  color: #60a5fa;
+  border-color: transparent;
+}
+
+.pawn-item-kind.is-capture-text,
+.pawn-item-kind.is-capture-quote {
+  background: rgba(16, 185, 129, 0.18);
+  color: #34d399;
+  border-color: transparent;
+}
+
+.pawn-item-kind.is-capture-note,
+.pawn-item-kind.is-capture-inbox {
+  background: rgba(139, 92, 246, 0.18);
+  color: #a78bfa;
+  border-color: transparent;
+}
+
+.pawn-capture-card .pawn-inbox-title.is-orphan {
+  color: var(--text-muted);
+  font-style: italic;
+}
+
 .pawn-item-meta-row {
   display: flex;
   align-items: center;

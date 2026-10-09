@@ -530,13 +530,16 @@ async def _run_capture_enrich(
             "enrich_failed",
         )
         return
+    from pawn_agent.core.sallm_session import strip_tool_trail  # noqa: PLC0415
+
+    display = strip_tool_trail(reply or "") or "enriched"
     _finish(
         cfg,
         job_id,
         "done",
         "capture_enrich",
         conv,
-        (reply or "enriched")[:4000],
+        display[:4000],
     )
 
 

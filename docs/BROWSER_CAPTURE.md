@@ -57,9 +57,16 @@ Collections are **not** declared in config. They emerge as folders under
 pick an existing folder from `GET /v1/captures/collections`.
 
 After enrich, inbox notes have `status: proposed` (or `filed` when auto_file
-succeeds). Triage in the Obsidian Inbox **Captures** chip: **File** / **Ignore**
-(`POST /v1/captures/file`). Filing links the capture under the entity note’s
-`## Captures` section without moving the inbox file.
+succeeds). Triage in the Obsidian Inbox **Captures** chip (Items-style cards):
+**File** / **Ignore** / **Open** (`POST /v1/captures/file`). Filing links the
+capture under the entity note’s `## Captures` section without moving the inbox
+file.
+
+Enrich updates capture frontmatter only via the `capture_update` CliTool
+(parse + YAML dump), not `note_write`, so captions that contain `:` stay valid
+Obsidian properties. Job results for `capture_enrich` store the answer body
+only (`strip_tool_trail`); the Jobs tab strips any legacy `[tool]` prefix
+before markdown render.
 
 ## HTTP API
 

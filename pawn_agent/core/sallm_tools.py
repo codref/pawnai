@@ -214,6 +214,17 @@ def build_pawn_clitools() -> dict[str, CliTool]:
                 "Same write guards as note_write."
             ),
         ),
+        "capture_update": CliTool(
+            name="capture_update",
+            argv=_cli_argv("capture_update.py"),
+            summary=(
+                "Update research-capture frontmatter safely (parse + YAML dump). "
+                "Required: --path. Optional: --collection --entity --type "
+                "--caption --proposed-tags --status proposed|filed|inbox|ignored "
+                "--hint --enriched-at. Slugifies collection/entity. "
+                "Never rewrite capture frontmatter with note_write."
+            ),
+        ),
         "task_update": CliTool(
             name="task_update",
             argv=_cli_argv("task_update.py"),
