@@ -215,11 +215,14 @@ class ApiSection(BaseModel):
     port: int = 8000
     model_idle_timeout_minutes: float = 10.0
     # Browser origins allowed by CORS (Obsidian desktop / mobile webviews).
+    # Extension pages (moz-extension:// / chrome-extension://) are allowed via
+    # allow_origin_regex in create_app — not listed here (UUID per install).
     cors_origins: list[str] = Field(
         default_factory=lambda: [
             "app://obsidian.md",
             "capacitor://localhost",
             "http://localhost",
+            "http://127.0.0.1",
         ]
     )
     # Prepend the client's system message (e.g. obsidian-copilot's) as context.

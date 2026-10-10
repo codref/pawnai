@@ -85,14 +85,20 @@ CORS-blocked otherwise).
 
 ### NetworkError / “failed to fetch”
 
-1. Confirm `pawn-server` is up (`curl -s http://127.0.0.1:8000/health`).
-2. Reload the add-on (v0.1.1+), open the companion window → **Settings** →
-   **Save settings**, and accept the host-permission prompt.
-3. Or: Add-ons Manager → Pawn Capture → **Permissions** → enable **Access your
-   data for all websites** (or the `127.0.0.1` / `localhost` entries).
-4. Use `http://127.0.0.1:8000` or `http://localhost:8000` (Gecko host match
-   patterns must not include a port; the add-on strips it when requesting
-   access).
+Host permissions alone are not enough — Firefox/Thunderbird use the same
+`NetworkError` string for CORS failures **and** connection refused.
+
+1. Confirm `pawn-server` is up: `curl -sS -i http://127.0.0.1:8000/health`
+   (use the same host/port as Settings). If curl fails, fix the server first.
+2. **Restart pawn-server** on a build that allows `moz-extension://` via CORS
+   (`allow_origin_regex` in `create_app`). Older servers only listed Obsidian
+   origins, so the companion window was blocked even with Permissions toggles on.
+3. Reload the add-on (v0.1.2+), Settings → **Save settings**.
+4. Permissions tab should show **Access your data for all websites** (and/or
+   `127.0.0.1` / `localhost`) enabled — Gecko match patterns must not include a
+   port; the add-on requests `http://127.0.0.1/*`, which covers `:8000`.
+5. If curl works but the add-on still fails, check for an HTTP proxy that
+   hijacks localhost (Thunderbird uses the browser network stack).
 
 ## Implementation
 

@@ -147,3 +147,18 @@ def test_cors_preflight_allows_obsidian() -> None:
     )
     assert resp.status_code == 200
     assert resp.headers["access-control-allow-origin"] == "app://obsidian.md"
+
+
+def test_cors_preflight_allows_thunderbird_extension() -> None:
+    """Companion-window fetch sends Origin: moz-extension://<uuid>."""
+    origin = "moz-extension://aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+    resp = _client().options(
+        "/v1/captures",
+        headers={
+            "Origin": origin,
+            "Access-Control-Request-Method": "GET",
+            "Access-Control-Request-Headers": "authorization,content-type",
+        },
+    )
+    assert resp.status_code == 200
+    assert resp.headers["access-control-allow-origin"] == origin

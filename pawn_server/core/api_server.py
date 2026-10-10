@@ -1772,10 +1772,14 @@ def create_app(cfg: Any) -> FastAPI:
     _apply_docs_enabled(enable_docs)
 
     origins = list(getattr(getattr(cfg, "api", None), "cors_origins", None) or [])
-    if origins and not _cors_installed:
+    # Always allow browser / Thunderbird extension pages (UUID origin per install).
+    # Host permissions *should* bypass CORS, but Gecko still NetworkError's in
+    # some builds when Access-Control-Allow-Origin is missing.
+    if not _cors_installed:
         app.add_middleware(
             CORSMiddleware,
             allow_origins=origins,
+            allow_origin_regex=r"(?:moz-extension|chrome-extension)://.*",
             allow_methods=["*"],
             allow_headers=["*"],
         )

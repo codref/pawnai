@@ -207,14 +207,7 @@ async function privilegedFetch(msg) {
   try {
     resp = await fetch(url, opts);
   } catch (err) {
-    const detail = String(err?.message || err);
-    throw new Error(
-      /NetworkError|Failed to fetch|NetworkError when attempting/i.test(detail)
-        ? `Network error talking to ${base}. Save Settings to grant host access ` +
-          `(or enable Access your data for all websites under Add-ons → Pawn Capture → ` +
-          `Permissions). Confirm pawn-server is running. (${detail})`
-        : detail,
-    );
+    throw new Error(await explainFetchFailure(url, err));
   }
   const text = await resp.text();
   let data = null;
@@ -228,6 +221,33 @@ async function privilegedFetch(msg) {
     throw new Error(typeof detail === "string" ? detail : JSON.stringify(detail));
   }
   return data;
+}
+
+/** Turn Gecko's opaque NetworkError into an actionable message. */
+async function explainFetchFailure(url, err) {
+  const detail = String(err?.message || err);
+  const pattern = hostOriginPattern(url);
+  let hostOk = false;
+  try {
+    if (pattern) {
+      hostOk = await browser.permissions.contains({ origins: [pattern] });
+    }
+    if (!hostOk) {
+      hostOk = await browser.permissions.contains({ origins: ["<all_urls>"] });
+    }
+  } catch (_) {
+    /* ignore */
+  }
+  const lines = [
+    `Could not reach ${url}`,
+    `(${detail})`,
+    hostOk
+      ? "Host permission is granted — this is usually pawn-server not listening, a wrong URL/port, TLS, or an HTTP proxy hijacking localhost."
+      : "Host permission missing — Add-ons → Pawn Capture → Permissions → enable Access your data for all websites (or 127.0.0.1 / localhost).",
+    `Check from a terminal: curl -sS -i ${url}`,
+    "Restart pawn-server after upgrading (CORS now allows moz-extension://).",
+  ];
+  return lines.join(" ");
 }
 
 browser.windows.onRemoved.addListener((windowId) => {
