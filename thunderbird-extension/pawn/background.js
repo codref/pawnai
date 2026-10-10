@@ -115,8 +115,120 @@ browser.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     })();
     return true;
   }
+  // Panel fetch is CORS-blocked without privileged host access; proxy via background.
+  if (msg?.type === "pawn-api") {
+    (async () => {
+      try {
+        const data = await privilegedFetch(msg);
+        sendResponse({ ok: true, data });
+      } catch (err) {
+        sendResponse({ ok: false, error: String(err?.message || err) });
+      }
+    })();
+    return true;
+  }
+  if (msg?.type === "pawn-ensure-host") {
+    (async () => {
+      try {
+        const granted = await ensureHostPermission(msg.serverUrl || "");
+        sendResponse({ ok: true, granted });
+      } catch (err) {
+        sendResponse({ ok: false, error: String(err?.message || err), granted: false });
+      }
+    })();
+    return true;
+  }
   return false;
 });
+
+/**
+ * Match pattern without a port (Gecko ignores / fails patterns that include :port).
+ * Example: http://127.0.0.1:8000 → http://127.0.0.1/*
+ */
+function hostOriginPattern(serverUrl) {
+  const raw = String(serverUrl || "").trim();
+  if (!raw) return "";
+  try {
+    const u = new URL(raw.includes("://") ? raw : `http://${raw}`);
+    if (!/^https?:$/i.test(u.protocol)) return "";
+    return `${u.protocol}//${u.hostname}/*`;
+  } catch (_) {
+    return "";
+  }
+}
+
+async function ensureHostPermission(serverUrl) {
+  const pattern = hostOriginPattern(serverUrl);
+  const origins = [];
+  if (pattern) origins.push(pattern);
+  // Broader fallbacks — some TB builds treat host_permissions as optional until requested.
+  origins.push("<all_urls>");
+  const unique = [...new Set(origins)];
+  try {
+    if (await browser.permissions.contains({ origins: unique })) return true;
+  } catch (_) {
+    /* contains may reject unknown patterns */
+  }
+  if (pattern) {
+    try {
+      if (await browser.permissions.contains({ origins: [pattern] })) return true;
+    } catch (_) {
+      /* ignore */
+    }
+  }
+  try {
+    return Boolean(await browser.permissions.request({ origins: unique }));
+  } catch (err) {
+    // request() must run from a user gesture; fall back to pattern-only.
+    if (pattern) {
+      try {
+        return Boolean(await browser.permissions.request({ origins: [pattern] }));
+      } catch (_) {
+        throw err;
+      }
+    }
+    throw err;
+  }
+}
+
+async function privilegedFetch(msg) {
+  const base = String(msg.serverUrl || "").replace(/\/+$/, "");
+  const path = String(msg.path || "");
+  if (!base) throw new Error("Server URL is empty — open Settings");
+  const url = `${base}${path}`;
+  const headers = { Accept: "application/json", ...(msg.headers || {}) };
+  if (msg.apiToken) headers.Authorization = `Bearer ${msg.apiToken}`;
+  const opts = { method: msg.method || "GET", headers };
+  if (msg.body !== undefined) {
+    headers["Content-Type"] = "application/json";
+    opts.body = JSON.stringify(msg.body);
+  }
+  let resp;
+  try {
+    resp = await fetch(url, opts);
+  } catch (err) {
+    const detail = String(err?.message || err);
+    throw new Error(
+      /NetworkError|Failed to fetch|NetworkError when attempting/i.test(detail)
+        ? `Network error talking to ${base}. Save Settings to grant host access ` +
+          `(or enable Access your data for all websites under Add-ons → Pawn Capture → ` +
+          `Permissions). Confirm pawn-server is running. (${detail})`
+        : detail,
+    );
+  }
+  const text = await resp.text();
+  let data = null;
+  try {
+    data = text ? JSON.parse(text) : null;
+  } catch (_) {
+    data = { detail: text };
+  }
+  if (!resp.ok) {
+    const detail = data?.detail || data?.message || text || resp.statusText;
+    throw new Error(typeof detail === "string" ? detail : JSON.stringify(detail));
+  }
+  return data;
+}
 
 browser.windows.onRemoved.addListener((windowId) => {
   if (windowId !== panelWindowId) return;

@@ -37,7 +37,13 @@ at the root.
 4. Click the **Pawn Capture** toolbar button (or the message-display action) to
    open the companion window.
 5. In the panel → **Settings**: server URL (e.g. `http://127.0.0.1:8000`) and
-   `api.token` from `pawnai.yaml`.
+   `api.token` from `pawnai.yaml`. Click **Save settings** and accept the host
+   permission prompt (required so the add-on can reach pawn-server).
+
+If you see **NetworkError when attempting to fetch resource**: reload this
+add-on (v0.1.1+), Save settings again, or enable **Access your data for all
+websites** under Add-ons → Pawn Capture → Permissions. Confirm pawn-server is
+running.
 
 Temporary add-ons are cleared when Thunderbird quits; reload after each restart.
 

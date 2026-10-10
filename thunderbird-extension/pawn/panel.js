@@ -322,9 +322,22 @@ async function saveSettings() {
   try {
     state.settings.serverUrl = el.serverUrl.value.trim().replace(/\/+$/, "");
     state.settings.apiToken = el.apiToken.value.trim();
+    // User gesture: ask Gecko to grant host access (CORS bypass) for the server origin.
+    const host = await runtime.sendMessage({
+      type: "pawn-ensure-host",
+      serverUrl: state.settings.serverUrl,
+    });
+    if (host && host.ok === false) {
+      showNotice(host.error || "Host permission denied", true);
+    } else if (host && host.granted === false) {
+      showNotice(
+        "Host permission denied — enable Access your data for all websites under Add-ons → Permissions",
+        true,
+      );
+    }
     await storage.local.set({ settings: state.settings });
     await refreshConnection();
-    showNotice("Settings saved");
+    if (host?.granted !== false) showNotice("Settings saved");
   } catch (err) {
     showNotice(String(err.message || err), true);
   } finally {
@@ -432,29 +445,21 @@ function requestSnip(type) {
 }
 
 async function api(method, path, body) {
-  const base = state.settings.serverUrl.replace(/\/+$/, "");
-  const headers = { Accept: "application/json" };
-  if (state.settings.apiToken) {
-    headers.Authorization = `Bearer ${state.settings.apiToken}`;
+  // Thunderbird companion windows are cross-origin to pawn-server; privileged
+  // fetch (CORS bypass) only works reliably from the background script once
+  // host permission is granted. Do not fetch() from the panel directly.
+  const resp = await runtime.sendMessage({
+    type: "pawn-api",
+    method,
+    path,
+    body,
+    serverUrl: state.settings.serverUrl,
+    apiToken: state.settings.apiToken,
+  });
+  if (!resp || resp.ok === false) {
+    throw new Error(resp?.error || "API request failed");
   }
-  const opts = { method, headers };
-  if (body !== undefined) {
-    headers["Content-Type"] = "application/json";
-    opts.body = JSON.stringify(body);
-  }
-  const resp = await fetch(`${base}${path}`, opts);
-  const text = await resp.text();
-  let data = null;
-  try {
-    data = text ? JSON.parse(text) : null;
-  } catch (_) {
-    data = { detail: text };
-  }
-  if (!resp.ok) {
-    const detail = data?.detail || data?.message || text || resp.statusText;
-    throw new Error(typeof detail === "string" ? detail : JSON.stringify(detail));
-  }
-  return data;
+  return resp.data;
 }
 
 async function refreshConnection() {

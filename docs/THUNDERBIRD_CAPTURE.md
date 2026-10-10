@@ -79,6 +79,20 @@ installs may need `xpinstall.signatures.required` disabled for development.
 
 Set **Server URL** and **API token** (`api.token` from `pawnai.yaml`) in the
 panel settings — same values as the Obsidian plugin and browser extension.
+Click **Save settings** once so Thunderbird can prompt for host access; API
+calls are proxied through the background script (companion-window `fetch` is
+CORS-blocked otherwise).
+
+### NetworkError / “failed to fetch”
+
+1. Confirm `pawn-server` is up (`curl -s http://127.0.0.1:8000/health`).
+2. Reload the add-on (v0.1.1+), open the companion window → **Settings** →
+   **Save settings**, and accept the host-permission prompt.
+3. Or: Add-ons Manager → Pawn Capture → **Permissions** → enable **Access your
+   data for all websites** (or the `127.0.0.1` / `localhost` entries).
+4. Use `http://127.0.0.1:8000` or `http://localhost:8000` (Gecko host match
+   patterns must not include a port; the add-on strips it when requesting
+   access).
 
 ## Implementation
 
