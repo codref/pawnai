@@ -183,4 +183,5 @@ Full install notes: [browser-extension/pawn/README.md](../browser-extension/pawn
 - Routes: [`pawn_server/core/api_server.py`](../pawn_server/core/api_server.py)
 - Tests: [`tests/test_captures_api.py`](../tests/test_captures_api.py)
 - Extension: [`browser-extension/pawn/`](../browser-extension/pawn/)
+- Thunderbird counterpart: [THUNDERBIRD_CAPTURE.md](THUNDERBIRD_CAPTURE.md)
 - Obsidian Captures chip: [`obsidian-plugin/pawn/src/inbox/`](../obsidian-plugin/pawn/src/inbox/)

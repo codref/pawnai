@@ -1,0 +1,45 @@
+{
+  "manifest_version": 3,
+  "name": "Pawn Capture (Thunderbird)",
+  "version": "0.1.0",
+  "description": "Capture email messages and image attachments into the Pawn vault.",
+  "permissions": [
+    "messagesRead",
+    "menus",
+    "storage",
+    "windows"
+  ],
+  "host_permissions": [
+    "<all_urls>"
+  ],
+  "background": {
+    "scripts": ["background.js"]
+  },
+  "action": {
+    "default_title": "Pawn Capture",
+    "default_icon": {
+      "16": "icons/icon-16.png",
+      "48": "icons/icon-48.png",
+      "128": "icons/icon-128.png"
+    }
+  },
+  "message_display_action": {
+    "default_title": "Pawn Capture",
+    "default_icon": {
+      "16": "icons/icon-16.png",
+      "48": "icons/icon-48.png",
+      "128": "icons/icon-128.png"
+    }
+  },
+  "icons": {
+    "16": "icons/icon-16.png",
+    "48": "icons/icon-48.png",
+    "128": "icons/icon-128.png"
+  },
+  "browser_specific_settings": {
+    "gecko": {
+      "id": "pawn-capture-tb@pawnai.local",
+      "strict_min_version": "128.0"
+    }
+  }
+}

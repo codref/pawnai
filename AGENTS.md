@@ -16,6 +16,7 @@ Packages:
 - `pawn_server/`: HTTP API, queue listener, Matrix bot, vault watcher, scheduler CLI/server runner.
 - `obsidian-plugin/pawn/`: Obsidian desktop/mobile plugin (Copilot-style chat pane, prompt commands, background jobs, uploads). MIT, written from scratch; do not copy obsidian-copilot (AGPL) code into it.
 - `browser-extension/pawn/`: MV3 side panel that appends ordered text/image snippets to vault capture notes or session Annotations (no chat UI). See `docs/BROWSER_CAPTURE.md`.
+- `thunderbird-extension/pawn/`: MV3 MailExtension (TB 128+) companion-window tray that captures messages/selections/image attachments into the same `/v1/captures` API. See `docs/THUNDERBIRD_CAPTURE.md`.
 
 ## Setup / Commands
 
@@ -193,6 +194,7 @@ Default DB uses PostgreSQL on port `5433` and requires `pgvector`.
 - HTTP API: `tests/test_api_chat_compat.py` (OpenAI/Copilot compat), `tests/test_api_jobs.py` (jobs + `/v1/pawn/chat`).
 - Plugin: `cd obsidian-plugin/pawn && npm run build` (bumps the `manifest.json` patch version, then `tsc -noEmit`); no JS test runner. CI sets `CI=true`, which skips the bump so an `obsidian-plugin-v*` tag still matches the manifest. `make dist` in that directory (or `make obsidian-plugin-dist` from the repo root) writes `pawn.zip` (`pawn/main.js`, `manifest.json`, `styles.css`). `.github/workflows/obsidian-plugin.yml` uploads that zip as the `pawn-obsidian-plugin` artifact and, on an `obsidian-plugin-v*` tag whose version matches `manifest.json`, publishes it on the GitHub release.
 - Browser capture extension: plain MV3 JS (no compile). `make browser-extension` verifies files; `make browser-extension-dist` writes `pawn-capture.zip` (Chrome `service_worker`) and `pawn-capture-firefox.zip` (`background.scripts` + sidebar). See `docs/BROWSER_CAPTURE.md`.
+- Thunderbird capture add-on: plain MV3 JS (no compile). `make thunderbird-extension` verifies files; `make thunderbird-extension-dist` writes `pawn-capture-thunderbird.xpi`. Companion window (no docked sidebar API). See `docs/THUNDERBIRD_CAPTURE.md`.
 - No CI workflows are present in `.github/workflows/`.
 
 ## Constraints / Gotchas

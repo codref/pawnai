@@ -1,0 +1,86 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Pawn Capture</title>
+    <link rel="stylesheet" href="panel.css" />
+  </head>
+  <body>
+    <div class="pawn-root">
+      <header class="pawn-header">
+        <div class="pawn-header-row">
+          <!-- Custom select: native <select> popups are unreliable in extension panels. -->
+          <div id="target-kind" class="pawn-select" title="Target"></div>
+          <button
+            type="button"
+            id="btn-settings"
+            class="clickable-icon"
+            aria-label="Settings"
+            title="Settings"
+          ></button>
+          <span id="status-dot" class="pawn-dot is-offline" title="Server"></span>
+        </div>
+        <div id="target-extra" class="pawn-target-extra"></div>
+        <label id="title-field" class="pawn-field">
+          <span>Title</span>
+          <input id="title-input" type="text" placeholder="Capture title" />
+        </label>
+      </header>
+
+      <section id="settings-panel" class="pawn-settings" hidden>
+        <label class="pawn-field">
+          <span>Server URL</span>
+          <input id="server-url" type="url" placeholder="http://127.0.0.1:8000" />
+        </label>
+        <label class="pawn-field">
+          <span>API token</span>
+          <input id="api-token" type="password" placeholder="Bearer token" />
+        </label>
+        <div class="pawn-toolbar">
+          <button type="button" id="btn-save-settings" class="mod-cta">Save settings</button>
+        </div>
+        <p class="pawn-hint">
+          Same fields as the Obsidian Pawn plugin. Token is api.token from pawnai.yaml.
+        </p>
+      </section>
+
+      <p id="notice" class="pawn-notice" hidden></p>
+
+      <main class="pawn-body">
+        <div class="pawn-toolbar">
+          <button
+            type="button"
+            id="btn-add-displayed"
+            class="clickable-icon"
+            aria-label="Add displayed message"
+            title="Add displayed message"
+          ></button>
+          <button
+            type="button"
+            id="btn-add-selected"
+            class="clickable-icon"
+            aria-label="Add selected messages"
+            title="Add selected messages"
+          ></button>
+          <span class="pawn-toolbar-sep" aria-hidden="true"></span>
+          <button type="button" id="btn-save" class="mod-cta" title="Save to vault">Save</button>
+          <button
+            type="button"
+            id="btn-new-page"
+            class="clickable-icon"
+            aria-label="New page"
+            title="New page"
+          ></button>
+          <span id="path-label" class="pawn-hint pawn-path-label"></span>
+        </div>
+        <div id="tray" class="pawn-tray"></div>
+        <p id="empty" class="pawn-hint pawn-empty">
+          Add the displayed or selected messages. Snippets stack here in order, then Save appends
+          them to the target note.
+        </p>
+      </main>
+    </div>
+    <script src="panel.js"></script>
+  </body>
+</html>
