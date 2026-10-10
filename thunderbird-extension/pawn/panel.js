@@ -86,6 +86,7 @@ const el = {
   btnNewPage: document.getElementById("btn-new-page"),
   pathLabel: document.getElementById("path-label"),
   notice: document.getElementById("notice"),
+  httpsOnlyHint: document.getElementById("https-only-hint"),
   tray: document.getElementById("tray"),
   empty: document.getElementById("empty"),
 };
@@ -298,9 +299,11 @@ function bind() {
     void persistTarget();
   });
   el.btnSaveSettings.addEventListener("click", () => void saveSettings());
+  el.serverUrl.addEventListener("input", () => syncHttpsOnlyHint());
   el.btnSettings.addEventListener("click", () => {
     state.settingsOpen = !state.settingsOpen;
     syncSettingsUi();
+    syncHttpsOnlyHint();
   });
   el.btnAddDisplayed.addEventListener("click", () => {
     void requestSnip("pawn-add-displayed");
@@ -347,11 +350,38 @@ async function saveSettings() {
   }
 }
 
+/** Thunderbird HTTPS-Only Mode upgrades http://LAN to https:// (localhost usually exempt). */
+function httpLanWarning(serverUrl) {
+  try {
+    const u = new URL(String(serverUrl || "").trim());
+    if (u.protocol !== "http:") return "";
+    const host = u.hostname.toLowerCase();
+    if (host === "localhost" || host === "127.0.0.1" || host === "[::1]" || host === "::1") {
+      return "";
+    }
+    return (
+      `Thunderbird will likely force HTTPS for http://${host} (HTTPS-Only Mode). ` +
+      `Use http://127.0.0.1 if the server is local, add an HTTPS-Only exception for ` +
+      `${u.origin}, disable HTTPS-Only Mode, or serve TLS (make ssl-cert).`
+    );
+  } catch (_) {
+    return "";
+  }
+}
+
+function syncHttpsOnlyHint() {
+  if (!el.httpsOnlyHint) return;
+  const warn = httpLanWarning(el.serverUrl.value || state.settings.serverUrl);
+  el.httpsOnlyHint.hidden = !warn;
+  el.httpsOnlyHint.textContent = warn;
+}
+
 async function loadSettings() {
   const stored = await storage.local.get(["settings", "target"]);
   state.settings = { ...DEFAULTS, ...(stored.settings || {}) };
   el.serverUrl.value = state.settings.serverUrl;
   el.apiToken.value = state.settings.apiToken;
+  syncHttpsOnlyHint();
   const t = stored.target || {};
   state.targetKind = t.kind || "new";
   state.stickyPath = t.path || "";

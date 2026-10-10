@@ -238,15 +238,33 @@ async function explainFetchFailure(url, err) {
   } catch (_) {
     /* ignore */
   }
+  let httpsOnly = "";
+  try {
+    const u = new URL(url);
+    const host = u.hostname.toLowerCase();
+    const loopback = host === "localhost" || host === "127.0.0.1" || host === "[::1]" || host === "::1";
+    if (u.protocol === "http:" && !loopback) {
+      httpsOnly =
+        `Thunderbird HTTPS-Only Mode upgrades plain HTTP on LAN hosts to HTTPS ` +
+        `(DevTools will show https://${host}/…). Fix: Settings → Privacy → HTTPS-Only → ` +
+        `exception for ${u.origin}, or use http://127.0.0.1, or enable TLS on pawn-server.`;
+    } else if (u.protocol === "https:") {
+      httpsOnly =
+        "URL is HTTPS — pawn-server is usually plain HTTP on the LAN. " +
+        "Switch Settings to http://… or terminate TLS on the server.";
+    }
+  } catch (_) {
+    /* ignore */
+  }
   const lines = [
     `Could not reach ${url}`,
     `(${detail})`,
+    httpsOnly,
     hostOk
-      ? "Host permission is granted — this is usually pawn-server not listening, a wrong URL/port, TLS, or an HTTP proxy hijacking localhost."
-      : "Host permission missing — Add-ons → Pawn Capture → Permissions → enable Access your data for all websites (or 127.0.0.1 / localhost).",
-    `Check from a terminal: curl -sS -i ${url}`,
-    "Restart pawn-server after upgrading (CORS now allows moz-extension://).",
-  ];
+      ? "Host permission is granted."
+      : "Host permission missing — Add-ons → Pawn Capture → Permissions → enable Access your data for all websites.",
+    `Check from a terminal: curl -sS -i '${url.replace(/'/g, "'\\''")}'`,
+  ].filter(Boolean);
   return lines.join(" ");
 }
 

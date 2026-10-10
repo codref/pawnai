@@ -90,15 +90,20 @@ Host permissions alone are not enough — Firefox/Thunderbird use the same
 
 1. Confirm `pawn-server` is up: `curl -sS -i http://127.0.0.1:8000/health`
    (use the same host/port as Settings). If curl fails, fix the server first.
-2. **Restart pawn-server** on a build that allows `moz-extension://` via CORS
-   (`allow_origin_regex` in `create_app`). Older servers only listed Obsidian
-   origins, so the companion window was blocked even with Permissions toggles on.
-3. Reload the add-on (v0.1.2+), Settings → **Save settings**.
-4. Permissions tab should show **Access your data for all websites** (and/or
-   `127.0.0.1` / `localhost`) enabled — Gecko match patterns must not include a
-   port; the add-on requests `http://127.0.0.1/*`, which covers `:8000`.
-5. If curl works but the add-on still fails, check for an HTTP proxy that
-   hijacks localhost (Thunderbird uses the browser network stack).
+2. **HTTPS-Only Mode (most common on LAN IPs).** Thunderbird upgrades
+   `http://192.168.x.x:8000` to `https://…` (localhost / `127.0.0.1` are usually
+   exempt). In DevTools the request URL shows `https://` even when Settings say
+   `http://`. Fixes (pick one):
+   - Settings → Privacy & Security → **HTTPS-Only Mode** → manage exceptions →
+     allow `http://192.168.x.x:8000` (your server), **or** turn HTTPS-Only off
+   - Point the add-on at `http://127.0.0.1:8000` when the server is on this machine
+   - Serve TLS (`make ssl-cert` + `api.ssl_certfile` / `api.ssl_keyfile`) and use
+     `https://…` with a certificate Thunderbird trusts (or a permanent exception)
+3. **Restart pawn-server** on a build that allows `moz-extension://` via CORS
+   (`allow_origin_regex` in `create_app`).
+4. Reload the add-on (v0.1.4+), Settings → **Save settings**.
+5. Permissions: **Access your data for all websites** (and/or the host). Gecko
+   match patterns must not include a port; `http://192.168.1.61/*` covers `:8000`.
 
 ## Implementation
 

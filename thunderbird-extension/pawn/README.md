@@ -40,10 +40,11 @@ at the root.
    `api.token` from `pawnai.yaml`. Click **Save settings** and accept the host
    permission prompt (required so the add-on can reach pawn-server).
 
-If you see **NetworkError when attempting to fetch resource**: reload this
-add-on (v0.1.1+), Save settings again, or enable **Access your data for all
-websites** under Add-ons → Pawn Capture → Permissions. Confirm pawn-server is
-running.
+If you see **NetworkError** and DevTools shows `https://` while the server is
+plain HTTP on a LAN IP: Thunderbird **HTTPS-Only Mode** upgraded the request.
+Add an HTTPS-Only exception for `http://<host>:8000`, use `http://127.0.0.1:8000`
+on the same machine, or enable TLS on pawn-server. See
+[docs/THUNDERBIRD_CAPTURE.md](../../docs/THUNDERBIRD_CAPTURE.md).
 
 Temporary add-ons are cleared when Thunderbird quits; reload after each restart.
 
