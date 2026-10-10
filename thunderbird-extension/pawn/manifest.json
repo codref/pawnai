@@ -1,13 +1,12 @@
 {
   "manifest_version": 3,
   "name": "Pawn Capture (Thunderbird)",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "Capture email messages and image attachments into the Pawn vault.",
   "permissions": [
     "messagesRead",
     "menus",
-    "storage",
-    "windows"
+    "storage"
   ],
   "host_permissions": [
     "http://127.0.0.1/*",
