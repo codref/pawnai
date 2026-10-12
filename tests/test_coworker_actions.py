@@ -12,6 +12,7 @@ def test_item_note_roundtrip():
         kind="decision",
         text="Keep it on our S3.",
         thread="Project X",
+        context="Davide and Mira agreed not to migrate before Friday.",
         quote="we stay on S3",
         source_link="[[Pawn/Transcripts/s.md]]",
         reason="New commitment.",
@@ -21,6 +22,8 @@ def test_item_note_roundtrip():
     assert parsed["short_id"] == "abcd1234"
     assert parsed["action"] == ""
     assert "Keep it on our S3." in raw
+    assert "## Context" in raw
+    assert "Davide and Mira agreed" in raw
     assert "Why you were notified" in raw
 
 

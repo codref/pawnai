@@ -54,6 +54,7 @@ def _rewrite_note(store: Any, item: dict[str, Any], *, status: str, action: str 
         kind=item.get("kind") or "",
         text=item.get("text") or "",
         thread=item.get("thread") or "",
+        context=item.get("context") or "",
         quote=item.get("quote") or "",
         reason=item.get("reason") or "",
         interrupt=bool(item.get("interrupt")),

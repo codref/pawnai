@@ -278,22 +278,74 @@ const KINDS = [
 interface InboxUiState {
   section: ItemsSection;
   selectMode: boolean;
+  reviewMode: boolean;
   selected: Set<string>;
   search: string;
   kind: string;
   scope: ItemsScope;
   expanded: Set<string>;
+  focusedId: string | null;
 }
 
 const uiState: InboxUiState = {
   section: "items",
   selectMode: false,
+  reviewMode: false,
   selected: new Set(),
   search: "",
   kind: "",
   scope: "open",
   expanded: new Set(),
+  focusedId: null,
 };
+
+const CONTEXT_PREVIEW = 220;
+
+/** Preserved across ChatView body rebuilds (store notify). */
+let pendingJobsScroll: number | null = null;
+
+/** Call before recreating the inbox root so scroll position survives notify. */
+export function preserveInboxScroll(top: number): void {
+  pendingJobsScroll = top;
+}
+
+function contextPreview(item: InboxItem): string {
+  const raw = (item.context || "").trim() || (item.quote || "").trim();
+  if (!raw) return "";
+  const oneLine = raw.replace(/\s+/g, " ");
+  if (oneLine.length <= CONTEXT_PREVIEW) return oneLine;
+  return `${oneLine.slice(0, CONTEXT_PREVIEW).replace(/\s+\S*$/, "")}…`;
+}
+
+function anchorAfterRemove(ids: string[], removedId: string): string | null {
+  const idx = ids.indexOf(removedId);
+  if (idx < 0) return ids[0] ?? null;
+  return ids[idx + 1] ?? ids[idx - 1] ?? null;
+}
+
+function restoreScroll(el: HTMLElement, top: number): void {
+  el.scrollTop = top;
+  requestAnimationFrame(() => {
+    if (el.isConnected) el.scrollTop = top;
+  });
+}
+
+function focusCard(listRoot: HTMLElement, id: string | null): void {
+  if (!id) return;
+  const card = listRoot.querySelector(
+    `.pawn-item-card[data-item-id="${CSS.escape(id)}"]`,
+  ) as HTMLElement | null;
+  if (!card) return;
+  card.addClass("is-focused");
+  card.scrollIntoView({ block: "nearest" });
+}
+
+export interface ItemActionsOpts {
+  /** Include Ask Pawn (task). Default true for note bar; Inbox rows pass false. */
+  ask?: boolean;
+  /** Called before the async action (for busy UI / focus anchor). */
+  onStart?: (action: string) => void;
+}
 
 /** Quiet icon actions for an item (sidebar row or note bar). */
 export function mountItemActions(
@@ -301,7 +353,9 @@ export function mountItemActions(
   plugin: PawnPlugin,
   item: InboxItem,
   onDone?: () => void,
+  opts?: ItemActionsOpts,
 ): void {
+  const ask = opts?.ask !== false;
   const actions = parent.createDiv({ cls: "pawn-item-actions" });
   const iconBtn = (icon: string, label: string, action: string) => {
     const button = actions.createEl("button", {
@@ -311,13 +365,20 @@ export function mountItemActions(
     setIcon(button, icon);
     button.onclick = (ev) => {
       ev.stopPropagation();
+      button.addClass("is-busy");
+      button.setAttr("disabled", "true");
+      opts?.onStart?.(action);
       void plugin.items
         .runAction(item.id, action)
         .then((receipt) => {
           new Notice(receipt, 4000);
           onDone?.();
         })
-        .catch(noticeError);
+        .catch((err) => {
+          button.removeClass("is-busy");
+          button.removeAttribute("disabled");
+          noticeError(err);
+        });
     };
   };
 
@@ -333,11 +394,13 @@ export function mountItemActions(
   iconBtn("circle-check", "Done", "ignore");
   iconBtn("list-plus", "Add TODO", "todo");
   if (item.thread) iconBtn("folder-input", "File to thread", "file");
-  iconBtn("bot", "Ask Pawn", "task");
+  if (ask) iconBtn("bot", "Ask Pawn", "task");
   iconBtn("trash-2", "Delete", "delete");
 }
 
 export function renderInbox(parent: HTMLElement, plugin: PawnPlugin): void {
+  const scrollTop = pendingJobsScroll ?? parent.scrollTop;
+  pendingJobsScroll = null;
   parent.empty();
   const state = uiState;
   state.scope = plugin.items.scope || state.scope;
@@ -362,7 +425,9 @@ export function renderInbox(parent: HTMLElement, plugin: PawnPlugin): void {
     b.onclick = () => {
       if (state.section !== id) {
         state.selectMode = false;
+        state.reviewMode = false;
         state.selected.clear();
+        state.focusedId = null;
       }
       state.section = id;
       renderInbox(parent, plugin);
@@ -371,10 +436,12 @@ export function renderInbox(parent: HTMLElement, plugin: PawnPlugin): void {
 
   if (state.section === "ideas") {
     renderIdeas(parent, plugin);
+    restoreScroll(parent, scrollTop);
     return;
   }
   if (state.section === "captures") {
     renderCaptures(parent, plugin);
+    restoreScroll(parent, scrollTop);
     return;
   }
 
@@ -468,9 +535,37 @@ export function renderInbox(parent: HTMLElement, plugin: PawnPlugin): void {
   }
 
   const listedIds = plugin.items.all().map((i) => i.id);
+  if (state.focusedId && !listedIds.includes(state.focusedId)) {
+    state.focusedId = listedIds[0] ?? null;
+  }
+  if (state.reviewMode && !state.focusedId && listedIds.length) {
+    state.focusedId = listedIds[0];
+  }
   const allSelected =
     listedIds.length > 0 && listedIds.every((id) => state.selected.has(id));
   const bulk = parent.createDiv({ cls: "pawn-inbox-bulk" });
+  const reviewBtn = bulk.createEl("button", {
+    cls: "clickable-icon",
+    attr: {
+      "aria-label": state.reviewMode ? "Exit review" : "Review",
+      title: state.reviewMode
+        ? "Exit review (j/k · d done · x delete · t todo)"
+        : "Review with keyboard",
+    },
+  });
+  setIcon(reviewBtn, state.reviewMode ? "keyboard" : "eye");
+  reviewBtn.toggleClass("is-active", state.reviewMode);
+  reviewBtn.onclick = () => {
+    state.reviewMode = !state.reviewMode;
+    if (state.reviewMode) {
+      state.selectMode = false;
+      state.selected.clear();
+      state.focusedId = listedIds[0] ?? null;
+    } else {
+      state.focusedId = null;
+    }
+    renderInbox(parent, plugin);
+  };
   const selectBtn = bulk.createEl("button", {
     cls: "clickable-icon",
     attr: {
@@ -479,9 +574,14 @@ export function renderInbox(parent: HTMLElement, plugin: PawnPlugin): void {
     },
   });
   setIcon(selectBtn, state.selectMode ? "x" : "check-square");
+  selectBtn.toggleClass("is-active", state.selectMode);
   selectBtn.onclick = () => {
     state.selectMode = !state.selectMode;
     state.selected.clear();
+    if (state.selectMode) {
+      state.reviewMode = false;
+      state.focusedId = null;
+    }
     renderInbox(parent, plugin);
   };
   const selectAllLabel = allSelected ? "Clear selection" : "Select all";
@@ -496,12 +596,14 @@ export function renderInbox(parent: HTMLElement, plugin: PawnPlugin): void {
       state.selected.clear();
     } else {
       state.selectMode = true;
+      state.reviewMode = false;
+      state.focusedId = null;
       state.selected = new Set(listedIds);
     }
     renderInbox(parent, plugin);
   };
   const delSel = bulk.createEl("button", {
-    cls: "clickable-icon",
+    cls: "clickable-icon pawn-inbox-del-sel",
     attr: {
       "aria-label":
         state.selected.size > 0
@@ -522,18 +624,21 @@ export function renderInbox(parent: HTMLElement, plugin: PawnPlugin): void {
       "Delete selected items?",
       `Delete ${ids.length} item(s). They will not come back.`,
       () => {
+        state.selected.clear();
+        state.selectMode = false;
         void plugin.items
           .deleteIds(ids)
-          .then((n) => {
-            state.selected.clear();
-            state.selectMode = false;
-            new Notice(`Deleted ${n}.`, 4000);
-            renderInbox(parent, plugin);
-          })
+          .then((n) => new Notice(`Deleted ${n}.`, 4000))
           .catch(noticeError);
       },
     ).open();
   };
+  if (state.reviewMode) {
+    parent.createDiv({
+      cls: "pawn-inbox-hint",
+      text: "Review · j/k move · d done · x delete · t todo · f file · e expand · Enter open",
+    });
+  }
 
   if (plugin.items.isOffline()) {
     parent.createDiv({
@@ -551,14 +656,34 @@ export function renderInbox(parent: HTMLElement, plugin: PawnPlugin): void {
           ? "No open items. Meeting extracts land here for triage."
           : "No items match this filter.",
     });
+    restoreScroll(parent, scrollTop);
     return;
   }
 
   const list = parent.createDiv({ cls: "pawn-inbox-list" });
+  const rerender = () => renderInbox(parent, plugin);
+  const runTriaged = (itemId: string, action: string) => {
+    state.focusedId = anchorAfterRemove(listedIds, itemId);
+    state.selected.delete(itemId);
+    // Store notify rebuilds the inbox; avoid rendering into a detached parent.
+    void plugin.items
+      .runAction(itemId, action)
+      .then((receipt) => {
+        if (!state.reviewMode) new Notice(receipt, 3000);
+      })
+      .catch(noticeError);
+  };
+
   for (const group of groupByDay(items)) {
     list.createDiv({ cls: "pawn-inbox-day", text: group.label });
     for (const item of group.items) {
-      renderItemRow(list, plugin, item, state, () => renderInbox(parent, plugin));
+      renderItemRow(list, plugin, item, state, {
+        rerender,
+        onSelectToggle: () => updateBulkDeleteLabel(parent, state),
+        onActionStart: (id) => {
+          state.focusedId = anchorAfterRemove(listedIds, id);
+        },
+      });
     }
   }
 
@@ -568,6 +693,99 @@ export function renderInbox(parent: HTMLElement, plugin: PawnPlugin): void {
       void plugin.items.loadMore().then(() => renderInbox(parent, plugin));
     };
   }
+
+  restoreScroll(parent, scrollTop);
+  if (state.reviewMode) {
+    focusCard(parent, state.focusedId);
+    parent.tabIndex = 0;
+    parent.onkeydown = (ev) => {
+      if (!state.reviewMode) return;
+      const target = ev.target as HTMLElement | null;
+      if (
+        target &&
+        (target.tagName === "INPUT" ||
+          target.tagName === "TEXTAREA" ||
+          target.isContentEditable)
+      ) {
+        return;
+      }
+      const ids = plugin.items.all().map((i) => i.id);
+      if (!ids.length) return;
+      let focus = state.focusedId && ids.includes(state.focusedId) ? state.focusedId : ids[0];
+      const idx = ids.indexOf(focus);
+      const key = ev.key;
+      if (key === "j" || key === "ArrowDown") {
+        ev.preventDefault();
+        state.focusedId = ids[Math.min(ids.length - 1, idx + 1)];
+        rerender();
+        return;
+      }
+      if (key === "k" || key === "ArrowUp") {
+        ev.preventDefault();
+        state.focusedId = ids[Math.max(0, idx - 1)];
+        rerender();
+        return;
+      }
+      if (key === "e") {
+        ev.preventDefault();
+        if (state.expanded.has(focus)) state.expanded.delete(focus);
+        else state.expanded.add(focus);
+        rerender();
+        return;
+      }
+      if (key === "Enter") {
+        ev.preventDefault();
+        const item = plugin.items.all().find((i) => i.id === focus);
+        const noteFile = item?.note_key
+          ? plugin.app.vault.getAbstractFileByPath(item.note_key)
+          : null;
+        if (noteFile instanceof TFile) {
+          void plugin.app.workspace.getLeaf(false).openFile(noteFile);
+        }
+        return;
+      }
+      if (key === "d") {
+        ev.preventDefault();
+        runTriaged(focus, "ignore");
+        return;
+      }
+      if (key === "x" || key === "Backspace") {
+        ev.preventDefault();
+        runTriaged(focus, "delete");
+        return;
+      }
+      if (key === "t") {
+        ev.preventDefault();
+        runTriaged(focus, "todo");
+        return;
+      }
+      if (key === "f") {
+        const item = plugin.items.all().find((i) => i.id === focus);
+        if (!item?.thread) return;
+        ev.preventDefault();
+        runTriaged(focus, "file");
+      }
+    };
+    parent.focus({ preventScroll: true });
+  }
+}
+
+function updateBulkDeleteLabel(parent: HTMLElement, state: InboxUiState): void {
+  const delSel = parent.querySelector(".pawn-inbox-del-sel") as HTMLButtonElement | null;
+  if (!delSel) return;
+  const label =
+    state.selected.size > 0
+      ? `Delete selected (${state.selected.size})`
+      : "Delete selected";
+  delSel.setAttr("aria-label", label);
+  delSel.setAttr("title", label);
+  delSel.disabled = state.selected.size === 0;
+}
+
+interface ItemRowHandlers {
+  rerender: () => void;
+  onSelectToggle: () => void;
+  onActionStart: (id: string) => void;
 }
 
 function renderItemRow(
@@ -575,9 +793,12 @@ function renderItemRow(
   plugin: PawnPlugin,
   item: InboxItem,
   state: InboxUiState,
-  rerender: () => void,
+  handlers: ItemRowHandlers,
 ): void {
+  const { rerender, onSelectToggle, onActionStart } = handlers;
   const card = parent.createDiv({ cls: "pawn-job-card pawn-inbox-card pawn-item-card" });
+  card.dataset.itemId = item.id;
+  if (state.reviewMode && state.focusedId === item.id) card.addClass("is-focused");
   const noteFile = item.note_key
     ? plugin.app.vault.getAbstractFileByPath(item.note_key)
     : null;
@@ -588,10 +809,11 @@ function renderItemRow(
   if (state.selectMode) {
     const box = top.createEl("input", { type: "checkbox", cls: "pawn-item-check" });
     box.checked = state.selected.has(item.id);
+    box.onclick = (ev) => ev.stopPropagation();
     box.onchange = () => {
       if (box.checked) state.selected.add(item.id);
       else state.selected.delete(item.id);
-      rerender();
+      onSelectToggle();
     };
   }
   const body = top.createDiv({ cls: "pawn-item-body" });
@@ -606,7 +828,16 @@ function renderItemRow(
   if (orphaned) {
     title.setAttr("title", item.note_key ? "Item note missing" : "No item note");
   }
+  const preview = contextPreview(item);
+  if (preview) {
+    body.createDiv({ cls: "pawn-inbox-context", text: preview });
+  }
   title.onclick = () => {
+    if (state.reviewMode) {
+      state.focusedId = item.id;
+      rerender();
+      return;
+    }
     if (hasNote) {
       void plugin.app.workspace.getLeaf(false).openFile(noteFile);
       return;
@@ -616,6 +847,14 @@ function renderItemRow(
     else state.expanded.add(item.id);
     rerender();
   };
+  if (state.reviewMode) {
+    card.onclick = () => {
+      if (state.focusedId !== item.id) {
+        state.focusedId = item.id;
+        rerender();
+      }
+    };
+  }
 
   const metaRow = card.createDiv({ cls: "pawn-item-meta-row" });
   const meta = metaRow.createDiv({ cls: "pawn-job-meta" });
@@ -625,7 +864,16 @@ function renderItemRow(
     item.status,
   ].filter(Boolean);
   meta.setText(bits.join(" · "));
-  mountItemActions(metaRow, plugin, item, rerender);
+  mountItemActions(
+    metaRow,
+    plugin,
+    item,
+    undefined, // ItemsStore.notify rebuilds the list
+    {
+      ask: false,
+      onStart: () => onActionStart(item.id),
+    },
+  );
 
   const expandBtn = card.createEl("button", {
     cls: "pawn-item-expand clickable-icon",
@@ -635,7 +883,8 @@ function renderItemRow(
     },
   });
   setIcon(expandBtn, state.expanded.has(item.id) ? "chevron-up" : "chevron-down");
-  expandBtn.onclick = () => {
+  expandBtn.onclick = (ev) => {
+    ev.stopPropagation();
     if (state.expanded.has(item.id)) state.expanded.delete(item.id);
     else state.expanded.add(item.id);
     rerender();
@@ -643,8 +892,25 @@ function renderItemRow(
 
   if (state.expanded.has(item.id)) {
     const detail = card.createDiv({ cls: "pawn-item-detail" });
+    if (item.context) {
+      detail.createDiv({ cls: "pawn-item-context-full", text: item.context });
+    }
     if (item.quote) detail.createEl("blockquote", { text: item.quote });
     if (item.reason) detail.createDiv({ text: item.reason, cls: "pawn-item-reason" });
+    const askRow = detail.createDiv({ cls: "pawn-item-detail-actions" });
+    const askBtn = askRow.createEl("button", {
+      cls: "clickable-icon pawn-item-action",
+      attr: { "aria-label": "Ask Pawn", title: "Ask Pawn" },
+    });
+    setIcon(askBtn, "bot");
+    askBtn.onclick = (ev) => {
+      ev.stopPropagation();
+      onActionStart(item.id);
+      void plugin.items
+        .runAction(item.id, "task")
+        .then((receipt) => new Notice(receipt, 4000))
+        .catch(noticeError);
+    };
     if (item.note_key) {
       if (hasNote) {
         const link = detail.createEl("a", { text: item.note_key, cls: "internal-link" });

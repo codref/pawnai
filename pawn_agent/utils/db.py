@@ -183,6 +183,7 @@ class CoworkerItem(_Base):
     owner: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     due: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     quote: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    context: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     thread: Mapped[Optional[str]] = mapped_column(String, nullable=True, index=True)
     interrupt: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     movement: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)

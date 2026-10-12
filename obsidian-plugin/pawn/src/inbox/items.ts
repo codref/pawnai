@@ -81,23 +81,45 @@ function metaValue(meta: string, key: string): string {
   return match ? match[1].trim() : "";
 }
 
-function bodyText(rest: string): { text: string; quote: string } {
+function bodyText(rest: string): { text: string; context: string; quote: string } {
   const lines = rest.trim().split("\n");
   const textLines: string[] = [];
+  const contextLines: string[] = [];
   const quoteLines: string[] = [];
-  let inQuote = false;
+  let section: "text" | "context" | "quote" | "done" = "text";
   for (const line of lines) {
+    if (section === "done") break;
+    if (line.startsWith("## Context")) {
+      section = "context";
+      continue;
+    }
+    if (line.startsWith("Source:") || (line.startsWith("## ") && !line.startsWith("## Context"))) {
+      section = "done";
+      continue;
+    }
     if (line.startsWith(">")) {
-      inQuote = true;
+      section = "quote";
       quoteLines.push(line.replace(/^>\s?/, ""));
       continue;
     }
-    if (inQuote && !line.trim()) break;
-    if (line.startsWith("Source:") || line.startsWith("## ")) break;
-    if (!inQuote) textLines.push(line);
+    if (section === "quote") {
+      if (!line.trim()) {
+        section = "done";
+        continue;
+      }
+      // Non-blockquote after quote ends the quote block.
+      section = "done";
+      continue;
+    }
+    if (section === "context") {
+      contextLines.push(line);
+      continue;
+    }
+    if (section === "text") textLines.push(line);
   }
   return {
     text: textLines.join("\n").trim() || "(empty)",
+    context: contextLines.join("\n").trim(),
     quote: quoteLines.join("\n").trim(),
   };
 }
@@ -116,7 +138,7 @@ export function parseItemNote(
   if (!statusAllowed(status, scope)) return null;
   const id = metaValue(parsed.meta, "id") || path;
   const shortId = metaValue(parsed.meta, "short_id") || id.slice(0, 8);
-  const { text: body, quote } = bodyText(parsed.rest);
+  const { text: body, context, quote } = bodyText(parsed.rest);
   const created =
     mtime != null ? window.moment(mtime).toISOString() : window.moment().toISOString();
   return {
@@ -129,6 +151,7 @@ export function parseItemNote(
     interrupt: false,
     reason: null,
     quote: quote || null,
+    context: context || null,
     note_key: path,
     created_at: created,
   };

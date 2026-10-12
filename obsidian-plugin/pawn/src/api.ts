@@ -127,6 +127,7 @@ export interface InboxItem {
   interrupt: boolean;
   reason?: string | null;
   quote?: string | null;
+  context?: string | null;
   note_key?: string | null;
   created_at?: string | null;
   updated_at?: string | null;

@@ -18,6 +18,7 @@ def render_item_note(
     kind: str,
     text: str,
     thread: str = "",
+    context: str = "",
     quote: str = "",
     source_link: str = "",
     reason: str = "",
@@ -36,6 +37,10 @@ def render_item_note(
         "action": action or "",
     }
     body_parts = [text.strip() or "(empty)"]
+    if context.strip():
+        body_parts.append("")
+        body_parts.append("## Context")
+        body_parts.append(context.strip())
     if quote.strip():
         body_parts.append("")
         for line in quote.strip().splitlines():

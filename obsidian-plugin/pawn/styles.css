@@ -717,6 +717,44 @@ button.pawn-chip-pin:hover {
   min-width: 0;
 }
 
+.pawn-inbox-context {
+  margin-top: 2px;
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+  line-height: 1.35;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.pawn-item-context-full {
+  margin-bottom: 6px;
+  white-space: pre-wrap;
+  color: var(--text-muted);
+  font-size: var(--font-ui-small);
+}
+
+.pawn-item-card.is-focused {
+  outline: 2px solid var(--interactive-accent);
+  outline-offset: -2px;
+}
+
+.pawn-inbox-bulk .clickable-icon.is-active {
+  color: var(--interactive-accent);
+  background: var(--background-modifier-hover);
+}
+
+.pawn-item-detail-actions {
+  display: flex;
+  gap: var(--size-4-1);
+  margin: 4px 0;
+}
+
+.pawn-jobs:focus {
+  outline: none;
+}
+
 .pawn-inbox-title.is-orphan {
   color: var(--text-muted);
   text-decoration: none;

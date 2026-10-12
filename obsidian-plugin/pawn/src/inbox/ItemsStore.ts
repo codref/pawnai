@@ -23,6 +23,7 @@ export interface ItemsQuery {
 }
 
 const DEBOUNCE_MS = 400;
+const SUPPRESS_NOTE_MS = 1200;
 
 /** Coworker Items backed by the API online, vault notes offline. */
 export class ItemsStore {
@@ -39,6 +40,8 @@ export class ItemsStore {
   private refreshing = false;
   private flushing = false;
   private flushLabel = "";
+  /** note_key → expiry (ms) — skip vault-driven refresh after local triage. */
+  private suppressUntil = new Map<string, number>();
   kind = "";
   q = "";
   scope: ItemsScope = "open";
@@ -49,11 +52,27 @@ export class ItemsStore {
     return `${this.plugin.settings.agentRoot.replace(/\/+$/, "")}/Items`;
   }
 
+  private suppressNoteKey(noteKey: string | null | undefined): void {
+    if (!noteKey) return;
+    this.suppressUntil.set(noteKey, Date.now() + SUPPRESS_NOTE_MS);
+  }
+
+  private isSuppressed(path: string): boolean {
+    const until = this.suppressUntil.get(path);
+    if (until == null) return false;
+    if (Date.now() >= until) {
+      this.suppressUntil.delete(path);
+      return false;
+    }
+    return true;
+  }
+
   start(): void {
     this.stopped = false;
     const onVault = (file: TAbstractFile) => {
       if (!(file instanceof TFile)) return;
       if (!isItemNotePath(file.path, this.itemsDir())) return;
+      if (this.isSuppressed(file.path)) return;
       this.scheduleRefresh();
     };
     this.plugin.registerEvent(this.plugin.app.vault.on("create", onVault));
@@ -66,6 +85,12 @@ export class ItemsStore {
           (file instanceof TFile && isItemNotePath(file.path, dir)) ||
           isItemNotePath(oldPath, dir)
         ) {
+          if (
+            (file instanceof TFile && this.isSuppressed(file.path)) ||
+            this.isSuppressed(oldPath)
+          ) {
+            return;
+          }
           this.scheduleRefresh();
         }
       }),
@@ -196,11 +221,16 @@ export class ItemsStore {
     };
   }
 
-  async refresh(): Promise<void> {
+  /**
+   * Reload the list. Pass ``{ flushable: false }`` after triage to skip the
+   * expensive open-id walk; flush button / full refresh still recount.
+   */
+  async refresh(opts?: { flushable?: boolean }): Promise<void> {
     if (this.stopped || this.refreshing) {
       if (this.refreshing) this.scheduleRefresh();
       return;
     }
+    const wantFlushable = opts?.flushable !== false;
     this.refreshing = true;
     const generation = ++this.generation;
     const before = this.fingerprint();
@@ -222,9 +252,13 @@ export class ItemsStore {
           if (this.stopped || generation !== this.generation) return;
           this.openTotal = open.total;
         }
-        const keep = await this.collectOpenKeepSet();
-        if (this.stopped || generation !== this.generation) return;
-        await this.recountFlushable(keep);
+        if (wantFlushable) {
+          const keep = await this.collectOpenKeepSet();
+          if (this.stopped || generation !== this.generation) return;
+          await this.recountFlushable(keep);
+        } else {
+          this.vaultNotes = countVaultItemNotes(this.plugin.app, this.itemsDir());
+        }
       } catch (e) {
         if (!(e instanceof ServerUnreachable) && this.plugin.jobs?.online) return;
         const items = await listItemNotes(this.plugin.app, this.itemsDir(), this.scope);
@@ -236,26 +270,56 @@ export class ItemsStore {
           filtered = filtered.filter(
             (i) =>
               (i.text || "").toLowerCase().includes(needle) ||
-              (i.thread || "").toLowerCase().includes(needle),
+              (i.thread || "").toLowerCase().includes(needle) ||
+              (i.context || "").toLowerCase().includes(needle),
           );
         }
         this.items = filtered;
         this.total = filtered.length;
         this.offline = true;
-        const keep = await this.collectOpenKeepSet();
         if (this.scope === "open") {
           this.openTotal = filtered.length;
         } else {
           const openOnly = await listItemNotes(this.plugin.app, this.itemsDir(), "open");
           this.openTotal = openOnly.length;
         }
-        await this.recountFlushable(keep);
+        if (wantFlushable) {
+          const keep = await this.collectOpenKeepSet();
+          await this.recountFlushable(keep);
+        } else {
+          this.vaultNotes = countVaultItemNotes(this.plugin.app, this.itemsDir());
+        }
       }
       if (before !== this.fingerprint()) this.notify();
       else this.plugin.updateStatusBar();
     } finally {
       this.refreshing = false;
     }
+  }
+
+  private isOpenStatus(item: InboxItem): boolean {
+    return ["new", "notified", "snoozed"].includes((item.status || "").toLowerCase());
+  }
+
+  /** Drop one item from the local list and adjust counters (optimistic UI). */
+  private dropLocal(id: string): { item: InboxItem; index: number } | null {
+    const index = this.items.findIndex((i) => i.id === id || i.short_id === id);
+    if (index < 0) return null;
+    const item = this.items[index];
+    this.items = this.items.filter((_, i) => i !== index);
+    this.total = Math.max(0, this.total - 1);
+    if (this.isOpenStatus(item)) this.openTotal = Math.max(0, this.openTotal - 1);
+    this.suppressNoteKey(item.note_key);
+    return { item, index };
+  }
+
+  private restoreLocal(item: InboxItem, index: number): void {
+    const exists = this.items.some((i) => i.id === item.id);
+    if (exists) return;
+    const at = Math.min(Math.max(0, index), this.items.length);
+    this.items = [...this.items.slice(0, at), item, ...this.items.slice(at)];
+    this.total += 1;
+    if (this.isOpenStatus(item)) this.openTotal += 1;
   }
 
   async loadMore(): Promise<void> {
@@ -280,45 +344,55 @@ export class ItemsStore {
   }
 
   async runAction(id: string, action: string): Promise<string> {
-    const item = this.items.find((i) => i.id === id || i.short_id === id);
-    if (this.offline || !this.plugin.jobs?.online) {
-      const noteKey = item?.note_key;
-      if (!noteKey) throw new Error("Offline and no local note for this item.");
-      const { setItemNoteAction } = await import("./items");
-      await setItemNoteAction(this.plugin.app, noteKey, action);
-      this.items = this.items.filter((i) => i.id !== item?.id);
-      this.total = Math.max(0, this.total - 1);
-      if (this.scope === "open") this.openTotal = Math.max(0, this.openTotal - 1);
-      this.notify();
-      return `Queued ${action} on note (sync will apply).`;
+    const removed = this.dropLocal(id);
+    if (removed) this.notify();
+    const item = removed?.item;
+    try {
+      if (this.offline || !this.plugin.jobs?.online) {
+        const noteKey = item?.note_key;
+        if (!noteKey) throw new Error("Offline and no local note for this item.");
+        const { setItemNoteAction } = await import("./items");
+        await setItemNoteAction(this.plugin.app, noteKey, action);
+        return `Queued ${action} on note (sync will apply).`;
+      }
+      return await this.plugin.client.itemAction(id, action);
+    } catch (err) {
+      if (removed) {
+        this.restoreLocal(removed.item, removed.index);
+        this.notify();
+      }
+      throw err;
     }
-    const receipt = await this.plugin.client.itemAction(id, action);
-    this.items = this.items.filter((i) => i.id !== id && i.short_id !== id);
-    this.total = Math.max(0, this.total - 1);
-    if (this.scope === "open" || ["todo", "file", "task", "delete", "ignore"].includes(action)) {
-      this.openTotal = Math.max(0, this.openTotal - 1);
-    }
-    this.notify();
-    return receipt;
   }
 
   async deleteIds(ids: string[]): Promise<number> {
     if (!ids.length) return 0;
-    if (this.offline || !this.plugin.jobs?.online) {
-      let n = 0;
-      for (const id of ids) {
-        await this.runAction(id, "delete");
-        n += 1;
+    const snapshot = ids.map((id) => this.dropLocal(id)).filter(Boolean) as {
+      item: InboxItem;
+      index: number;
+    }[];
+    if (snapshot.length) this.notify();
+    try {
+      if (this.offline || !this.plugin.jobs?.online) {
+        let n = 0;
+        for (const { item } of snapshot) {
+          const noteKey = item.note_key;
+          if (!noteKey) continue;
+          const { setItemNoteAction } = await import("./items");
+          await setItemNoteAction(this.plugin.app, noteKey, "delete");
+          n += 1;
+        }
+        return n;
       }
-      return n;
+      const result = await this.plugin.client.deleteItems({ ids });
+      return result.deleted;
+    } catch (err) {
+      for (const entry of snapshot.reverse()) {
+        this.restoreLocal(entry.item, entry.index);
+      }
+      if (snapshot.length) this.notify();
+      throw err;
     }
-    const result = await this.plugin.client.deleteItems({ ids });
-    const drop = new Set(ids);
-    this.items = this.items.filter((i) => !drop.has(i.id) && !drop.has(i.short_id));
-    this.total = Math.max(0, this.total - result.deleted);
-    this.openTotal = Math.max(0, this.openTotal - result.deleted);
-    this.notify();
-    return result.deleted;
   }
 
   async deleteAllMatching(): Promise<number> {

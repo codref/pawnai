@@ -11,7 +11,7 @@ import {
 import { resolveActiveMarkdownFile } from "../active";
 import { ChatImage, ModelChoice, NoteContext, ServerUnreachable } from "../api";
 import { PromptCommand, renderPrompt } from "../commands/PromptCommands";
-import { renderInbox } from "../inbox/InboxView";
+import { preserveInboxScroll, renderInbox } from "../inbox/InboxView";
 import { captureIdea, noticeError } from "../inbox/ideas";
 import { renderJobCard, renderJobsList } from "../jobs/JobsView";
 import type PawnPlugin from "../main";
@@ -581,7 +581,11 @@ export class PawnChatView extends ItemView {
   }
 
   private onInboxChanged(): void {
-    if (this.tab === "inbox") this.renderBody();
+    if (this.tab === "inbox") {
+      const prev = this.bodyEl?.querySelector(".pawn-jobs") as HTMLElement | null;
+      if (prev) preserveInboxScroll(prev.scrollTop);
+      this.renderBody();
+    }
     this.renderTabs();
   }
 

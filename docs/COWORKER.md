@@ -120,6 +120,9 @@ Attention rules:
 When a `transcribe-diarize` job finishes and chaining resolves to `session_completed` (finalize or one-shot, not an intermediate chunk), the server:
 
 1. Extracts decisions, commitments, open questions, blocks, and contradictions.
+   Each item has a one-line `text` claim, a self-contained `context` (who / about
+   what / stakes; repetition across siblings is fine), and a longer verbatim
+   `quote` from the source.
 2. Scores them against the active threads. A hit has to name one of those threads.
 3. Writes `Pawn/Items/{YYYY-MM-DD}-{slug}-{short_id}.md` and refreshes `Pawn/Today.md`.
 4. Pushes Matrix (and optional ntfy) only for interrupts.
@@ -154,7 +157,13 @@ action:
 
 Keep the recordings on our S3 through Friday.
 
+## Context
+
+Davide and Mira agreed not to migrate recordings off our S3 before the Friday
+deploy; moving earlier risks breaking the Sync Engine cutover. Owner unclear.
+
 > We should not move the bucket before the deploy.
+> Mira: yes, keep it on our S3 through Friday at least.
 
 Source: [[Pawn/Transcripts/2026-09-28 session-id.md]]
 
@@ -185,7 +194,7 @@ Use any of the surfaces. They call the same actions.
 
 `<id>` is the `short_id` or the full UUID.
 
-**Obsidian.** The plugin Inbox tab (and **Show inbox**) is a time-grouped timeline of open meeting items from `GET /v1/items`. Each row has **Done** (ignore/dismiss), **Add TODO**, **File to thread** (when threaded), **Ask Pawn**, and **Delete**. Select mode plus **Select all**, then **Delete**, clears noise. A missing item note shows as an orphan (title/link disabled). Expand a row for quote/source. The same action buttons appear on an open item note. The **Ideas** chip lists idea notes (`status: inbox`) with Keep / Goal / Task / Drop. The status bar counts open items (and ideas) and opens the Inbox.
+**Obsidian.** The plugin Inbox tab (and **Show inbox**) is a time-grouped timeline of open meeting items from `GET /v1/items`. Each row shows the claim plus a short `context` subtitle (or quote fallback). **Review** mode highlights one row and supports keyboard triage (`j`/`k`, `d` Done, `x` Delete, `t` TODO, `f` File, `e` expand, Enter open note) with optimistic remove and no jump-to-top. **Select** mode plus **Select all**, then **Delete**, clears noise in bulk. Row actions: **Done**, **Add TODO**, **File to thread** (when threaded), **Delete**; **Ask Pawn** lives under expand. A missing item note shows as an orphan. Expand a row for full context, quote, and source. The same primary actions appear on an open item note. The **Ideas** chip lists idea notes (`status: inbox`) with Keep / Goal / Task / Drop. The status bar counts open items (and ideas) and opens the Inbox.
 
 **The item note.** Set `action:` to `todo`, `file`, `task`, `delete`, or `ignore` and let it sync. The vault watcher applies it on its next poll (default 15 seconds). A note already filed, tasked, or dismissed is left alone.
 
