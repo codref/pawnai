@@ -192,6 +192,7 @@ class TranscriptionEngine:
         backend: str = _DEFAULT_TRANSCRIPTION_BACKEND,
         model_name: str = _DEFAULT_TRANSCRIPTION_MODEL,
         whisper_model_name: str = _DEFAULT_WHISPER_MODEL,
+        language: Optional[str] = None,
     ):
         """Initialise the transcription engine.
 
@@ -203,6 +204,8 @@ class TranscriptionEngine:
             model_name: NeMo ASR model identifier (ignored for whisper backend).
             whisper_model_name: faster-whisper model size or path (ignored for
                 nemo backend).
+            language: Optional BCP-47 / Whisper language code (e.g. ``"it"``).
+                Applied only for the whisper backend; NeMo auto-detects.
         """
         self.model: Optional[Any] = None          # NeMo model
         self.whisper_model: Optional[Any] = None  # faster-whisper model
@@ -211,6 +214,7 @@ class TranscriptionEngine:
         self.backend = backend.lower()
         self.model_name = model_name
         self.whisper_model_name = whisper_model_name
+        self.language = (language or "").strip() or None
         if self.backend not in ("nemo", "whisper"):
             raise ValueError(
                 f"Unknown transcription backend: {backend!r}. Choose 'nemo' or 'whisper'."
@@ -325,11 +329,13 @@ class TranscriptionEngine:
     ) -> Dict[str, Any]:
         """Transcribe one audio file via faster-whisper and normalise to the internal schema."""
         self._initialize_whisper_model()
-        segments_gen, _ = self.whisper_model.transcribe(
-            audio_path,
-            word_timestamps=include_timestamps,
-            beam_size=5,
-        )
+        kwargs: Dict[str, Any] = {
+            "word_timestamps": include_timestamps,
+            "beam_size": 5,
+        }
+        if self.language:
+            kwargs["language"] = self.language
+        segments_gen, _ = self.whisper_model.transcribe(audio_path, **kwargs)
 
         segments = list(segments_gen)
 

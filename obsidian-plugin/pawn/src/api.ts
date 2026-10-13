@@ -147,6 +147,64 @@ export interface ListItemsResult {
   total: number;
 }
 
+export interface SessionSummary {
+  session_id: string;
+  title: string;
+  updated_at?: string | null;
+  created_at?: string | null;
+  segments?: number | null;
+  duration_seconds?: number | null;
+  summary?: string | null;
+  transcript_path?: string | null;
+  speakers?: string[];
+  unmapped_count?: number;
+  needs_speakers?: boolean;
+  tags?: string[];
+  topics?: string[];
+  sentiment?: string | null;
+  has_analysis?: boolean;
+}
+
+export interface SessionSpeakerFacet {
+  name: string;
+  count: number;
+}
+
+export interface SessionsPage {
+  data: SessionSummary[];
+  facets: {
+    speakers: SessionSpeakerFacet[];
+    needs_speakers: number;
+  };
+}
+
+export interface SessionLabel {
+  local_label: string;
+  duration_s: number;
+  sample_text: string;
+  mapped_speaker_id?: string | null;
+  mapped_name?: string | null;
+  has_centroid: boolean;
+}
+
+export interface GallerySpeaker {
+  id: string;
+  display_name: string;
+  enrollments: number;
+}
+
+export interface SessionDetail extends SessionSummary {
+  labels: SessionLabel[];
+  gallery: GallerySpeaker[];
+}
+
+export interface ListSessionsParams {
+  q?: string;
+  limit?: number;
+  needs_speakers?: boolean;
+  speaker?: string;
+}
+
 export class ServerUnreachable extends Error {}
 
 export class HttpError extends Error {
@@ -265,6 +323,128 @@ export class PawnClient {
   async createAskJob(req: AskJobRequest): Promise<Job> {
     const resp = await this.request("POST", "/v1/jobs", { kind: "ask", ...req });
     return resp.json as Job;
+  }
+
+  async listSessions(params: ListSessionsParams = {}): Promise<SessionsPage> {
+    const qs = new URLSearchParams();
+    if (params.q) qs.set("q", params.q);
+    if (params.limit != null) qs.set("limit", String(params.limit));
+    if (params.needs_speakers) qs.set("needs_speakers", "true");
+    if (params.speaker) qs.set("speaker", params.speaker);
+    const query = qs.toString() ? `?${qs}` : "";
+    const resp = await this.request("GET", `/v1/sessions${query}`);
+    const body = resp.json as {
+      data?: SessionSummary[];
+      facets?: { speakers?: SessionSpeakerFacet[]; needs_speakers?: number };
+    };
+    return {
+      data: (body.data ?? []) as SessionSummary[],
+      facets: {
+        speakers: body.facets?.speakers ?? [],
+        needs_speakers: Number(body.facets?.needs_speakers ?? 0),
+      },
+    };
+  }
+
+  async getSession(sessionId: string): Promise<SessionDetail> {
+    const resp = await this.request("GET", `/v1/sessions/${encodeURIComponent(sessionId)}`);
+    return resp.json as SessionDetail;
+  }
+
+  async createSpeaker(displayName: string): Promise<GallerySpeaker & { created?: boolean }> {
+    const resp = await this.request("POST", "/v1/speakers", { display_name: displayName });
+    return resp.json as GallerySpeaker & { created?: boolean };
+  }
+
+  async enrollSessionSpeaker(
+    sessionId: string,
+    body: { speaker: string; from_label: string; force?: boolean },
+  ): Promise<{
+    enrollment_id: string;
+    speaker_id: string;
+    display_name: string;
+    duration: number;
+    quality_score?: number | null;
+  }> {
+    const resp = await this.request(
+      "POST",
+      `/v1/sessions/${encodeURIComponent(sessionId)}/enroll`,
+      body,
+    );
+    return resp.json as {
+      enrollment_id: string;
+      speaker_id: string;
+      display_name: string;
+      duration: number;
+      quality_score?: number | null;
+    };
+  }
+
+  async reidentifySession(sessionId: string): Promise<{
+    session_id: string;
+    segments_updated: number;
+    matched: Record<string, string>;
+    unmatched: string[];
+    summary: string;
+  }> {
+    const resp = await this.request(
+      "POST",
+      `/v1/sessions/${encodeURIComponent(sessionId)}/reidentify`,
+      {},
+    );
+    return resp.json as {
+      session_id: string;
+      segments_updated: number;
+      matched: Record<string, string>;
+      unmatched: string[];
+      summary: string;
+    };
+  }
+
+  async relabelSession(
+    sessionId: string,
+    body: { from: string; to: string },
+  ): Promise<{ session_id: string; from: string; to: string; summary: string }> {
+    const resp = await this.request(
+      "POST",
+      `/v1/sessions/${encodeURIComponent(sessionId)}/relabel`,
+      body,
+    );
+    return resp.json as { session_id: string; from: string; to: string; summary: string };
+  }
+
+  async reprocessSession(
+    sessionId: string,
+    body: {
+      confirm: boolean;
+      mode?: "rediarize" | "retranscribe";
+      backend?: "nemo" | "whisper";
+      language?: string | null;
+      threshold?: number;
+      cross_file_threshold?: number;
+      margin?: number | null;
+    },
+  ): Promise<{
+    job_id: string;
+    session_id: string;
+    mode: string;
+    queued: boolean;
+    command: string;
+    result?: string;
+  }> {
+    const resp = await this.request(
+      "POST",
+      `/v1/sessions/${encodeURIComponent(sessionId)}/reprocess`,
+      body,
+    );
+    return resp.json as {
+      job_id: string;
+      session_id: string;
+      mode: string;
+      queued: boolean;
+      command: string;
+      result?: string;
+    };
   }
 
   async listItems(params: ListItemsParams | string = {}): Promise<ListItemsResult> {

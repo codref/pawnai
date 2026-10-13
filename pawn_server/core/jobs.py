@@ -2,9 +2,10 @@
 
 Every job is accepted immediately and runs as an asyncio task in the server
 process. Rows live in ``vault_tasks`` (``kind`` = ``ask`` | ``push_note`` |
-``upload`` | ``capture_enrich``). ``ask`` jobs also get a ``Pawn/Tasks/{id}.md``
-note on S3 so devices that are offline or on mobile see status and result
-through Sync Engine, and the vault watcher can resume them.
+``upload`` | ``capture_enrich`` | ``session_reprocess``). ``ask`` jobs also
+get a ``Pawn/Tasks/{id}.md`` note on S3 so devices that are offline or on
+mobile see status and result through Sync Engine, and the vault watcher can
+resume them.
 """
 
 from __future__ import annotations
@@ -17,7 +18,6 @@ from pathlib import PurePosixPath
 from typing import Any, Optional, Sequence
 
 from pawn_agent.core.sallm_registry import SallmSessionRegistry
-from pawn_agent.tools.push_queue_message import push_queue_message_impl
 from pawn_agent.utils.db import (
     VaultTask,
     claim_vault_task,
@@ -42,7 +42,7 @@ from pawn_server.core.vault_tasks import (
 
 logger = logging.getLogger(__name__)
 
-JOB_KINDS = ("ask", "push_note", "upload", "capture_enrich")
+JOB_KINDS = ("ask", "push_note", "upload", "capture_enrich", "session_reprocess")
 TERMINAL_STATUSES = frozenset({"review", "done", "blocked"})
 # Finished enough to remove from the Jobs UI (running jobs must cancel first).
 DELETABLE_STATUSES = frozenset({"review", "done", "blocked"})
@@ -303,6 +303,57 @@ def _new_side_job(
     return effective_id
 
 
+def create_session_reprocess_job_row(
+    cfg: Any,
+    *,
+    job_id: str,
+    session_id: str,
+    mode: str,
+    title: str,
+    payload: dict,
+) -> VaultTask:
+    """Create a ``session_reprocess`` vault_task row (queued until publish finishes)."""
+    effective_id = _new_side_job(
+        cfg,
+        job_id=job_id,
+        kind="session_reprocess",
+        title=title,
+        conversation=f"session:{session_id}",
+        note_path=None,
+        payload={"session_id": session_id, "mode": mode, **payload},
+    )
+    row = get_vault_task(cfg.db_dsn, effective_id)
+    if row is None:
+        raise JobError(f"failed to create job {effective_id}", status_code=500)
+    return row
+
+
+def finish_session_reprocess_job(
+    cfg: Any,
+    job_id: str,
+    *,
+    status: str,
+    result: str,
+    error_code: Optional[str] = None,
+    payload_update: Optional[dict] = None,
+) -> None:
+    """Mark a session_reprocess job terminal after queue publish."""
+    row = get_vault_task(cfg.db_dsn, job_id)
+    payload = dict((row.payload if row else None) or {})
+    if payload_update:
+        payload.update(payload_update)
+    _finish(
+        cfg,
+        job_id,
+        status,
+        "session_reprocess",
+        row.conversation_id if row else None,
+        result,
+        error_code=error_code,
+        payload=payload,
+    )
+
+
 async def create_push_note_job(
     cfg: Any,
     *,
@@ -397,19 +448,28 @@ async def _run_upload(
                 _upload_audio_to_s3, cfg, f"{prefix}/{job_id}/{filename}", data, content_type
             )
             session = PurePosixPath(filename).stem
-            target = getattr(cfg.api, "upload_audio_target", "diarize")
             audio_payload: dict[str, Any] = {"audio_paths": [uri], "session": session}
             if getattr(getattr(cfg, "coworker", None), "enabled", False):
                 audio_payload["chain_agent"] = {"command": "session_completed"}
-            receipt = await push_queue_message_impl(
+            from pawn_server.core.diarize_publish import (  # noqa: PLC0415
+                publish_to_diarize_queue,
+                resolve_diarize_publish_source,
+            )
+
+            receipt = await publish_to_diarize_queue(
                 cfg,
-                target=target,
                 command="transcribe-diarize",
                 payload=audio_payload,
             )
             if receipt.startswith("Error"):
                 raise VaultError(f"{receipt} (stored at {uri})")
-            payload.update({"s3_uri": uri, "session": session, "target": target})
+            payload.update(
+                {
+                    "s3_uri": uri,
+                    "session": session,
+                    "target": resolve_diarize_publish_source(cfg),
+                }
+            )
             _finish(
                 cfg,
                 job_id,

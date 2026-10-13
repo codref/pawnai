@@ -322,6 +322,12 @@ def transcribe(
         "-b",
         help="Transcription backend: 'nemo' (Parakeet/NeMo) or 'whisper' (faster-whisper large-v3)",
     ),
+    language: Optional[str] = typer.Option(
+        None,
+        "--language",
+        "-l",
+        help="Whisper language code (e.g. it, en). Ignored for nemo/Parakeet.",
+    ),
 ) -> None:
     """Transcribe one or more audio files using the Parakeet model.
 
@@ -366,7 +372,7 @@ def transcribe(
         db_engine = get_engine(db_dsn)
         init_db(db_engine)
 
-        engine_t = TranscriptionEngine(device=device, backend=backend)
+        engine_t = TranscriptionEngine(device=device, backend=backend, language=language)
 
         if len(audio_paths) == 1:
             console.print(f"[cyan]Transcribing: {audio_paths[0]}[/cyan]")
@@ -519,6 +525,12 @@ def transcribe_diarize(
         "-b",
         help="Transcription backend: 'nemo' (Parakeet/NeMo) or 'whisper' (faster-whisper large-v3)",
     ),
+    language: Optional[str] = typer.Option(
+        None,
+        "--language",
+        "-l",
+        help="Whisper language code (e.g. it, en). Ignored for nemo/Parakeet.",
+    ),
     overwrite: bool = typer.Option(
         False,
         "--overwrite",
@@ -610,30 +622,12 @@ def transcribe_diarize(
             raise typer.Exit(1)
 
         if overwrite and session:
-            from sqlalchemy import delete as sql_delete
-            from sqlalchemy.orm import Session as OrmSession
+            from ..core.reprocess import wipe_session_asr_state
 
-            from pawn_core.database import SessionSpeakerMap
-
-            with OrmSession(db_engine) as _db:
-                seg_del = _db.execute(
-                    sql_delete(TranscriptionSegment).where(
-                        TranscriptionSegment.session_id == session_id
-                    )
-                )
-                _db.execute(
-                    sql_delete(SessionAnalysis).where(SessionAnalysis.session_id == session_id)
-                )
-                _db.execute(sql_delete(SessionState).where(SessionState.session_id == session_id))
-                map_del = _db.execute(
-                    sql_delete(SessionSpeakerMap).where(
-                        SessionSpeakerMap.session_id == session_id
-                    )
-                )
-                _db.commit()
+            seg_n, map_n = wipe_session_asr_state(db_engine, session_id)
             console.print(
-                f"[yellow]⚠ Overwrite: deleted {seg_del.rowcount} segment(s), "
-                f"{map_del.rowcount} speaker-map row(s), and session state "
+                f"[yellow]⚠ Overwrite: deleted {seg_n} segment(s), "
+                f"{map_n} speaker-map row(s), and session state "
                 f"for '{session_id}'[/yellow]"
             )
 
@@ -682,6 +676,7 @@ def transcribe_diarize(
             time_cursor=prior_time_cursor,
             verbose=verbose,
             backend=backend,
+            language=language,
             source_map=_path_map,
             session_id=session_id,
             identify_margin=float(app_cfg.speakers.identify_margin),
@@ -2698,43 +2693,14 @@ def repair_audio_paths(
 
 
 def _ordered_session_audio_files(engine: Any, session_id: str) -> List[str]:
-    """Return distinct ``audio_file`` paths for *session_id*, oldest-first.
+    """Return distinct ``audio_file`` paths for *session_id*, oldest-first."""
+    from ..core.reprocess import ordered_session_audio_files
 
-    Falls back to ``session_state.processed_files`` when segment rows have no
-    paths (should be rare after a successful ingest).
-    """
-    from sqlalchemy import func, select
-    from sqlalchemy.orm import Session as OrmSession
-
-    from pawn_core.database import TranscriptionSegment
-
-    from ..core.database import SessionState
-
-    with OrmSession(engine) as db:
-        ordered = list(
-            db.execute(
-                select(
-                    TranscriptionSegment.audio_file,
-                    func.min(TranscriptionSegment.start_time),
-                )
-                .where(TranscriptionSegment.session_id == session_id)
-                .where(TranscriptionSegment.audio_file.is_not(None))
-                .group_by(TranscriptionSegment.audio_file)
-                .order_by(func.min(TranscriptionSegment.start_time))
-            ).all()
-        )
-        audio_files = [row[0] for row in ordered if row[0]]
-        if audio_files:
-            return audio_files
-        state = db.get(SessionState, session_id)
-        if state and state.processed_files:
-            return [str(p) for p in state.processed_files if p]
-    return []
+    return ordered_session_audio_files(engine, session_id)
 
 
 @app.command()
 def retranscribe(
-    ctx: typer.Context,
     session: str = typer.Option(..., "--session", "-s", help="Session id to rebuild"),
     confirm: bool = typer.Option(False, "--confirm", help="Required safety flag"),
     threshold: float = typer.Option(
@@ -2752,17 +2718,19 @@ def retranscribe(
         "-b",
         help="Transcription backend: 'nemo' (Parakeet) or 'whisper'",
     ),
+    language: Optional[str] = typer.Option(
+        None,
+        "--language",
+        "-l",
+        help="Whisper language code (e.g. it). Ignored for nemo/Parakeet.",
+    ),
     device: str = typer.Option("cuda", "--device", "-d", help="Device: cuda or cpu"),
     chunk_duration: Optional[float] = typer.Option(
         None, "--chunk-duration", "-c", help="Split each file into chunks of N seconds"
     ),
-    output: Optional[str] = typer.Option(
-        None, "--output", "-o", help="Optional transcript output (.txt / .json)"
-    ),
     db_dsn: Optional[str] = typer.Option(None),
     config: Optional[str] = typer.Option(None, "--config"),
     verbose: bool = typer.Option(False, "--verbose", "-v"),
-    no_timestamps: bool = typer.Option(False, "--no-timestamps"),
     push_vault: bool = typer.Option(
         False,
         "--push-vault",
@@ -2779,12 +2747,13 @@ def retranscribe(
     \b
     Example:
         pawn-diarize retranscribe --session warren-1005 --confirm
-        pawn-diarize retranscribe -s warren-1005 --confirm --backend whisper
+        pawn-diarize retranscribe -s warren-1005 --confirm --backend whisper -l it
         pawn-diarize retranscribe -s warren-1005 --confirm --push-vault
     """
+    import shutil
+
     from ..core.config import AppConfig
-    from ..core.database import get_engine, init_db
-    from ..core.path_repair import repair_session_audio_paths
+    from ..core.reprocess import prepare_session_audio, retranscribe_session
     from ..core.s3 import is_s3_path
 
     if not confirm:
@@ -2793,30 +2762,11 @@ def retranscribe(
 
     app_cfg = AppConfig(config_path=config) if config else AppConfig()
     dsn = db_dsn or app_cfg.db_dsn
-    engine = get_engine(dsn)
-    init_db(engine)
 
     try:
-        repair = repair_session_audio_paths(session, dsn, app_cfg)
+        audio_files, _engine = prepare_session_audio(session, dsn, app_cfg)
     except ValueError as exc:
         console.print(f"[red]{exc}[/red]")
-        raise typer.Exit(1)
-    if repair.remaps:
-        console.print(f"[cyan]{repair.summary()}[/cyan]")
-        for old, new_uri in repair.remaps.items():
-            console.print(f"  {Path(old).name} → {new_uri}")
-
-    audio_files = _ordered_session_audio_files(engine, session)
-    if not audio_files:
-        console.print(f"[red]No audio files for session {session!r}[/red]")
-        raise typer.Exit(1)
-
-    missing = [p for p in audio_files if not is_s3_path(p) and not Path(p).exists()]
-    if missing:
-        console.print(
-            "[red]Audio paths are missing locally and could not be recovered as "
-            "S3 URIs:[/red] " + ", ".join(Path(p).name for p in missing)
-        )
         raise typer.Exit(1)
 
     n_s3 = sum(1 for p in audio_files if is_s3_path(p))
@@ -2828,34 +2778,33 @@ def retranscribe(
     for i, p in enumerate(audio_files, 1):
         console.print(f"  {i}. {Path(p).name if not is_s3_path(p) else p}")
 
-    # Delegate to transcribe-diarize with --overwrite.  Pass canonical paths
-    # (often s3://); that command downloads and builds source_map itself.
-    ctx.invoke(
-        transcribe_diarize,
-        audio_paths=audio_files,
-        output=output,
-        config=config,
-        session=session,
-        db_dsn=dsn,
-        threshold=threshold,
-        store_new=False,
-        device=device,
-        chunk_duration=chunk_duration,
-        cross_file_threshold=cross_file_threshold,
-        no_timestamps=no_timestamps,
-        verbose=verbose,
-        backend=backend,
-        overwrite=True,
-    )
+    def _resolve(paths: list, cfg: Any) -> tuple:
+        return _resolve_s3_paths(paths, cfg)
 
-    if push_vault:
-        from ..core.vault_transcript import push_session_transcript
+    def _cleanup(temps: list) -> None:
+        for t in temps:
+            shutil.rmtree(t, ignore_errors=True)
 
-        try:
-            push_session_transcript(session, db_dsn=dsn, cfg=app_cfg)
-            console.print("[cyan]Vault transcript refreshed[/cyan]")
-        except Exception as exc:  # noqa: BLE001
-            console.print(f"[yellow]Vault refresh skipped: {exc}[/yellow]")
+    try:
+        retranscribe_session(
+            session,
+            dsn,
+            app_cfg,
+            backend=backend,
+            language=language,
+            threshold=threshold,
+            cross_file_threshold=cross_file_threshold,
+            device=device,
+            chunk_duration=chunk_duration,
+            verbose=verbose,
+            push_vault=push_vault,
+            resolve_audio=_resolve,
+            cleanup_temps=_cleanup,
+        )
+    except ValueError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1)
+    console.print(f"[green]Retranscribe complete for {session!r}[/green]")
 
 
 @app.command()

@@ -16,6 +16,36 @@ Three ways to use Pawn from Obsidian:
 3. **Stock [obsidian-copilot](https://github.com/logancyang/obsidian-copilot)**
    pointed at Pawn's OpenAI-compatible endpoint (see below).
 
+Primary tabs in the Pawn pane: **Chat**, **Jobs**, **Inbox**, **Sessions**.
+
+### Sessions tab
+
+Navigate diarization sessions from `GET /v1/sessions` (default scope: **All**).
+Response includes speaker facets and analysis decoration when
+`session_analyze` has run (`tags`, `topics`, `summary`, `sentiment`).
+
+Filters:
+
+- **All** / **Needs speakers** — primary scope chips
+- Frequent **speaker** chips from facets (toggle to narrow)
+- Search over title, session id, speakers, tags, and topics
+
+Each card can:
+
+- **Open** the vault transcript (`transcript_path` / `Pawn/Transcripts/…`)
+- **Chat** — soft bind: opens the transcript note and switches the
+  conversation to `note:{path}` (not the raw diarization session id)
+- **Reprocess** — queue `rediarize` (default; keep ASR text) or
+  `retranscribe` (wipe + ASR with Parakeet/Whisper + optional Whisper
+  language). Thresholds match CLI. Creates a `session_reprocess` job;
+  vault note refreshes when the diarize worker finishes
+  (`POST /v1/sessions/{id}/reprocess`).
+- **Train** — secondary modal to create Speakers, enroll a label centroid,
+  reidentify, or display-only relabel (same gates as CLI; no audio preview)
+
+Offline: vault scan of `pawn: transcript` notes for browse/Open only; Train
+and Reprocess need the server. Speakers training details: [SPEAKERS.md](SPEAKERS.md).
+
 Session key for a note: `note:{path}` (e.g. `note:Projects/Roadmap.md`).
 Free-standing plugin chats use `chat:{uuid}`.
 
@@ -55,14 +85,15 @@ api:
   include_system_prompt: false    # prepend obsidian-copilot's system prompt
   stream_progress: true           # tool steps as reasoning_content deltas
   stream_keepalive_seconds: 10
-  upload_audio_target: diarize    # queue_producers target for audio uploads
+  upload_audio_target: diarize    # preferred queue_producers target for audio
   upload_s3_prefix: uploads/obsidian
 
-# Audio uploads: staged in the main s3: bucket, then published to the
-# diarize listener's topic (transcribe-diarize).
+# Audio uploads / session reprocess: staged in s3, then published for the
+# diarize listener. Prefer queue_producers[upload_audio_target]; if that name
+# is missing, Pawn falls back to publishing via diarize_queue: (topic/bucket).
 queue_producers:
   diarize:
-    topic: audio-chunks
+    topic: audio-chunks           # should match diarize_queue.topic
     bucket_name: my-bucket
 
 vault:

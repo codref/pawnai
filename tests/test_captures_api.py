@@ -294,7 +294,7 @@ def test_list_captures_and_sessions(env: SimpleNamespace, monkeypatch: pytest.Mo
         ]
 
     monkeypatch.setattr(
-        "pawn_server.core.captures.list_session_candidates_impl",
+        "pawn_server.core.sessions_api.list_session_candidates_impl",
         fake_sessions,
     )
     upsert_vault_note(

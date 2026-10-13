@@ -19,6 +19,7 @@ def transcribe_with_diarization(
     time_cursor: float = 0.0,
     verbose: bool = False,
     backend: str = "nemo",
+    language: Optional[str] = None,
     source_map: Optional[Dict[str, str]] = None,
     transcription_engine: Optional["TranscriptionEngine"] = None,
     diarization_engine: Optional["DiarizationEngine"] = None,
@@ -33,6 +34,7 @@ def transcribe_with_diarization(
 
     Identity matching uses the curated Speakers gallery only.  Unknown
     speakers stay as ``SPEAKER_XX``; ``store_new_speakers`` is ignored.
+    ``language`` is passed to Whisper only (ignored for NeMo).
     """
     audio_paths: List[str] = [audio_path] if isinstance(audio_path, str) else list(audio_path)
     multiple = len(audio_paths) > 1
@@ -40,7 +42,11 @@ def transcribe_with_diarization(
 
     print(f"[1/2] Running transcription{'  (' + str(len(audio_paths)) + ' files)' if multiple else ''}{resume_note}...")
     if transcription_engine is None:
-        transcription_engine = TranscriptionEngine(device=device, verbose=verbose, backend=backend)
+        transcription_engine = TranscriptionEngine(
+            device=device, verbose=verbose, backend=backend, language=language
+        )
+    elif language is not None:
+        transcription_engine.language = (language or "").strip() or None
 
     if multiple:
         transcription = transcription_engine.transcribe_conversation(

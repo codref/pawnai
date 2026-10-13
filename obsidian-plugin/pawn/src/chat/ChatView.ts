@@ -12,6 +12,7 @@ import { resolveActiveMarkdownFile } from "../active";
 import { ChatImage, ModelChoice, NoteContext, ServerUnreachable } from "../api";
 import { PromptCommand, renderPrompt } from "../commands/PromptCommands";
 import { preserveInboxScroll, renderInbox } from "../inbox/InboxView";
+import { renderSessionsList } from "../sessions/SessionsView";
 import { captureIdea, noticeError } from "../inbox/ideas";
 import { renderJobCard, renderJobsList } from "../jobs/JobsView";
 import type PawnPlugin from "../main";
@@ -29,7 +30,7 @@ import {
 
 export const PAWN_CHAT_VIEW = "pawn-chat";
 
-type TabId = "chat" | "jobs" | "inbox";
+type TabId = "chat" | "jobs" | "inbox" | "sessions";
 
 interface Pending {
   abort: AbortController;
@@ -69,6 +70,7 @@ export class PawnChatView extends ItemView {
   private unsubscribeInbox: (() => void) | null = null;
   private unsubscribeCaptures: (() => void) | null = null;
   private unsubscribeItems: (() => void) | null = null;
+  private unsubscribeSessions: (() => void) | null = null;
   private fileInput: HTMLInputElement | null = null;
   private rereadButton: HTMLButtonElement | null = null;
   private keyboardFrame = 0;
@@ -127,6 +129,7 @@ export class PawnChatView extends ItemView {
     this.unsubscribeInbox = this.plugin.inbox?.onChange(() => this.onInboxChanged());
     this.unsubscribeCaptures = this.plugin.captures?.onChange(() => this.onInboxChanged());
     this.unsubscribeItems = this.plugin.items?.onChange(() => this.onInboxChanged());
+    this.unsubscribeSessions = this.plugin.sessions?.onChange(() => this.onSessionsChanged());
     this.registerEvent(
       this.app.workspace.on("active-leaf-change", () => this.onActiveNoteChanged()),
     );
@@ -353,6 +356,7 @@ export class PawnChatView extends ItemView {
     this.unsubscribeInbox?.();
     this.unsubscribeCaptures?.();
     this.unsubscribeItems?.();
+    this.unsubscribeSessions?.();
     this.unsubscribeJobs?.();
     this.closeModelPop();
     this.pending?.abort.abort();
@@ -589,6 +593,23 @@ export class PawnChatView extends ItemView {
     this.renderTabs();
   }
 
+  private onSessionsChanged(): void {
+    if (this.tab === "sessions") this.renderBody();
+    this.renderTabs();
+  }
+
+  /** Soft-bind chat to a transcript note and pin it in the context bar. */
+  openNoteConversation(notePathOrConv: string): void {
+    const conv = notePathOrConv.startsWith("note:")
+      ? notePathOrConv
+      : noteConversationId(notePathOrConv);
+    this.switchConversation(conv, true);
+    this.tab = "chat";
+    this.context.setIncludeActive(true);
+    this.render();
+    this.composer?.focus();
+  }
+
   // ── rendering ────────────────────────────────────────────────────────────
 
   private tabsEl: HTMLElement | null = null;
@@ -694,6 +715,9 @@ export class PawnChatView extends ItemView {
           void this.plugin.items?.refresh();
           void this.plugin.inbox?.refresh();
         }
+        if (id === "sessions" && prev !== "sessions") {
+          void this.plugin.sessions?.refresh();
+        }
         this.render();
       };
     };
@@ -705,6 +729,8 @@ export class PawnChatView extends ItemView {
     const waiting =
       (this.plugin.items?.attention() ?? 0) + (this.plugin.inbox?.attention() ?? 0);
     mk("inbox", waiting ? `Inbox (${waiting})` : "Inbox");
+    const needs = this.plugin.sessions?.attention() ?? 0;
+    mk("sessions", needs ? `Sessions (${needs})` : "Sessions");
     const dot = tabs.createSpan({
       cls: this.plugin.jobs.online ? "pawn-dot is-online" : "pawn-dot is-offline",
       attr: { "aria-label": this.plugin.jobs.online ? "Server reachable" : "Server offline" },
@@ -719,6 +745,12 @@ export class PawnChatView extends ItemView {
     body.empty();
     if (this.tab === "inbox") {
       renderInbox(body.createDiv({ cls: "pawn-jobs" }), this.plugin);
+      return;
+    }
+    if (this.tab === "sessions") {
+      renderSessionsList(body.createDiv({ cls: "pawn-jobs" }), this.plugin, {
+        onOpenChat: (conv) => this.openNoteConversation(conv),
+      });
       return;
     }
     if (this.tab === "jobs") {

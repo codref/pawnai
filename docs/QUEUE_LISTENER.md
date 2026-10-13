@@ -116,8 +116,10 @@ Every message sent to the queue must be a JSON object with a `command` key.  All
 
 | `command` | Required fields | Notable optional fields |
 |---|---|---|
-| `transcribe-diarize` | `audio_paths` | `session`, `threshold`, `cross_file_threshold`, `device`, `backend`, `store_new`, `no_timestamps`, `chunk_duration`, `output`, `db_dsn`, `annotations`, `screenshots` |
-| `transcribe` | `audio_paths` | `session`, `device`, `backend`, `timestamps`, `chunk_duration`, `output`, `db_dsn` |
+| `transcribe-diarize` | `audio_paths` | `session`, `threshold`, `cross_file_threshold`, `device`, `backend`, `language`, `store_new`, `no_timestamps`, `chunk_duration`, `output`, `db_dsn`, `annotations`, `screenshots` |
+| `transcribe` | `audio_paths` | `session`, `device`, `backend`, `language`, `timestamps`, `chunk_duration`, `output`, `db_dsn` |
+| `rediarize` | `session` | `threshold`, `cross_file_threshold`, `margin`, `device`, `push_vault`, `db_dsn` |
+| `retranscribe` | `session` | `backend`, `language`, `threshold`, `cross_file_threshold`, `device`, `chunk_duration`, `push_vault`, `db_dsn` |
 | `diarize` | `audio_paths` | `threshold`, `store_new`, `output`, `db_dsn` |
 | `embed` | `audio_paths`, `speaker_id` | `db_dsn` |
 | `analyze` | `session` or `input_path` | `mode` (`summary`\|`graph`), `model`, `output`, `db_dsn` |
@@ -189,9 +191,37 @@ them later. Empty lists are omitted.
   "cross_file_threshold": 0.80,
   "device": "cuda",
   "backend": "whisper",
+  "language": "it",
   "output": "/output/standup-20260306.txt"
 }
 ```
+
+### rediarize / retranscribe (Obsidian Sessions → Reprocess)
+
+```json
+{
+  "command": "rediarize",
+  "session": "tom-20260305",
+  "threshold": 0.7,
+  "cross_file_threshold": 0.55,
+  "push_vault": true
+}
+```
+
+```json
+{
+  "command": "retranscribe",
+  "session": "tom-20260305",
+  "backend": "whisper",
+  "language": "it",
+  "threshold": 0.7,
+  "cross_file_threshold": 0.55,
+  "push_vault": true
+}
+```
+
+Worker repairs S3 paths, wipes ASR state on `retranscribe`, then refreshes
+the vault transcript when `push_vault` is true (API always sets it).
 
 ### transcribe only
 

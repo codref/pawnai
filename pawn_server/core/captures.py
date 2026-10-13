@@ -19,7 +19,6 @@ from uuid import uuid4
 
 from pawn_agent.core.vision import MAX_IMAGE_BYTES
 from pawn_agent.tools.ideas_impl import idea_filename_title
-from pawn_agent.tools.list_sessions import list_session_candidates_impl
 from pawn_core.vault import (
     VaultNotFound,
     VaultWriteDenied,
@@ -288,39 +287,17 @@ def list_captures(cfg: Any, *, limit: int = 40, store: Any = None) -> list[dict[
     return out
 
 
-def list_sessions(cfg: Any, *, limit: int = 20, q: str = "") -> list[dict[str, Any]]:
+def list_sessions(
+    cfg: Any,
+    *,
+    limit: int = 20,
+    q: str = "",
+    needs_speakers: bool = False,
+) -> list[dict[str, Any]]:
     """Recent diarization sessions with transcript vault path when mapped."""
-    candidates = list_session_candidates_impl(cfg, name_filter=q or "", limit=limit)
-    out: list[dict[str, Any]] = []
-    for cand in candidates:
-        path = None
-        try:
-            row = get_vault_note(cfg.db_dsn, cand.session_id)
-            if row is not None and row.key:
-                path = row.key
-        except Exception as exc:
-            logger.debug("vault_notes lookup %s failed: %s", cand.session_id, exc)
-        out.append(
-            {
-                "session_id": cand.session_id,
-                "title": cand.title or cand.session_id,
-                "updated_at": (
-                    cand.updated_at.isoformat()
-                    if getattr(cand, "updated_at", None) is not None
-                    else None
-                ),
-                "created_at": (
-                    cand.created_at.isoformat()
-                    if getattr(cand, "created_at", None) is not None
-                    else None
-                ),
-                "segments": cand.segments,
-                "duration_seconds": cand.duration_seconds,
-                "summary": cand.summary,
-                "transcript_path": path,
-            }
-        )
-    return out
+    from pawn_server.core.sessions_api import list_sessions as list_sessions_enriched
+
+    return list_sessions_enriched(cfg, limit=limit, q=q, needs_speakers=needs_speakers)
 
 
 def _resolve_target(

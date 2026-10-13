@@ -18,6 +18,7 @@ import { captureIdea, noticeError } from "./inbox/ideas";
 import { QuickCaptureModal } from "./inbox/QuickCapture";
 import { snippetDecorationsExtension } from "./editor/snippetDecorations";
 import { JobStore } from "./jobs/JobStore";
+import { SessionsStore } from "./sessions/SessionsStore";
 import { DEFAULT_SETTINGS, PawnSettings, PawnSettingTab } from "./settings";
 import { VaultSync } from "./vaultSync";
 
@@ -38,6 +39,7 @@ export default class PawnPlugin extends Plugin {
   inbox!: InboxStore;
   captures!: CapturesStore;
   items!: ItemsStore;
+  sessions!: SessionsStore;
   itemNoteBar!: ItemNoteBar;
   vaultSync!: VaultSync;
   prompts!: PromptCommandRegistry;
@@ -54,6 +56,7 @@ export default class PawnPlugin extends Plugin {
     this.inbox = new InboxStore(this);
     this.captures = new CapturesStore(this);
     this.items = new ItemsStore(this);
+    this.sessions = new SessionsStore(this);
     this.itemNoteBar = new ItemNoteBar(this);
     this.vaultSync = new VaultSync(this, this.client);
     this.prompts = new PromptCommandRegistry(this);
@@ -76,6 +79,7 @@ export default class PawnPlugin extends Plugin {
       this.inbox.start();
       this.captures.start();
       this.items.start();
+      this.sessions.start();
       this.itemNoteBar.start();
       this.vaultSync.start();
       this.updateStatusBar();
@@ -101,6 +105,7 @@ export default class PawnPlugin extends Plugin {
     this.inbox?.stop();
     this.captures?.stop();
     this.items?.stop();
+    this.sessions?.stop();
     this.vaultSync?.stop();
     void this.persist();
   }
@@ -180,6 +185,11 @@ export default class PawnPlugin extends Plugin {
       id: "show-inbox",
       name: "Show inbox",
       callback: () => void this.openChat({ tab: "inbox" }),
+    });
+    this.addCommand({
+      id: "show-sessions",
+      name: "Show sessions",
+      callback: () => void this.openChat({ tab: "sessions" }),
     });
     this.addCommand({
       id: "quick-capture",

@@ -57,6 +57,29 @@ Agent CliTools: `speakers_list`, `speakers_show`, `speakers_update`,
 `people_show` / `people_ensure` / `people_append` (see [PEOPLE.md](PEOPLE.md)).
 The agent must confirm quality with you before `speaker_enroll`.
 
+## Obsidian plugin (Sessions → Train / Reprocess)
+
+The Pawn pane **Sessions** tab is primarily for navigating recordings
+(default scope **All**, plus speaker chips and search). **Train** on a card
+opens a modal that wraps the same gallery operations over HTTP. **Reprocess**
+queues CLI-parity `rediarize` (default) or `retranscribe` on the diarize
+worker (ASR backend + Whisper language, thresholds); the vault transcript
+refreshes when the worker finishes.
+
+| Action | Endpoint |
+|--------|----------|
+| List / detail | `GET /v1/sessions`, `GET /v1/sessions/{id}` |
+| Create person | `POST /v1/speakers` |
+| Enroll label centroid | `POST /v1/sessions/{id}/enroll` |
+| Rematch gallery | `POST /v1/sessions/{id}/reidentify` |
+| Display rename | `POST /v1/sessions/{id}/relabel` |
+| Reprocess | `POST /v1/sessions/{id}/reprocess` (`confirm`, `mode`, `backend`, `language`, thresholds) |
+
+Enrollment still uses **session_state centroids** (no browser audio). Confirm
+from duration + transcript sample; quality gates (`min_enrollment_seconds`,
+pairwise, max enrollments) apply — the UI may offer **force** after a gate
+error. Relabel is display-only and does not create a voiceprint.
+
 ## Config (`pawnai.yaml`)
 
 ```yaml

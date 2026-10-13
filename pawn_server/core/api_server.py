@@ -29,10 +29,13 @@ DELETE /v1/jobs/{id}, POST /v1/jobs/delete, GET /v1/jobs/events
     Delete removes finished jobs (and ask task notes). ``flush_terminal`` clears done/blocked.
     ``/v1/vault/tasks*`` remain as deprecated aliases.
 
-GET /v1/sessions, GET /v1/captures, GET /v1/captures/collections,
+GET /v1/sessions, GET /v1/sessions/{id}, POST /v1/speakers,
+POST /v1/sessions/{id}/enroll|reidentify|relabel|reprocess,
+GET /v1/captures, GET /v1/captures/collections,
 POST /v1/captures, POST /v1/captures/file, DELETE /v1/captures/snippets/{id}
-    Browser extension snippet capture (ordered text/image blocks on a vault note).
-    Research mode writes inbox atoms and may enqueue capture_enrich jobs.
+    Sessions management + Speakers train (Obsidian plugin). Browser capture
+    still uses GET /v1/sessions for the target picker. Research mode writes
+    inbox atoms and may enqueue capture_enrich jobs.
 
 DELETE /sessions/{session_id}
     Clear all stored turns for a session (start fresh).
@@ -403,6 +406,48 @@ class CaptureFileRequest(BaseModel):
     entity: Optional[str] = None
     tags: List[str] = Field(default_factory=list)
     ignore: bool = False
+
+
+class CreateSpeakerRequest(BaseModel):
+    """POST /v1/speakers — create a Speakers gallery person."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    display_name: str
+
+
+class SessionEnrollRequest(BaseModel):
+    """POST /v1/sessions/{session_id}/enroll — approve a voiceprint."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    speaker: str
+    from_label: str
+    force: bool = False
+
+
+class SessionRelabelRequest(BaseModel):
+    """POST /v1/sessions/{session_id}/relabel — display rename only."""
+
+    model_config = ConfigDict(extra="ignore", populate_by_name=True)
+
+    from_label: str = Field(alias="from")
+    to_label: str = Field(alias="to")
+
+
+class SessionReprocessRequest(BaseModel):
+    """POST /v1/sessions/{session_id}/reprocess — queue rediarize or retranscribe."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    confirm: bool = False
+    mode: str = "rediarize"  # rediarize | retranscribe
+    backend: str = "nemo"  # nemo | whisper (retranscribe only)
+    language: Optional[str] = None  # Whisper language lock (e.g. it)
+    threshold: float = 0.7
+    cross_file_threshold: float = 0.55
+    margin: Optional[float] = None
+    id: Optional[str] = None  # optional client job id
 
 
 class VaultTaskCreateRequest(BaseModel):
@@ -1204,17 +1249,144 @@ _VAULT_POLL_MAX_SECONDS = 25.0
 
 @app.get("/v1/sessions", dependencies=[Depends(_require_token)])
 async def sessions_list(
-    limit: int = Query(default=20, ge=1, le=100),
+    limit: int = Query(default=50, ge=1, le=200),
     q: str = Query(default=""),
+    needs_speakers: bool = Query(default=False),
+    speaker: str = Query(default=""),
     cfg: Any = Depends(_get_cfg),
 ) -> dict:
-    """Recent diarization sessions (for the browser capture target picker)."""
-    from pawn_server.core import captures  # noqa: PLC0415
+    """Recent diarization sessions (plugin Sessions tab + capture picker)."""
+    from pawn_server.core import sessions_api  # noqa: PLC0415
 
+    page = await asyncio.to_thread(
+        sessions_api.list_sessions_page,
+        cfg,
+        limit=limit,
+        q=q,
+        needs_speakers=needs_speakers,
+        speaker=speaker,
+    )
     return {
         "object": "list",
-        "data": await asyncio.to_thread(captures.list_sessions, cfg, limit=limit, q=q),
+        "data": page["data"],
+        "facets": page.get("facets") or {},
     }
+
+
+@app.get("/v1/sessions/{session_id}", dependencies=[Depends(_require_token)])
+async def sessions_get(session_id: str, cfg: Any = Depends(_get_cfg)) -> dict:
+    """Session detail with labels + gallery for the Train modal."""
+    from pawn_server.core import sessions_api  # noqa: PLC0415
+
+    try:
+        return await asyncio.to_thread(sessions_api.get_session, cfg, session_id)
+    except sessions_api.SessionsApiError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+
+
+@app.post("/v1/speakers", dependencies=[Depends(_require_token)])
+async def speakers_create(body: CreateSpeakerRequest, cfg: Any = Depends(_get_cfg)) -> dict:
+    """Create (or return existing) Speakers gallery person."""
+    from pawn_server.core import sessions_api  # noqa: PLC0415
+
+    try:
+        return await asyncio.to_thread(sessions_api.create_speaker, cfg, body.display_name)
+    except sessions_api.SessionsApiError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+
+
+@app.post(
+    "/v1/sessions/{session_id}/enroll",
+    dependencies=[Depends(_require_token)],
+)
+async def sessions_enroll(
+    session_id: str,
+    body: SessionEnrollRequest,
+    cfg: Any = Depends(_get_cfg),
+) -> dict:
+    """Approve a voiceprint from a session label centroid."""
+    from pawn_server.core import sessions_api  # noqa: PLC0415
+
+    try:
+        return await asyncio.to_thread(
+            sessions_api.enroll_session_speaker,
+            cfg,
+            session_id,
+            speaker=body.speaker,
+            from_label=body.from_label,
+            force=body.force,
+        )
+    except sessions_api.SessionsApiError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+
+
+@app.post(
+    "/v1/sessions/{session_id}/reidentify",
+    dependencies=[Depends(_require_token)],
+)
+async def sessions_reidentify(session_id: str, cfg: Any = Depends(_get_cfg)) -> dict:
+    """Rematch session labels against the curated Speakers gallery."""
+    from pawn_server.core import sessions_api  # noqa: PLC0415
+
+    try:
+        return await asyncio.to_thread(sessions_api.reidentify_session_api, cfg, session_id)
+    except sessions_api.SessionsApiError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+
+
+@app.post(
+    "/v1/sessions/{session_id}/relabel",
+    dependencies=[Depends(_require_token)],
+)
+async def sessions_relabel(
+    session_id: str,
+    body: SessionRelabelRequest,
+    cfg: Any = Depends(_get_cfg),
+) -> dict:
+    """Display-only rename of a speaker label within one session."""
+    from pawn_server.core import sessions_api  # noqa: PLC0415
+
+    try:
+        return await asyncio.to_thread(
+            sessions_api.relabel_session_api,
+            cfg,
+            session_id,
+            from_label=body.from_label,
+            to_label=body.to_label,
+        )
+    except sessions_api.SessionsApiError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+
+
+@app.post(
+    "/v1/sessions/{session_id}/reprocess",
+    status_code=202,
+    dependencies=[Depends(_require_token)],
+)
+async def sessions_reprocess(
+    session_id: str,
+    body: SessionReprocessRequest,
+    cfg: Any = Depends(_get_cfg),
+) -> JSONResponse:
+    """Queue rediarize (default) or full retranscribe for a session."""
+    from pawn_server.core import sessions_api  # noqa: PLC0415
+
+    try:
+        result = await sessions_api.enqueue_session_reprocess(
+            cfg,
+            session_id,
+            confirm=body.confirm,
+            mode=body.mode,
+            backend=body.backend,
+            language=body.language,
+            threshold=body.threshold,
+            cross_file_threshold=body.cross_file_threshold,
+            margin=body.margin,
+            job_id=body.id,
+        )
+    except sessions_api.SessionsApiError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+    return JSONResponse(status_code=202, content=result)
 
 
 @app.get("/v1/captures", dependencies=[Depends(_require_token)])

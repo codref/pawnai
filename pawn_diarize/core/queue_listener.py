@@ -57,7 +57,9 @@ class ModelCache:
     def has_models(self) -> bool:
         return self._transcription_engine is not None or self._diarization_engine is not None
 
-    def get_transcription_engine(self, device: str, backend: str) -> Any:
+    def get_transcription_engine(
+        self, device: str, backend: str, language: Optional[str] = None
+    ) -> Any:
         """Return a cached (or newly created) :class:`TranscriptionEngine`."""
         key: Tuple[str, str] = (device, backend)
         if self._transcription_engine is None or self._transcription_key != key:
@@ -70,6 +72,8 @@ class ModelCache:
             )
             self._transcription_engine = TranscriptionEngine(device=device, backend=backend)
             self._transcription_key = key
+        lang = (language or "").strip() or None
+        self._transcription_engine.language = lang
         return self._transcription_engine
 
     def get_diarization_engine(self, device: str) -> Any:
@@ -126,6 +130,7 @@ COMMAND_DEFAULTS: Dict[str, Dict[str, Any]] = {
         "no_timestamps": False,
         "verbose": False,
         "backend": "nemo",
+        "language": None,  # Whisper only; ignored for nemo
         # None = config fallback; False = skip (intermediate chunks);
         # dict e.g. {"command": "session_completed"} = finalize; True/str = legacy.
         "chain_agent": None,
@@ -139,6 +144,29 @@ COMMAND_DEFAULTS: Dict[str, Dict[str, Any]] = {
         "device": "cuda",
         "chunk_duration": None,
         "backend": "nemo",
+        "language": None,
+    },
+    "rediarize": {
+        "session": None,  # required
+        "db_dsn": None,
+        "threshold": 0.7,
+        "cross_file_threshold": 0.55,
+        "margin": None,
+        "device": "auto",
+        "push_vault": True,
+    },
+    "retranscribe": {
+        "session": None,  # required
+        "db_dsn": None,
+        "threshold": 0.7,
+        "cross_file_threshold": 0.55,
+        "device": "cuda",
+        "chunk_duration": None,
+        "backend": "nemo",
+        "language": None,
+        "no_timestamps": False,
+        "verbose": False,
+        "push_vault": True,
     },
     "diarize": {
         "audio_paths": [],
@@ -228,6 +256,10 @@ async def dispatch(
         await loop.run_in_executor(None, _run_embed, params, cfg)
     elif command == "push-vault":
         await loop.run_in_executor(None, _run_push_vault, params, cfg)
+    elif command == "rediarize":
+        await loop.run_in_executor(None, _run_rediarize, params, cfg, model_cache)
+    elif command == "retranscribe":
+        await loop.run_in_executor(None, _run_retranscribe, params, cfg, model_cache)
     else:
         raise ValueError(f"Unsupported command: {command!r}")
 
@@ -394,6 +426,7 @@ def _run_transcribe_diarize(
     no_timestamps = bool(params.get("no_timestamps", False))
     verbose = bool(params.get("verbose", False))
     backend = params.get("backend", "nemo")
+    language = params.get("language")
     output = params.get("output")
 
     engine = get_engine(db_dsn)
@@ -461,12 +494,13 @@ def _run_transcribe_diarize(
             cross_file_threshold=cross_file_threshold,
             verbose=verbose,
             backend=backend,
+            language=language,
             prior_speaker_embeddings=prior_embeddings,
             time_cursor=time_cursor,
             source_map=path_map,
             session_id=session,
             transcription_engine=(
-                model_cache.get_transcription_engine(device, backend)
+                model_cache.get_transcription_engine(device, backend, language=language)
                 if model_cache is not None
                 else None
             ),
@@ -587,16 +621,17 @@ def _run_transcribe(
     try:
         device = params.get("device", "cuda")
         backend = params.get("backend", "nemo")
+        language = params.get("language")
         timestamps = bool(params.get("timestamps", True))
         chunk_duration = params.get("chunk_duration")
         output = params.get("output")
 
         if model_cache is not None:
-            engine = model_cache.get_transcription_engine(device, backend)
+            engine = model_cache.get_transcription_engine(device, backend, language=language)
         else:
             from .transcription import TranscriptionEngine
 
-            engine = TranscriptionEngine(device=device, backend=backend)
+            engine = TranscriptionEngine(device=device, backend=backend, language=language)
         results = engine.transcribe(
             resolved,
             include_timestamps=timestamps,
@@ -655,6 +690,69 @@ def _run_diarize(
             logger.info("Diarization result:\n%s", text)
     finally:
         _cleanup(temps)
+
+
+def _run_rediarize(
+    params: Dict[str, Any], cfg: Any, model_cache: Optional[ModelCache] = None
+) -> None:
+    from .reprocess import rediarize_session_job
+
+    session = params.get("session")
+    if not session:
+        raise ValueError("rediarize: 'session' is required")
+    db_dsn = _resolve_db_dsn(params, cfg)
+    margin = params.get("margin")
+    rediarize_session_job(
+        str(session),
+        db_dsn,
+        cfg,
+        threshold=float(params.get("threshold", 0.7)),
+        cross_file_threshold=float(params.get("cross_file_threshold", 0.55)),
+        margin=float(margin) if margin is not None else None,
+        device=str(params.get("device") or "auto"),
+        push_vault=bool(params.get("push_vault", True)),
+        resolve_audio=_resolve_audio_paths,
+        cleanup_temps=_cleanup,
+    )
+    _ = model_cache  # reserved for future diarization engine reuse
+
+
+def _run_retranscribe(
+    params: Dict[str, Any], cfg: Any, model_cache: Optional[ModelCache] = None
+) -> None:
+    from .reprocess import retranscribe_session
+
+    session = params.get("session")
+    if not session:
+        raise ValueError("retranscribe: 'session' is required")
+    db_dsn = _resolve_db_dsn(params, cfg)
+    device = str(params.get("device") or "cuda")
+    backend = str(params.get("backend") or "nemo")
+    language = params.get("language")
+    transcription_engine = None
+    diarization_engine = None
+    if model_cache is not None:
+        transcription_engine = model_cache.get_transcription_engine(
+            device, backend, language=language
+        )
+        diarization_engine = model_cache.get_diarization_engine(device)
+    retranscribe_session(
+        str(session),
+        db_dsn,
+        cfg,
+        backend=backend,
+        language=language,
+        threshold=float(params.get("threshold", 0.7)),
+        cross_file_threshold=float(params.get("cross_file_threshold", 0.55)),
+        device=device,
+        chunk_duration=params.get("chunk_duration"),
+        verbose=bool(params.get("verbose", False)),
+        push_vault=bool(params.get("push_vault", True)),
+        resolve_audio=_resolve_audio_paths,
+        cleanup_temps=_cleanup,
+        transcription_engine=transcription_engine,
+        diarization_engine=diarization_engine,
+    )
 
 
 def _run_embed(params: Dict[str, Any], cfg: Any) -> None:
