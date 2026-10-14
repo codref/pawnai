@@ -127,66 +127,63 @@ chrome.contextMenus.onClicked.addListener(async (info, tab) => {
   }
 });
 
-chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
-  if (msg?.type === "pawn-snip-selection") {
-    (async () => {
-      const tab = await activeContentTab();
-      if (!tab) {
-        sendResponse({ ok: false, error: "No active tab" });
-        return;
-      }
-      try {
-        await captureSelection(tab);
-        sendResponse({ ok: true });
-      } catch (err) {
-        const error = hostPermissionError(tab.url, err);
-        await pushPending({ error });
-        sendResponse({ ok: false, error });
-      }
-    })();
-    return true;
-  }
-  if (msg?.type === "pawn-snip-region") {
-    (async () => {
-      const tab = await activeContentTab();
-      if (!tab) {
-        sendResponse({ ok: false, error: "No active tab" });
-        return;
-      }
-      try {
-        await captureRegion(tab);
-        sendResponse({ ok: true });
-      } catch (err) {
-        const error = hostPermissionError(tab.url, err);
-        if (!isBenignClipError(error)) await pushPending({ error });
-        sendResponse({ ok: false, error });
-      }
-    })();
-    return true;
-  }
-  if (msg?.type === "pawn-snip-visible") {
-    (async () => {
-      const tab = await activeContentTab();
-      if (!tab) {
-        sendResponse({ ok: false, error: "No active tab" });
-        return;
-      }
-      try {
-        await captureVisible(tab);
-        sendResponse({ ok: true });
-      } catch (err) {
-        const error = hostPermissionError(tab.url, err);
-        if (!isBenignClipError(error)) await pushPending({ error });
-        sendResponse({ ok: false, error });
-      }
-    })();
-    return true;
-  }
-  return false;
+/**
+ * Side-panel snips use a long-lived port (not one-shot sendMessage).
+ * Full-viewport capture often outlives the one-shot reply channel in MV3,
+ * which surfaces as "The message port closed before a response was received."
+ * A connected port keeps the service worker alive until we post the result.
+ */
+chrome.runtime.onConnect.addListener((port) => {
+  if (port.name !== "pawn-snip") return;
+  port.onMessage.addListener((msg) => {
+    const mode =
+      msg?.type === "pawn-snip-selection"
+        ? "selection"
+        : msg?.type === "pawn-snip-region"
+          ? "region"
+          : msg?.type === "pawn-snip-visible"
+            ? "visible"
+            : null;
+    if (!mode) {
+      safePortPost(port, { ok: false, error: "Unknown capture mode" });
+      return;
+    }
+    void runSnip(mode).then((result) => safePortPost(port, result));
+  });
 });
+
+function safePortPost(port, msg) {
+  try {
+    port.postMessage(msg);
+  } catch (_) {
+    /* port already disconnected — snippet/error still land via storage */
+  }
+}
 
 function isBenignClipError(error) {
   return /already in progress|cancelled/i.test(String(error || ""));
+}
+
+async function runSnip(mode) {
+  const tab = await activeContentTab();
+  if (!tab) return { ok: false, error: "No active tab" };
+  try {
+    if (mode === "selection") await captureSelection(tab);
+    else if (mode === "region") await captureRegion(tab);
+    else if (mode === "visible") await captureVisible(tab);
+    else return { ok: false, error: "Unknown capture mode" };
+    return { ok: true };
+  } catch (err) {
+    const error = hostPermissionError(tab.url, err);
+    if (!isBenignClipError(error)) {
+      try {
+        await pushPending({ error });
+      } catch (_) {
+        /* ignore storage failures while reporting */
+      }
+    }
+    return { ok: false, error };
+  }
 }
 
 async function captureSelection(tab) {
@@ -250,15 +247,17 @@ async function captureVisible(tab) {
   clipBusy = true;
   try {
     await ensureTabAccess(tab);
+    // JPEG keeps full-viewport captures under storage pressure vs PNG.
     const dataUrl = await chrome.tabs.captureVisibleTab(tab.windowId, {
-      format: "png",
+      format: "jpeg",
+      quality: 90,
     });
     const b64 = String(dataUrl || "").split(",", 2)[1] || "";
     if (!b64) throw new Error("Visible capture failed");
     await enqueueSnippet({
       kind: "image",
       data_base64: b64,
-      media_type: "image/png",
+      media_type: "image/jpeg",
       source_url: tab.url || "",
       page_title: tab.title || "",
     });

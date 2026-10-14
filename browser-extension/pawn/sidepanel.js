@@ -509,25 +509,130 @@ async function drainPending() {
   render();
 }
 
-function requestSnip(type, opts = {}) {
+async function requestSnip(type, opts = {}) {
   const isClip = !!opts.clip;
   if (isClip) {
     if (state.clipBusy) return;
     state.clipBusy = true;
     syncClipUi();
   }
-  chrome.runtime.sendMessage({ type }, (resp) => {
+  try {
+    // Visible-area capture runs in the side panel (extension page). Doing it in
+    // the MV3 service worker often kills the one-shot reply channel mid-write.
+    if (type === "pawn-snip-visible") {
+      await captureVisibleInPanel();
+      return;
+    }
+    const resp = await snipOverPort(type);
+    await drainPending();
+    if (resp && resp.ok === false) {
+      const err = resp.error || "Capture failed";
+      if (!/already in progress|cancelled/i.test(err)) showNotice(err, true);
+    }
+  } catch (err) {
+    await drainPending();
+    const msg = String(err?.message || err || "");
+    // Port can drop after a successful enqueue; storage already delivered the clip.
+    if (
+      /connection closed|message port closed/i.test(msg) &&
+      state.tray.some((s) => !s.saved)
+    ) {
+      return;
+    }
+    if (!/already in progress|cancelled/i.test(msg)) {
+      showNotice(msg || "Capture failed", true);
+    }
+  } finally {
     if (isClip) {
       state.clipBusy = false;
       syncClipUi();
     }
-    if (chrome.runtime.lastError) {
-      showNotice(chrome.runtime.lastError.message, true);
+  }
+}
+
+function newSnippetId() {
+  if (crypto?.randomUUID) return crypto.randomUUID().replace(/-/g, "").slice(0, 16);
+  return `s${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
+}
+
+async function findContentTab() {
+  const focused = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+  let tab = focused.find((t) => t.id != null && /^https?:/i.test(t.url || ""));
+  if (tab) return tab;
+  const active = await chrome.tabs.query({ active: true });
+  tab = active.find((t) => t.id != null && /^https?:/i.test(t.url || ""));
+  return tab || focused[0] || active[0] || null;
+}
+
+async function captureVisibleInPanel() {
+  const tab = await findContentTab();
+  if (!tab?.id) throw new Error("No active tab");
+  if (!/^https?:|^file:/i.test(tab.url || "")) {
+    throw new Error("Cannot capture this page (open an http(s) tab).");
+  }
+  const dataUrl = await chrome.tabs.captureVisibleTab(tab.windowId, {
+    format: "jpeg",
+    quality: 90,
+  });
+  const b64 = String(dataUrl || "").split(",", 2)[1] || "";
+  if (!b64) throw new Error("Visible capture failed");
+  if (!state.title && tab.title) {
+    state.title = tab.title;
+    el.title.value = state.title;
+  }
+  if (tab.url) state.sourceUrl = tab.url;
+  state.tray.push({
+    id: newSnippetId(),
+    kind: "image",
+    text: "",
+    data_base64: b64,
+    media_type: "image/jpeg",
+    source_url: tab.url || "",
+    page_title: tab.title || "",
+    captured_at: new Date().toISOString(),
+    saved: false,
+  });
+  await persistTarget();
+  await persistTray();
+  render();
+}
+
+/** Long-lived port handoff — survives full-viewport capture in MV3. */
+function snipOverPort(type) {
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    let port;
+    const finish = (fn, value) => {
+      if (settled) return;
+      settled = true;
+      try {
+        port?.disconnect();
+      } catch (_) {
+        /* ignore */
+      }
+      fn(value);
+    };
+    try {
+      port = chrome.runtime.connect({ name: "pawn-snip" });
+    } catch (err) {
+      reject(err);
       return;
     }
-    if (resp && resp.ok === false) {
-      const err = resp.error || "Capture failed";
-      if (!/already in progress|cancelled/i.test(err)) showNotice(err, true);
+    port.onMessage.addListener((msg) => {
+      finish(resolve, msg || { ok: true });
+    });
+    port.onDisconnect.addListener(() => {
+      if (settled) return;
+      const err = chrome.runtime.lastError;
+      finish(
+        reject,
+        new Error(err?.message || "Capture connection closed"),
+      );
+    });
+    try {
+      port.postMessage({ type });
+    } catch (err) {
+      finish(reject, err);
     }
   });
 }
