@@ -49,7 +49,7 @@ pawn-diarize speakers purge-legacy-embeddings --confirm
 | `speakers reembed` | Rebuild enrollments after an embedding-model change |
 | `speakers purge-legacy-embeddings --confirm` | Clear old `embeddings` rows |
 | `reidentify --session` | Rematch labels from session centroids |
-| `rediarize --session --confirm` | Re-run diarization + identify (keeps ASR text) |
+| `rediarize --session --confirm` | Re-run diarization + identify (keeps ASR text); clears stale `session_speaker_map` so Sessions pills match the vault Speakers table |
 | `retranscribe --session --confirm` | Wipe session + full ASR + diarize from stored S3 audio |
 
 Agent CliTools: `speakers_list`, `speakers_show`, `speakers_update`,
@@ -73,7 +73,13 @@ refreshes when the worker finishes.
 | Enroll label centroid | `POST /v1/sessions/{id}/enroll` |
 | Rematch gallery | `POST /v1/sessions/{id}/reidentify` |
 | Display rename | `POST /v1/sessions/{id}/relabel` |
+| Ignore noise label | `POST /v1/sessions/{id}/ignore` (`from`, `ignore`) |
+| Mark session trained | `POST /v1/sessions/{id}/speakers-trained` (`trained`) |
 | Reprocess | `POST /v1/sessions/{id}/reprocess` (`confirm`, `mode`, `backend`, `language`, thresholds) |
+
+Sessions pills mirror the vault Speakers table (non-empty transcript text only).
+Ignore a leftover `SPEAKER_XX` (eye-off in Train) or **Mark session trained** to
+clear the needs-training badge without enrolling noise.
 
 Enrollment still uses **session_state centroids** (no browser audio). Confirm
 from duration + transcript sample; quality gates (`min_enrollment_seconds`,

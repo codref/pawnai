@@ -21,7 +21,7 @@ from pawn_core.database import (
     get_engine,
 )
 from pawn_core.vault_db import get_vault_note
-from pawn_diarize.core.database import init_db, load_session_state
+from pawn_diarize.core.database import SessionState, init_db, load_session_state
 from pawn_diarize.core.speaker_gallery import SpeakerGallery
 
 logger = logging.getLogger(__name__)
@@ -54,22 +54,30 @@ def _transcript_path(cfg: Any, session_id: str) -> Optional[str]:
 
 
 def _label_stats(db_dsn: str, session_ids: list[str]) -> dict[str, dict[str, dict[str, Any]]]:
-    """session_id → local_label → {duration_s, segment_count}."""
+    """session_id → local_label → {duration_s, segment_count}.
+
+    Matches the vault Speakers table: only segments with non-empty transcript
+    text, and talk time as the sum of turn durations (not first→last span).
+    """
     if not session_ids:
         return {}
     engine = get_engine(db_dsn)
     out: dict[str, dict[str, dict[str, Any]]] = {}
     try:
         with OrmSession(engine) as db:
+            # SUM(end - start) per label; exclude blank ASR turns (noise clusters
+            # that vault Speakers already drops).
+            talk = TranscriptionSegment.end_time - TranscriptionSegment.start_time
             rows = db.execute(
                 select(
                     TranscriptionSegment.session_id,
                     TranscriptionSegment.original_speaker_label,
-                    func.min(TranscriptionSegment.start_time).label("first_start"),
-                    func.max(TranscriptionSegment.end_time).label("last_end"),
+                    func.coalesce(func.sum(talk), 0.0).label("talk_s"),
                     func.count().label("n"),
                 )
                 .where(TranscriptionSegment.session_id.in_(session_ids))
+                .where(TranscriptionSegment.text.is_not(None))
+                .where(func.length(func.trim(TranscriptionSegment.text)) > 0)
                 .group_by(
                     TranscriptionSegment.session_id,
                     TranscriptionSegment.original_speaker_label,
@@ -78,9 +86,8 @@ def _label_stats(db_dsn: str, session_ids: list[str]) -> dict[str, dict[str, dic
             for row in rows:
                 sid = str(row.session_id)
                 label = str(row.original_speaker_label or "SPEAKER_00")
-                duration = float(row.last_end or 0.0) - float(row.first_start or 0.0)
                 out.setdefault(sid, {})[label] = {
-                    "duration_s": max(0.0, duration),
+                    "duration_s": max(0.0, float(row.talk_s or 0.0)),
                     "segment_count": int(row.n or 0),
                 }
     except Exception as exc:  # noqa: BLE001
@@ -108,15 +115,49 @@ def _session_maps(db_dsn: str, session_ids: list[str]) -> dict[str, dict[str, Se
     return out
 
 
+def _speakers_trained_flags(db_dsn: str, session_ids: list[str]) -> dict[str, bool]:
+    """session_id → True when speakers_trained_at is set."""
+    if not session_ids:
+        return {}
+    engine = get_engine(db_dsn)
+    out: dict[str, bool] = {}
+    try:
+        with OrmSession(engine) as db:
+            rows = db.execute(
+                select(SessionState.session_id, SessionState.speakers_trained_at).where(
+                    SessionState.session_id.in_(session_ids)
+                )
+            ).all()
+            for row in rows:
+                out[str(row.session_id)] = row.speakers_trained_at is not None
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("speakers_trained flags failed: %s", exc)
+    return out
+
+
+def _is_ignored(mapped: Optional[SessionSpeakerMap]) -> bool:
+    return bool(mapped and str(getattr(mapped, "match_method", "") or "") == "ignore")
+
+
 def _speakers_summary(
     labels: dict[str, dict[str, Any]],
     mapping: dict[str, SessionSpeakerMap],
+    *,
+    speakers_trained: bool = False,
 ) -> tuple[list[str], int, bool]:
-    """Return (speaker pills, unmapped_count, needs_speakers)."""
+    """Return (speaker pills, unmapped_count, needs_speakers).
+
+    Anonymous labels marked ``match_method=ignore`` are omitted from the
+    needs-training signal (noise). When *speakers_trained* is true, needs is
+    always false.
+    """
     pills: list[str] = []
     unmapped = 0
     for label in sorted(labels.keys()):
         mapped = mapping.get(label)
+        if _is_ignored(mapped):
+            # Omit ignored noise from card pills (Train still lists them).
+            continue
         if mapped and mapped.display_name:
             name = str(mapped.display_name)
             if name not in pills:
@@ -134,10 +175,25 @@ def _speakers_summary(
         else:
             if label not in pills:
                 pills.append(label)
-    # Needs training when any anonymous label remains.
-    needs = any(_is_anon(label) for label in labels) or unmapped > 0
-    # Prefer counting anonymous labels as the attention signal.
-    anon_count = sum(1 for label in labels if _is_anon(label))
+
+    needs = False
+    if not speakers_trained:
+        for label in labels:
+            if not _is_anon(label):
+                continue
+            mapped = mapping.get(label)
+            if _is_ignored(mapped):
+                continue
+            if mapped and mapped.speaker_id:
+                continue
+            needs = True
+            break
+
+    anon_count = sum(
+        1
+        for label in labels
+        if _is_anon(label) and not _is_ignored(mapping.get(label))
+    )
     return pills, anon_count if anon_count else unmapped, needs
 
 
@@ -223,6 +279,7 @@ def list_sessions_page(
     session_ids = [c.session_id for c in candidates]
     label_stats = _label_stats(cfg.db_dsn, session_ids)
     maps = _session_maps(cfg.db_dsn, session_ids)
+    trained_flags = _speakers_trained_flags(cfg.db_dsn, session_ids)
     analyses = _load_analyses(cfg.db_dsn, session_ids)
 
     enriched: list[dict[str, Any]] = []
@@ -231,7 +288,10 @@ def list_sessions_page(
     for cand in candidates:
         labels = label_stats.get(cand.session_id, {})
         mapping = maps.get(cand.session_id, {})
-        speakers, unmapped_count, needs = _speakers_summary(labels, mapping)
+        trained = bool(trained_flags.get(cand.session_id))
+        speakers, unmapped_count, needs = _speakers_summary(
+            labels, mapping, speakers_trained=trained
+        )
         analysis = analyses.get(cand.session_id)
         tags = _parse_tags(getattr(analysis, "tags", None) if analysis else None)
         topics = _parse_topics(getattr(analysis, "key_topics", None) if analysis else None)
@@ -260,6 +320,7 @@ def list_sessions_page(
             "speakers": speakers,
             "unmapped_count": unmapped_count,
             "needs_speakers": needs,
+            "speakers_trained": trained,
             "tags": tags,
             "topics": topics,
             "sentiment": sentiment,
@@ -375,6 +436,7 @@ def get_session(cfg: Any, session_id: str) -> dict[str, Any]:
     engine = get_engine(cfg.db_dsn)
     init_db(engine)
     prior, _, _, _ = load_session_state(sid, engine)
+    trained = bool(_speakers_trained_flags(cfg.db_dsn, [sid]).get(sid))
 
     labels_out: list[dict[str, Any]] = []
     for label in sorted(labels_map.keys()):
@@ -396,11 +458,14 @@ def get_session(cfg: Any, session_id: str) -> dict[str, Any]:
                 "mapped_name": (
                     str(mapped.display_name) if mapped and mapped.display_name else None
                 ),
+                "ignored": _is_ignored(mapped),
                 "has_centroid": centroid is not None,
             }
         )
 
-    speakers_summary, unmapped_count, needs = _speakers_summary(labels_map, mapping)
+    speakers_summary, unmapped_count, needs = _speakers_summary(
+        labels_map, mapping, speakers_trained=trained
+    )
     gallery_out: list[dict[str, Any]] = []
     for sp in gallery.list_speakers():
         enrollments = gallery.list_enrollments(sp.id)
@@ -424,6 +489,7 @@ def get_session(cfg: Any, session_id: str) -> dict[str, Any]:
         "speakers": speakers_summary,
         "unmapped_count": unmapped_count,
         "needs_speakers": needs,
+        "speakers_trained": trained,
         "labels": labels_out,
         "gallery": gallery_out,
     }
@@ -711,6 +777,109 @@ async def enqueue_session_reprocess(
         "backend": backend_norm if mode_norm == "retranscribe" else None,
         "language": lang,
         "result": result_text,
+    }
+
+
+def ignore_session_speaker(
+    cfg: Any, session_id: str, *, from_label: str, ignore: bool = True
+) -> dict[str, Any]:
+    """Mark a local label as ignored noise (or clear the ignore flag)."""
+    from datetime import datetime, timezone
+
+    sid = (session_id or "").strip()
+    label = (from_label or "").strip()
+    if not sid or not label:
+        raise SessionsApiError("session_id and from_label are required", status_code=422)
+
+    stats = _label_stats(cfg.db_dsn, [sid]).get(sid, {})
+    if label not in stats and ignore:
+        raise SessionsApiError(
+            f"No spoken turns for label {label!r} in session {sid!r}",
+            status_code=422,
+        )
+
+    gallery = SpeakerGallery(cfg.db_dsn, config=getattr(cfg, "speakers", None))
+    if ignore:
+        gallery.upsert_session_map(
+            sid,
+            label,
+            speaker_id=None,
+            display_name=None,
+            match_score=None,
+            match_method="ignore",
+        )
+    else:
+        engine = get_engine(cfg.db_dsn)
+        init_db(engine)
+        with OrmSession(engine) as db:
+            row = db.get(SessionSpeakerMap, (sid, label))
+            if row is not None and str(row.match_method or "") == "ignore":
+                db.delete(row)
+
+    mapping = gallery.load_session_map(sid)
+    trained = bool(_speakers_trained_flags(cfg.db_dsn, [sid]).get(sid))
+    labels = _label_stats(cfg.db_dsn, [sid]).get(sid, {})
+    speakers, unmapped, needs = _speakers_summary(
+        labels, mapping, speakers_trained=trained
+    )
+    return {
+        "session_id": sid,
+        "from_label": label,
+        "ignored": bool(ignore),
+        "speakers": speakers,
+        "unmapped_count": unmapped,
+        "needs_speakers": needs,
+        "speakers_trained": trained,
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+
+def set_speakers_trained(
+    cfg: Any, session_id: str, *, trained: bool = True
+) -> dict[str, Any]:
+    """Mark the session as speaker-trained (or clear the flag)."""
+    from datetime import datetime, timezone
+
+    sid = (session_id or "").strip()
+    if not sid:
+        raise SessionsApiError("session_id is required", status_code=422)
+
+    engine = get_engine(cfg.db_dsn)
+    init_db(engine)
+    now = datetime.now(timezone.utc)
+    with OrmSession(engine) as db:
+        state = db.get(SessionState, sid)
+        if state is None:
+            if not trained:
+                return {
+                    "session_id": sid,
+                    "speakers_trained": False,
+                    "needs_speakers": True,
+                }
+            state = SessionState(
+                session_id=sid,
+                processed_files=[],
+                speaker_embeddings={},
+                time_cursor=0.0,
+                speakers_trained_at=now,
+                updated_at=now,
+            )
+            db.add(state)
+        else:
+            state.speakers_trained_at = now if trained else None
+            state.updated_at = now
+
+    labels = _label_stats(cfg.db_dsn, [sid]).get(sid, {})
+    mapping = _session_maps(cfg.db_dsn, [sid]).get(sid, {})
+    speakers, unmapped, needs = _speakers_summary(
+        labels, mapping, speakers_trained=bool(trained)
+    )
+    return {
+        "session_id": sid,
+        "speakers_trained": bool(trained),
+        "speakers": speakers,
+        "unmapped_count": unmapped,
+        "needs_speakers": needs,
     }
 
 

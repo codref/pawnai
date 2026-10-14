@@ -9,7 +9,8 @@
     Re-fetches audio for the session, re-runs the anonymous diarization backend
     + gallery identification, and replaces segment speaker labels.  Transcription
     text is preserved when possible by midpoint merge; if audio is missing the
-    call fails clearly.
+    call fails clearly.  Clears ``session_speaker_map`` first so stale
+    SPEAKER_XX→name rows cannot collapse the Sessions UI after labels change.
 """
 
 from __future__ import annotations
@@ -19,11 +20,12 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
+from sqlalchemy import delete as sql_delete
 from sqlalchemy import select, update
 from sqlalchemy.orm import Session as OrmSession
 
 from pawn_core.config import SpeakersConfig
-from pawn_core.database import TranscriptionSegment
+from pawn_core.database import SessionSpeakerMap, TranscriptionSegment
 from pawn_diarize.core.database import (
     SessionState,
     get_engine,
@@ -241,6 +243,20 @@ def rediarize_session(
     if not files:
         raise ValueError(f"Session '{session_id}' has no audio_file paths on segments")
 
+    # Drop stale gallery maps before re-labeling.  Old SPEAKER_XX → name rows
+    # otherwise make the Sessions pills collapse unmatched clusters into prior
+    # names while the vault Speakers table (which ignores this map) still lists
+    # the anonymous labels — the mismatch after rediarize-only.  Also clear the
+    # speakers_trained flag so the user re-confirms after labels change.
+    with get_session(engine) as db:
+        db.execute(
+            sql_delete(SessionSpeakerMap).where(SessionSpeakerMap.session_id == session_id)
+        )
+        state_row = db.get(SessionState, session_id)
+        if state_row is not None and getattr(state_row, "speakers_trained_at", None):
+            state_row.speakers_trained_at = None
+            state_row.updated_at = datetime.now(timezone.utc)
+
     prior, _, _, _ = load_session_state(session_id, engine)
     named_prior = {
         label: info
@@ -321,6 +337,25 @@ def rediarize_session(
                 state.speaker_embeddings = embeddings
             state.time_cursor = cursor or float(state.time_cursor or 0.0)
             state.updated_at = now
+
+        # Prune map rows whose local_label is no longer on any segment
+        # (gallery upserts anonymous labels; midpoint merge writes display names).
+        live_labels = {
+            str(r.original_speaker_label)
+            for r in rows
+            if r.original_speaker_label
+        }
+        if live_labels:
+            orphans = list(
+                db.scalars(
+                    select(SessionSpeakerMap).where(
+                        SessionSpeakerMap.session_id == session_id,
+                        SessionSpeakerMap.local_label.notin_(live_labels),
+                    )
+                )
+            )
+            for row in orphans:
+                db.delete(row)
 
     return ReidentifyResult(
         session_id=session_id,

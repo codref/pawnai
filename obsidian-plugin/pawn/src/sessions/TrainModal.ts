@@ -106,9 +106,22 @@ export class TrainModal extends Modal {
     reidentify.disabled = this.busy;
     reidentify.onclick = () => void this.runReidentify();
 
+    const trained = actions.createEl("button", {
+      text: detail.speakers_trained ? "Clear trained" : "Mark session trained",
+    });
+    trained.disabled = this.busy;
+    trained.onclick = () => void this.runMarkTrained(!(detail.speakers_trained ?? false));
+
     const refresh = actions.createEl("button", { text: "Refresh" });
     refresh.disabled = this.busy;
     refresh.onclick = () => void this.reload();
+
+    if (detail.speakers_trained) {
+      contentEl.createEl("p", {
+        cls: "pawn-session-meta",
+        text: "Speakers marked trained — needs-training badge is suppressed.",
+      });
+    }
   }
 
   private renderLabelRow(
@@ -123,7 +136,9 @@ export class TrainModal extends Modal {
       cls: "pawn-session-meta",
       text: fmtDur(label.duration_s),
     });
-    if (!label.has_centroid) {
+    if (label.ignored) {
+      head.createSpan({ cls: "pawn-session-badge", text: "ignored" });
+    } else if (!label.has_centroid) {
       head.createSpan({ cls: "pawn-session-badge is-warn", text: "no centroid" });
     } else if (label.mapped_name) {
       head.createSpan({ cls: "pawn-session-badge", text: label.mapped_name });
@@ -172,6 +187,15 @@ export class TrainModal extends Modal {
         btn.setIcon("pencil");
         btn.setTooltip("Rename label only (not a voiceprint)");
         btn.onClick(() => void this.runRelabel(label));
+      })
+      .addExtraButton((btn) => {
+        btn.setIcon(label.ignored ? "eye" : "eye-off");
+        btn.setTooltip(
+          label.ignored
+            ? "Stop ignoring this label"
+            : "Ignore as noise (skip needs-training)",
+        );
+        btn.onClick(() => void this.runIgnore(label, !label.ignored));
       });
   }
 
@@ -289,6 +313,50 @@ export class TrainModal extends Modal {
         to: to.trim(),
       });
       new Notice(result.summary || "Relabeled.", 4000);
+      await this.reload();
+      this.onDone?.();
+    } catch (e) {
+      new Notice(e instanceof Error ? e.message : String(e), 6000);
+    } finally {
+      this.busy = false;
+      this.renderBody();
+    }
+  }
+
+  private async runIgnore(label: SessionLabel, ignore: boolean): Promise<void> {
+    this.busy = true;
+    try {
+      await this.plugin.client.ignoreSessionSpeaker(this.sessionId, {
+        from: label.local_label,
+        ignore,
+      });
+      new Notice(
+        ignore
+          ? `Ignored ${label.local_label} as noise.`
+          : `Stopped ignoring ${label.local_label}.`,
+        4000,
+      );
+      await this.reload();
+      this.onDone?.();
+    } catch (e) {
+      new Notice(e instanceof Error ? e.message : String(e), 6000);
+    } finally {
+      this.busy = false;
+      this.renderBody();
+    }
+  }
+
+  private async runMarkTrained(trained: boolean): Promise<void> {
+    this.busy = true;
+    this.renderBody();
+    try {
+      await this.plugin.client.setSessionSpeakersTrained(this.sessionId, { trained });
+      new Notice(
+        trained
+          ? "Session marked trained — needs-training cleared."
+          : "Trained flag cleared.",
+        4000,
+      );
       await this.reload();
       this.onDone?.();
     } catch (e) {

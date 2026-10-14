@@ -30,7 +30,7 @@ DELETE /v1/jobs/{id}, POST /v1/jobs/delete, GET /v1/jobs/events
     ``/v1/vault/tasks*`` remain as deprecated aliases.
 
 GET /v1/sessions, GET /v1/sessions/{id}, POST /v1/speakers,
-POST /v1/sessions/{id}/enroll|reidentify|relabel|reprocess,
+POST /v1/sessions/{id}/enroll|reidentify|relabel|reprocess|ignore|speakers-trained,
 GET /v1/captures, GET /v1/captures/collections,
 POST /v1/captures, POST /v1/captures/file, DELETE /v1/captures/snippets/{id}
     Sessions management + Speakers train (Obsidian plugin). Browser capture
@@ -448,6 +448,23 @@ class SessionReprocessRequest(BaseModel):
     cross_file_threshold: float = 0.55
     margin: Optional[float] = None
     id: Optional[str] = None  # optional client job id
+
+
+class SessionIgnoreRequest(BaseModel):
+    """POST /v1/sessions/{session_id}/ignore — mark a label as noise."""
+
+    model_config = ConfigDict(extra="ignore", populate_by_name=True)
+
+    from_label: str = Field(alias="from")
+    ignore: bool = True
+
+
+class SessionSpeakersTrainedRequest(BaseModel):
+    """POST /v1/sessions/{session_id}/speakers-trained — suppress needs-training."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    trained: bool = True
 
 
 class VaultTaskCreateRequest(BaseModel):
@@ -1387,6 +1404,53 @@ async def sessions_reprocess(
     except sessions_api.SessionsApiError as exc:
         raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
     return JSONResponse(status_code=202, content=result)
+
+
+@app.post(
+    "/v1/sessions/{session_id}/ignore",
+    dependencies=[Depends(_require_token)],
+)
+async def sessions_ignore(
+    session_id: str,
+    body: SessionIgnoreRequest,
+    cfg: Any = Depends(_get_cfg),
+) -> dict:
+    """Mark a local speaker label as ignored noise (or clear ignore)."""
+    from pawn_server.core import sessions_api  # noqa: PLC0415
+
+    try:
+        return await asyncio.to_thread(
+            sessions_api.ignore_session_speaker,
+            cfg,
+            session_id,
+            from_label=body.from_label,
+            ignore=body.ignore,
+        )
+    except sessions_api.SessionsApiError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+
+
+@app.post(
+    "/v1/sessions/{session_id}/speakers-trained",
+    dependencies=[Depends(_require_token)],
+)
+async def sessions_speakers_trained(
+    session_id: str,
+    body: SessionSpeakersTrainedRequest,
+    cfg: Any = Depends(_get_cfg),
+) -> dict:
+    """Mark the session as speaker-trained (suppresses needs-training badge)."""
+    from pawn_server.core import sessions_api  # noqa: PLC0415
+
+    try:
+        return await asyncio.to_thread(
+            sessions_api.set_speakers_trained,
+            cfg,
+            session_id,
+            trained=body.trained,
+        )
+    except sessions_api.SessionsApiError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
 
 
 @app.get("/v1/captures", dependencies=[Depends(_require_token)])

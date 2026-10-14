@@ -53,6 +53,7 @@ def ordered_session_audio_files(engine: Any, session_id: str) -> List[str]:
 def wipe_session_asr_state(engine: Any, session_id: str) -> Tuple[int, int]:
     """Delete segments, analyses, session_state, and speaker_map for *session_id*.
 
+    Also clears ``speakers_trained_at`` (via deleting session_state).
     Returns ``(segments_deleted, speaker_map_deleted)``.
     """
     with OrmSession(engine) as db:

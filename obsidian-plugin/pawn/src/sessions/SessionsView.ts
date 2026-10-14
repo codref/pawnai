@@ -161,6 +161,8 @@ function renderSessionCard(
   title.onclick = () => void openTranscript(plugin, session);
   if (session.needs_speakers) {
     head.createSpan({ cls: "pawn-session-badge is-warn", text: "needs training" });
+  } else if (session.speakers_trained) {
+    head.createSpan({ cls: "pawn-session-badge", text: "trained" });
   } else if (session.has_analysis) {
     head.createSpan({ cls: "pawn-session-badge", text: "analyzed" });
   }

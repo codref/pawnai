@@ -227,7 +227,8 @@ class SessionSpeakerMap(Base):
     """Maps a local diarization label in one session to a gallery speaker.
 
     ``match_method`` is one of ``gallery`` (auto from enrollments), ``manual``
-    (session-relabel / enroll), or ``prior`` (carried from session_state).
+    (session-relabel / enroll), ``prior`` (carried from session_state), or
+    ``ignore`` (noise / skip — does not count toward needs-training).
     """
 
     __tablename__ = "session_speaker_map"

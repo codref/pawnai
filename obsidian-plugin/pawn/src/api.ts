@@ -159,6 +159,7 @@ export interface SessionSummary {
   speakers?: string[];
   unmapped_count?: number;
   needs_speakers?: boolean;
+  speakers_trained?: boolean;
   tags?: string[];
   topics?: string[];
   sentiment?: string | null;
@@ -184,6 +185,7 @@ export interface SessionLabel {
   sample_text: string;
   mapped_speaker_id?: string | null;
   mapped_name?: string | null;
+  ignored?: boolean;
   has_centroid: boolean;
 }
 
@@ -444,6 +446,50 @@ export class PawnClient {
       queued: boolean;
       command: string;
       result?: string;
+    };
+  }
+
+  async ignoreSessionSpeaker(
+    sessionId: string,
+    body: { from: string; ignore?: boolean },
+  ): Promise<{
+    session_id: string;
+    from_label: string;
+    ignored: boolean;
+    needs_speakers: boolean;
+    speakers_trained: boolean;
+  }> {
+    const resp = await this.request(
+      "POST",
+      `/v1/sessions/${encodeURIComponent(sessionId)}/ignore`,
+      body,
+    );
+    return resp.json as {
+      session_id: string;
+      from_label: string;
+      ignored: boolean;
+      needs_speakers: boolean;
+      speakers_trained: boolean;
+    };
+  }
+
+  async setSessionSpeakersTrained(
+    sessionId: string,
+    body: { trained?: boolean } = {},
+  ): Promise<{
+    session_id: string;
+    speakers_trained: boolean;
+    needs_speakers: boolean;
+  }> {
+    const resp = await this.request(
+      "POST",
+      `/v1/sessions/${encodeURIComponent(sessionId)}/speakers-trained`,
+      { trained: body.trained ?? true },
+    );
+    return resp.json as {
+      session_id: string;
+      speakers_trained: boolean;
+      needs_speakers: boolean;
     };
   }
 

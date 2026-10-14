@@ -37,13 +37,83 @@ def env(tmp_path: Path) -> SimpleNamespace:
 def test_speakers_summary_flags_anonymous() -> None:
     labels = {"SPEAKER_00": {"duration_s": 3.0}, "Davide": {"duration_s": 2.0}}
     mapping = {
-        "Davide": SimpleNamespace(display_name="Davide", speaker_id="davide", local_label="Davide")
+        "Davide": SimpleNamespace(
+            display_name="Davide",
+            speaker_id="davide",
+            local_label="Davide",
+            match_method="manual",
+        )
     }
     pills, unmapped, needs = _speakers_summary(labels, mapping)  # type: ignore[arg-type]
     assert needs is True
     assert unmapped == 1
     assert "SPEAKER_00" in pills
     assert "Davide" in pills
+
+
+def test_speakers_summary_ignore_and_trained() -> None:
+    labels = {
+        "Davide": {"duration_s": 100.0},
+        "SPEAKER_00": {"duration_s": 5.0},
+        "SPEAKER_02": {"duration_s": 0.0},
+    }
+    mapping = {
+        "SPEAKER_02": SimpleNamespace(
+            display_name=None,
+            speaker_id=None,
+            local_label="SPEAKER_02",
+            match_method="ignore",
+        )
+    }
+    pills, unmapped, needs = _speakers_summary(labels, mapping)  # type: ignore[arg-type]
+    assert "SPEAKER_02" not in pills
+    assert "SPEAKER_00" in pills
+    assert needs is True
+    assert unmapped == 1
+
+    _, _, needs_trained = _speakers_summary(
+        labels, mapping, speakers_trained=True
+    )  # type: ignore[arg-type]
+    assert needs_trained is False
+
+
+def test_speakers_summary_stale_map_collapses_anon_into_named() -> None:
+    """Stale session_speaker_map after rediarize hides anonymous clusters in pills."""
+    labels = {
+        "Davide": {"duration_s": 100.0},
+        "Viola": {"duration_s": 50.0},
+        "SPEAKER_00": {"duration_s": 5.0},
+        "SPEAKER_01": {"duration_s": 8.0},
+        "SPEAKER_02": {"duration_s": 1.0},
+    }
+    stale = {
+        "SPEAKER_00": SimpleNamespace(
+            display_name="Davide",
+            speaker_id="davide",
+            local_label="SPEAKER_00",
+            match_method="gallery",
+        ),
+        "SPEAKER_01": SimpleNamespace(
+            display_name="Viola",
+            speaker_id="viola",
+            local_label="SPEAKER_01",
+            match_method="gallery",
+        ),
+    }
+    pills, _unmapped, needs = _speakers_summary(labels, stale)  # type: ignore[arg-type]
+    assert needs is True
+    assert set(pills) == {"Davide", "Viola", "SPEAKER_02"}
+    assert "SPEAKER_00" not in pills
+    assert "SPEAKER_01" not in pills
+
+    pills_fresh, _, _ = _speakers_summary(labels, {})  # type: ignore[arg-type]
+    assert set(pills_fresh) == {
+        "Davide",
+        "Viola",
+        "SPEAKER_00",
+        "SPEAKER_01",
+        "SPEAKER_02",
+    }
 
 
 def test_list_sessions_http(env: SimpleNamespace, monkeypatch: pytest.MonkeyPatch) -> None:
