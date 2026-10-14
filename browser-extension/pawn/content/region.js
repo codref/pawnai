@@ -1,4 +1,4 @@
-/** Injected overlay: drag a rectangle, crop the visible-tab PNG. */
+/** Injected overlay: drag a rectangle on a frozen screenshot of the tab. */
 
 (function () {
   if (window.__pawnRegionReady) return;
@@ -14,6 +14,16 @@
 
   function pickRegion(dataUrl) {
     return new Promise((resolve) => {
+      if (document.getElementById("pawn-region-root")) {
+        resolve({ ok: false, error: "Region capture already in progress" });
+        return;
+      }
+
+      const prevHtmlOverflow = document.documentElement.style.overflow;
+      const prevBodyOverflow = document.body.style.overflow;
+      document.documentElement.style.overflow = "hidden";
+      document.body.style.overflow = "hidden";
+
       const root = document.createElement("div");
       root.id = "pawn-region-root";
       Object.assign(root.style, {
@@ -21,8 +31,31 @@
         inset: "0",
         zIndex: "2147483646",
         cursor: "crosshair",
-        background: "rgba(0,0,0,0.15)",
+        background: "#000",
       });
+
+      const freeze = document.createElement("img");
+      freeze.alt = "";
+      freeze.draggable = false;
+      Object.assign(freeze.style, {
+        position: "absolute",
+        inset: "0",
+        width: "100%",
+        height: "100%",
+        objectFit: "fill",
+        pointerEvents: "none",
+        userSelect: "none",
+      });
+      freeze.src = dataUrl;
+
+      const dim = document.createElement("div");
+      Object.assign(dim.style, {
+        position: "absolute",
+        inset: "0",
+        background: "rgba(0,0,0,0.15)",
+        pointerEvents: "none",
+      });
+
       const box = document.createElement("div");
       Object.assign(box.style, {
         position: "fixed",
@@ -30,8 +63,10 @@
         background: "rgba(74,158,142,0.15)",
         display: "none",
         pointerEvents: "none",
+        zIndex: "1",
       });
-      root.appendChild(box);
+
+      root.append(freeze, dim, box);
       document.documentElement.appendChild(root);
 
       let startX = 0;
@@ -40,6 +75,8 @@
 
       const cleanup = () => {
         root.remove();
+        document.documentElement.style.overflow = prevHtmlOverflow;
+        document.body.style.overflow = prevBodyOverflow;
         window.removeEventListener("keydown", onKey, true);
       };
 
@@ -52,6 +89,8 @@
       window.addEventListener("keydown", onKey, true);
 
       root.addEventListener("mousedown", (ev) => {
+        if (ev.button !== 0) return;
+        ev.preventDefault();
         dragging = true;
         startX = ev.clientX;
         startY = ev.clientY;

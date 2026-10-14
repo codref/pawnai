@@ -31,6 +31,10 @@ DELETE /v1/jobs/{id}, POST /v1/jobs/delete, GET /v1/jobs/events
 
 GET /v1/sessions, GET /v1/sessions/{id}, POST /v1/speakers,
 POST /v1/sessions/{id}/enroll|reidentify|relabel|reprocess|ignore|speakers-trained,
+GET /v1/meta
+    Small authenticated config for clients (e.g. ``obsidian_vault_name`` for
+    ``obsidian://open`` links in the browser capture panel).
+
 GET /v1/captures, GET /v1/captures/collections,
 POST /v1/captures, POST /v1/captures/file, DELETE /v1/captures/snippets/{id}
     Sessions management + Speakers train (Obsidian plugin). Browser capture
@@ -777,6 +781,15 @@ app = FastAPI(
 async def health() -> dict:
     """Liveness probe. No authentication required."""
     return {"status": "ok"}
+
+
+@app.get("/v1/meta", dependencies=[Depends(_require_token)])
+async def meta(cfg: Any = Depends(_get_cfg)) -> dict:
+    """Small authenticated config for Obsidian / browser clients."""
+    vault = getattr(cfg, "vault", None)
+    return {
+        "obsidian_vault_name": getattr(vault, "obsidian_vault_name", "") or "",
+    }
 
 
 @app.post(

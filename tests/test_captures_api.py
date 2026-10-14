@@ -483,6 +483,16 @@ def test_research_enqueues_enrich_when_enabled(
         assert called == body["enrich_paths"]
 
 
+def test_meta_obsidian_vault_name(env: SimpleNamespace) -> None:
+    env.cfg.vault = VaultConfig(agent_root="Pawn", obsidian_vault_name="MyVault")
+    with TestClient(api_server.create_app(env.cfg)) as client:
+        denied = client.get("/v1/meta")
+        assert denied.status_code == 401
+        resp = client.get("/v1/meta", headers=AUTH)
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["obsidian_vault_name"] == "MyVault"
+
+
 def test_capture_config_path_helpers() -> None:
     from pawn_server.core import capture_config as capcfg
 

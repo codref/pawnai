@@ -6,6 +6,9 @@
 const MENU_SELECTION = "pawn-capture-selection";
 const MENU_REGION = "pawn-capture-region";
 
+/** Only one region / visible clip at a time (side panel + context menu). */
+let clipBusy = false;
+
 chrome.runtime.onInstalled.addListener(() => {
   chrome.contextMenus.removeAll(() => {
     chrome.contextMenus.create({
@@ -119,7 +122,8 @@ chrome.contextMenus.onClicked.addListener(async (info, tab) => {
       await captureRegion(tab);
     }
   } catch (err) {
-    await pushPending({ error: hostPermissionError(tab.url, err) });
+    const error = hostPermissionError(tab.url, err);
+    if (!isBenignClipError(error)) await pushPending({ error });
   }
 });
 
@@ -154,7 +158,25 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
         sendResponse({ ok: true });
       } catch (err) {
         const error = hostPermissionError(tab.url, err);
-        await pushPending({ error });
+        if (!isBenignClipError(error)) await pushPending({ error });
+        sendResponse({ ok: false, error });
+      }
+    })();
+    return true;
+  }
+  if (msg?.type === "pawn-snip-visible") {
+    (async () => {
+      const tab = await activeContentTab();
+      if (!tab) {
+        sendResponse({ ok: false, error: "No active tab" });
+        return;
+      }
+      try {
+        await captureVisible(tab);
+        sendResponse({ ok: true });
+      } catch (err) {
+        const error = hostPermissionError(tab.url, err);
+        if (!isBenignClipError(error)) await pushPending({ error });
         sendResponse({ ok: false, error });
       }
     })();
@@ -162,6 +184,10 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   }
   return false;
 });
+
+function isBenignClipError(error) {
+  return /already in progress|cancelled/i.test(String(error || ""));
+}
 
 async function captureSelection(tab) {
   await ensureTabAccess(tab);
@@ -189,31 +215,56 @@ async function captureSelection(tab) {
 }
 
 async function captureRegion(tab) {
-  await ensureTabAccess(tab);
-  const dataUrl = await chrome.tabs.captureVisibleTab(tab.windowId, {
-    format: "png",
-  });
-  await chrome.scripting.executeScript({
-    target: { tabId: tab.id },
-    files: ["content/region.js"],
-  });
-  const response = await chrome.tabs.sendMessage(tab.id, {
-    type: "pawn-region-pick",
-    dataUrl,
-  });
-  if (!response?.ok) {
-    await pushPending({
-      error: response?.error || "Region capture cancelled",
+  if (clipBusy) throw new Error("Region capture already in progress");
+  clipBusy = true;
+  try {
+    await ensureTabAccess(tab);
+    const dataUrl = await chrome.tabs.captureVisibleTab(tab.windowId, {
+      format: "png",
     });
-    return;
+    await chrome.scripting.executeScript({
+      target: { tabId: tab.id },
+      files: ["content/region.js"],
+    });
+    const response = await chrome.tabs.sendMessage(tab.id, {
+      type: "pawn-region-pick",
+      dataUrl,
+    });
+    if (!response?.ok) {
+      throw new Error(response?.error || "Region capture cancelled");
+    }
+    await enqueueSnippet({
+      kind: "image",
+      data_base64: response.data_base64,
+      media_type: "image/png",
+      source_url: tab.url || "",
+      page_title: tab.title || "",
+    });
+  } finally {
+    clipBusy = false;
   }
-  await enqueueSnippet({
-    kind: "image",
-    data_base64: response.data_base64,
-    media_type: "image/png",
-    source_url: tab.url || "",
-    page_title: tab.title || "",
-  });
+}
+
+async function captureVisible(tab) {
+  if (clipBusy) throw new Error("Region capture already in progress");
+  clipBusy = true;
+  try {
+    await ensureTabAccess(tab);
+    const dataUrl = await chrome.tabs.captureVisibleTab(tab.windowId, {
+      format: "png",
+    });
+    const b64 = String(dataUrl || "").split(",", 2)[1] || "";
+    if (!b64) throw new Error("Visible capture failed");
+    await enqueueSnippet({
+      kind: "image",
+      data_base64: b64,
+      media_type: "image/png",
+      source_url: tab.url || "",
+      page_title: tab.title || "",
+    });
+  } finally {
+    clipBusy = false;
+  }
 }
 
 function newId() {

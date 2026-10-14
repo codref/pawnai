@@ -107,7 +107,7 @@ vault:
     path_style: true
   agent_root: Pawn
   auto_push_transcript: true
-  obsidian_vault_name: "MyVault"   # for Matrix obsidian:// links
+  obsidian_vault_name: "MyVault"   # Matrix + browser capture obsidian:// links
 
 vault_watcher:
   enabled: true

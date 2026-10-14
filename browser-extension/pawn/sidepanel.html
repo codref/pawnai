@@ -48,6 +48,7 @@
       <p id="notice" class="pawn-notice" hidden></p>
 
       <main class="pawn-body">
+        <div id="destination" class="pawn-destination"></div>
         <div class="pawn-toolbar">
           <button
             type="button"
@@ -56,23 +57,27 @@
             aria-label="Capture selection"
             title="Capture selection"
           ></button>
-          <button
-            type="button"
-            id="btn-region"
-            class="clickable-icon"
-            aria-label="Capture region"
-            title="Capture region"
-          ></button>
+          <div id="clip-control" class="pawn-clip">
+            <button
+              type="button"
+              id="btn-region"
+              class="clickable-icon"
+              aria-label="Capture region"
+              title="Capture region"
+            ></button>
+            <button
+              type="button"
+              id="btn-clip-menu"
+              class="clickable-icon pawn-clip-chevron"
+              aria-label="Clip mode"
+              title="Clip mode"
+              aria-haspopup="menu"
+              aria-expanded="false"
+            ></button>
+            <div id="clip-menu" class="pawn-select-menu pawn-clip-menu" hidden role="menu"></div>
+          </div>
           <span class="pawn-toolbar-sep" aria-hidden="true"></span>
           <button type="button" id="btn-save" class="mod-cta" title="Save to vault">Save</button>
-          <button
-            type="button"
-            id="btn-new-page"
-            class="clickable-icon"
-            aria-label="New page"
-            title="New page"
-          ></button>
-          <span id="path-label" class="pawn-hint pawn-path-label"></span>
         </div>
         <div id="tray" class="pawn-tray"></div>
         <p id="empty" class="pawn-hint pawn-empty">

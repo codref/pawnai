@@ -89,11 +89,15 @@ disabled*.
 
 1. Target defaults to **New page** (creates `Pawn/Captures/{date} {title}.md`).
 2. Or pick a recent capture, a diarization **session** (writes into transcript
-   Annotations when mapped), or another vault note path.
-3. **Selection** / right-click **Send selection to Pawn**, or **Region** /
-   right-click **Capture region to Pawn**.
+   Annotations when mapped), or another vault note path. The destination row
+   shows the sticky path (and opens Obsidian when `vault.obsidian_vault_name`
+   is configured on the server).
+3. **Selection** / right-click **Send selection to Pawn**, or **Clip**
+   (region on a frozen screenshot, or whole visible area) / right-click
+   **Capture region to Pawn**.
 4. Reorder or drop items in the tray, then **Save**. The target stays sticky so
-   the next batch appends to the same note. **New page** starts a fresh note.
+   the next batch appends to the same note. **Start new note** (destination
+   row) starts a fresh note.
 
 ## API
 
@@ -101,6 +105,7 @@ Bearer auth against pawn-server:
 
 | Method | Path | Role |
 |--------|------|------|
+| GET | `/v1/meta` | Vault name for Obsidian links |
 | GET | `/v1/sessions` | Session picker |
 | GET | `/v1/captures` | Recent capture notes |
 | POST | `/v1/captures` | Append ordered snippets |

@@ -8,13 +8,16 @@ Matrix after Sync Engine pulls the note.
 ## Flow
 
 1. Open the side panel. The target defaults to **New page**.
-2. Capture a **selection** or drag a **region** on the active tab. Items stack in
-   the tray (reorder / delete before save).
-3. **Save** appends unsaved items, in tray order, to the current target. The
+2. The **destination** row shows the sticky note (title + full path). When
+   `vault.obsidian_vault_name` is set, the title is an `obsidian://open` link.
+3. Capture a **selection**, or use **Clip** (region drag on a frozen screenshot,
+   or whole **visible area**). Items stack in the tray (reorder / delete before
+   save). Only one clip runs at a time.
+4. **Save** appends unsaved items, in tray order, to the current target. The
    target stays selected so the next batch continues the same note (except
    Research, which writes one inbox atom per snippet).
-4. **New page** clears the sticky path and starts a fresh capture note (in
-   Research mode it only clears the tray).
+5. **Start new note** (destination row) clears the sticky path and starts a
+   fresh capture note (in Research mode it only clears the tray).
 
 The panel does not guess which meeting you are in. Pick a diarization session
 from the list when you want snippets on that transcript.
@@ -71,6 +74,11 @@ before markdown render.
 ## HTTP API
 
 Bearer token (`api.token`), same as the Obsidian plugin.
+
+### `GET /v1/meta`
+
+Returns `{ "obsidian_vault_name": "…" }` from `vault.obsidian_vault_name` so the
+browser panel can build Obsidian open links. Empty string when unset.
 
 ### `GET /v1/sessions?limit=&q=`
 
