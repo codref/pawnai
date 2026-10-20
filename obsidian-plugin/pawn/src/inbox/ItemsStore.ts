@@ -11,6 +11,8 @@ import {
   isItemNotePath,
   listItemNotes,
   listVaultItemRefs,
+  readOpenedAt,
+  setItemNoteOpenedAt,
   statusesForScope,
 } from "./items";
 
@@ -42,6 +44,8 @@ export class ItemsStore {
   private flushLabel = "";
   /** note_key → expiry (ms) — skip vault-driven refresh after local triage. */
   private suppressUntil = new Map<string, number>();
+  /** Instant unread overlay until vault metadata catches up. */
+  private openedAtById = new Map<string, string>();
   kind = "";
   q = "";
   scope: ItemsScope = "open";
@@ -157,8 +161,39 @@ export class ItemsStore {
       this.openTotal,
       this.vaultNotes,
       this.flushable,
-      this.items.map((i) => `${i.id}:${i.status}`).join(","),
+      this.items.map((i) => `${i.id}:${i.status}:${i.opened_at || ""}`).join(","),
     ].join("|");
+  }
+
+  private mergeOpenedAt(items: InboxItem[]): InboxItem[] {
+    return items.map((item) => {
+      const overlay = this.openedAtById.get(item.id) || this.openedAtById.get(item.short_id);
+      const fromVault = readOpenedAt(this.plugin.app, item.note_key);
+      const opened = overlay || item.opened_at || fromVault || null;
+      if (opened && opened !== item.opened_at) {
+        return { ...item, opened_at: opened };
+      }
+      if (opened) this.openedAtById.set(item.id, opened);
+      return item.opened_at ? item : { ...item, opened_at: opened };
+    });
+  }
+
+  /** Mark an item opened: overlay first, then write ``opened_at`` on the note. */
+  markOpened(item: InboxItem): void {
+    if (item.opened_at || this.openedAtById.has(item.id)) return;
+    const iso = window.moment().toISOString();
+    this.openedAtById.set(item.id, iso);
+    if (item.short_id) this.openedAtById.set(item.short_id, iso);
+    this.items = this.items.map((row) =>
+      row.id === item.id || row.short_id === item.id ? { ...row, opened_at: iso } : row,
+    );
+    this.notify();
+    const noteKey = item.note_key;
+    if (!noteKey) return;
+    this.suppressNoteKey(noteKey);
+    void setItemNoteOpenedAt(this.plugin.app, noteKey, iso).catch(() => {
+      /* keep overlay even if write fails */
+    });
   }
 
   /** Live open ids / short_ids / note paths that must never be flushed. */
@@ -238,7 +273,7 @@ export class ItemsStore {
       try {
         const result = await this.plugin.client.listItems(this.listParams(0));
         if (this.stopped || generation !== this.generation) return;
-        this.items = result.items;
+        this.items = this.mergeOpenedAt(result.items);
         this.total = result.total;
         this.offline = false;
         if (this.scope === "open") {
@@ -274,7 +309,7 @@ export class ItemsStore {
               (i.context || "").toLowerCase().includes(needle),
           );
         }
-        this.items = filtered;
+        this.items = this.mergeOpenedAt(filtered);
         this.total = filtered.length;
         this.offline = true;
         if (this.scope === "open") {
@@ -330,7 +365,7 @@ export class ItemsStore {
       if (this.stopped || generation !== this.generation) return;
       const seen = new Set(this.items.map((i) => i.id));
       let added = false;
-      for (const item of result.items) {
+      for (const item of this.mergeOpenedAt(result.items)) {
         if (!seen.has(item.id)) {
           this.items.push(item);
           added = true;
@@ -343,7 +378,23 @@ export class ItemsStore {
     }
   }
 
-  async runAction(id: string, action: string): Promise<string> {
+  /**
+   * Trash the local item note after the server deleted it from S3.
+   * Without this, Sync Engine can re-upload the still-open vault file.
+   */
+  private async trashNoteLocally(noteKey: string | null | undefined): Promise<void> {
+    if (!noteKey) return;
+    const file = this.plugin.app.vault.getAbstractFileByPath(noteKey);
+    if (!(file instanceof TFile)) return;
+    this.suppressNoteKey(noteKey);
+    try {
+      await this.plugin.app.fileManager.trashFile(file);
+    } catch {
+      /* already gone */
+    }
+  }
+
+  async runAction(id: string, action: string, arg?: string): Promise<string> {
     const removed = this.dropLocal(id);
     if (removed) this.notify();
     const item = removed?.item;
@@ -352,10 +403,12 @@ export class ItemsStore {
         const noteKey = item?.note_key;
         if (!noteKey) throw new Error("Offline and no local note for this item.");
         const { setItemNoteAction } = await import("./items");
-        await setItemNoteAction(this.plugin.app, noteKey, action);
+        await setItemNoteAction(this.plugin.app, noteKey, action, arg);
         return `Queued ${action} on note (sync will apply).`;
       }
-      return await this.plugin.client.itemAction(id, action);
+      const receipt = await this.plugin.client.itemAction(id, action, arg);
+      if (action === "delete") await this.trashNoteLocally(item?.note_key);
+      return receipt;
     } catch (err) {
       if (removed) {
         this.restoreLocal(removed.item, removed.index);
@@ -385,6 +438,9 @@ export class ItemsStore {
         return n;
       }
       const result = await this.plugin.client.deleteItems({ ids });
+      for (const { item } of snapshot) {
+        await this.trashNoteLocally(item.note_key);
+      }
       return result.deleted;
     } catch (err) {
       for (const entry of snapshot.reverse()) {

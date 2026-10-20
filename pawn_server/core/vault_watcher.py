@@ -211,7 +211,12 @@ async def _apply_item_actions(cfg: Any, store: Any, *, registry: Any) -> int:
         item_id = parsed.get("id") or parsed.get("short_id")
         if not item_id:
             continue
-        await apply_action(cfg, item_id, action, registry=registry, store=store)
+        arg = None
+        if action == "todo":
+            project = str(parsed.get("todo_project") or "").strip()
+            if project:
+                arg = project
+        await apply_action(cfg, item_id, action, arg, registry=registry, store=store)
         acted += 1
     return acted
 

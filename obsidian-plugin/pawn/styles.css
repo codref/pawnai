@@ -740,6 +740,25 @@ button.pawn-chip-pin:hover {
   outline-offset: -2px;
 }
 
+.pawn-item-card {
+  position: relative;
+}
+
+.pawn-item-unread-dot {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--interactive-accent);
+  pointer-events: none;
+}
+
+.pawn-inbox-title.is-unread-title {
+  font-weight: var(--font-semibold, 600);
+}
+
 .pawn-inbox-bulk .clickable-icon.is-active {
   color: var(--interactive-accent);
   background: var(--background-modifier-hover);

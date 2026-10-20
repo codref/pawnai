@@ -10,6 +10,18 @@ from pawn_core.vault import dump_frontmatter, parse_frontmatter
 TERMINAL_STATUSES = frozenset({"filed", "task", "dismissed"})
 
 
+def _meta_str(value: Any) -> str:
+    """Frontmatter scalars may arrive as datetime from YAML; keep ISO text."""
+    if value is None:
+        return ""
+    if hasattr(value, "isoformat"):
+        try:
+            return str(value.isoformat())
+        except Exception:
+            return str(value).strip()
+    return str(value).strip()
+
+
 def render_item_note(
     *,
     item_id: str,
@@ -25,6 +37,7 @@ def render_item_note(
     interrupt: bool = False,
     related: list[str] | None = None,
     action: str = "",
+    opened_at: str = "",
 ) -> str:
     """Serialize one ``pawn: item`` note."""
     meta: dict[str, Any] = {
@@ -36,6 +49,9 @@ def render_item_note(
         "thread": thread or "",
         "action": action or "",
     }
+    opened = (opened_at or "").strip()
+    if opened:
+        meta["opened_at"] = opened
     body_parts = [text.strip() or "(empty)"]
     if context.strip():
         body_parts.append("")
@@ -72,6 +88,8 @@ def parse_item_note(text: str) -> dict[str, Any]:
         "kind": str(meta.get("kind") or "").strip(),
         "thread": str(meta.get("thread") or "").strip(),
         "action": str(meta.get("action") or "").strip().lower(),
+        "opened_at": _meta_str(meta.get("opened_at")),
+        "todo_project": _meta_str(meta.get("todo_project")),
         "body": body,
         "meta": meta,
     }

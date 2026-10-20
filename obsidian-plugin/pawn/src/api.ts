@@ -131,6 +131,8 @@ export interface InboxItem {
   note_key?: string | null;
   created_at?: string | null;
   updated_at?: string | null;
+  /** ISO timestamp when the user first opened the item note (vault frontmatter). */
+  opened_at?: string | null;
 }
 
 export interface ListItemsParams {

@@ -8,7 +8,12 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
 from pawn_agent.core.coworker import db as itemdb
-from pawn_agent.core.coworker.notes import append_thread_entry, render_item_note, thread_note_key
+from pawn_agent.core.coworker.notes import (
+    append_thread_entry,
+    parse_item_note,
+    render_item_note,
+    thread_note_key,
+)
 from pawn_agent.utils.config import AgentConfig
 from pawn_core.goals import slugify
 from pawn_core.vault import dump_frontmatter
@@ -43,10 +48,23 @@ def _store(cfg: AgentConfig, store: Any) -> Any:
     return vault_store_from_config(cfg)
 
 
+def _existing_opened_at(store: Any, key: str) -> str:
+    """Keep ``opened_at`` across triage rewrites."""
+    try:
+        text = store.read(key)
+    except Exception:
+        return ""
+    try:
+        return str(parse_item_note(text).get("opened_at") or "").strip()
+    except ValueError:
+        return ""
+
+
 def _rewrite_note(store: Any, item: dict[str, Any], *, status: str, action: str = "") -> None:
     key = item.get("note_key")
     if not key or store is None:
         return
+    opened_at = _existing_opened_at(store, key)
     body = render_item_note(
         item_id=item["id"],
         short_id=item["short_id"],
@@ -59,6 +77,7 @@ def _rewrite_note(store: Any, item: dict[str, Any], *, status: str, action: str 
         reason=item.get("reason") or "",
         interrupt=bool(item.get("interrupt")),
         action=action,
+        opened_at=opened_at,
     )
     store.write(key, body)
 
@@ -107,8 +126,18 @@ def _todo_folder(cfg: AgentConfig) -> str:
     return f"{root}/{external}"
 
 
-def _write_todo_note(store: Any, cfg: AgentConfig, item: dict[str, Any]) -> Optional[str]:
-    """Create a TaskNotes note for *item*. Returns the vault key."""
+def _write_todo_note(
+    store: Any,
+    cfg: AgentConfig,
+    item: dict[str, Any],
+    *,
+    project: str = "",
+) -> Optional[str]:
+    """Create a TaskNotes note for *item*. Returns the vault key.
+
+    When *project* is set, ensure a project stub and kanban board, and link the
+    task via ``project`` / ``projects``.
+    """
     if store is None:
         return None
     title = " ".join((item.get("text") or "Follow up").split())
@@ -132,6 +161,14 @@ def _write_todo_note(store: Any, cfg: AgentConfig, item: dict[str, Any]) -> Opti
         "status": "open",
         "priority": "normal",
     }
+    project_name = " ".join((project or "").split())
+    if project_name:
+        from pawn_agent.tools.tasknotes_impl import ensure_project_and_board  # noqa: PLC0415
+
+        project_stem = ensure_project_and_board(cfg, store, project_name)
+        meta["project"] = project_name
+        if project_stem:
+            meta["projects"] = [f"[[{project_stem}]]"]
     parts = []
     if link:
         parts.append(f"Source: {link}")
@@ -178,12 +215,17 @@ async def apply_action(
         return f"Task captured for {item['short_id']}."
 
     if action == "todo":
-        path = _write_todo_note(vault, cfg, item)
+        project = " ".join((arg or "").split())
+        path = _write_todo_note(vault, cfg, item, project=project)
         payload = dict(item.get("payload") or {})
         if path:
             payload["todo_path"] = path
+        if project:
+            payload["todo_project"] = project
         updated = itemdb.update_item(cfg.db_dsn, item["id"], status="task", payload=payload or None)
         _rewrite_note(vault, updated or item, status="task")
+        if path and project:
+            return f"TODO {path} ({project}) for {item['short_id']}."
         if path:
             return f"TODO {path} for {item['short_id']}."
         return f"TODO recorded for {item['short_id']} (no vault)."

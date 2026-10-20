@@ -63,6 +63,7 @@ export class ItemNoteBar {
         this.clear();
         return;
       }
+      const openedRaw = fm.opened_at != null ? String(fm.opened_at).trim() : "";
       item = {
         id: String(fm.id || file.path),
         short_id: String(fm.short_id || ""),
@@ -72,6 +73,7 @@ export class ItemNoteBar {
         status,
         interrupt: false,
         note_key: file.path,
+        opened_at: openedRaw || null,
       };
       // Prefer body first line when cheap.
       const text = await this.plugin.app.vault.cachedRead(file);
@@ -84,6 +86,7 @@ export class ItemNoteBar {
       this.clear();
       return;
     }
+    this.plugin.items.markOpened(item);
     if (this.bar && this.path === file.path) {
       this.bar.empty();
       mountItemActions(this.bar, this.plugin, item, () => void this.refresh());
@@ -125,5 +128,6 @@ function parseOpenItemNote(path: string, text: string): InboxItem | null {
     status,
     interrupt: false,
     note_key: path,
+    opened_at: val("opened_at") || null,
   };
 }

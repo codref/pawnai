@@ -22,8 +22,9 @@ import {
   parkIdea,
   setIdeaStatus,
 } from "./ideas";
-import { ItemsScope, groupByDay, kindClass, kindLabel } from "./items";
+import { ItemsScope, groupByDay, isItemUnread, kindClass, kindLabel } from "./items";
 import type { ItemsSection } from "./ItemsStore";
+import { pickTodoProject } from "./projects";
 
 const IDEAS_DEBOUNCE_MS = 400;
 
@@ -347,6 +348,19 @@ export interface ItemActionsOpts {
   onStart?: (action: string) => void;
 }
 
+/** Pick a project then run todo. Returns null if the user cancelled. */
+export async function runTodoWithProject(
+  plugin: PawnPlugin,
+  itemId: string,
+  opts?: { onConfirm?: () => void },
+): Promise<string | null> {
+  const choice = await pickTodoProject(plugin.app, plugin.settings.agentRoot);
+  if (choice.type === "cancel") return null;
+  opts?.onConfirm?.();
+  const arg = choice.type === "project" ? choice.name : undefined;
+  return plugin.items.runAction(itemId, "todo", arg);
+}
+
 /** Quiet icon actions for an item (sidebar row or note bar). */
 export function mountItemActions(
   parent: HTMLElement,
@@ -357,6 +371,10 @@ export function mountItemActions(
 ): void {
   const ask = opts?.ask !== false;
   const actions = parent.createDiv({ cls: "pawn-item-actions" });
+  const run = (action: string, arg?: string) => {
+    opts?.onStart?.(action);
+    return plugin.items.runAction(item.id, action, arg);
+  };
   const iconBtn = (icon: string, label: string, action: string) => {
     const button = actions.createEl("button", {
       cls: "clickable-icon pawn-item-action",
@@ -367,9 +385,7 @@ export function mountItemActions(
       ev.stopPropagation();
       button.addClass("is-busy");
       button.setAttr("disabled", "true");
-      opts?.onStart?.(action);
-      void plugin.items
-        .runAction(item.id, action)
+      void run(action)
         .then((receipt) => {
           new Notice(receipt, 4000);
           onDone?.();
@@ -392,7 +408,35 @@ export function mountItemActions(
   }
 
   iconBtn("circle-check", "Done", "ignore");
-  iconBtn("list-plus", "Add TODO", "todo");
+
+  const todoBtn = actions.createEl("button", {
+    cls: "clickable-icon pawn-item-action",
+    attr: { "aria-label": "Add TODO", title: "Add TODO" },
+  });
+  setIcon(todoBtn, "list-plus");
+  todoBtn.onclick = (ev) => {
+    ev.stopPropagation();
+    todoBtn.addClass("is-busy");
+    todoBtn.setAttr("disabled", "true");
+    void runTodoWithProject(plugin, item.id, {
+      onConfirm: () => opts?.onStart?.("todo"),
+    })
+      .then((receipt) => {
+        if (receipt == null) {
+          todoBtn.removeClass("is-busy");
+          todoBtn.removeAttribute("disabled");
+          return;
+        }
+        new Notice(receipt, 4000);
+        onDone?.();
+      })
+      .catch((err) => {
+        todoBtn.removeClass("is-busy");
+        todoBtn.removeAttribute("disabled");
+        noticeError(err);
+      });
+  };
+
   if (item.thread) iconBtn("folder-input", "File to thread", "file");
   if (ask) iconBtn("bot", "Ask Pawn", "task");
   iconBtn("trash-2", "Delete", "delete");
@@ -662,13 +706,27 @@ export function renderInbox(parent: HTMLElement, plugin: PawnPlugin): void {
 
   const list = parent.createDiv({ cls: "pawn-inbox-list" });
   const rerender = () => renderInbox(parent, plugin);
-  const runTriaged = (itemId: string, action: string) => {
+  const runTriaged = (itemId: string, action: string, arg?: string) => {
     state.focusedId = anchorAfterRemove(listedIds, itemId);
     state.selected.delete(itemId);
     // Store notify rebuilds the inbox; avoid rendering into a detached parent.
     void plugin.items
-      .runAction(itemId, action)
+      .runAction(itemId, action, arg)
       .then((receipt) => {
+        if (!state.reviewMode) new Notice(receipt, 3000);
+      })
+      .catch(noticeError);
+  };
+
+  const runTodoTriaged = (itemId: string) => {
+    void runTodoWithProject(plugin, itemId, {
+      onConfirm: () => {
+        state.focusedId = anchorAfterRemove(listedIds, itemId);
+        state.selected.delete(itemId);
+      },
+    })
+      .then((receipt) => {
+        if (receipt == null) return;
         if (!state.reviewMode) new Notice(receipt, 3000);
       })
       .catch(noticeError);
@@ -739,7 +797,8 @@ export function renderInbox(parent: HTMLElement, plugin: PawnPlugin): void {
         const noteFile = item?.note_key
           ? plugin.app.vault.getAbstractFileByPath(item.note_key)
           : null;
-        if (noteFile instanceof TFile) {
+        if (noteFile instanceof TFile && item) {
+          plugin.items.markOpened(item);
           void plugin.app.workspace.getLeaf(false).openFile(noteFile);
         }
         return;
@@ -756,7 +815,7 @@ export function renderInbox(parent: HTMLElement, plugin: PawnPlugin): void {
       }
       if (key === "t") {
         ev.preventDefault();
-        runTriaged(focus, "todo");
+        runTodoTriaged(focus);
         return;
       }
       if (key === "f") {
@@ -799,11 +858,20 @@ function renderItemRow(
   const card = parent.createDiv({ cls: "pawn-job-card pawn-inbox-card pawn-item-card" });
   card.dataset.itemId = item.id;
   if (state.reviewMode && state.focusedId === item.id) card.addClass("is-focused");
+  const unread = isItemUnread(item);
+  if (unread) card.addClass("is-unread");
   const noteFile = item.note_key
     ? plugin.app.vault.getAbstractFileByPath(item.note_key)
     : null;
   const hasNote = noteFile instanceof TFile;
   const orphaned = !hasNote;
+
+  if (unread) {
+    card.createDiv({
+      cls: "pawn-item-unread-dot",
+      attr: { "aria-label": "Unread", title: "Unread" },
+    });
+  }
 
   const top = card.createDiv({ cls: "pawn-item-top" });
   if (state.selectMode) {
@@ -822,7 +890,11 @@ function renderItemRow(
     text: kindLabel(item.kind),
   });
   const title = body.createDiv({
-    cls: orphaned ? "pawn-inbox-title is-orphan" : "pawn-inbox-title",
+    cls: orphaned
+      ? "pawn-inbox-title is-orphan"
+      : unread
+        ? "pawn-inbox-title is-unread-title"
+        : "pawn-inbox-title",
   });
   title.setText((item.text || "").replace(/\s+/g, " ").trim() || "(empty)");
   if (orphaned) {
@@ -839,6 +911,7 @@ function renderItemRow(
       return;
     }
     if (hasNote) {
+      plugin.items.markOpened(item);
       void plugin.app.workspace.getLeaf(false).openFile(noteFile);
       return;
     }

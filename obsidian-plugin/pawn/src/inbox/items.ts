@@ -141,6 +141,7 @@ export function parseItemNote(
   const { text: body, context, quote } = bodyText(parsed.rest);
   const created =
     mtime != null ? window.moment(mtime).toISOString() : window.moment().toISOString();
+  const openedAt = metaValue(parsed.meta, "opened_at") || null;
   return {
     id,
     short_id: shortId,
@@ -154,6 +155,7 @@ export function parseItemNote(
     context: context || null,
     note_key: path,
     created_at: created,
+    opened_at: openedAt,
   };
 }
 
@@ -269,6 +271,7 @@ export async function listItemNotes(
         .replace(/^[0-9]{4}-[0-9]{2}-[0-9]{2}-/, "")
         .replace(/-[a-f0-9]{8}$/i, "");
       const label = base.replace(/-/g, " ").trim() || shortId;
+      const openedRaw = fm.opened_at != null ? String(fm.opened_at).trim() : "";
       items.push({
         id,
         short_id: shortId,
@@ -279,6 +282,7 @@ export async function listItemNotes(
         interrupt: false,
         note_key: file.path,
         created_at: window.moment(file.stat.mtime).toISOString(),
+        opened_at: openedRaw || null,
       });
       continue;
     }
@@ -295,22 +299,73 @@ export async function listOpenItemNotes(app: App, itemsDir: string): Promise<Inb
   return listItemNotes(app, itemsDir, "open");
 }
 
+function setMetaLine(meta: string, key: string, value: string): string {
+  const line = `${key}: ${value}`;
+  const re = new RegExp(`^${key}:\\s*.*$`, "m");
+  if (re.test(meta)) return meta.replace(re, line);
+  let next = meta;
+  if (next.length && !next.endsWith("\n")) next += "\n";
+  return `${next}${line}\n`;
+}
+
+function clearMetaLine(meta: string, key: string): string {
+  return meta.replace(new RegExp(`^${key}:\\s*.*\\n?`, "m"), "");
+}
+
 /** Set ``action:`` on an item note for the vault watcher (offline triage). */
-export async function setItemNoteAction(app: App, noteKey: string, action: string): Promise<void> {
+export async function setItemNoteAction(
+  app: App,
+  noteKey: string,
+  action: string,
+  arg?: string,
+): Promise<void> {
   const file = app.vault.getAbstractFileByPath(noteKey);
   if (!(file instanceof TFile)) throw new Error(`Note not found: ${noteKey}`);
   const text = await app.vault.read(file);
   const parsed = frontmatterBody(text);
   if (!parsed) throw new Error("Item note has no frontmatter.");
-  let meta = parsed.meta;
-  if (/^action:\s*/m.test(meta)) {
-    meta = meta.replace(/^action:.*$/m, `action: ${action}`);
+  let meta = setMetaLine(parsed.meta, "action", action);
+  if (action === "todo" && arg?.trim()) {
+    meta = setMetaLine(meta, "todo_project", arg.trim());
   } else {
-    if (meta.length && !meta.endsWith("\n")) meta += "\n";
-    meta += `action: ${action}\n`;
+    meta = clearMetaLine(meta, "todo_project");
   }
   if (!meta.endsWith("\n")) meta += "\n";
   await app.vault.modify(file, `---\n${meta}---${parsed.rest}`);
+}
+
+/** Persist ``opened_at`` when the user first opens an item note. */
+export async function setItemNoteOpenedAt(
+  app: App,
+  noteKey: string,
+  openedAt: string,
+): Promise<void> {
+  const file = app.vault.getAbstractFileByPath(noteKey);
+  if (!(file instanceof TFile)) return;
+  const text = await app.vault.read(file);
+  const parsed = frontmatterBody(text);
+  if (!parsed || metaValue(parsed.meta, "pawn") !== "item") return;
+  if (metaValue(parsed.meta, "opened_at")) return;
+  let meta = setMetaLine(parsed.meta, "opened_at", openedAt);
+  if (!meta.endsWith("\n")) meta += "\n";
+  await app.vault.modify(file, `---\n${meta}---${parsed.rest}`);
+}
+
+/** Read ``opened_at`` from vault metadata for a note path. */
+export function readOpenedAt(app: App, noteKey: string | null | undefined): string | null {
+  if (!noteKey) return null;
+  const file = app.vault.getAbstractFileByPath(noteKey);
+  if (!(file instanceof TFile)) return null;
+  const cache = app.metadataCache.getFileCache(file);
+  const raw = cache?.frontmatter?.opened_at;
+  if (raw != null && String(raw).trim()) return String(raw).trim();
+  return null;
+}
+
+export function isItemUnread(item: InboxItem): boolean {
+  const status = (item.status || "").toLowerCase();
+  if (!(OPEN_STATUSES as readonly string[]).includes(status)) return false;
+  return !item.opened_at;
 }
 
 export function isItemNotePath(path: string, itemsDir: string): boolean {
