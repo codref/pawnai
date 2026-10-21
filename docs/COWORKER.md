@@ -1,6 +1,6 @@
 # Using the coworker loop
 
-The coworker loop keeps a short list of what you are trying to move, files what comes out of meetings and notes, and interrupts you only when an active thread is affected. You triage meeting items from the item note, from Matrix, or from chat. The plugin Inbox is the list of idea notes you have not filed. The loop stays off until `coworker.enabled` is true.
+The coworker loop keeps a short list of what you are trying to move, files what comes out of meetings and notes, and interrupts you only when an active thread is affected. You triage meeting items from the plugin Inbox (Date or Session grouping), the item note, Matrix, or chat. The Inbox **Ideas** chip lists idea notes you have not filed. The loop stays off until `coworker.enabled` is true.
 
 ## Turn it on
 
@@ -30,7 +30,17 @@ coworker:
     - Davide
 ```
 
-`chain_agent.command: session_completed` replaces the free-form “analyze this conversation” prompt. `command: run` still does that older path. Both need `chain_agent.enabled: true`.
+`chain_agent.command: session_completed` replaces the free-form “analyze this conversation” prompt. `command: run` still does that older path. Config chaining needs `chain_agent.enabled: true`, but a per-message dict such as `{"command": "session_completed"}` always chains, and `chain_agent: false` always skips.
+
+### Chunked recordings
+
+The recorder owns when items analysis runs:
+
+1. **Per-chunk** uploads publish `transcribe-diarize` with `"chain_agent": false` (diarize appends; no extract).
+2. **On stop**, it re-publishes the last chunk URI once with `"chain_agent": {"command": "session_completed"}` (plus any leftover notes/screenshots).
+3. **One-shot** / end-of-session single files chain `session_completed` on that message.
+
+Pawn skips audio paths already in `session_state.processed_files`, so the finalize re-publish does not duplicate segments. Duplicate `session_completed` for the same segment count is ignored (use `force: true` or `pawn-server coworker process --session <id>` to re-run). If the recorder crashes without finalize, items stay pending until a later finalize or that CLI.
 
 `coworker.me` is the names the morning briefing treats as yours when it looks for overdue commitments. `timezone` is used for quiet hours, the daily cap, and the cron clocks when `Goals.md` does not set its own timezone.
 
@@ -107,22 +117,49 @@ Attention rules:
 
 ## What you see after a meeting
 
-When a `transcribe-diarize` job finishes and the chain command is `session_completed`, the server:
+When a `transcribe-diarize` job finishes and chaining resolves to `session_completed` (finalize or one-shot, not an intermediate chunk), the server:
 
 1. Extracts decisions, commitments, open questions, blocks, and contradictions.
+   Each item has a one-line `text` claim, a self-contained `context` (who / about
+   what / stakes; repetition across siblings is fine), and a longer verbatim
+   `quote` from the source. Extract source is the DB transcript plus any
+   non-empty vault `## Annotations` on the session note (the default stub is
+   ignored). Edit Annotations to explain people, relations, or what to skip,
+   then re-run extract.
 2. Scores them against the active threads. A hit has to name one of those threads.
-3. Writes `Pawn/Items/{short_id}.md` and refreshes `Pawn/Today.md`.
+3. Writes `Pawn/Items/{YYYY-MM-DD}-{slug}-{short_id}.md` and refreshes `Pawn/Today.md`.
 4. Pushes Matrix (and optional ntfy) only for interrupts.
+5. Runs `speakers_refresh` for gallery-linked people (Appearances always;
+   Facts under autonomy `people_refresh` — see [PEOPLE.md](PEOPLE.md)).
+   Approve `people_update` items with `approve <id>` like research proposals.
 
 Duplicates you already triaged, ignored fingerprints, quiet hours, and the daily cap still create the item note. They do not notify. `Pawn/Today.md` lists what needs a tap under “Needs you”, then what was filed quietly.
 
 Run one session by hand:
 
 ```bash
+# Meeting items → Pawn/Items (not People bios)
 pawn-server coworker process --session <diarization-session-id>
+
+# People bios only → People/{speaker_id}.md (not Items)
+pawn-server coworker people-refresh --session <diarization-session-id>
 ```
 
-An item note looks like this. The eight-character `short_id` is what you reply with.
+From the Obsidian Sessions tab, **Extract** opens a modal (Items on by default;
+optional People refresh) that calls `POST /v1/sessions/{id}/extract`. That path
+always re-runs (no queue dedupe). Untriaged items for the session are replaced;
+triaged fingerprints stay suppressed. **Show items** opens the Inbox filtered
+to that session with Session grouping.
+
+```http
+POST /v1/sessions/{session_id}/extract
+{ "items": true, "people": false }
+```
+
+`GET /v1/items` accepts optional `source_ref` / `source_kind` filters (plugin
+deep-link uses `source_ref=<session_id>`).
+
+An item note looks like this. The eight-character `short_id` is what you reply with in Matrix or chat.
 
 ```markdown
 ---
@@ -132,44 +169,60 @@ short_id: a1b2c3d4
 status: notified
 kind: decision
 thread: Project X storage
+source_kind: session
+source_ref: session-id
 action:
 ---
 
 Keep the recordings on our S3 through Friday.
 
+## Context
+
+Davide and Mira agreed not to migrate recordings off our S3 before the Friday
+deploy; moving earlier risks breaking the Sync Engine cutover. Owner unclear.
+
 > We should not move the bucket before the deploy.
+> Mira: yes, keep it on our S3 through Friday at least.
 
 Source: [[Pawn/Transcripts/2026-09-28 session-id.md]]
 
 ## Why you were notified
 
 A decision with no owner on Project X storage.
+
+## Related
+
+- [[Pawn/Items/2026-09-20-keep-recordings-on-s3-b2c3d4e5.md]]
 ```
+
+`## Related` is filled from the shared knowledge index (same embedding model as sallm). Queries use sallm's instruct template; neighbors must clear `coworker.related_max_distance` (cosine distance). Transcript hits also need a proper-noun overlap with the item summary/quote when one exists. Prior item notes rank above raw meeting windows; empty Related is omitted.
 
 ## Triage
 
-Use any of the three surfaces. They call the same actions.
+Use any of the surfaces. They call the same actions.
 
 | Action | Effect |
 |--------|--------|
+| `todo <id>` | Writes a TaskNotes TODO and clears the item |
 | `file <id>` | Appends the item to `Pawn/Threads/{slug}.md` |
 | `task <id>` | Records an open loop on that thread and opens an ask job |
-| `later <id> [YYYY-MM-DD]` | Snoozes until that date, or until tomorrow when the date is omitted |
-| `ignore <id>` | Dismisses it and suppresses the same fingerprint later |
-| `approve <id>` / `reject <id>` | A schedule proposal, or a research follow-up |
+| `delete <id>` | Dismisses, suppresses the fingerprint, and deletes the vault note |
+| `ignore <id>` | Dismisses and suppresses the fingerprint (note left in place) |
+| `later <id> [YYYY-MM-DD]` | Snoozes (Matrix/chat only; not shown in Obsidian) |
+| `approve <id>` / `reject <id>` | A schedule proposal, people update, or research follow-up |
 
 `<id>` is the `short_id` or the full UUID.
 
-**Obsidian.** Meeting items are triaged from the item note. The plugin Inbox tab, and **Show inbox**, list idea notes whose `status` is `inbox`. Each card has Keep, Goal, Task, and Drop. The status bar counts those notes.
+**Obsidian.** The plugin Inbox tab (and **Show inbox**) lists open meeting items from `GET /v1/items`. Toggle **Date** (default) or **Session** grouping: Session mode nests day → originating session → items (`source_ref`). A dismissible “Filtered: …” chip appears when opened from a session card. Each row shows the claim plus a short `context` subtitle (or quote fallback); session-origin rows can open the transcript. **Review** mode highlights one row and supports keyboard triage (`j`/`k`, `d` Done, `x` Delete, `t` TODO, `f` File, `e` expand, Enter open note) with optimistic remove and no jump-to-top. **Select** mode plus **Select all**, then **Delete**, clears noise in bulk. Row actions: **Done**, **Add TODO**, **File to thread** (when threaded), **Delete**; **Ask Pawn** lives under expand. A missing item note shows as an orphan. Expand a row for full context, quote, and source. The same primary actions appear on an open item note. Triage rewrites preserve `source_kind` / `source_ref` frontmatter. The **Ideas** chip lists idea notes (`status: inbox`) with Keep / Goal / Task / Drop. The status bar counts open items (and ideas) and opens the Inbox.
 
-**The item note.** Set `action:` to `file`, `task`, `later`, or `ignore` and let it sync. The vault watcher applies it on its next poll (default 15 seconds). `later` from the note is also tomorrow. A note already filed, tasked, or dismissed is left alone.
+**The item note.** Set `action:` to `todo`, `file`, `task`, `delete`, or `ignore` and let it sync. The vault watcher applies it on its next poll (default 15 seconds). A note already filed, tasked, or dismissed is left alone.
 
 **Matrix.** In a DM, send the command as the whole message. In a room, put it after `command_prefix` (default `!pawn`):
 
 ```text
 file a1b2c3d4
-later a1b2c3d4 2026-10-03
-ignore a1b2c3d4
+todo a1b2c3d4
+delete a1b2c3d4
 ```
 
 Pawn replies with a one-line receipt and does not start a chat turn.
@@ -180,16 +233,21 @@ Pawn replies with a one-line receipt and does not start a chat turn.
 curl -X POST "$PAWN_URL/v1/items/a1b2c3d4/action" \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
-  -d '{"action":"later","arg":"2026-10-03"}'
+  -d '{"action":"todo"}'
+
+curl -X POST "$PAWN_URL/v1/items/delete" \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"all_open":true}'
 ```
 
-`GET /v1/items?status=notified` lists the inbox.
+`GET /v1/items` lists open items (`new,notified,snoozed`) with `total`, filters (`kind`, `q`, `statuses`), and pagination (`limit`, `offset`).
 
 ## Capture an idea
 
 Ideas are notes under `Ideas/`. `/idea` and **Quick capture** write the note and do not start a model turn. An existing file at that path is left in place. The scanner does not extract a note under `Ideas/` or a note tagged `idea`. `coworker.watch_folders` and `coworker.watch_tags` start empty. A folder you still list is scanned, except idea notes.
 
-The plugin Inbox lists notes with `status: inbox`. Keep sets `status: later`. Goal appends a Parked thread in `Goals.md` that links the note, then sets `status: goal`. Task writes one note under `{agent root}/TaskNotes/Tasks/` and sets `status: task`. Drop sets `status: dropped`. Notes with no `status` stay in the folder and do not appear as cards.
+The Inbox **Ideas** chip lists notes with `status: inbox`. Keep sets `status: later`. Goal appends a Parked thread in `Goals.md` that links the note, then sets `status: goal`. Task writes one note under `{agent root}/TaskNotes/Tasks/` and sets `status: task`. Drop sets `status: dropped`. Notes with no `status` stay in the folder and do not appear as cards.
 
 ```markdown
 ---
@@ -231,9 +289,9 @@ With no flags, both notes and transcripts are indexed.
 
 ## Phone audio
 
-Set `coworker.capture_audio_dir` to a vault folder your phone recorder syncs into, for example `Pawn/Capture/audio`. New `m4a`, `webm`, `wav`, `mp3`, `ogg`, and `flac` files are copied onto the diarize queue with `chain_agent.command: session_completed`. Pawn leaves a stub at `Pawn/Capture/{session}.md`. An empty `capture_audio_dir` disables this.
+Set `coworker.capture_audio_dir` to a vault folder your phone recorder syncs into, for example `Pawn/Capture/audio`. New `m4a`, `webm`, `wav`, `mp3`, `ogg`, and `flac` files are treated as **one-shot** takes: each file gets its own session and is queued with `chain_agent: {command: session_completed}`. Pawn leaves a stub at `Pawn/Capture/{session}.md`. An empty `capture_audio_dir` disables this.
 
-The same chain is attached when the plugin uploads audio and the coworker loop is enabled.
+Plugin audio upload is the same one-shot path when the coworker loop is enabled. Continuous multi-chunk sessions should use the recorder queue producer (per-chunk `chain_agent: false`, finalize on stop) instead of dropping many files into `capture_audio_dir`.
 
 ## Morning and Friday
 
@@ -301,5 +359,6 @@ Env vars use `PAWN_COWORKER__*` (`PAWN_COWORKER__ENABLED=true`, `PAWN_COWORKER__
 | `pawn-server serve --coworker-only` | Loop only, no HTTP API |
 | `pawn-server coworker status` | Enabled, paused, and autonomy mode |
 | `pawn-server coworker pause` / `resume` | Kill switch for unattended follow-ups |
-| `pawn-server coworker process --session ID` | Run the loop for one finished session |
+| `pawn-server coworker process --session ID` | Extract meeting items → `Pawn/Items` |
+| `pawn-server coworker people-refresh --session ID` | People bios only → `People/{id}.md` |
 | `pawn-server coworker reindex` | Backfill the knowledge index |

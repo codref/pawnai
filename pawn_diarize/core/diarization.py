@@ -1,6 +1,16 @@
-"""Speaker diarization engine using pyannote.audio."""
+"""Speaker diarization engine with curated Speakers-gallery identification.
+
+Pipeline (two separate jobs — do not conflate them):
+
+1. **Anonymous diarization** — a pluggable backend (pyannote / Nemotron) emits
+   ``SPEAKER_XX`` turns for "who spoke when".
+2. **Identification** — duration-weighted cluster embeddings are scored against
+   the curated Speakers gallery only.  Unknowns stay anonymous; nothing is
+   auto-enrolled into the gallery at runtime.
+"""
 
 from typing import Optional, List, Dict, Any, Union, Tuple
+import re
 import tempfile
 import warnings
 import os
@@ -9,7 +19,6 @@ import numpy as np
 import soundfile as sf
 from math import gcd
 from pathlib import Path
-from pyannote.audio import Pipeline, Model, Inference
 from sklearn.cluster import DBSCAN
 from sklearn.metrics.pairwise import cosine_distances
 
@@ -21,6 +30,13 @@ from .config import (
 )
 
 warnings.filterwarnings("ignore")
+
+_ANON_SPEAKER_RE = re.compile(r"^SPEAKER_\d+$")
+
+
+def is_anonymous_speaker_label(label: str) -> bool:
+    """True for backend-local labels like ``SPEAKER_00`` (not display names)."""
+    return bool(_ANON_SPEAKER_RE.match(str(label or "").strip()))
 
 
 def _load_audio(path: str) -> Tuple[torch.Tensor, int]:
@@ -55,21 +71,114 @@ def _resample(waveform: torch.Tensor, orig_sr: int, target_sr: int) -> torch.Ten
 
 
 class DiarizationEngine:
-    """Engine for speaker diarization and embedding extraction."""
+    """Engine for speaker diarization and embedding extraction.
 
-    def __init__(self, device: Optional[str] = None):
-        """Initialize the diarization engine.
+    Args:
+        device: ``cuda`` / ``cpu`` / ``auto``.
+        diarization_backend: ``pyannote`` or ``nemotron``.
+        diarization_model: HF / NeMo model id for the chosen backend.
+        embedding_model: voiceprint extractor id (TitaNet or pyannote).
+        hf_token: Hugging Face token for gated pyannote models.
+        identify_margin: min gap between best and second-best gallery scores.
+    """
 
-        Args:
-            device: Device to use ("cuda", "cpu", or "auto"). Defaults to auto-detect.
-        """
+    def __init__(
+        self,
+        device: Optional[str] = None,
+        *,
+        diarization_backend: str = "pyannote",
+        diarization_model: Optional[str] = None,
+        embedding_model: Optional[str] = None,
+        hf_token: Optional[str] = None,
+        identify_margin: float = 0.05,
+    ):
         if device is None or device == "auto":
             self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         else:
             self.device = torch.device(device)
 
-        self.diarization_pipeline: Optional[Pipeline] = None
-        self.embedding_model: Optional[Inference] = None
+        self.diarization_backend_name = diarization_backend
+        self.diarization_model_id = diarization_model or DIARIZATION_MODEL
+        self.embedding_model_id = embedding_model or EMBEDDING_MODEL
+        self.hf_token = hf_token if hf_token is not None else HUGGINGFACE_TOKEN
+        self.identify_margin = identify_margin
+
+        # Lazy-loaded in _initialize_models().
+        self._backend = None
+        self._extractor = None
+        # Legacy aliases kept so older call sites / tests keep working.
+        self.diarization_pipeline = None
+        self.embedding_model = None
+
+    def _initialize_models(self) -> None:
+        """Lazy-load the diarization backend and embedding extractor."""
+        if self._backend is not None and self._extractor is not None:
+            return
+
+        from .diar_backends import (
+            build_diarization_backend,
+            resolve_diarization_model_id,
+            resolve_nemotron_runtime_model_id,
+        )
+        from .voice_embeddings import build_embedding_extractor
+
+        device_str = str(self.device)
+        print(f"Using device: {self.device}")
+
+        resolved_model = resolve_diarization_model_id(
+            self.diarization_backend_name, self.diarization_model_id
+        )
+        if self.diarization_backend_name.lower() == "nemotron":
+            resolved_model = resolve_nemotron_runtime_model_id(resolved_model)
+        self.diarization_model_id = resolved_model
+        print(
+            f"Initializing diarization backend={self.diarization_backend_name} "
+            f"model={resolved_model}..."
+        )
+        self._backend = build_diarization_backend(
+            self.diarization_backend_name,
+            model_id=resolved_model,
+            device=device_str,
+            hf_token=self.hf_token,
+        )
+        # Keep a handle for code that still expects the raw pyannote Pipeline.
+        self.diarization_pipeline = getattr(self._backend, "_pipeline", None)
+
+        print(f"Initializing embedding model={self.embedding_model_id}...")
+        self._extractor = build_embedding_extractor(
+            self.embedding_model_id,
+            device=device_str,
+            hf_token=self.hf_token,
+        )
+        self.embedding_model = self._extractor  # duck-typed for extract_embeddings
+        print("Models initialized successfully")
+
+    def _embed_crop(
+        self,
+        waveform: torch.Tensor,
+        sample_rate: int,
+        start: float,
+        end: float,
+    ) -> Optional[np.ndarray]:
+        """Extract an L2-normalised embedding for ``[start, end)`` seconds."""
+        assert self._extractor is not None
+        start_idx = int(start * sample_rate)
+        end_idx = int(end * sample_rate)
+        if end_idx <= start_idx:
+            return None
+        segment_audio = waveform[:, start_idx:end_idx]
+        if segment_audio.device != torch.device("cpu"):
+            segment_audio = segment_audio.cpu()
+        try:
+            return self._extractor.extract(segment_audio, sample_rate)
+        except Exception as exc:  # noqa: BLE001
+            print(f"Warning: Could not extract embedding at {start:.2f}s: {exc}")
+            return None
+
+    def _diarize_turns(self, processed_audio: Union[str, Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Run the configured backend; returns ``[{speaker, start, end}, ...]``."""
+        assert self._backend is not None
+        return self._backend.diarize_file(processed_audio)
 
     def _preprocess_audio(self, audio_path: str) -> Union[str, Dict[str, Any]]:
         """Preprocess audio file to ensure compatibility with pyannote.audio.
@@ -178,86 +287,54 @@ class DiarizationEngine:
     def _diarize_multiple_files(
         self,
         audio_paths: List[str],
-        cross_file_threshold: float = 0.85,
+        cross_file_threshold: float = 0.55,
         prior_speaker_embeddings: Optional[Dict[str, Any]] = None,
         time_cursor: float = 0.0,
     ) -> Tuple[List[Dict[str, Any]], Dict[str, List[Dict[str, Any]]], List[Dict[str, Any]]]:
         """Diarize each file independently and align speakers across files.
 
-        No audio concatenation is performed.  Each file is diarized on its own;
-        speaker embeddings from each file are compared against all globally-seen
-        speakers so that the same person gets the same global label regardless of
-        which file they appear in.
-
-        Supports incremental sessions: pass ``prior_speaker_embeddings`` and
-        ``time_cursor`` to seed speaker state from a previous call so that
-        speakers are recognised across sessions and all new segments carry
-        correctly offset timestamps.
+        No audio concatenation.  Each file is diarized on its own; local
+        speaker centroids are then clustered globally (average-linkage on
+        cosine distance) so the same person keeps one label across chunks.
 
         Args:
             audio_paths: Ordered list of audio file paths.
-            cross_file_threshold: Cosine-similarity threshold for merging two
-                local speaker labels into one global label (0-1).
-            prior_speaker_embeddings: Per-speaker state from a previous session.
-                Mapping of global_label → {"embedding": [...], "total_duration": float}.
-                When provided the global speaker pool is pre-seeded so speakers
-                from past calls are recognised without re-processing old audio.
-            time_cursor: Seconds of audio already processed in previous calls.
-                All new segment timestamps are shifted by this value.
+            cross_file_threshold: Minimum cosine similarity to merge two local
+                centroids into one global speaker (0-1).  Distance threshold for
+                clustering is ``1 - cross_file_threshold``.
+            prior_speaker_embeddings: Optional prior centroids
+                ``label → {embedding, total_duration}``.  After clustering,
+                cluster means are matched to these so named speakers (e.g. Tom)
+                stick across a rediarize.
+            time_cursor: Seconds already processed; new timestamps are offset.
 
         Returns:
-            Tuple of:
-                - segments: Time-offset segments with globally consistent labels,
-                            sorted by start time.
-                - speaker_embeddings: Mapping of global label →
-                                      list of {embedding, start, end} dicts
-                                      (current call's data only; excludes synthetic
-                                       prior-session entries).
-                - chunk_offsets: List of {path, start, end} for each source file
-                                 using global time positions.
+            ``(segments, speaker_embeddings, chunk_offsets)``.
         """
+        from sklearn.cluster import AgglomerativeClustering  # noqa: PLC0415
+
         TARGET_SR = 16000
         all_segments: List[Dict[str, Any]] = []
-        # global_label → list of {embedding, start, end}
         global_speaker_embeddings: Dict[str, List[Dict[str, Any]]] = {}
         chunk_offsets: List[Dict[str, Any]] = []
-        # time_cursor is a running counter; initialised from the parameter
 
-        # --------------------------------------------------------------------
-        # Seed global speaker state from a prior session
-        # --------------------------------------------------------------------
-        if prior_speaker_embeddings:
-            for label, info in prior_speaker_embeddings.items():
-                emb = np.array(info["embedding"])
-                emb = emb / np.linalg.norm(emb)
-                # Represent the prior session as a single synthetic segment
-                # whose "duration" equals total_duration so that the weight
-                # given to it in any subsequent averaging is proportional to
-                # how much real audio it was derived from.
-                # The "synthetic" flag prevents these entries from being stored
-                # in the speaker database as if they were new audio.
-                global_speaker_embeddings[label] = [{
-                    "embedding": emb,
-                    "start": 0.0,
-                    "end": info["total_duration"],
-                    "synthetic": True,
-                }]
-            # Set counter past the highest SPEAKER_NN number already in use
-            nums = [
-                int(lbl.split("_")[-1])
-                for lbl in prior_speaker_embeddings
-                if lbl.startswith("SPEAKER_") and lbl.split("_")[-1].isdigit()
-            ]
-            global_counter = (max(nums) + 1) if nums else len(prior_speaker_embeddings)
-        else:
-            global_counter = 0
+        def _mean_emb(emb_list: List[Dict[str, Any]]) -> np.ndarray:
+            durations = np.array([e["end"] - e["start"] for e in emb_list], dtype=np.float64)
+            total = float(durations.sum())
+            weights = durations / total if total > 0 else np.ones(len(emb_list))
+            stacked = np.stack([e["embedding"].flatten() for e in emb_list])
+            mean = np.average(stacked, axis=0, weights=weights)
+            norm = float(np.linalg.norm(mean))
+            return mean / norm if norm > 0 else mean
+
+        # Per-file local clusters awaiting global merge.
+        # Each entry: file_idx, local_label, mean, emb_list, turns, file_offset
+        pending: List[Dict[str, Any]] = []
 
         for file_idx, path in enumerate(audio_paths):
             print(f"  Diarizing file {file_idx + 1}/{len(audio_paths)}: {path}")
 
-            # Preprocess handles format conversion; keep waveform for embedding extraction
             processed_audio = self._preprocess_audio(path)
-
             if isinstance(processed_audio, dict):
                 waveform = processed_audio["waveform"]
                 sample_rate = processed_audio["sample_rate"]
@@ -268,175 +345,383 @@ class DiarizationEngine:
                     sample_rate = TARGET_SR
 
             file_duration = waveform.shape[1] / sample_rate
-            chunk_offsets.append({
-                "path": str(path),
-                "start": time_cursor,
-                "end": time_cursor + file_duration,
-            })
+            file_offset = time_cursor
+            chunk_offsets.append(
+                {
+                    "path": str(path),
+                    "start": file_offset,
+                    "end": file_offset + file_duration,
+                }
+            )
 
-            # Run diarization pipeline on this file
-            diarization_output = self.diarization_pipeline(processed_audio)
-            diarization = diarization_output.speaker_diarization
-
-            # ------------------------------------------------------------------
-            # Extract per-segment embeddings and accumulate per local speaker
-            # ------------------------------------------------------------------
+            turns = self._diarize_turns(processed_audio)
             local_speaker_embeddings: Dict[str, List[Dict[str, Any]]] = {}
-
-            for turn, _, speaker in diarization.itertracks(yield_label=True):
-                seg_start = turn.start
-                seg_end = turn.end
+            for turn in turns:
+                speaker = turn["speaker"]
+                seg_start = float(turn["start"])
+                seg_end = float(turn["end"])
                 if seg_end - seg_start < 0.5:
                     continue
-
-                start_idx = int(seg_start * sample_rate)
-                end_idx = int(seg_end * sample_rate)
-                segment_audio = waveform[:, start_idx:end_idx]
-
-                try:
-                    if segment_audio.device != torch.device("cpu"):
-                        segment_audio = segment_audio.cpu()
-
-                    embedding = self.embedding_model({
-                        "waveform": segment_audio,
-                        "sample_rate": sample_rate,
-                    })
-                    if not isinstance(embedding, np.ndarray):
-                        embedding = (
-                            embedding.numpy()
-                            if hasattr(embedding, "numpy")
-                            else np.array(embedding)
-                        )
-                    embedding = embedding / np.linalg.norm(embedding)
-
-                    local_speaker_embeddings.setdefault(speaker, []).append({
+                embedding = self._embed_crop(waveform, sample_rate, seg_start, seg_end)
+                if embedding is None:
+                    continue
+                local_speaker_embeddings.setdefault(speaker, []).append(
+                    {
                         "embedding": embedding,
                         "start": seg_start,
                         "end": seg_end,
-                    })
-                except Exception as e:
-                    print(f"Warning: Could not extract embedding at {seg_start:.2f}s: {e}")
+                    }
+                )
 
-            # ------------------------------------------------------------------
-            # Compute duration-weighted mean embedding per local speaker
-            # ------------------------------------------------------------------
-            def _mean_emb(emb_list: List[Dict[str, Any]]) -> np.ndarray:
-                durations = np.array([e["end"] - e["start"] for e in emb_list])
-                weights = durations / durations.sum()
-                stacked = np.stack([e["embedding"].flatten() for e in emb_list])
-                mean = np.average(stacked, axis=0, weights=weights)
-                return mean / np.linalg.norm(mean)
+            for local_label, emb_list in local_speaker_embeddings.items():
+                pending.append(
+                    {
+                        "file_idx": file_idx,
+                        "local_label": local_label,
+                        "mean": _mean_emb(emb_list),
+                        "emb_list": emb_list,
+                        "turns": [
+                            t
+                            for t in turns
+                            if t["speaker"] == local_label
+                            and float(t["end"]) - float(t["start"]) >= 0.5
+                        ],
+                        "file_offset": file_offset,
+                        "source_file": str(path),
+                    }
+                )
 
-            local_mean_embeddings: Dict[str, np.ndarray] = {
-                lbl: _mean_emb(lst)
-                for lbl, lst in local_speaker_embeddings.items()
-            }
-
-            # ------------------------------------------------------------------
-            # Cross-file speaker alignment
-            # ------------------------------------------------------------------
-            local_to_global: Dict[str, str] = {}
-
-            if not global_speaker_embeddings:
-                # First file — assign new global labels directly
-                for local_label in local_mean_embeddings:
-                    global_label = f"SPEAKER_{global_counter:02d}"
-                    global_counter += 1
-                    local_to_global[local_label] = global_label
-                    global_speaker_embeddings[global_label] = list(
-                        local_speaker_embeddings.get(local_label, [])
-                    )
-                    print(f"    {local_label} → {global_label} (new)")
-            else:
-                # Subsequent files — compute current global mean embeddings once
-                global_labels = list(global_speaker_embeddings.keys())
-                global_means = [_mean_emb(global_speaker_embeddings[gl]) for gl in global_labels]
-
-                for local_label, local_mean in local_mean_embeddings.items():
-                    similarities = [
-                        float(np.dot(local_mean.flatten(), gm.flatten()))
-                        for gm in global_means
-                    ]
-                    best_idx = int(np.argmax(similarities))
-                    best_sim = similarities[best_idx]
-
-                    if best_sim >= cross_file_threshold:
-                        best_global = global_labels[best_idx]
-                        local_to_global[local_label] = best_global
-                        # Merge embeddings into global pool
-                        global_speaker_embeddings[best_global].extend(
-                            local_speaker_embeddings.get(local_label, [])
-                        )
-                        print(
-                            f"    {local_label} → {best_global} "
-                            f"(same speaker, similarity={best_sim:.3f})"
-                        )
-                    else:
-                        global_label = f"SPEAKER_{global_counter:02d}"
-                        global_counter += 1
-                        local_to_global[local_label] = global_label
-                        global_speaker_embeddings[global_label] = list(
-                            local_speaker_embeddings.get(local_label, [])
-                        )
-                        print(
-                            f"    {local_label} → {global_label} "
-                            f"(new speaker, best_sim={best_sim:.3f})"
-                        )
-
-            # ------------------------------------------------------------------
-            # Build time-offset segments with global labels
-            # ------------------------------------------------------------------
-            for turn, _, speaker in diarization.itertracks(yield_label=True):
-                if turn.end - turn.start < 0.5:
+            # Turns with no usable embedding still need a provisional label later.
+            embedded_locals = set(local_speaker_embeddings)
+            orphan_turns: Dict[str, List[Dict[str, Any]]] = {}
+            for turn in turns:
+                if turn["speaker"] in embedded_locals:
                     continue
-                global_label = local_to_global.get(speaker, speaker)
-                all_segments.append({
-                    "speaker": global_label,
-                    "original_label": speaker,
-                    "start": turn.start + time_cursor,
-                    "end": turn.end + time_cursor,
-                    "duration": turn.end - turn.start,
-                    "source_file": str(path),
-                })
+                if float(turn["end"]) - float(turn["start"]) < 0.5:
+                    continue
+                orphan_turns.setdefault(turn["speaker"], []).append(turn)
+            for local_label, turn_list in orphan_turns.items():
+                pending.append(
+                    {
+                        "file_idx": file_idx,
+                        "local_label": local_label,
+                        "mean": None,
+                        "emb_list": [],
+                        "turns": turn_list,
+                        "file_offset": file_offset,
+                        "source_file": str(path),
+                    }
+                )
 
             time_cursor += file_duration
-            del waveform  # free before loading next file
+            del waveform
+
+        if not pending:
+            return [], {}, chunk_offsets
+
+        # ------------------------------------------------------------------
+        # Global clustering of embedded locals (agglomerative on cosine)
+        # ------------------------------------------------------------------
+        embedded = [p for p in pending if p["mean"] is not None]
+        unembedded = [p for p in pending if p["mean"] is None]
+
+        def _entry_duration(entry: Dict[str, Any]) -> float:
+            return float(
+                sum(float(e["end"]) - float(e["start"]) for e in entry["emb_list"])
+            )
+
+        # Short/noisy chunk-locals often refuse to merge; cluster on longer
+        # voices first, then attach short ones to the nearest centroid.
+        min_seed_sec = 2.0
+        seeds = [p for p in embedded if _entry_duration(p) >= min_seed_sec]
+        shorts = [p for p in embedded if _entry_duration(p) < min_seed_sec]
+        if not seeds:
+            seeds, shorts = embedded, []
+
+        cluster_ids = np.zeros(len(seeds), dtype=np.int32)
+        if len(seeds) == 1:
+            cluster_ids[0] = 0
+        elif len(seeds) > 1:
+            stacked = np.stack([p["mean"] for p in seeds])
+            distance_threshold = max(0.0, min(1.0, 1.0 - float(cross_file_threshold)))
+            clustering = AgglomerativeClustering(
+                n_clusters=None,
+                metric="cosine",
+                linkage="average",
+                distance_threshold=distance_threshold,
+            )
+            cluster_ids = clustering.fit_predict(stacked)
+
+        unique_clusters = sorted({int(c) for c in cluster_ids})
+        cluster_emb_lists: Dict[int, List[Dict[str, Any]]] = {}
+        for idx, entry in enumerate(seeds):
+            cid = int(cluster_ids[idx])
+            cluster_emb_lists.setdefault(cid, []).extend(entry["emb_list"])
+        cluster_means: Dict[int, np.ndarray] = {
+            cid: _mean_emb(emb_list) for cid, emb_list in cluster_emb_lists.items()
+        }
+
+        # Attach short locals to the nearest existing cluster when similar enough;
+        # otherwise mint a new cluster (keeps rare but real speakers).
+        next_cid = (max(unique_clusters) + 1) if unique_clusters else 0
+        short_cluster_of: Dict[int, int] = {}
+        for entry in shorts:
+            mean = entry["mean"]
+            best_cid, best_sim = None, -1.0
+            for cid, cmean in cluster_means.items():
+                if cmean.shape != mean.shape:
+                    continue
+                sim = float(np.dot(mean.flatten(), cmean.flatten()))
+                if sim > best_sim:
+                    best_sim, best_cid = sim, cid
+            if best_cid is not None and best_sim >= cross_file_threshold:
+                short_cluster_of[id(entry)] = best_cid
+                cluster_emb_lists[best_cid].extend(entry["emb_list"])
+                cluster_means[best_cid] = _mean_emb(cluster_emb_lists[best_cid])
+            else:
+                short_cluster_of[id(entry)] = next_cid
+                cluster_emb_lists[next_cid] = list(entry["emb_list"])
+                cluster_means[next_cid] = mean
+                unique_clusters.append(next_cid)
+                next_cid += 1
+
+        # Second pass: merge cluster centroids that are still similar.
+        merged_into: Dict[int, int] = {cid: cid for cid in unique_clusters}
+        changed = True
+        while changed:
+            changed = False
+            alive = sorted({merged_into[c] for c in unique_clusters})
+            best_pair = None
+            best_sim = -1.0
+            for i, a in enumerate(alive):
+                for b in alive[i + 1 :]:
+                    ma, mb = cluster_means[a], cluster_means[b]
+                    if ma.shape != mb.shape:
+                        continue
+                    sim = float(np.dot(ma.flatten(), mb.flatten()))
+                    if sim > best_sim:
+                        best_sim = sim
+                        best_pair = (a, b)
+            if best_pair is not None and best_sim >= cross_file_threshold:
+                a, b = best_pair
+                keep, drop = (a, b) if a < b else (b, a)
+                cluster_emb_lists[keep].extend(cluster_emb_lists.get(drop, []))
+                cluster_means[keep] = _mean_emb(cluster_emb_lists[keep])
+                for cid in list(merged_into):
+                    if merged_into[cid] == drop:
+                        merged_into[cid] = keep
+                changed = True
+
+        def _final_cid(raw_cid: int) -> int:
+            return merged_into.get(raw_cid, raw_cid)
+
+        # Rebuild means after merges.
+        final_ids = sorted({_final_cid(c) for c in unique_clusters})
+        final_emb_lists: Dict[int, List[Dict[str, Any]]] = {cid: [] for cid in final_ids}
+        for idx, entry in enumerate(seeds):
+            final_emb_lists[_final_cid(int(cluster_ids[idx]))].extend(entry["emb_list"])
+        for entry in shorts:
+            final_emb_lists[_final_cid(short_cluster_of[id(entry)])].extend(
+                entry["emb_list"]
+            )
+        final_means = {
+            cid: _mean_emb(lst) for cid, lst in final_emb_lists.items() if lst
+        }
+
+        # Fold singleton / tiny clusters into the nearest major voice.  These are
+        # usually one noisy chunk-local that failed to merge at the main threshold.
+        local_counts: Dict[int, int] = {cid: 0 for cid in final_means}
+        for idx, _entry in enumerate(seeds):
+            local_counts[_final_cid(int(cluster_ids[idx]))] = (
+                local_counts.get(_final_cid(int(cluster_ids[idx])), 0) + 1
+            )
+        for entry in shorts:
+            cid = _final_cid(short_cluster_of[id(entry)])
+            local_counts[cid] = local_counts.get(cid, 0) + 1
+
+        def _cid_duration(cid: int) -> float:
+            return float(
+                sum(
+                    float(e["end"]) - float(e["start"])
+                    for e in final_emb_lists.get(cid, [])
+                )
+            )
+
+        majors = [
+            cid
+            for cid in final_means
+            if local_counts.get(cid, 0) >= 2 or _cid_duration(cid) >= 5.0
+        ]
+        tinies = [cid for cid in final_means if cid not in majors]
+        absorb_thr = min(float(cross_file_threshold), 0.40)
+        if majors and tinies:
+            for tiny in list(tinies):
+                tmean = final_means[tiny]
+                best_major, best_sim = None, -1.0
+                for major in majors:
+                    mmean = final_means[major]
+                    if mmean.shape != tmean.shape:
+                        continue
+                    sim = float(np.dot(tmean.flatten(), mmean.flatten()))
+                    if sim > best_sim:
+                        best_sim, best_major = sim, major
+                if best_major is not None and best_sim >= absorb_thr:
+                    print(
+                        f"    absorb cluster {tiny} → cluster {best_major} "
+                        f"(singleton/tiny, similarity={best_sim:.3f})"
+                    )
+                    for cid in list(merged_into):
+                        if _final_cid(cid) == tiny:
+                            merged_into[cid] = best_major
+                    final_emb_lists[best_major].extend(final_emb_lists.get(tiny, []))
+                    final_means[best_major] = _mean_emb(final_emb_lists[best_major])
+                    final_emb_lists.pop(tiny, None)
+                    final_means.pop(tiny, None)
+                    local_counts[best_major] = local_counts.get(best_major, 0) + local_counts.get(
+                        tiny, 0
+                    )
+                    local_counts.pop(tiny, None)
+
+        # Match only *named* priors (Tom). Anonymous SPEAKER_XX priors from a
+        # previous fragmented rediarize must not pin new clusters to old junk.
+        named_prior = {
+            label: info
+            for label, info in (prior_speaker_embeddings or {}).items()
+            if not is_anonymous_speaker_label(str(label))
+        }
+
+        def _prior_vec(info: Any) -> Optional[np.ndarray]:
+            if not isinstance(info, dict):
+                return None
+            emb = info.get("embedding")
+            if emb is None:
+                return None
+            vec = np.asarray(emb, dtype=np.float32).flatten()
+            norm = float(np.linalg.norm(vec))
+            return vec / norm if norm > 0 else None
+
+        cluster_to_global: Dict[int, str] = {}
+        used_prior: set = set()
+        next_speaker_num = 0
+
+        for cid in sorted(final_means):
+            mean = final_means[cid]
+            best_label = None
+            best_sim = -1.0
+            for label, info in named_prior.items():
+                if label in used_prior:
+                    continue
+                pvec = _prior_vec(info)
+                if pvec is None or pvec.shape != mean.shape:
+                    continue
+                sim = float(np.dot(mean.flatten(), pvec.flatten()))
+                if sim > best_sim:
+                    best_sim = sim
+                    best_label = label
+            n_locals = sum(
+                1
+                for idx, entry in enumerate(seeds)
+                if _final_cid(int(cluster_ids[idx])) == cid
+            ) + sum(
+                1
+                for entry in shorts
+                if _final_cid(short_cluster_of[id(entry)]) == cid
+            )
+            if best_label is not None and best_sim >= cross_file_threshold:
+                cluster_to_global[cid] = best_label
+                used_prior.add(best_label)
+                print(
+                    f"    cluster {cid} → {best_label} "
+                    f"(named prior, similarity={best_sim:.3f}, "
+                    f"{n_locals} chunk-local voice(s))"
+                )
+            else:
+                global_label = f"SPEAKER_{next_speaker_num:02d}"
+                next_speaker_num += 1
+                cluster_to_global[cid] = global_label
+                print(
+                    f"    cluster {cid} → {global_label} "
+                    f"({n_locals} chunk-local voice(s))"
+                )
+
+        local_to_global_by_file: Dict[Tuple[int, str], str] = {}
+
+        def _assign_entry(entry: Dict[str, Any], raw_cid: int) -> None:
+            global_label = cluster_to_global[_final_cid(raw_cid)]
+            key = (entry["file_idx"], entry["local_label"])
+            local_to_global_by_file[key] = global_label
+            global_speaker_embeddings.setdefault(global_label, []).extend(
+                entry["emb_list"]
+            )
+            for turn in entry["turns"]:
+                seg_start = float(turn["start"])
+                seg_end = float(turn["end"])
+                all_segments.append(
+                    {
+                        "speaker": global_label,
+                        "original_label": entry["local_label"],
+                        "start": seg_start + entry["file_offset"],
+                        "end": seg_end + entry["file_offset"],
+                        "duration": seg_end - seg_start,
+                        "source_file": entry["source_file"],
+                    }
+                )
+
+        for idx, entry in enumerate(seeds):
+            _assign_entry(entry, int(cluster_ids[idx]))
+        for entry in shorts:
+            _assign_entry(entry, short_cluster_of[id(entry)])
+
+        # Unembedded turns: map via same-file local label if that local was clustered.
+        for entry in unembedded:
+            key = (entry["file_idx"], entry["local_label"])
+            global_label = local_to_global_by_file.get(key)
+            if global_label is None:
+                global_label = f"SPEAKER_{next_speaker_num:02d}"
+                next_speaker_num += 1
+                local_to_global_by_file[key] = global_label
+                print(
+                    f"    {entry['local_label']}@file{entry['file_idx']} → "
+                    f"{global_label} (no embedding; isolated)"
+                )
+            for turn in entry["turns"]:
+                seg_start = float(turn["start"])
+                seg_end = float(turn["end"])
+                all_segments.append(
+                    {
+                        "speaker": global_label,
+                        "original_label": entry["local_label"],
+                        "start": seg_start + entry["file_offset"],
+                        "end": seg_end + entry["file_offset"],
+                        "duration": seg_end - seg_start,
+                        "source_file": entry["source_file"],
+                    }
+                )
+
+        n_globals = len(global_speaker_embeddings)
+        print(
+            f"  Cross-file clustering: {len(embedded)} local voice(s) → "
+            f"{n_globals} global speaker(s) "
+            f"(threshold={cross_file_threshold:.2f})"
+        )
 
         all_segments.sort(key=lambda x: x["start"])
         return all_segments, global_speaker_embeddings, chunk_offsets
-
-    def _initialize_models(self) -> None:
-        """Initialize diarization and embedding models (lazy loading)."""
-        if self.diarization_pipeline is not None and self.embedding_model is not None:
-            return  # Already initialized
-
-        print(f"Using device: {self.device}")
-        print("Initializing diarization pipeline...")
-        self.diarization_pipeline = Pipeline.from_pretrained(
-            DIARIZATION_MODEL, token=HUGGINGFACE_TOKEN
-        ).to(self.device)
-
-        print("Initializing embedding model...")
-        self.embedding_model = Inference(
-            Model.from_pretrained(
-                EMBEDDING_MODEL, token=HUGGINGFACE_TOKEN
-            ).to(self.device),
-            window="whole",
-        )
-        print("Models initialized successfully")
 
     def diarize(
         self,
         audio_path: Union[str, List[str]],
         db_dsn: Optional[str] = None,
         similarity_threshold: float = 0.7,
-        store_new_speakers: bool = True,
-        cross_file_threshold: float = 0.85,
+        store_new_speakers: bool = False,
+        cross_file_threshold: float = 0.55,
         prior_speaker_embeddings: Optional[Dict[str, Any]] = None,
         time_cursor: float = 0.0,
         source_map: Optional[Dict[str, str]] = None,
+        session_id: Optional[str] = None,
+        identify_margin: Optional[float] = None,
     ) -> Dict[str, Any]:
-        """Perform speaker diarization on audio file(s) with database lookup.
+        """Perform speaker diarization with curated gallery identification.
 
         Supports incremental session processing: pass ``prior_speaker_embeddings``
         and ``time_cursor`` from a saved session to recognise speakers across
@@ -447,41 +732,37 @@ class DiarizationEngine:
 
         Args:
             audio_path: Path to audio file, or ordered list of paths.
-            db_dsn: PostgreSQL DSN (None to skip database lookup).
-            similarity_threshold: Minimum cosine similarity to match a speaker
-                against the database (0-1).
-            store_new_speakers: Whether to store embeddings for unknown speakers.
+            db_dsn: PostgreSQL DSN (None to skip gallery lookup).
+            similarity_threshold: Minimum cosine similarity to accept a gallery hit.
+            store_new_speakers: Deprecated / ignored.  Gallery enrollments are
+                never written at runtime — use ``speakers enroll`` instead.
             cross_file_threshold: Cosine-similarity threshold for aligning
-                speaker labels across files (0-1).
+                speaker labels across files (0-1). Default 0.55.
             prior_speaker_embeddings: Per-speaker state from a previous session.
-                Mapping of global_label → {"embedding": [...], "total_duration": float}.
-                When provided all new speakers are compared against these so that
-                the same person receives the same label across sessions.
+                Only **named** priors (not ``SPEAKER_XX``) are used to relabel clusters.
             time_cursor: Seconds of audio already processed in previous calls.
-                All new segment timestamps are shifted by this value.
+            source_map: local temp path → canonical S3 URI map.
+            session_id: When set, gallery hits are written to session_speaker_map.
+            identify_margin: Override for best-vs-second margin (default: engine).
 
         Returns:
-            Dictionary containing:
-                - speakers: List of unique speaker IDs (with names if found)
-                - segments: List of dicts with speaker, start, end times
-                - num_speakers: Total number of speakers detected
-                - matched_speakers: Dict mapping global labels to matched names
-                - new_speakers: List of speaker labels that were not matched
-                - chunk_offsets: list of {path, start, end} when multiple files given
-                - session_speaker_embeddings: Serialisable per-speaker embeddings
-                  (global_label → {"embedding": [...], "total_duration": float})
-                  suitable for persisting in a session file and passing back as
-                  prior_speaker_embeddings on the next incremental call.
-                - new_time_cursor: Updated total seconds processed; pass as
-                  time_cursor on the next incremental call.
+            Dictionary containing speakers, segments, matched/new speakers,
+            session_speaker_embeddings, and new_time_cursor.
         """
-        from .database import Embedding, SpeakerName, get_engine, get_session, init_db
-        from sqlalchemy import text
-        import os
+        from .speaker_gallery import SpeakerGallery, duration_weighted_mean
+        from pawn_core.config import SpeakersConfig
+
+        if store_new_speakers:
+            print(
+                "Note: --store-new is ignored.  Enroll speakers explicitly via "
+                "`pawn-diarize speakers enroll` (gallery is curated, not auto-filled)."
+            )
 
         self._initialize_models()
+        margin = (
+            self.identify_margin if identify_margin is None else float(identify_margin)
+        )
 
-        # Normalise to list
         audio_paths: List[str] = (
             [audio_path] if isinstance(audio_path, str) else list(audio_path)
         )
@@ -492,10 +773,9 @@ class DiarizationEngine:
         segments: List[Dict[str, Any]] = []
         speaker_embeddings: Dict[str, List[Dict[str, Any]]] = {}
         chunk_offsets: Optional[List[Dict[str, Any]]] = None
-        file_duration: float = 0.0  # set in single-file branch for new_time_cursor
+        file_duration: float = 0.0
+        single_file_turns: List[Dict[str, Any]] = []
 
-        # Route single file with prior state through the multi-file path so that
-        # prior speaker embeddings and the time offset are handled uniformly.
         use_multi_file = len(audio_paths) > 1 or bool(prior_speaker_embeddings)
 
         if use_multi_file:
@@ -510,14 +790,14 @@ class DiarizationEngine:
                 prior_speaker_embeddings=prior_speaker_embeddings,
                 time_cursor=time_cursor,
             )
-            # Canonicalise source_file paths using the S3 path map (local tmp → s3://)
             if source_map:
                 for seg in segments:
                     if "source_file" in seg:
-                        seg["source_file"] = source_map.get(seg["source_file"], seg["source_file"])
+                        seg["source_file"] = source_map.get(
+                            seg["source_file"], seg["source_file"]
+                        )
             speakers: set = {seg["speaker"] for seg in segments}
         else:
-            # ----- single-file baseline path (no prior state) -----
             processed_audio = self._preprocess_audio(audio_paths[0])
 
             if isinstance(processed_audio, dict):
@@ -529,303 +809,202 @@ class DiarizationEngine:
                 waveform, sample_rate = _load_audio(str(processed_audio))
 
             file_duration = waveform.shape[1] / sample_rate
-
-            diarization_output = self.diarization_pipeline(processed_audio)
-            diarization = diarization_output.speaker_diarization
+            single_file_turns = self._diarize_turns(processed_audio)
 
             speakers = set()
             print("Extracting speaker embeddings...")
-            for turn, _, speaker in diarization.itertracks(yield_label=True):
-                start_time = turn.start
-                end_time = turn.end
+            for turn in single_file_turns:
+                speaker = turn["speaker"]
+                start_time = float(turn["start"])
+                end_time = float(turn["end"])
                 if end_time - start_time < 0.5:
                     continue
-
-                start_idx = int(start_time * sample_rate)
-                end_idx = int(end_time * sample_rate)
-                segment_audio = waveform[:, start_idx:end_idx]
-
-                try:
-                    if segment_audio.device != torch.device("cpu"):
-                        segment_audio = segment_audio.cpu()
-
-                    embedding = self.embedding_model({
-                        "waveform": segment_audio,
-                        "sample_rate": sample_rate,
-                    })
-                    if not isinstance(embedding, np.ndarray):
-                        embedding = (
-                            embedding.numpy()
-                            if hasattr(embedding, "numpy")
-                            else np.array(embedding)
-                        )
-                    embedding = embedding / np.linalg.norm(embedding)
-
+                embedding = self._embed_crop(waveform, sample_rate, start_time, end_time)
+                if embedding is not None:
                     speaker_embeddings.setdefault(speaker, []).append({
                         "embedding": embedding,
                         "start": start_time,
                         "end": end_time,
                     })
-                except Exception as e:
-                    print(f"Warning: Could not extract embedding at {start_time:.2f}s: {e}")
-
                 speakers.add(speaker)
 
         # ------------------------------------------------------------------
-        # STEP 2: Database lookup — match each speaker against known embeddings
+        # STEP 2: Identify against the curated Speakers gallery (no auto-store)
         # ------------------------------------------------------------------
-        try:
-            engine = None
-            has_embeddings = False
-            if db_dsn:
-                try:
-                    engine = get_engine(db_dsn)
-                    init_db(engine)
-                    # Check whether the embeddings table has any rows
-                    with engine.connect() as conn:
-                        count = conn.execute(
-                            text("SELECT COUNT(*) FROM embeddings")
-                        ).scalar()
-                        has_embeddings = count > 0
-                except Exception as e:
-                    print(f"Warning: Could not connect to database: {e}")
+        matched_speakers: Dict[str, str] = {}
+        matched_speaker_ids: Dict[str, str] = {}
+        matched_scores: Dict[str, float] = {}
+        new_speakers: List[str] = []
 
-            matched_speakers: Dict[str, str] = {}
-            matched_raw_labels: Dict[str, str] = {}  # speaker_label → raw embedding label (e.g., "SPEAKER_00")
-            new_speakers: List[str] = []
+        gallery: Optional[SpeakerGallery] = None
+        if db_dsn:
+            try:
+                gallery = SpeakerGallery(
+                    db_dsn,
+                    config=SpeakersConfig(
+                        identify_threshold=similarity_threshold,
+                        identify_margin=margin,
+                    ),
+                )
+            except Exception as exc:  # noqa: BLE001
+                print(f"Warning: Could not open Speakers gallery: {exc}")
+                gallery = None
 
-            if has_embeddings and engine is not None:
-                print("Searching database for speaker matches...")
-                for speaker_label, emb_list in speaker_embeddings.items():
-                    if not emb_list:
-                        continue
-
-                    # Duration-weighted mean embedding as the query vector
-                    durations = np.array([e["end"] - e["start"] for e in emb_list])
-                    weights = durations / durations.sum()
-                    stacked = np.stack([e["embedding"].flatten() for e in emb_list])
-                    mean_embedding = np.average(stacked, axis=0, weights=weights)
-                    mean_embedding = mean_embedding / np.linalg.norm(mean_embedding)
-                    vec_str = "[" + ",".join(str(v) for v in mean_embedding.tolist()) + "]"
-
-                    try:
-                        sql = text(
-                            "SELECT id, audio_file, local_speaker_label, "
-                            "(embedding <=> CAST(:vec AS vector)) AS _distance "
-                            "FROM embeddings "
-                            "ORDER BY embedding <=> CAST(:vec AS vector) "
-                            "LIMIT 1"
-                        )
-                        with engine.connect() as conn:
-                            row = conn.execute(sql, {"vec": vec_str}).fetchone()
-
-                        if row is not None:
-                            similarity = 1.0 - row._distance
-
-                            if similarity >= similarity_threshold:
-                                matched_label = row.local_speaker_label
-                                matched_file = row.audio_file
-
-                                # Look up the human name for the matched embedding.
-                                # Try exact (audio_file, label) match first; fall back
-                                # to basename-only match so that paths that differ only
-                                # in their /tmp/ prefix still resolve correctly.
-                                speaker_name = None
-                                with engine.connect() as _conn:
-                                    nm = _conn.execute(
-                                        text(
-                                            "SELECT speaker_name FROM speaker_names "
-                                            "WHERE local_speaker_label = :label "
-                                            "  AND ("
-                                            "    audio_file = :af "
-                                            "    OR substring(audio_file from '[^/]+$')"
-                                            "       = substring(:af from '[^/]+$')"
-                                            "  ) "
-                                            "ORDER BY CASE WHEN audio_file = :af THEN 0 ELSE 1 END "
-                                            "LIMIT 1"
-                                        ),
-                                        {"label": matched_label, "af": matched_file},
-                                    ).fetchone()
-                                    if nm:
-                                        speaker_name = nm.speaker_name
-
-                                if speaker_name:
-                                    print(
-                                        f"  ✓ Matched {speaker_label} → '{speaker_name}' "
-                                        f"(similarity={similarity:.3f})"
-                                    )
-                                    matched_speakers[speaker_label] = speaker_name
-                                    matched_raw_labels[speaker_label] = matched_label
-                                    # Persist the resolved name for every audio file in
-                                    # this run so _load_transcript_from_db can find it via
-                                    # the speaker_names table (enables display names in
-                                    # real names instead of SPEAKER_XX labels).
-                                    # Use the raw embedding label (e.g., "SPEAKER_00") not
-                                    # the speaker_embeddings key which may be a display name
-                                    # when resuming a session (e.g., "Alice").
-                                    try:
-                                        with get_session(engine) as _sn_sess:
-                                            for _af in audio_paths:
-                                                _canonical_af = source_map.get(str(_af), str(_af)) if source_map else str(_af)
-                                                _raw_label = matched_label  # from matched embedding row
-                                                _sn_sess.merge(SpeakerName(
-                                                    id=f"{os.path.basename(_canonical_af)}_{_raw_label}",
-                                                    audio_file=_canonical_af,
-                                                    local_speaker_label=_raw_label,
-                                                    speaker_name=speaker_name,
-                                                    labeled_at=None,
-                                                ))
-                                    except Exception as _e:
-                                        print(f"Warning: Could not persist speaker name mapping: {_e}")
-                                else:
-                                    # Embedding match found but no name yet: still treat as
-                                    # a new speaker so embeddings are stored and future
-                                    # labelling will take effect on the next run.
-                                    print(
-                                        f"  Found match for {speaker_label} but no name assigned "
-                                        f"(id: {row.id}, similarity={similarity:.3f}) — "
-                                        f"storing embeddings for future labelling"
-                                    )
-                                    new_speakers.append(speaker_label)
-                            else:
-                                new_speakers.append(speaker_label)
-                        else:
-                            new_speakers.append(speaker_label)
-                    except Exception as e:
-                        print(f"Warning: Could not search for {speaker_label}: {e}")
-                        new_speakers.append(speaker_label)
+        if gallery is not None:
+            enrollment_count = gallery.count_enrollments()
+            if enrollment_count == 0:
+                print(
+                    "Matching speakers against curated gallery... "
+                    "(gallery has 0 enrollments — all labels stay anonymous; "
+                    "use `speakers create` + `speakers enroll` for named hits)"
+                )
             else:
-                new_speakers = list(speaker_embeddings.keys())
-
-            # ------------------------------------------------------------------
-            # STEP 3: Store embeddings for new/unknown speakers
-            # ------------------------------------------------------------------
-            if store_new_speakers and new_speakers and db_dsn and engine:
-                print(f"Storing embeddings for {len(new_speakers)} new speaker(s)...")
-                records_to_add = []
-
-                # Resolve the canonical source file for a given timestamp using
-                # chunk_offsets so each embedding is attributed to the correct
-                # audio file rather than always pointing at audio_paths[0].
-                def _source_for_time(t: float) -> str:
-                    if chunk_offsets:
-                        for co in chunk_offsets:
-                            if co["start"] <= t < co["end"]:
-                                p = co["path"]
-                                return source_map.get(str(p), str(p)) if source_map else str(p)
-                    fallback = str(audio_paths[0])
-                    return source_map.get(fallback, fallback) if source_map else fallback
-
-                for speaker_label in new_speakers:
-                    if speaker_label not in speaker_embeddings:
-                        continue
-                    for idx, emb_data in enumerate(speaker_embeddings[speaker_label]):
-                        # Skip synthetic prior-session entries — they already exist in DB
-                        if emb_data.get("synthetic", False):
-                            continue
-                        canonical_source = _source_for_time(emb_data["start"])
-                        records_to_add.append(
-                            Embedding(
-                                id=f"{os.path.basename(canonical_source)}_{speaker_label}_{idx}",
-                                audio_file=canonical_source,
-                                local_speaker_label=speaker_label,
-                                start_time=float(emb_data["start"]),
-                                end_time=float(emb_data["end"]),
-                                embedding=emb_data["embedding"].flatten().tolist(),
-                            )
-                        )
-
-                if records_to_add:
-                    try:
-                        with get_session(engine) as session:
-                            for rec in records_to_add:
-                                session.merge(rec)
-                        print(f"  Added {len(records_to_add)} embeddings to database")
-                    except Exception as e:
-                        print(f"Warning: Could not store embeddings: {e}")
-
-            # ------------------------------------------------------------------
-            # STEP 4: Build final segment list, applying matched names
-            # ------------------------------------------------------------------
-            if use_multi_file:
-                # Segments already built by _diarize_multiple_files; just rename speakers
-                for seg in segments:
-                    seg["speaker"] = matched_speakers.get(seg["speaker"], seg["speaker"])
-            else:
-                # Build segments from single-file diarization annotation
-                canonical_path0 = source_map.get(str(audio_paths[0]), str(audio_paths[0])) if source_map else str(audio_paths[0])
-                for turn, _, speaker in diarization.itertracks(yield_label=True):  # type: ignore[union-attr]
-                    if turn.end - turn.start < 0.5:
-                        continue
-                    display_name = matched_speakers.get(speaker, speaker)
-                    segments.append({
-                        "speaker": display_name,
-                        "original_label": speaker,
-                        "source_file": canonical_path0,
-                        "start": turn.start + time_cursor,
-                        "end": turn.end + time_cursor,
-                        "duration": turn.end - turn.start,
-                    })
-                segments.sort(key=lambda x: x["start"])
-
-            # Final speaker list with matched names applied
-            final_speakers = sorted({
-                matched_speakers.get(s, s) for s in speakers
-            })
-
-            # ------------------------------------------------------------------
-            # Build session_speaker_embeddings for incremental use
-            # The DW-mean is computed over all entries, including any synthetic
-            # prior-session entry, so history is correctly blended with new data.
-            # ------------------------------------------------------------------
-            session_speaker_embeddings: Dict[str, Any] = {}
-            for label, emb_list in speaker_embeddings.items():
-                real_entries = [e for e in emb_list if not e.get("synthetic", False)]
-                if not real_entries and not emb_list:
+                print(
+                    f"Matching speakers against curated gallery "
+                    f"({enrollment_count} enrollment(s))..."
+                )
+            compat_warned = False
+            for speaker_label, emb_list in speaker_embeddings.items():
+                probe = duration_weighted_mean(emb_list)
+                if probe is None:
+                    new_speakers.append(speaker_label)
                     continue
-                # Use all entries (including synthetic prior) for the mean so
-                # that prior history is weighted proportionally.
-                entries_for_mean = emb_list if emb_list else real_entries
-                durations = np.array([e["end"] - e["start"] for e in entries_for_mean])
-                weights = durations / durations.sum() if durations.sum() > 0 else durations
-                stacked = np.stack([e["embedding"].flatten() for e in entries_for_mean])
-                mean_emb = np.average(stacked, axis=0, weights=weights)
-                norm = np.linalg.norm(mean_emb)
-                if norm > 0:
-                    mean_emb = mean_emb / norm
-                total_dur = float(durations.sum())
-                # Key by matched/display name so sessions carry human-readable labels
-                display_label = matched_speakers.get(label, label)
-                session_speaker_embeddings[display_label] = {
-                    "embedding": mean_emb.tolist(),
-                    "total_duration": total_dur,
-                }
+                probe_model = getattr(self._extractor, "model_id", None)
+                hit = gallery.identify(
+                    probe,
+                    embedding_model=probe_model,
+                    threshold=similarity_threshold,
+                    margin=margin,
+                )
+                if not hit.accepted:
+                    # Allow cross-model gallery hits after an embedding upgrade.
+                    hit = gallery.identify(
+                        probe,
+                        embedding_model=None,
+                        threshold=similarity_threshold,
+                        margin=margin,
+                    )
+                if hit.accepted and hit.display_name:
+                    print(
+                        f"  ✓ Matched {speaker_label} → '{hit.display_name}' "
+                        f"(score={hit.score:.3f}, "
+                        f"margin={hit.score - hit.second_score:.3f})"
+                    )
+                    matched_speakers[speaker_label] = hit.display_name
+                    if hit.speaker_id:
+                        matched_speaker_ids[speaker_label] = hit.speaker_id
+                    matched_scores[speaker_label] = hit.score
+                    if session_id:
+                        gallery.upsert_session_map(
+                            session_id,
+                            speaker_label,
+                            speaker_id=hit.speaker_id,
+                            display_name=hit.display_name,
+                            match_score=hit.score,
+                            match_method="gallery",
+                        )
+                else:
+                    if hit.score == 0.0 and hit.second_score == 0.0:
+                        if enrollment_count == 0:
+                            print(f"  · {speaker_label} unmatched (empty gallery)")
+                        else:
+                            if not compat_warned:
+                                info = gallery.enrollment_compatibility(
+                                    probe, embedding_model=probe_model
+                                )
+                                print(
+                                    "  Note: gallery enrollments are incompatible with "
+                                    f"runtime embeddings (probe dim={info['probe_dim']}, "
+                                    f"model={info['probe_model']!r}; "
+                                    f"enrollments dims={dict(info['enrollment_dims'])}, "
+                                    f"models={dict(info['enrollment_models'])}). "
+                                    "Re-enroll or run `speakers reembed`."
+                                )
+                                compat_warned = True
+                            print(
+                                f"  · {speaker_label} unmatched "
+                                f"(no compatible enrollments for this embedding dim/model)"
+                            )
+                    else:
+                        print(
+                            f"  · {speaker_label} unmatched "
+                            f"(best={hit.score:.3f}, second={hit.second_score:.3f})"
+                        )
+                    new_speakers.append(speaker_label)
+        else:
+            new_speakers = list(speaker_embeddings.keys())
 
-            # Updated time cursor for the next incremental call
-            if chunk_offsets:
-                new_time_cursor = chunk_offsets[-1]["end"]
-            else:
-                new_time_cursor = time_cursor + file_duration
+        # ------------------------------------------------------------------
+        # STEP 3: Build final segment list (apply display names)
+        # ------------------------------------------------------------------
+        if use_multi_file:
+            for seg in segments:
+                seg["speaker"] = matched_speakers.get(seg["speaker"], seg["speaker"])
+        else:
+            canonical_path0 = (
+                source_map.get(str(audio_paths[0]), str(audio_paths[0]))
+                if source_map
+                else str(audio_paths[0])
+            )
+            for turn in single_file_turns:
+                start_t = float(turn["start"])
+                end_t = float(turn["end"])
+                if end_t - start_t < 0.5:
+                    continue
+                speaker = turn["speaker"]
+                display_name = matched_speakers.get(speaker, speaker)
+                segments.append({
+                    "speaker": display_name,
+                    "original_label": speaker,
+                    "source_file": canonical_path0,
+                    "start": start_t + time_cursor,
+                    "end": end_t + time_cursor,
+                    "duration": end_t - start_t,
+                })
+            segments.sort(key=lambda x: x["start"])
 
-            result: Dict[str, Any] = {
-                "speakers": final_speakers,
-                "segments": segments,
-                "num_speakers": len(speakers),
-                "matched_speakers": matched_speakers,
-                "new_speakers": new_speakers,
-                "session_speaker_embeddings": session_speaker_embeddings,
-                "new_time_cursor": new_time_cursor,
+        final_speakers = sorted({matched_speakers.get(s, s) for s in speakers})
+
+        # In-session centroids only — never promoted to the gallery automatically.
+        session_speaker_embeddings: Dict[str, Any] = {}
+        for label, emb_list in speaker_embeddings.items():
+            if not emb_list:
+                continue
+            durations = np.array([e["end"] - e["start"] for e in emb_list])
+            weights = durations / durations.sum() if durations.sum() > 0 else durations
+            stacked = np.stack([e["embedding"].flatten() for e in emb_list])
+            mean_emb = np.average(stacked, axis=0, weights=weights)
+            norm = np.linalg.norm(mean_emb)
+            if norm > 0:
+                mean_emb = mean_emb / norm
+            display_label = matched_speakers.get(label, label)
+            session_speaker_embeddings[display_label] = {
+                "embedding": mean_emb.tolist(),
+                "total_duration": float(durations.sum()),
             }
 
-            # Attach chunk offsets when multiple files were used
-            if chunk_offsets is not None:
-                result["chunk_offsets"] = chunk_offsets
+        if chunk_offsets:
+            new_time_cursor = chunk_offsets[-1]["end"]
+        else:
+            new_time_cursor = time_cursor + file_duration
 
-            return result
-
-        except Exception:
-            raise
-
+        result: Dict[str, Any] = {
+            "speakers": final_speakers,
+            "segments": segments,
+            "num_speakers": len(speakers),
+            "matched_speakers": matched_speakers,
+            "matched_speaker_ids": matched_speaker_ids,
+            "matched_scores": matched_scores,
+            "new_speakers": new_speakers,
+            "session_speaker_embeddings": session_speaker_embeddings,
+            "new_time_cursor": new_time_cursor,
+            "embedding_model": getattr(
+                self._extractor, "model_id", self.embedding_model_id
+            ),
+        }
+        if chunk_offsets is not None:
+            result["chunk_offsets"] = chunk_offsets
+        return result
 
     def extract_embeddings(self, audio_path: Union[str, List[str]]) -> np.ndarray:
         """Extract a speaker embedding from one or more audio files.
@@ -842,38 +1021,40 @@ class DiarizationEngine:
             1-D normalised embedding array
         """
         self._initialize_models()
+        assert self._extractor is not None
 
-        audio_paths: List[str] = [audio_path] if isinstance(audio_path, str) else list(audio_path)
+        audio_paths: List[str] = (
+            [audio_path] if isinstance(audio_path, str) else list(audio_path)
+        )
 
         if len(audio_paths) == 1:
-            processed_audio = self._preprocess_audio(audio_paths[0])
-            embedding = self.embedding_model(processed_audio)
-            if not isinstance(embedding, np.ndarray):
-                embedding = np.array(embedding)
-            return embedding / np.linalg.norm(embedding)
+            waveform, sample_rate = _load_audio(audio_paths[0])
+            target_sr = 16000
+            if sample_rate != target_sr:
+                waveform = _resample(waveform, sample_rate, target_sr)
+                sample_rate = target_sr
+            return self._extractor.extract(waveform, sample_rate)
 
-        # Multiple files: weighted average of per-file embeddings
         print(f"Extracting embeddings from {len(audio_paths)} files (per-file average)…")
         embeddings_list: List[np.ndarray] = []
         durations: List[float] = []
 
         for path in audio_paths:
-            processed = self._preprocess_audio(path)
-            emb = self.embedding_model(processed)
-            if not isinstance(emb, np.ndarray):
-                emb = np.array(emb)
-            emb = emb / np.linalg.norm(emb)
+            waveform, sample_rate = _load_audio(str(path))
+            target_sr = 16000
+            if sample_rate != target_sr:
+                waveform = _resample(waveform, sample_rate, target_sr)
+                sample_rate = target_sr
+            emb = self._extractor.extract(waveform, sample_rate)
             embeddings_list.append(emb.flatten())
-
-            # Measure duration for weighting
-            waveform, sr = _load_audio(str(path))
-            durations.append(waveform.shape[1] / sr)
-            del waveform  # free immediately
+            durations.append(waveform.shape[1] / sample_rate)
+            del waveform
 
         weights = np.array(durations)
         weights = weights / weights.sum()
         mean_emb = np.average(np.stack(embeddings_list), axis=0, weights=weights)
         return mean_emb / np.linalg.norm(mean_emb)
+
 
     def cluster_speakers(
         self, embeddings: List[np.ndarray], eps: float = 0.5, min_samples: int = 2

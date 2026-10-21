@@ -2,7 +2,7 @@ import { Platform, requestUrl, RequestUrlResponse } from "obsidian";
 import type { PawnSettings } from "./settings";
 import { parseSseText, SseEvent, SseParser } from "./sse";
 
-export type JobKind = "ask" | "push_note" | "upload";
+export type JobKind = "ask" | "push_note" | "upload" | "capture_enrich";
 export type JobStatus =
   | "todo"
   | "queued"
@@ -10,7 +10,8 @@ export type JobStatus =
   | "running"
   | "review"
   | "done"
-  | "blocked";
+  | "blocked"
+  | "deleted";
 
 export interface VaultEvent {
   seq: number;
@@ -48,6 +49,8 @@ export interface Job {
 export interface NoteContext {
   path: string;
   content?: string;
+  /** false = path pointer only; server must not vault-fill the body */
+  inline?: boolean;
 }
 
 export interface ChatRequest {
@@ -125,8 +128,97 @@ export interface InboxItem {
   status: string;
   interrupt: boolean;
   reason?: string | null;
+  quote?: string | null;
+  context?: string | null;
   note_key?: string | null;
   created_at?: string | null;
+  updated_at?: string | null;
+  /** ISO timestamp when the user first opened the item note (vault frontmatter). */
+  opened_at?: string | null;
+  source_kind?: string | null;
+  source_ref?: string | null;
+}
+
+export interface ListItemsParams {
+  status?: string;
+  statuses?: string;
+  kind?: string;
+  q?: string;
+  source_kind?: string;
+  source_ref?: string;
+  limit?: number;
+  offset?: number;
+}
+
+export interface SessionExtractResult {
+  session_id: string;
+  items: { source_ref?: string; items?: number; interrupts?: number } | null;
+  people: Record<string, unknown> | null;
+}
+
+export interface ListItemsResult {
+  items: InboxItem[];
+  total: number;
+}
+
+export interface SessionSummary {
+  session_id: string;
+  title: string;
+  updated_at?: string | null;
+  created_at?: string | null;
+  segments?: number | null;
+  duration_seconds?: number | null;
+  summary?: string | null;
+  transcript_path?: string | null;
+  speakers?: string[];
+  unmapped_count?: number;
+  needs_speakers?: boolean;
+  speakers_trained?: boolean;
+  tags?: string[];
+  topics?: string[];
+  sentiment?: string | null;
+  has_analysis?: boolean;
+}
+
+export interface SessionSpeakerFacet {
+  name: string;
+  count: number;
+}
+
+export interface SessionsPage {
+  data: SessionSummary[];
+  facets: {
+    speakers: SessionSpeakerFacet[];
+    needs_speakers: number;
+  };
+}
+
+export interface SessionLabel {
+  local_label: string;
+  duration_s: number;
+  sample_text: string;
+  mapped_speaker_id?: string | null;
+  mapped_name?: string | null;
+  ignored?: boolean;
+  has_centroid: boolean;
+}
+
+export interface GallerySpeaker {
+  id: string;
+  display_name: string;
+  enrollments: number;
+}
+
+export interface SessionDetail extends SessionSummary {
+  labels: SessionLabel[];
+  gallery: GallerySpeaker[];
+}
+
+export interface ListSessionsParams {
+  q?: string;
+  limit?: number;
+  needs_speakers?: boolean;
+  speaker?: string;
 }
 
 export class ServerUnreachable extends Error {}
@@ -249,11 +341,204 @@ export class PawnClient {
     return resp.json as Job;
   }
 
-  async listItems(status?: string): Promise<InboxItem[]> {
-    const query = status ? `?status=${encodeURIComponent(status)}` : "";
+  async listSessions(params: ListSessionsParams = {}): Promise<SessionsPage> {
+    const qs = new URLSearchParams();
+    if (params.q) qs.set("q", params.q);
+    if (params.limit != null) qs.set("limit", String(params.limit));
+    if (params.needs_speakers) qs.set("needs_speakers", "true");
+    if (params.speaker) qs.set("speaker", params.speaker);
+    const query = qs.toString() ? `?${qs}` : "";
+    const resp = await this.request("GET", `/v1/sessions${query}`);
+    const body = resp.json as {
+      data?: SessionSummary[];
+      facets?: { speakers?: SessionSpeakerFacet[]; needs_speakers?: number };
+    };
+    return {
+      data: (body.data ?? []) as SessionSummary[],
+      facets: {
+        speakers: body.facets?.speakers ?? [],
+        needs_speakers: Number(body.facets?.needs_speakers ?? 0),
+      },
+    };
+  }
+
+  async getSession(sessionId: string): Promise<SessionDetail> {
+    const resp = await this.request("GET", `/v1/sessions/${encodeURIComponent(sessionId)}`);
+    return resp.json as SessionDetail;
+  }
+
+  async createSpeaker(displayName: string): Promise<GallerySpeaker & { created?: boolean }> {
+    const resp = await this.request("POST", "/v1/speakers", { display_name: displayName });
+    return resp.json as GallerySpeaker & { created?: boolean };
+  }
+
+  async enrollSessionSpeaker(
+    sessionId: string,
+    body: { speaker: string; from_label: string; force?: boolean },
+  ): Promise<{
+    enrollment_id: string;
+    speaker_id: string;
+    display_name: string;
+    duration: number;
+    quality_score?: number | null;
+  }> {
+    const resp = await this.request(
+      "POST",
+      `/v1/sessions/${encodeURIComponent(sessionId)}/enroll`,
+      body,
+    );
+    return resp.json as {
+      enrollment_id: string;
+      speaker_id: string;
+      display_name: string;
+      duration: number;
+      quality_score?: number | null;
+    };
+  }
+
+  async reidentifySession(sessionId: string): Promise<{
+    session_id: string;
+    segments_updated: number;
+    matched: Record<string, string>;
+    unmatched: string[];
+    summary: string;
+  }> {
+    const resp = await this.request(
+      "POST",
+      `/v1/sessions/${encodeURIComponent(sessionId)}/reidentify`,
+      {},
+    );
+    return resp.json as {
+      session_id: string;
+      segments_updated: number;
+      matched: Record<string, string>;
+      unmatched: string[];
+      summary: string;
+    };
+  }
+
+  async relabelSession(
+    sessionId: string,
+    body: { from: string; to: string },
+  ): Promise<{ session_id: string; from: string; to: string; summary: string }> {
+    const resp = await this.request(
+      "POST",
+      `/v1/sessions/${encodeURIComponent(sessionId)}/relabel`,
+      body,
+    );
+    return resp.json as { session_id: string; from: string; to: string; summary: string };
+  }
+
+  async reprocessSession(
+    sessionId: string,
+    body: {
+      confirm: boolean;
+      mode?: "rediarize" | "retranscribe";
+      backend?: "nemo" | "whisper";
+      language?: string | null;
+      threshold?: number;
+      cross_file_threshold?: number;
+      margin?: number | null;
+    },
+  ): Promise<{
+    job_id: string;
+    session_id: string;
+    mode: string;
+    queued: boolean;
+    command: string;
+    result?: string;
+  }> {
+    const resp = await this.request(
+      "POST",
+      `/v1/sessions/${encodeURIComponent(sessionId)}/reprocess`,
+      body,
+    );
+    return resp.json as {
+      job_id: string;
+      session_id: string;
+      mode: string;
+      queued: boolean;
+      command: string;
+      result?: string;
+    };
+  }
+
+  async ignoreSessionSpeaker(
+    sessionId: string,
+    body: { from: string; ignore?: boolean },
+  ): Promise<{
+    session_id: string;
+    from_label: string;
+    ignored: boolean;
+    needs_speakers: boolean;
+    speakers_trained: boolean;
+  }> {
+    const resp = await this.request(
+      "POST",
+      `/v1/sessions/${encodeURIComponent(sessionId)}/ignore`,
+      body,
+    );
+    return resp.json as {
+      session_id: string;
+      from_label: string;
+      ignored: boolean;
+      needs_speakers: boolean;
+      speakers_trained: boolean;
+    };
+  }
+
+  async setSessionSpeakersTrained(
+    sessionId: string,
+    body: { trained?: boolean } = {},
+  ): Promise<{
+    session_id: string;
+    speakers_trained: boolean;
+    needs_speakers: boolean;
+  }> {
+    const resp = await this.request(
+      "POST",
+      `/v1/sessions/${encodeURIComponent(sessionId)}/speakers-trained`,
+      { trained: body.trained ?? true },
+    );
+    return resp.json as {
+      session_id: string;
+      speakers_trained: boolean;
+      needs_speakers: boolean;
+    };
+  }
+
+  async listItems(params: ListItemsParams | string = {}): Promise<ListItemsResult> {
+    const opts: ListItemsParams =
+      typeof params === "string" ? { status: params } : params ?? {};
+    const qs = new URLSearchParams();
+    if (opts.status) qs.set("status", opts.status);
+    if (opts.statuses) qs.set("statuses", opts.statuses);
+    if (opts.kind) qs.set("kind", opts.kind);
+    if (opts.q) qs.set("q", opts.q);
+    if (opts.source_kind) qs.set("source_kind", opts.source_kind);
+    if (opts.source_ref) qs.set("source_ref", opts.source_ref);
+    if (opts.limit != null) qs.set("limit", String(opts.limit));
+    if (opts.offset != null) qs.set("offset", String(opts.offset));
+    const query = qs.toString() ? `?${qs}` : "";
     const resp = await this.request("GET", `/v1/items${query}`);
-    const body = resp.json as { items?: InboxItem[] };
-    return body.items ?? [];
+    const body = resp.json as { items?: InboxItem[]; total?: number };
+    const items = body.items ?? [];
+    return { items, total: body.total ?? items.length };
+  }
+
+  async extractSession(
+    sessionId: string,
+    body: { items?: boolean; people?: boolean } = {},
+  ): Promise<SessionExtractResult> {
+    const resp = await this.request(
+      "POST",
+      `/v1/sessions/${encodeURIComponent(sessionId)}/extract`,
+      {
+        items: body.items !== false,
+        people: Boolean(body.people),
+      },
+    );
+    return resp.json as SessionExtractResult;
   }
 
   async itemAction(id: string, action: string, arg?: string): Promise<string> {
@@ -262,6 +547,44 @@ export class PawnClient {
       arg,
     });
     return String((resp.json as { receipt?: string }).receipt ?? "ok");
+  }
+
+  async fileCapture(body: {
+    path: string;
+    collection?: string;
+    entity?: string;
+    tags?: string[];
+    ignore?: boolean;
+  }): Promise<{ path: string; status: string; entity_path?: string | null }> {
+    const resp = await this.request("POST", "/v1/captures/file", body);
+    return resp.json as { path: string; status: string; entity_path?: string | null };
+  }
+
+  async deleteCaptureSnippet(
+    snippetId: string,
+    path: string,
+  ): Promise<{ path: string; deleted: boolean; removed_assets?: string[] }> {
+    const q = `path=${encodeURIComponent(path)}`;
+    const resp = await this.request(
+      "DELETE",
+      `/v1/captures/snippets/${encodeURIComponent(snippetId)}?${q}`,
+    );
+    return resp.json as {
+      path: string;
+      deleted: boolean;
+      removed_assets?: string[];
+    };
+  }
+
+  async deleteItems(body: {
+    ids?: string[];
+    all_open?: boolean;
+    statuses?: string;
+    kind?: string;
+    q?: string;
+  }): Promise<{ deleted: number }> {
+    const resp = await this.request("POST", "/v1/items/delete", body);
+    return { deleted: Number((resp.json as { deleted?: number }).deleted ?? 0) };
   }
 
   async pushNote(path: string, content: string, mode: "replace" | "append"): Promise<Job> {
@@ -339,6 +662,19 @@ export class PawnClient {
   async dismissJob(id: string): Promise<Job> {
     const resp = await this.request("POST", `/v1/jobs/${encodeURIComponent(id)}/dismiss`, {});
     return resp.json as Job;
+  }
+
+  async deleteJob(id: string): Promise<{ id: string; deleted: boolean }> {
+    const resp = await this.request("DELETE", `/v1/jobs/${encodeURIComponent(id)}`);
+    return resp.json as { id: string; deleted: boolean };
+  }
+
+  async deleteJobs(body: {
+    ids?: string[];
+    flush_terminal?: boolean;
+  }): Promise<{ deleted: number; ids: string[]; skipped: string[] }> {
+    const resp = await this.request("POST", "/v1/jobs/delete", body);
+    return resp.json as { deleted: number; ids: string[]; skipped: string[] };
   }
 
   /** Long-poll vault writes. Empty ``events`` means the timeout elapsed. */

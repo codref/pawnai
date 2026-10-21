@@ -247,7 +247,7 @@ def test_triage_requires_the_loop() -> None:
     assert called == {"action": "file", "id": "abcd1234"}
 
 
-def test_inbox_lists_interrupts(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_inbox_lists_open_items(monkeypatch: pytest.MonkeyPatch) -> None:
     cfg = _cfg()
 
     def _list(dsn, **kwargs):  # noqa: ARG001
@@ -269,6 +269,7 @@ def test_inbox_lists_interrupts(monkeypatch: pytest.MonkeyPatch) -> None:
         ]
 
     monkeypatch.setattr("pawn_agent.core.coworker.db.list_items", _list)
+    monkeypatch.setattr("pawn_agent.core.coworker.db.count_items", lambda dsn, **kwargs: 2)
     reply = asyncio.run(resolve_chat_message(cfg, "/inbox"))
     assert "a1b2c3d4" in reply.text
-    assert "Quiet" not in reply.text
+    assert "Quiet" in reply.text

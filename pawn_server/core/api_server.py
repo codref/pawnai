@@ -24,9 +24,22 @@ POST /v1/pawn/chat
 
 POST /v1/jobs, POST /v1/jobs/upload, GET /v1/jobs, GET /v1/jobs/{id},
 POST /v1/jobs/{id}/approve, POST /v1/jobs/{id}/cancel, POST /v1/jobs/{id}/dismiss,
-GET /v1/jobs/events
-    Background jobs (ask / push_note / upload); always accepted with 202.
+DELETE /v1/jobs/{id}, POST /v1/jobs/delete, GET /v1/jobs/events
+    Background jobs (ask / push_note / upload / capture_enrich); always accepted with 202.
+    Delete removes finished jobs (and ask task notes). ``flush_terminal`` clears done/blocked.
     ``/v1/vault/tasks*`` remain as deprecated aliases.
+
+GET /v1/sessions, GET /v1/sessions/{id}, POST /v1/speakers,
+POST /v1/sessions/{id}/enroll|reidentify|relabel|reprocess|extract|ignore|speakers-trained,
+GET /v1/meta
+    Small authenticated config for clients (e.g. ``obsidian_vault_name`` for
+    ``obsidian://open`` links in the browser capture panel).
+
+GET /v1/captures, GET /v1/captures/collections,
+POST /v1/captures, POST /v1/captures/file, DELETE /v1/captures/snippets/{id}
+    Sessions management + Speakers train (Obsidian plugin). Browser capture
+    still uses GET /v1/sessions for the target picker. Research mode writes
+    inbox atoms and may enqueue capture_enrich jobs.
 
 DELETE /sessions/{session_id}
     Clear all stored turns for a session (start fresh).
@@ -277,6 +290,15 @@ class JobApproveRequest(BaseModel):
     result: Optional[str] = None
 
 
+class JobsDeleteRequest(BaseModel):
+    """POST /v1/jobs/delete — remove finished jobs (or flush done/blocked)."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    ids: Optional[list[str]] = None
+    flush_terminal: bool = False
+
+
 class ItemActionRequest(BaseModel):
     """POST /v1/items/{id}/action — triage a coworker inbox item."""
 
@@ -286,11 +308,26 @@ class ItemActionRequest(BaseModel):
     arg: Optional[str] = None
 
 
+class ItemsDeleteRequest(BaseModel):
+    """POST /v1/items/delete — dismiss one or many items."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    ids: Optional[list[str]] = None
+    all_open: bool = False
+    # Comma list, or "all" for every status (when all_open).
+    statuses: Optional[str] = None
+    kind: Optional[str] = None
+    q: Optional[str] = None
+
+
 class ContextNote(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
     path: str
     content: Optional[str] = None
+    # False = path pointer only; server must not vault-fill or inline the body.
+    inline: bool = True
 
 
 class ChatImage(BaseModel):
@@ -326,6 +363,123 @@ class PawnChatRequest(BaseModel):
     force_caption: bool = False
     # When false, note embeds are not read from the vault.
     include_note_images: bool = True
+
+
+class CaptureTarget(BaseModel):
+    """Where browser snippets should land."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    kind: str = "new"  # new | capture | note | session | research
+    path: Optional[str] = None
+    session_id: Optional[str] = None
+    title: Optional[str] = None
+    source_url: Optional[str] = None
+    collection: Optional[str] = None
+    hint: Optional[str] = None
+
+
+class CaptureSnippet(BaseModel):
+    """One ordered text or image snippet from the browser tray."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    id: str
+    kind: str = "text"  # text | image
+    text: Optional[str] = None
+    data_base64: Optional[str] = None
+    media_type: Optional[str] = None
+    source_url: Optional[str] = None
+    captured_at: Optional[str] = None
+
+
+class CaptureSaveRequest(BaseModel):
+    """POST /v1/captures — append ordered snippets to a vault note."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    target: CaptureTarget
+    snippets: List[CaptureSnippet]
+
+
+class CaptureFileRequest(BaseModel):
+    """POST /v1/captures/file — file or ignore a research inbox capture."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    path: str
+    collection: Optional[str] = None
+    entity: Optional[str] = None
+    tags: List[str] = Field(default_factory=list)
+    ignore: bool = False
+
+
+class CreateSpeakerRequest(BaseModel):
+    """POST /v1/speakers — create a Speakers gallery person."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    display_name: str
+
+
+class SessionEnrollRequest(BaseModel):
+    """POST /v1/sessions/{session_id}/enroll — approve a voiceprint."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    speaker: str
+    from_label: str
+    force: bool = False
+
+
+class SessionRelabelRequest(BaseModel):
+    """POST /v1/sessions/{session_id}/relabel — display rename only."""
+
+    model_config = ConfigDict(extra="ignore", populate_by_name=True)
+
+    from_label: str = Field(alias="from")
+    to_label: str = Field(alias="to")
+
+
+class SessionReprocessRequest(BaseModel):
+    """POST /v1/sessions/{session_id}/reprocess — queue rediarize or retranscribe."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    confirm: bool = False
+    mode: str = "rediarize"  # rediarize | retranscribe
+    backend: str = "nemo"  # nemo | whisper (retranscribe only)
+    language: Optional[str] = None  # Whisper language lock (e.g. it)
+    threshold: float = 0.7
+    cross_file_threshold: float = 0.55
+    margin: Optional[float] = None
+    id: Optional[str] = None  # optional client job id
+
+
+class SessionIgnoreRequest(BaseModel):
+    """POST /v1/sessions/{session_id}/ignore — mark a label as noise."""
+
+    model_config = ConfigDict(extra="ignore", populate_by_name=True)
+
+    from_label: str = Field(alias="from")
+    ignore: bool = True
+
+
+class SessionSpeakersTrainedRequest(BaseModel):
+    """POST /v1/sessions/{session_id}/speakers-trained — suppress needs-training."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    trained: bool = True
+
+
+class SessionExtractRequest(BaseModel):
+    """POST /v1/sessions/{session_id}/extract — coworker items and/or people."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    items: bool = True
+    people: bool = False
 
 
 class VaultTaskCreateRequest(BaseModel):
@@ -638,6 +792,15 @@ app = FastAPI(
 async def health() -> dict:
     """Liveness probe. No authentication required."""
     return {"status": "ok"}
+
+
+@app.get("/v1/meta", dependencies=[Depends(_require_token)])
+async def meta(cfg: Any = Depends(_get_cfg)) -> dict:
+    """Small authenticated config for Obsidian / browser clients."""
+    vault = getattr(cfg, "vault", None)
+    return {
+        "obsidian_vault_name": getattr(vault, "obsidian_vault_name", "") or "",
+    }
 
 
 @app.post(
@@ -1101,7 +1264,21 @@ async def job_events_stream(request: Request, cfg: Any = Depends(_get_cfg)) -> S
                 if event is SHUTDOWN_EVENT:
                     break
                 job = await asyncio.to_thread(jobs.get_job, cfg, event["job_id"])
-                yield _sse_event("job", job or event)
+                if job is not None:
+                    yield _sse_event("job", job)
+                elif event.get("status") == "deleted":
+                    yield _sse_event(
+                        "job",
+                        {
+                            "id": event["job_id"],
+                            "status": "deleted",
+                            "kind": event.get("kind") or "ask",
+                            "title": "",
+                            "instruction": "",
+                            "conversation": event.get("conversation") or "",
+                            "approved": False,
+                        },
+                    )
         finally:
             job_events.unsubscribe(queue)
 
@@ -1109,6 +1286,322 @@ async def job_events_stream(request: Request, cfg: Any = Depends(_get_cfg)) -> S
 
 
 _VAULT_POLL_MAX_SECONDS = 25.0
+
+
+@app.get("/v1/sessions", dependencies=[Depends(_require_token)])
+async def sessions_list(
+    limit: int = Query(default=50, ge=1, le=200),
+    q: str = Query(default=""),
+    needs_speakers: bool = Query(default=False),
+    speaker: str = Query(default=""),
+    cfg: Any = Depends(_get_cfg),
+) -> dict:
+    """Recent diarization sessions (plugin Sessions tab + capture picker)."""
+    from pawn_server.core import sessions_api  # noqa: PLC0415
+
+    page = await asyncio.to_thread(
+        sessions_api.list_sessions_page,
+        cfg,
+        limit=limit,
+        q=q,
+        needs_speakers=needs_speakers,
+        speaker=speaker,
+    )
+    return {
+        "object": "list",
+        "data": page["data"],
+        "facets": page.get("facets") or {},
+    }
+
+
+@app.get("/v1/sessions/{session_id}", dependencies=[Depends(_require_token)])
+async def sessions_get(session_id: str, cfg: Any = Depends(_get_cfg)) -> dict:
+    """Session detail with labels + gallery for the Train modal."""
+    from pawn_server.core import sessions_api  # noqa: PLC0415
+
+    try:
+        return await asyncio.to_thread(sessions_api.get_session, cfg, session_id)
+    except sessions_api.SessionsApiError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+
+
+@app.post("/v1/speakers", dependencies=[Depends(_require_token)])
+async def speakers_create(body: CreateSpeakerRequest, cfg: Any = Depends(_get_cfg)) -> dict:
+    """Create (or return existing) Speakers gallery person."""
+    from pawn_server.core import sessions_api  # noqa: PLC0415
+
+    try:
+        return await asyncio.to_thread(sessions_api.create_speaker, cfg, body.display_name)
+    except sessions_api.SessionsApiError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+
+
+@app.post(
+    "/v1/sessions/{session_id}/enroll",
+    dependencies=[Depends(_require_token)],
+)
+async def sessions_enroll(
+    session_id: str,
+    body: SessionEnrollRequest,
+    cfg: Any = Depends(_get_cfg),
+) -> dict:
+    """Approve a voiceprint from a session label centroid."""
+    from pawn_server.core import sessions_api  # noqa: PLC0415
+
+    try:
+        return await asyncio.to_thread(
+            sessions_api.enroll_session_speaker,
+            cfg,
+            session_id,
+            speaker=body.speaker,
+            from_label=body.from_label,
+            force=body.force,
+        )
+    except sessions_api.SessionsApiError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+
+
+@app.post(
+    "/v1/sessions/{session_id}/reidentify",
+    dependencies=[Depends(_require_token)],
+)
+async def sessions_reidentify(session_id: str, cfg: Any = Depends(_get_cfg)) -> dict:
+    """Rematch session labels against the curated Speakers gallery."""
+    from pawn_server.core import sessions_api  # noqa: PLC0415
+
+    try:
+        return await asyncio.to_thread(sessions_api.reidentify_session_api, cfg, session_id)
+    except sessions_api.SessionsApiError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+
+
+@app.post(
+    "/v1/sessions/{session_id}/relabel",
+    dependencies=[Depends(_require_token)],
+)
+async def sessions_relabel(
+    session_id: str,
+    body: SessionRelabelRequest,
+    cfg: Any = Depends(_get_cfg),
+) -> dict:
+    """Display-only rename of a speaker label within one session."""
+    from pawn_server.core import sessions_api  # noqa: PLC0415
+
+    try:
+        return await asyncio.to_thread(
+            sessions_api.relabel_session_api,
+            cfg,
+            session_id,
+            from_label=body.from_label,
+            to_label=body.to_label,
+        )
+    except sessions_api.SessionsApiError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+
+
+@app.post(
+    "/v1/sessions/{session_id}/reprocess",
+    status_code=202,
+    dependencies=[Depends(_require_token)],
+)
+async def sessions_reprocess(
+    session_id: str,
+    body: SessionReprocessRequest,
+    cfg: Any = Depends(_get_cfg),
+) -> JSONResponse:
+    """Queue rediarize (default) or full retranscribe for a session."""
+    from pawn_server.core import sessions_api  # noqa: PLC0415
+
+    try:
+        result = await sessions_api.enqueue_session_reprocess(
+            cfg,
+            session_id,
+            confirm=body.confirm,
+            mode=body.mode,
+            backend=body.backend,
+            language=body.language,
+            threshold=body.threshold,
+            cross_file_threshold=body.cross_file_threshold,
+            margin=body.margin,
+            job_id=body.id,
+        )
+    except sessions_api.SessionsApiError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+    return JSONResponse(status_code=202, content=result)
+
+
+@app.post(
+    "/v1/sessions/{session_id}/ignore",
+    dependencies=[Depends(_require_token)],
+)
+async def sessions_ignore(
+    session_id: str,
+    body: SessionIgnoreRequest,
+    cfg: Any = Depends(_get_cfg),
+) -> dict:
+    """Mark a local speaker label as ignored noise (or clear ignore)."""
+    from pawn_server.core import sessions_api  # noqa: PLC0415
+
+    try:
+        return await asyncio.to_thread(
+            sessions_api.ignore_session_speaker,
+            cfg,
+            session_id,
+            from_label=body.from_label,
+            ignore=body.ignore,
+        )
+    except sessions_api.SessionsApiError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+
+
+@app.post(
+    "/v1/sessions/{session_id}/speakers-trained",
+    dependencies=[Depends(_require_token)],
+)
+async def sessions_speakers_trained(
+    session_id: str,
+    body: SessionSpeakersTrainedRequest,
+    cfg: Any = Depends(_get_cfg),
+) -> dict:
+    """Mark the session as speaker-trained (suppresses needs-training badge)."""
+    from pawn_server.core import sessions_api  # noqa: PLC0415
+
+    try:
+        return await asyncio.to_thread(
+            sessions_api.set_speakers_trained,
+            cfg,
+            session_id,
+            trained=body.trained,
+        )
+    except sessions_api.SessionsApiError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+
+
+@app.post(
+    "/v1/sessions/{session_id}/extract",
+    dependencies=[Depends(_require_token)],
+)
+async def sessions_extract(
+    session_id: str,
+    body: SessionExtractRequest,
+    cfg: Any = Depends(_get_cfg),
+) -> dict:
+    """Re-run coworker item extract and/or people refresh for a session.
+
+    Item extract includes vault ``## Annotations`` as user context. Replaces
+    untriaged items for this session; triaged fingerprints stay suppressed.
+    """
+    from pawn_server.core import sessions_api  # noqa: PLC0415
+
+    try:
+        return await sessions_api.extract_session(
+            cfg,
+            session_id,
+            items=bool(body.items),
+            people=bool(body.people),
+        )
+    except sessions_api.SessionsApiError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+
+
+@app.get("/v1/captures", dependencies=[Depends(_require_token)])
+async def captures_list(
+    limit: int = Query(default=40, ge=1, le=200),
+    cfg: Any = Depends(_get_cfg),
+) -> dict:
+    """Recent capture notes under ``{agent_root}/Captures/``."""
+    from pawn_server.core import captures  # noqa: PLC0415
+
+    return {
+        "object": "list",
+        "data": await asyncio.to_thread(captures.list_captures, cfg, limit=limit),
+    }
+
+
+@app.get("/v1/captures/collections", dependencies=[Depends(_require_token)])
+async def captures_collections(cfg: Any = Depends(_get_cfg)) -> dict:
+    """Existing collection folders under ``capture.enriched_dir`` (discovered)."""
+    from pawn_server.core import captures  # noqa: PLC0415
+
+    return {
+        "object": "list",
+        "data": await asyncio.to_thread(captures.list_collections, cfg),
+    }
+
+
+@app.post("/v1/captures", dependencies=[Depends(_require_token)])
+async def captures_save(body: CaptureSaveRequest, cfg: Any = Depends(_get_cfg)) -> dict:
+    """Append ordered text/image snippets to a vault note."""
+    from pawn_server.core import captures  # noqa: PLC0415
+    from pawn_server.core.jobs import create_capture_enrich_job  # noqa: PLC0415
+
+    try:
+        result = await asyncio.to_thread(
+            captures.save_snippets,
+            cfg,
+            target=body.target.model_dump(),
+            snippets=[s.model_dump() for s in body.snippets],
+        )
+    except captures.CaptureError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+
+    job_ids: list[str] = []
+    if result.get("enrich"):
+        for path in list(result.get("enrich_paths") or []):
+            try:
+                row = await create_capture_enrich_job(
+                    cfg,
+                    registry=get_sallm_registry(),
+                    path=path,
+                )
+                job_ids.append(row.id)
+            except Exception as exc:
+                logger.warning("capture enrich enqueue failed for %s: %s", path, exc)
+        result = {**result, "jobs": job_ids}
+    return result
+
+
+@app.post("/v1/captures/file", dependencies=[Depends(_require_token)])
+async def captures_file(body: CaptureFileRequest, cfg: Any = Depends(_get_cfg)) -> dict:
+    """File (or ignore) a research capture inbox note."""
+    from pawn_server.core import captures  # noqa: PLC0415
+
+    try:
+        return await asyncio.to_thread(
+            captures.file_capture,
+            cfg,
+            path=body.path,
+            collection=body.collection or "",
+            entity=body.entity or "",
+            tags=list(body.tags or []),
+            ignore=bool(body.ignore),
+        )
+    except captures.CaptureError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+
+
+@app.delete(
+    "/v1/captures/snippets/{snippet_id}",
+    dependencies=[Depends(_require_token)],
+)
+async def captures_delete_snippet(
+    snippet_id: str,
+    path: str = Query(..., description="Vault note that holds the snippet"),
+    cfg: Any = Depends(_get_cfg),
+) -> dict:
+    """Remove one snippet block from a note (and its image asset when present)."""
+    from pawn_server.core import captures  # noqa: PLC0415
+
+    try:
+        result = await asyncio.to_thread(
+            captures.delete_snippet,
+            cfg,
+            snippet_id,
+            path=path,
+        )
+    except captures.CaptureError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+    return result
 
 
 @app.get("/v1/vault/events", dependencies=[Depends(_require_token)])
@@ -1183,6 +1676,32 @@ async def job_cancel(job_id: str, cfg: Any = Depends(_get_cfg)) -> dict:
         raise _job_error(exc) from exc
 
 
+@app.delete("/v1/jobs/{job_id}", dependencies=[Depends(_require_token)])
+async def job_delete(job_id: str, cfg: Any = Depends(_get_cfg)) -> dict:
+    """Permanently remove a finished job (review/done/blocked)."""
+    from pawn_server.core import jobs  # noqa: PLC0415
+
+    try:
+        return await jobs.delete_job(cfg, job_id)
+    except jobs.JobError as exc:
+        raise _job_error(exc) from exc
+
+
+@app.post("/v1/jobs/delete", dependencies=[Depends(_require_token)])
+async def jobs_delete(body: JobsDeleteRequest, cfg: Any = Depends(_get_cfg)) -> dict:
+    """Delete selected finished jobs, or flush all done/blocked history."""
+    from pawn_server.core import jobs  # noqa: PLC0415
+
+    try:
+        return await jobs.delete_jobs(
+            cfg,
+            ids=body.ids,
+            flush_terminal=body.flush_terminal,
+        )
+    except jobs.JobError as exc:
+        raise _job_error(exc) from exc
+
+
 @app.post("/v1/jobs/{job_id}/dismiss", dependencies=[Depends(_require_token)])
 async def job_dismiss(job_id: str, cfg: Any = Depends(_get_cfg)) -> dict:
     """Close a review ask job without indexing the result into memory."""
@@ -1197,16 +1716,89 @@ async def job_dismiss(job_id: str, cfg: Any = Depends(_get_cfg)) -> dict:
 @app.get("/v1/items", dependencies=[Depends(_require_token)])
 async def items_list(
     status: Optional[str] = None,
+    statuses: Optional[str] = None,
+    kind: Optional[str] = None,
+    q: Optional[str] = None,
+    source_kind: Optional[str] = None,
+    source_ref: Optional[str] = None,
     limit: int = 100,
+    offset: int = 0,
     cfg: Any = Depends(_get_cfg),
 ) -> dict:
     """List coworker inbox items, newest first."""
     from pawn_agent.core.coworker import db as itemdb  # noqa: PLC0415
 
-    rows = await asyncio.to_thread(
-        itemdb.list_items, cfg.db_dsn, status=status or None, limit=limit
+    status_list: Optional[list[str]] = None
+    single = status or None
+    if statuses:
+        raw = statuses.strip().lower()
+        if raw in {"*", "all"}:
+            status_list = None
+            single = None
+        else:
+            status_list = [part.strip() for part in statuses.split(",") if part.strip()]
+    elif not status:
+        status_list = list(itemdb.OPEN_STATUSES)
+    capped = min(max(1, limit), 200)
+    start = max(0, offset)
+    sk = (source_kind or "").strip() or None
+    sr = (source_ref or "").strip() or None
+
+    def _load() -> tuple[list, int]:
+        rows = itemdb.list_items(
+            cfg.db_dsn,
+            status=single,
+            statuses=status_list,
+            kind=kind or None,
+            q=q or None,
+            source_kind=sk,
+            source_ref=sr,
+            limit=capped,
+            offset=start,
+        )
+        total = itemdb.count_items(
+            cfg.db_dsn,
+            status=single,
+            statuses=status_list,
+            kind=kind or None,
+            q=q or None,
+            source_kind=sk,
+            source_ref=sr,
+        )
+        return rows, total
+
+    rows, total = await asyncio.to_thread(_load)
+    return {"items": rows, "total": total}
+
+
+@app.post("/v1/items/delete", dependencies=[Depends(_require_token)])
+async def items_delete(
+    body: ItemsDeleteRequest,
+    cfg: Any = Depends(_get_cfg),
+) -> dict:
+    """Delete selected items or all open items matching optional filters."""
+    from pawn_agent.core.coworker.actions import delete_items  # noqa: PLC0415
+
+    if not body.all_open and not body.ids:
+        raise HTTPException(status_code=400, detail="Provide ids or all_open=true")
+    # None = default open; [] = every status; else explicit list.
+    status_filter: Optional[list[str]] = None
+    if body.statuses is not None:
+        raw = body.statuses.strip().lower()
+        if raw in {"*", "all", ""}:
+            status_filter = []
+        else:
+            status_filter = [part.strip() for part in body.statuses.split(",") if part.strip()]
+    result = await delete_items(
+        cfg,
+        ids=body.ids,
+        all_open=body.all_open,
+        statuses=status_filter,
+        kind=body.kind,
+        q=body.q,
+        registry=_sallm_registry,
     )
-    return {"items": rows}
+    return result
 
 
 @app.post("/v1/items/{item_id}/action", dependencies=[Depends(_require_token)])
@@ -1215,7 +1807,7 @@ async def item_action(
     body: ItemActionRequest,
     cfg: Any = Depends(_get_cfg),
 ) -> dict:
-    """Apply file, task, later, ignore, approve, or reject to one item."""
+    """Apply file, task, todo, delete, later, ignore, approve, or reject to one item."""
     from pawn_agent.core.coworker import db as itemdb  # noqa: PLC0415
     from pawn_agent.core.coworker.actions import apply_action  # noqa: PLC0415
 
@@ -1360,13 +1952,20 @@ async def pawn_chat(body: PawnChatRequest, cfg: Any = Depends(_get_cfg)) -> Stre
         except Exception:
             store = None
         active = (
-            NoteRef(path=body.active_note.path, content=body.active_note.content)
+            NoteRef(
+                path=body.active_note.path,
+                content=body.active_note.content,
+                inline=body.active_note.inline,
+            )
             if body.active_note
             else None
         )
         if active is not None:
             active = (await resolve_notes(store, [active]))[0]
-        extra = await resolve_notes(store, [NoteRef(n.path, n.content) for n in body.context])
+        extra = await resolve_notes(
+            store,
+            [NoteRef(n.path, n.content, inline=n.inline) for n in body.context],
+        )
         if resolved.rewritten:
             prompt = agent_message
         else:
@@ -1475,10 +2074,14 @@ def create_app(cfg: Any) -> FastAPI:
     _apply_docs_enabled(enable_docs)
 
     origins = list(getattr(getattr(cfg, "api", None), "cors_origins", None) or [])
-    if origins and not _cors_installed:
+    # Always allow browser / Thunderbird extension pages (UUID origin per install).
+    # Host permissions *should* bypass CORS, but Gecko still NetworkError's in
+    # some builds when Access-Control-Allow-Origin is missing.
+    if not _cors_installed:
         app.add_middleware(
             CORSMiddleware,
             allow_origins=origins,
+            allow_origin_regex=r"(?:moz-extension|chrome-extension)://.*",
             allow_methods=["*"],
             allow_headers=["*"],
         )

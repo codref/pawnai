@@ -88,7 +88,10 @@ export class PawnSettingTab extends PluginSettingTab {
 
     new Setting(containerEl)
       .setName("Include active note")
-      .setDesc("Attach the open note by default. Unpin it from the composer chip, and pin it to attach it again.")
+      .setDesc(
+        "Pin the open note as chat focus by default. The body is sent once per conversation " +
+          "(again if the note changes, or when you hit refresh). Unpin the chip to drop focus.",
+      )
       .addToggle((t) =>
         t.setValue(s.autoIncludeActiveNote).onChange(async (v) => {
           s.autoIncludeActiveNote = v;
@@ -114,7 +117,8 @@ export class PawnSettingTab extends PluginSettingTab {
       .setDesc(
         "When the selected model can see images, send pictures embedded in attached notes, " +
           "including Excalidraw drawings. Each picture is read once per conversation. " +
-          "A changed drawing is read again. The refresh button beside the paperclip reads them again.",
+          "A changed drawing is read again. The refresh button beside the paperclip " +
+          "re-reads notes and images on the next message.",
       )
       .addToggle((t) =>
         t.setValue(s.includeNoteImages).onChange(async (v) => {

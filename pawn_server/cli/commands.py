@@ -566,7 +566,11 @@ def coworker_process(
     session: str = typer.Option(..., "--session", "-s", help="Diarization session id."),
     config: Optional[str] = typer.Option(None, "--config", "-c"),
 ) -> None:
-    """Run the coworker loop for one finished session."""
+    """Run the coworker item loop for one finished session.
+
+    Creates ``Pawn/Items/`` notes from decisions / commitments / open questions.
+    Does **not** refresh People bios — use ``people-refresh`` for that.
+    """
     import asyncio  # noqa: PLC0415
 
     from pawn_agent.core.coworker.pipeline import process_session  # noqa: PLC0415
@@ -574,6 +578,38 @@ def coworker_process(
 
     cfg = load_config(config)
     result = asyncio.run(process_session(cfg, session))
+    console.print(result)
+
+
+@coworker_app.command("people-refresh")
+def coworker_people_refresh(
+    session: str = typer.Option(..., "--session", "-s", help="Diarization session id."),
+    force: bool = typer.Option(
+        True,
+        "--force/--no-force",
+        help=(
+            "Re-run even if a refresh already completed today (default: force). "
+            "Use --no-force to skip when a completed speakers_refresh exists."
+        ),
+    ),
+    config: Optional[str] = typer.Option(None, "--config", "-c"),
+) -> None:
+    """Update People/ vault bios for gallery speakers in one session.
+
+    Ensures stubs, appends Appearances, and proposes or applies Facts under
+    autonomy ``people_refresh``. Does **not** create coworker Items
+    (unlike ``coworker process``).
+
+    Runs even when ``coworker.enabled`` is false — this is an explicit
+    operator action.
+    """
+    import asyncio  # noqa: PLC0415
+
+    from pawn_agent.core.people.refresh import refresh_people_for_session  # noqa: PLC0415
+    from pawn_agent.utils.config import load_config  # noqa: PLC0415
+
+    cfg = load_config(config)
+    result = asyncio.run(refresh_people_for_session(cfg, session, force=bool(force)))
     console.print(result)
 
 

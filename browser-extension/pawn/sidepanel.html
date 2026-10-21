@@ -1,0 +1,91 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Pawn Capture</title>
+    <link rel="stylesheet" href="sidepanel.css" />
+  </head>
+  <body>
+    <div class="pawn-root">
+      <header class="pawn-header">
+        <div class="pawn-header-row">
+          <!-- Custom select: native <select> popups often fail to open in Edge/Chrome side panels. -->
+          <div id="target-kind" class="pawn-select" title="Target"></div>
+          <button
+            type="button"
+            id="btn-settings"
+            class="clickable-icon"
+            aria-label="Settings"
+            title="Settings"
+          ></button>
+          <span id="status-dot" class="pawn-dot is-offline" title="Server"></span>
+        </div>
+        <div id="target-extra" class="pawn-target-extra"></div>
+        <label id="title-field" class="pawn-field">
+          <span>Title</span>
+          <input id="title-input" type="text" placeholder="Capture title" />
+        </label>
+      </header>
+
+      <section id="settings-panel" class="pawn-settings" hidden>
+        <label class="pawn-field">
+          <span>Server URL</span>
+          <input id="server-url" type="url" placeholder="http://127.0.0.1:8000" />
+        </label>
+        <label class="pawn-field">
+          <span>API token</span>
+          <input id="api-token" type="password" placeholder="Bearer token" />
+        </label>
+        <div class="pawn-toolbar">
+          <button type="button" id="btn-save-settings" class="mod-cta">Save settings</button>
+        </div>
+        <p class="pawn-hint">
+          Same fields as the Obsidian Pawn plugin. Token is api.token from pawnai.yaml.
+        </p>
+      </section>
+
+      <p id="notice" class="pawn-notice" hidden></p>
+
+      <main class="pawn-body">
+        <div id="destination" class="pawn-destination"></div>
+        <div class="pawn-toolbar">
+          <button
+            type="button"
+            id="btn-selection"
+            class="clickable-icon"
+            aria-label="Capture selection"
+            title="Capture selection"
+          ></button>
+          <div id="clip-control" class="pawn-clip">
+            <button
+              type="button"
+              id="btn-region"
+              class="clickable-icon"
+              aria-label="Capture region"
+              title="Capture region"
+            ></button>
+            <button
+              type="button"
+              id="btn-clip-menu"
+              class="clickable-icon pawn-clip-chevron"
+              aria-label="Clip mode"
+              title="Clip mode"
+              aria-haspopup="menu"
+              aria-expanded="false"
+            ></button>
+            <div id="clip-menu" class="pawn-select-menu pawn-clip-menu" hidden role="menu"></div>
+          </div>
+          <span class="pawn-toolbar-sep" aria-hidden="true"></span>
+          <button type="button" id="btn-save" class="mod-cta" title="Save to vault">Save</button>
+        </div>
+        <div id="tray" class="pawn-tray"></div>
+        <p id="empty" class="pawn-hint pawn-empty">
+          Select text or capture a region. Snippets stack here in order, then Save appends them to
+          the target note.
+        </p>
+      </main>
+    </div>
+    <script src="sidepanel.js"></script>
+  </body>
+</html>

@@ -1,100 +1,118 @@
 # PawnAI
 
-A Python monolith for speaker diarization, audio transcription, and LLM-powered conversation analysis. Provides three CLI applications: **pawn-diarize** for audio processing and embedding management, **pawn-agent** for conversational analysis of recorded sessions, and **pawn-server** for the HTTP API, queue listener, durable agent scheduler, and optional Matrix bot.
+A Python monolith for speaker diarization, audio transcription, and an LLM coworker that lives in your Obsidian vault. Three console scripts from `pyproject.toml`:
+
+- **pawn-diarize** — transcription, diarization, speaker gallery, S3/queue workers
+- **pawn-agent** — sallm ReAct agent (skills + CliTools) for chat and domain tools
+- **pawn-server** — FastAPI OpenAI-compatible API, queue listener, durable scheduler, vault watcher, optional Matrix bot
+
+Companion UIs (separate packages in this repo):
+
+- **Obsidian plugin** — chat pane, Inbox, Sessions, background jobs (`obsidian-plugin/pawn/`)
+- **Browser capture** — MV3 side panel for text/image snippets (`browser-extension/pawn/`)
+- **Thunderbird capture** — MailExtension companion tray (`thunderbird-extension/pawn/`)
 
 ## Features
 
-- **Speaker Diarization**: Identify and separate multiple speakers using pyannote.audio
-- **Audio Transcription**: Convert speech to text via NeMo Parakeet or faster-whisper backends
-- **Combined Transcription & Diarization**: Transcribe and label speakers in one command
-- **Multi-file Processing**: Process multiple files as one conversation with cross-file speaker alignment
-- **Session Accumulation**: Process long conversations in parts across multiple invocations
-- **Speaker Embeddings**: Extract and store 512-dim speaker vectors in PostgreSQL with pgvector
-- **Conversation Analysis**: Generate titles, summaries, key topics, sentiment, and per-speaker highlights
-- **Knowledge Graph Extraction**: Extract semantic triples (subject, relation, object) from transcripts
-- **RAG Index**: Embed transcripts and Obsidian vault notes for semantic similarity search
-- **S3 Storage Management**: List, filter, and delete objects in S3-compatible storage
-- **Obsidian vault**: S3 Markdown vault (Sync Engine) for transcripts, analyses, and agent tasks — see `docs/OBSIDIAN_AGENT.md`
-- **Background Queue Worker**: S3-backed job queue with lease-based concurrency
-- **Durable Agent Scheduler**: Store scheduled agent prompts in PostgreSQL and run them from pawn-server
-- **GPU Support**: Accelerated processing on CUDA-enabled devices
+- **Speaker diarization** — pyannote (default) or Nemotron/Sortformer backends
+- **Transcription** — NeMo Parakeet or faster-whisper
+- **Combined transcribe + diarize** — multi-file chunks, session accumulation, S3 URIs
+- **Curated Speakers gallery** — manual enrollments / reidentify (runtime diarization never auto-enrolls)
+- **People bios** — vault notes under `People/` linked from transcript Speakers tables
+- **Conversation analysis** — titles, summaries, topics, sentiment; optional vault save under `Pawn/Analyses/`
+- **Knowledge / RAG index** — transcript and vault-note embeddings for related search
+- **Obsidian vault** — S3 Markdown vault (Sync Engine); transcripts, tasks, captures, coworker notes
+- **Coworker loop** — after sessions, extract/score items against `Goals.md`, Inbox triage, morning/weekly crons
+- **Background queues** — S3-backed pawn-queue with lease-based concurrency
+- **Durable agent scheduler** — PostgreSQL schedules (`once` / `interval` / `cron`)
+- **Capture extensions** — browser and Thunderbird → `/v1/captures` (notes, session Annotations, or research inbox)
+- **GPU support** — CUDA when available
 
 ## Installation
 
-### From Source
+Requires **Python 3.12+**, PostgreSQL with **pgvector**, and (for local sallm embeddings) Ollama.
 
 ```bash
 git clone <repository-url>
 cd parakeet
+
+# Prefer uv (matches uv.lock)
+uv sync --extra dev
+
+# Or pip
 pip install -e ".[dev]"
+
+# Matrix bot extras
+uv sync --extra matrix
 ```
 
-### System Requirements
+`sallm-agent` is an editable path dependency (`../sallm-agent` via `[tool.uv.sources]`). Alternative: `uv add git+https://github.com/codref/sallm-agent.git`.
 
-- Python 3.10+
-- PostgreSQL with the `pgvector` extension
-- CUDA 11.0+ (optional, for GPU acceleration)
-- 8 GB+ RAM recommended for ML models
-
-### Database Setup
+### Database
 
 ```bash
-# Apply all migrations
+docker compose -f docker/docker-compose.yml up -d postgres
 alembic upgrade head
+```
+
+Default DSN uses host port **5433**.
+
+### Local embeddings
+
+```bash
+ollama pull qwen3-embedding:0.6b
 ```
 
 ## Configuration
 
-All settings live in `pawnai.yaml` (auto-discovered in the current directory, or passed via `--config`).
-Precedence: **CLI flags → `pawnai.yaml` → environment variables → defaults**.
-See `pawnai.example.yaml` for a full commented configuration with every supported section.
+Settings live in `pawnai.yaml` (auto-discovered in the current directory, or `--config`). Precedence: **CLI flags → YAML → environment variables → defaults**. Env vars use `PAWN_` with `__` nesting (e.g. `PAWN_DB_DSN`, `PAWN_MODELS__HF_TOKEN`). Copy `pawnai.example.yaml` for a full commented template — do not commit a real `pawnai.yaml` (it may contain secrets).
+
+Minimal sketch of current shape:
 
 ```yaml
+db_dsn: postgresql+psycopg://postgres:postgres@localhost:5433/pawnai
+
 models:
-  hf_token: hf_your_token_here        # HuggingFace token for gated models
-  # asr_model: nvidia/parakeet-tdt-0.6b-v3
-  # diarization_model: pyannote/speaker-diarization-3.1
+  hf_token: ""
+  transcription_backend: nemo
+  diarization_backend: pyannote
+  diarization_model: pyannote/speaker-diarization-community-1
+  embedding_model: nvidia/speakerverification_en_titanet_large
 
-db_dsn: postgresql+psycopg://user:pass@localhost:5433/pawnai
-
-paths:
-  db_path: speakers_db
-  audio_dir: audio/
-
-device: auto    # auto | cuda | cpu
+device:
+  type: auto    # auto | cuda | cpu
 
 s3:
   bucket: my-audio-bucket
   endpoint_url: https://s3.amazonaws.com
-  access_key: AKIAIOSFODNN7EXAMPLE
-  secret_key: wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY
-  region: us-east-1
-  prefix: ""
-  verify_ssl: true
+  access_key: ""
+  secret_key: ""
   path_style: true
 
-queue_producers:
-  matrix:
-    topic: matrix-jobs
-    bucket_name: my-audio-bucket
-  downstream:
-    topic: downstream-jobs
-    bucket_name: my-audio-bucket
+# Obsidian Sync Engine bucket (separate credentials from audio/queue s3:)
+vault:
+  s3:
+    bucket: my-obsidian-bucket
+    endpoint_url: https://fsn1.your-objectstorage.com
+    access_key: ""
+    secret_key: ""
+  agent_root: Pawn
+  auto_push_transcript: false
 
 agent:
   name: Bob
-  anima: anima.md                     # optional personality/system-prompt file
-  openai:
-    model: qwen3:8b
-    base_url: http://localhost:11434/v1
-    api_key: ollama
-  copilot:
-    model: gpt-4o
-
-rag:
-  embed_model: Qwen/Qwen3-Embedding-0.6B
-  embed_dim: 1024
-  embed_device: cpu
+  anima: anima.md
+  # Catalog id = provider@model (interactive + background default)
+  default: ollama@gemma4:4b
+  providers:
+    ollama:
+      base_url: http://localhost:11434/v1
+      api_key: ollama
+      models:
+        - model: gemma4:4b
+          profile: large.yaml
+          # vision: true   # Matrix / Obsidian image attachments
+  # Legacy agent.openai block still works if providers is omitted
 
 agent_queue:
   topic: pawn-agent-jobs
@@ -104,645 +122,224 @@ agent_queue:
 agent_scheduler:
   enabled: true
   poll_interval_seconds: 30
-  max_due_per_tick: 5
-  default_timezone: UTC
-  stale_fire_after_seconds: 3600
-  allow_agent_auto_apply: false
+
+coworker:
+  enabled: false
+  goals_path: Goals.md
 ```
+
+Chat models are a catalog under `agent.providers`. Selectable ids look like `ollama@gemma4:4b`. `/model <id>` changes the background default at runtime; autonomous jobs (scheduler, coworker, Matrix, vault watcher) use that default when no model is passed.
 
 ---
 
 ## pawn-diarize
 
-### Quick Start
+### Quick start
 
 ```bash
-# Check system status
 pawn-diarize status
-
-# Transcribe and diarize a meeting
 pawn-diarize transcribe-diarize meeting.wav -o transcript.txt
-
-# Label a speaker for future recognition
-pawn-diarize label -f audio.wav -s SPEAKER_00 -n "Alice Smith"
+pawn-diarize speakers create Alice
+pawn-diarize speakers enroll -s Alice --audio alice-hello.wav
 ```
 
-### Commands Reference
+### Main commands
 
-#### `diarize`
+| Command | Purpose |
+|---------|---------|
+| `diarize` | Speaker labels only |
+| `transcribe` | ASR (`nemo` or `whisper`) |
+| `transcribe-diarize` | Combined pass; multi-file / `--session` accumulation; optional annotations/screenshots |
+| `embed` / `search` / `label` | Legacy embedding helpers and display-name labels |
+| `speakers …` | Curated gallery: `list`, `show`, `create`, `enroll`, `update`, … — see [docs/SPEAKERS.md](docs/SPEAKERS.md) |
+| `session-relabel` | Rename a speaker across one session |
+| `reidentify` | Re-match session speakers against the gallery |
+| `rediarize` / `retranscribe` | Repair labels only, or full ASR+diarize overwrite (`--confirm`) |
+| `push-vault` | Write/update vault Speakers+Transcript+Screenshots note |
+| `sessions` / `session-info` | Inspect stored sessions |
+| `s3 ls` / `s3 rm` | Bucket listing and age-based cleanup |
+| `listen` | Diarize queue worker |
+| `status` | Device / CUDA / model summary |
 
-Perform speaker diarization on one or more audio files. Automatically recognizes known speakers from the database and replaces generic labels with names.
-
-```bash
-pawn-diarize diarize <audio_path>... [OPTIONS]
-
-Options:
-  --output, -o TEXT        Output file (.txt or .json)
-  --config TEXT            Path to pawnai.yaml
-  --db-dsn TEXT            PostgreSQL DSN
-  --threshold, -t FLOAT    Similarity threshold for speaker matching (default: 0.7)
-  --store-new/--no-store   Store embeddings for unknown speakers (default: enabled)
-```
-
-```bash
-pawn-diarize diarize meeting.wav -o speakers.json
-pawn-diarize diarize part1.wav part2.wav part3.wav -o full_diarization.json
-pawn-diarize diarize meeting.wav --no-store
-```
-
-#### `transcribe`
-
-Transcribe audio to text. Supports two backends: `nemo` (Nvidia Parakeet) and `whisper` (faster-whisper).
+Audio commands accept `s3://` URIs. Opt-in auto vault push: `vault.auto_push_transcript: true`.
 
 ```bash
-pawn-diarize transcribe <audio_path> [OPTIONS]
-
-Options:
-  --output, -o TEXT          Output file (.txt or .json)
-  --config TEXT              Path to pawnai.yaml
-  --db-dsn TEXT              PostgreSQL DSN
-  --timestamps/--no-timestamps  Include word-level timestamps (default: enabled)
-  --device, -d TEXT          cuda or cpu (default: auto)
-  --chunk-duration, -c FLOAT Split audio into N-second chunks (helps avoid OOM)
-  --backend TEXT             nemo or whisper (default: nemo)
-```
-
-```bash
-pawn-diarize transcribe speech.wav -o transcript.txt
-pawn-diarize transcribe large.mp3 --backend whisper --device cpu -c 300
-```
-
-#### `transcribe-diarize`
-
-Combined transcription + diarization with speaker labels in a single pass. When multiple files are given they are treated as ordered chunks of the same conversation, with speaker labels aligned across files.
-
-```bash
-pawn-diarize transcribe-diarize <audio_path>... [OPTIONS]
-
-Options:
-  --output, -o TEXT             Output file (.txt or .json)
-  --config TEXT                 Path to pawnai.yaml
-  --session, -s TEXT            Session JSON file for accumulative processing
-  --db-dsn TEXT                 PostgreSQL DSN
-  --threshold, -t FLOAT         Speaker matching threshold (default: 0.7)
-  --store-new/--no-store        Store unknown speaker embeddings (default: enabled)
-  --device, -d TEXT             cuda or cpu
-  --chunk-duration, -c FLOAT    Split audio into chunks
-  --cross-threshold, -x FLOAT   Cross-file speaker alignment threshold (default: 0.85)
-  --no-timestamps               Hide timestamps in output
-  --backend TEXT                nemo or whisper (default: nemo)
-```
-
-```bash
-# Single file
 pawn-diarize transcribe-diarize meeting.wav -o transcript.txt
-
-# Multiple files (ordered chunks of same conversation)
-pawn-diarize transcribe-diarize part1.wav part2.wav part3.wav -o full.txt
-
-# Accumulate across invocations
-pawn-diarize transcribe-diarize part1.wav --session conv.json
-pawn-diarize transcribe-diarize part2.wav --session conv.json
-pawn-diarize transcribe-diarize part3.wav --session conv.json -o final.txt
-```
-
-#### `embed`
-
-Extract and store speaker embeddings (512-dim) in PostgreSQL for future recognition.
-
-```bash
-pawn-diarize embed <audio_path> --speaker-id SPEAKER_ID [OPTIONS]
-
-Options:
-  --speaker-id, -s TEXT   Unique speaker identifier (required)
-  --config TEXT           Path to pawnai.yaml
-  --db-dsn TEXT           PostgreSQL DSN
-```
-
-```bash
-pawn-diarize embed person.wav --speaker-id alice_smith
-```
-
-#### `search`
-
-Find speakers with similar voice characteristics via cosine similarity on stored embeddings.
-
-```bash
-pawn-diarize search <speaker_id> [OPTIONS]
-
-Options:
-  --limit INT    Maximum results (default: 5)
-  --db-dsn TEXT  PostgreSQL DSN
-```
-
-#### `label`
-
-Assign a human-readable name to a speaker for automatic recognition in future diarizations.
-
-```bash
-pawn-diarize label [OPTIONS]
-
-Options:
-  --file, -f TEXT      Audio file containing the speaker
-  --speaker, -s TEXT   Speaker label (e.g. SPEAKER_00)
-  --name, -n TEXT      Human-readable name
-  --session TEXT       Session ID to scope the labeling
-  --list, -l           List all speaker name mappings
-  --config TEXT        Path to pawnai.yaml
-  --db-dsn TEXT        PostgreSQL DSN
-```
-
-```bash
-pawn-diarize label -f audio.wav -s SPEAKER_00 -n "Alice Smith"
-pawn-diarize label --list
-```
-
-**Typical workflow:**
-1. `transcribe-diarize` → transcript with SPEAKER_00, SPEAKER_01, …
-2. `label` → assign names to those labels
-3. Future `transcribe-diarize` runs → names appear automatically
-
-#### `session-relabel`
-
-Bulk-rename a mis-identified speaker across an entire session. Accepts a raw
-`SPEAKER_XX` label or a wrong display name; updates transcript segments,
-`speaker_names` (so future embedding matches resolve correctly), and
-`session_state` prior-speaker keys.
-
-```bash
-pawn-diarize session-relabel --session SESSION_ID --from OLD_NAME --to NEW_NAME [OPTIONS]
-
-Options:
-  --yes, -y         Skip confirmation prompt
-  --push-vault      Force create/update the vault Speakers+Transcript note
-  --db-dsn TEXT
-  --config TEXT
-```
-
-```bash
+pawn-diarize transcribe-diarize part1.wav part2.wav --session conv.json
 pawn-diarize session-relabel --session my-session --from SPEAKER_00 --to Davide --yes
-pawn-diarize session-relabel --session my-session -F SPEAKER_00 -T Davide --yes --push-vault
-```
-
-The agent exposes the same operation as the `session_relabel` CliTool.
-Existing vault Speakers+Transcript notes refresh automatically; `--push-vault`
-creates the note when no `vault_notes` mapping exists yet.
-
-#### `push-vault`
-
-Project a session transcript into the S3 Obsidian vault as a stable Markdown
-note (`Pawn/Transcripts/…`). Speakers and Transcript are overwritten on each
-push; Annotations are preserved. Opt-in auto-push after each
-`transcribe-diarize` chunk with `vault.auto_push_transcript: true`.
-
-```bash
-pawn-diarize push-vault --latest
 pawn-diarize push-vault --session myconv
-pawn-diarize push-vault --since 2026-09-01
-pawn-diarize push-vault --all --dry-run
+pawn-diarize rediarize --session X --confirm
+pawn-diarize retranscribe --session X --confirm
 ```
 
-See `docs/OBSIDIAN_AGENT.md`.
-
-#### `session-info`
-
-Show speakers and their embedding source files for a session.
-
-```bash
-pawn-diarize session-info <session_id> [OPTIONS]
-```
-
-#### `sessions`
-
-List all sessions or inspect a specific one.
-
-```bash
-pawn-diarize sessions [OPTIONS]
-
-Options:
-  --session TEXT    Inspect a specific session
-  --head INT        Show first N segments
-  --tail INT        Show last N segments
-  --output TEXT     Save output to file
-  --config TEXT     Path to pawnai.yaml
-```
-
-#### `s3 ls`
-
-List objects in the configured S3 bucket with POSIX-style output (timestamp and size always shown).
-
-```bash
-pawn-diarize s3 ls [PREFIX] [OPTIONS]
-
-Options:
-  --config TEXT           Path to pawnai.yaml
-  --recursive, -r         Flat listing (no directory grouping)
-  --time, -t              Sort by modification time, newest first
-  --reverse               Reverse sort order
-  --older-than INTEGER    Show only objects older than N days
-```
-
-```bash
-pawn-diarize s3 ls
-pawn-diarize s3 ls recordings/ -t
-pawn-diarize s3 ls recordings/ -r -t --reverse
-pawn-diarize s3 ls --older-than 30
-```
-
-Output format:
-```
-2024-03-15 14:32:10    45.2 MB  recordings/2024/meeting.wav
-                PRE             recordings/archive/
-```
-
-#### `s3 rm`
-
-Delete objects from S3 by key or by age. Always prefer `--dry-run` first.
-
-```bash
-pawn-diarize s3 rm [PATH] [OPTIONS]
-
-Options:
-  --config TEXT           Path to pawnai.yaml
-  --older-than INTEGER    Delete all objects older than N days
-  --prefix TEXT           Limit --older-than to this key prefix
-  --dry-run, -n           Show what would be deleted without making changes
-  --yes, -y               Skip confirmation prompt for bulk deletions
-```
-
-```bash
-# Delete a specific file
-pawn-diarize s3 rm recordings/2024/old.wav
-
-# Preview bulk deletion
-pawn-diarize s3 rm --older-than 30 --dry-run
-
-# Delete all objects older than 90 days under a prefix
-pawn-diarize s3 rm --older-than 90 --prefix recordings/ --yes
-```
-
-#### `listen`
-
-Background worker that polls a pawn-queue topic and executes jobs (transcribe-diarize, transcribe, diarize, embed, analyze).
-
-```bash
-pawn-diarize listen [OPTIONS]
-
-Options:
-  --config TEXT          Path to pawnai.yaml
-  --topic TEXT           Queue topic name
-  --consumer-name TEXT   Worker identity for lease-based concurrency
-```
-
-#### `status`
-
-Show system status: device, CUDA availability, GPU info, configured models.
-
-```bash
-pawn-diarize status [--config TEXT]
-```
-
-### S3 Audio Paths
-
-All audio processing commands accept `s3://` URIs directly — files are downloaded to a temp location, processed, then cleaned up automatically.
-
-```bash
-pawn-diarize transcribe s3://my-bucket/recordings/meeting.wav -o transcript.txt
-pawn-diarize transcribe-diarize s3://my-bucket/recordings/*.wav
-```
+Queue / chain-agent details: [docs/QUEUE_LISTENER.md](docs/QUEUE_LISTENER.md). Vault diary notes: [docs/OBSIDIAN_AGENT.md](docs/OBSIDIAN_AGENT.md).
 
 ---
 
 ## pawn-agent
 
-LLM-powered conversational agent for analyzing pawn-diarize sessions. Backed by PydanticAI and supports multiple providers (OpenAI-compatible, GitHub Copilot, Anthropic, Google, Groq, Mistral, and others).
-
-Tools are **auto-discovered** from `pawn_agent/tools/` — any module that exports `NAME`, `DESCRIPTION`, and `build(cfg)` is registered automatically.
-
-### Commands Reference
-
-#### `chat`
-
-Start an interactive multi-turn conversation session.
+Interactive and scripted access to the embedded **sallm** ReAct agent (skills + CliTools). Conversation memory lives under `agent.sallm.state_dir` (SQLite + Lance). PostgreSQL still holds transcripts, analyses, `agent_runs`, and schedules.
 
 ```bash
-pawn-agent chat [OPTIONS]
-
-Options:
-  --config TEXT       Path to pawnai.yaml
-  --model TEXT        Override the configured LLM model (e.g. openai:gpt-4o)
-  --db-dsn TEXT       PostgreSQL DSN override
-  --otlp TEXT         Optional OTLP/HTTP endpoint for sallm Tempo traces
-  --metrics-port INT  Optional Prometheus /metrics port (0 = off)
+pawn-agent chat
+pawn-agent chat --model ollama@gemma4:4b
+pawn-agent tools
+pawn-agent models
 ```
 
-**Terminal features:**
+**Slash commands (chat):** `/exit`, `/quit`, `/stats`, `/reset`, `/model <id>`, `/model reset`, `/idea …`, `/goal` / `/park` / `/goal apply`.
 
-- **Slash commands:**
+### CliTools
 
-  | Command | Effect |
-  |---------|--------|
-  | `/exit` or `/quit` | End the session |
-  | `/stats` | Show sallm session metrics |
-  | `/reset` | Clear sallm session memory |
-
-  `Ctrl-D` and `Ctrl-C` also exit cleanly.
-
-Chat uses the durable sallm ReAct agent (skills + CliTools). Conversation memory lives under `agent.sallm.state_dir` (SQLite + Lance); optional tracing goes to Tempo via `--otlp` / `agent.sallm.otlp_endpoint`.
-
-#### `run`
-
-Execute a single prompt and exit (useful for scripting).
-
-```bash
-pawn-agent run "<prompt>" [OPTIONS]
-
-Options:
-  --config TEXT    Path to pawnai.yaml
-  --model TEXT     Override the configured LLM model
-  --session TEXT   Session hint
-```
-
-```bash
-pawn-agent run "Summarize session abc123 and save analysis"
-```
-
-#### `tools`
-
-List all registered agent tools with their descriptions.
-
-```bash
-pawn-agent tools [--config TEXT]
-```
-
-#### `models`
-
-List available Copilot models with billing and reasoning effort details.
-
-```bash
-pawn-agent models [--config TEXT]
-```
-
-### Available Tools
+Registered in `pawn_agent/core/sallm_tools.py` (domain logic in `pawn_agent/tools/*_impl` + `tools/cli/`):
 
 | CliTool | Description |
-|------|-------------|
-| `sessions_list` | List diarization sessions from the database |
-| `session_transcript` | Fetch the full transcript for a session |
-| `session_analyze` | Run structured analysis (title, summary, topics, sentiment, tags); `--save` writes to `Pawn/Analyses/` |
-| `session_delete` | Permanently delete one diarization session (requires matching `--confirm`) |
-| `session_relabel` | Rename a speaker across a session (`--from SPEAKER_00 --to Davide`) |
-| `note_read` | Read a vault Markdown note (`--path`, optional `--follow-links`) |
-| `note_search` | List/filter vault notes (`--folder`, `--tag`) |
-| `note_write` | Create/overwrite a vault note (write guards under `Pawn/`) |
-| `note_append` | Append Markdown to a vault note |
-| `task_update` | Update a vault task note status / Result |
-| `queue_push` | Publish progress updates or notifications to configured queue producers |
-| `schedule_propose` | Create schedule-change proposals for application approval |
+|---------|-------------|
+| `sessions_list` / `session_transcript` / `session_analyze` | List sessions, fetch transcript, structured analysis (`--save` → `Pawn/Analyses/`) |
+| `session_screenshots` | List/summarize session screenshots |
+| `session_delete` / `session_relabel` | Wipe a session (`--confirm`) / rename a speaker |
+| `speakers_*` / `speaker_enroll` / `session_reidentify` | Speakers gallery |
+| `people_show` / `people_ensure` / `people_append` | People bios |
+| `note_read` / `note_search` / `note_write` / `note_append` | Vault notes (write guards under `Pawn/`) |
+| `capture_update` / `task_update` | Research captures and vault jobs |
+| `knowledge_search` | Related / RAG search |
+| `schedule_propose` / `queue_push` / `goal_propose` | Schedules (proposals only), notifications, goal drafts |
+| `tasknotes_*` | TaskNotes-compatible notes under `{agent_root}/TaskNotes/` |
 
-Tools are sallm CliTools (`pawn_agent/tools/cli/`). See [docs/TOOLS.md](docs/TOOLS.md).
-Vault task loop: [docs/OBSIDIAN_AGENT.md](docs/OBSIDIAN_AGENT.md).
+Skills (modes): `converse`, `sessions`, `notes`, `scheduling`, `ops`, `vault_tasks`, `tasknotes`, `coworker`, `research_capture`. Full tool authoring notes: [docs/TOOLS.md](docs/TOOLS.md), [docs/AGENT_TOOL_AUTHORING.md](docs/AGENT_TOOL_AUTHORING.md).
 
 ---
 
 ## pawn-server
 
-HTTP API server, queue listener, scheduler, vault watcher, and optional Matrix bot for `pawn-agent`.
-
-### Serve
+HTTP API, agent queue listener, scheduler, vault watcher, and optional Matrix bot.
 
 ```bash
-pawn-server serve [OPTIONS]
-```
-
-Options:
-
-```text
---config, -c TEXT          Path to pawnai.yaml
---host, -H TEXT            Bind host, overriding api.host
---port, -p INTEGER         Bind port, overriding api.port
---model, -m TEXT           PydanticAI model string override
---topic, -T TEXT           Queue topic override
---consumer-name, -n TEXT   Queue consumer name override
---no-queue                 Disable the queue listener
---disable-scheduler        Disable the durable scheduler
---scheduler-only           Run only the durable scheduler
---no-matrix                Disable the Matrix bot
---matrix-only              Run only the Matrix bot
---no-vault-watcher         Disable the vault task watcher
---vault-watcher-only       Run only the vault task watcher
---ssl-certfile PATH        TLS certificate PEM (overrides api.ssl_certfile)
---ssl-keyfile PATH         TLS private key PEM (overrides api.ssl_keyfile)
-```
-
-`pawn-server serve` starts the OpenAI-compatible HTTP API and, when configured,
-the queue listener, scheduler, Matrix bot, and vault watcher. Agent turns use
-the in-process sallm registry and are recorded in `agent_runs`. Matrix chat
-needs `uv sync --extra matrix` and `matrix_bot.enabled` — see
-[docs/MATRIX_BOT.md](docs/MATRIX_BOT.md). Vault tasks:
-[docs/OBSIDIAN_AGENT.md](docs/OBSIDIAN_AGENT.md).
-
-```bash
-# API + queue listener + scheduler (+ Matrix / vault watcher if enabled)
 pawn-server serve
-
-# API only
 pawn-server serve --no-queue --disable-scheduler --no-matrix --no-vault-watcher
-
-# Scheduler worker only
 pawn-server serve --scheduler-only
-
-# Matrix bot only
 pawn-server serve --matrix-only
-
-# Vault watcher only
 pawn-server serve --vault-watcher-only
 ```
 
-### Schedule Management
+Useful flags: `--host` / `--port`, `--ssl-certfile` / `--ssl-keyfile`, `--no-queue`, `--disable-scheduler`, `--no-matrix`, `--no-vault-watcher`, and the `*-only` single-worker modes.
 
-Schedules live in PostgreSQL. Agent-facing tools create proposals only; the
-application owns approval and all actual schedule mutations.
+Chat completions always go through the embedded sallm agent. Surfaces:
+
+| Surface | Docs |
+|---------|------|
+| OpenAI-compatible `/v1/chat/completions` | [docs/OPENAI_API.md](docs/OPENAI_API.md) |
+| Obsidian plugin chat + jobs (`/v1/pawn/chat`, `/v1/jobs`) | [docs/OBSIDIAN_AGENT.md](docs/OBSIDIAN_AGENT.md) |
+| Browser / Thunderbird captures | [docs/BROWSER_CAPTURE.md](docs/BROWSER_CAPTURE.md), [docs/THUNDERBIRD_CAPTURE.md](docs/THUNDERBIRD_CAPTURE.md) |
+| Matrix bot | [docs/MATRIX_BOT.md](docs/MATRIX_BOT.md) (needs `uv sync --extra matrix`) |
+| Coworker / Inbox | [docs/COWORKER.md](docs/COWORKER.md) |
+| People bios | [docs/PEOPLE.md](docs/PEOPLE.md) |
+| Scheduler | [docs/AGENT_SCHEDULER.md](docs/AGENT_SCHEDULER.md) |
+
+### Admin CLIs
 
 ```bash
+# Schedules (agent tools only propose; you approve here)
 pawn-server schedules list
-pawn-server schedules show <schedule-id>
 pawn-server schedules proposals
 pawn-server schedules approve <proposal-id>
-pawn-server schedules reject <proposal-id>
-pawn-server schedules pause <schedule-id>
-pawn-server schedules resume <schedule-id>
-pawn-server schedules cancel <schedule-id>
-```
 
-### Queue Management
-
-Inspect or control configured pawn-queue topics from `agent_queue`,
-`diarize_queue`, and `queue_producers`:
-
-```bash
+# Queues (agent_queue, diarize_queue, queue_producers)
 pawn-server queue stats
-pawn-server queue stats --name diarize
 pawn-server queue pause --name agent
-pawn-server queue pause --topic audio-chunks
 pawn-server queue resume --all
-pawn-server queue empty --name agent --dry-run
-pawn-server queue empty --name diarize --yes
-```
 
-`stats` lists every configured queue by default. Mutating commands need
-`--name`, `--topic`, or `--all`. Pause/resume toggle `{topic}/.paused` in the
-queue bucket; agent and diarize listeners stop claiming new work while paused.
-
-### API security (docs, IP blacklist, reverse proxy)
-
-When exposing the HTTP API, set a Bearer token and turn docs off:
-
-```yaml
-api:
-  token: "strong-secret"
-  enable_docs: false
-  whitelist_ips:
-    - 127.0.0.1
-    - "::1"
-  bruteforce_enabled: true
-  auth_fail_threshold: 10
-  not_found_threshold: 40
-  bruteforce_window_seconds: 300
-  # Behind nginx/Caddy that sets X-Real-IP / X-Forwarded-For:
-  trust_proxy: false          # keep false for direct :8000 exposure
-  trusted_proxies:
-    - 127.0.0.1
-    - "::1"
-  # Direct TLS (no reverse proxy). Create files with: make ssl-cert
-  # ssl_certfile: certs/cert.pem
-  # ssl_keyfile: certs/key.pem
-```
-
-Repeated auth failures (401) or path scans (404) auto-ban the client IP in
-PostgreSQL. Manage the list with:
-
-```bash
+# API IP blacklist
 pawn-server blacklist list
-pawn-server blacklist add 203.0.113.9 --reason manual
-pawn-server blacklist remove 203.0.113.9
-pawn-server blacklist clear --yes
+
+# Coworker one-offs
+pawn-server coworker process --session ID
+pawn-server coworker people-refresh --session ID
+pawn-server coworker status
 ```
 
-`trust_proxy` is off by default. Enable it only when a reverse proxy is the
-TCP peer (e.g. local nginx → `127.0.0.1:8000`); headers from peers outside
-`trusted_proxies` are ignored so clients cannot spoof their IP. See also
-`deploy/nginx-pawn-location.conf` and [docs/OPENAI_API.md](docs/OPENAI_API.md).
-
-For **direct HTTPS** (no proxy), generate a self-signed cert and point the
-API at it:
-
-```bash
-make ssl-cert
-# optional LAN IP / hostname:
-# make ssl-cert CERT_CN=pawn.local \
-#   CERT_SAN='DNS:pawn.local,DNS:localhost,IP:192.168.1.10,IP:127.0.0.1'
-```
-
-```yaml
-api:
-  ssl_certfile: certs/cert.pem
-  ssl_keyfile: certs/key.pem
-```
-
-Or pass `--ssl-certfile` / `--ssl-keyfile` on `pawn-server serve`. Clients must
-trust (or skip verification of) the self-signed certificate. Prefer a real
-reverse-proxy cert when you already terminate TLS at nginx/Caddy.
-
-Schedule kinds:
-
-- `once`: one run at an ISO 8601 `run_at`
-- `interval`: repeat every `interval_seconds`
-- `cron`: cron expression in the configured timezone; requires `croniter`
-
-See `docs/AGENT_SCHEDULER.md` for the schedule contract and proposal approval
-model.
+When exposing the API, set `api.token`, turn `api.enable_docs` off, and prefer a reverse proxy (or `make ssl-cert` + `api.ssl_*` for direct TLS). See `deploy/nginx-pawn-location.conf` and the API security notes in [docs/OPENAI_API.md](docs/OPENAI_API.md).
 
 ---
 
-## Project Structure
+## Obsidian plugin & capture extensions
+
+```bash
+make obsidian-plugin          # build
+make obsidian-plugin-dist     # pawn.zip → <vault>/.obsidian/plugins/
+make browser-extension-dist   # Chrome/Firefox zips
+make thunderbird-extension-dist
+```
+
+The Obsidian plugin is MIT and written from scratch — do not copy AGPL `obsidian-copilot` code into it. Plugin chat uses `POST /v1/pawn/chat` (SSE); background work uses `POST /v1/jobs`. Stock Copilot can still target `/v1/chat/completions`.
+
+---
+
+## Project structure
 
 ```
 parakeet/
-├── pawn_diarize/
-│   ├── __main__.py           # Entry point → pawn-diarize
-│   ├── cli/
-│   │   ├── commands.py       # All CLI command definitions
-│   │   └── utils.py          # Console, helpers
-│   ├── core/
-│   │   ├── config.py         # pawnai.yaml loader
-│   │   ├── diarization.py    # pyannote.audio + DBSCAN clustering
-│   │   ├── transcription.py  # NeMo Parakeet / faster-whisper backends
-│   │   ├── embeddings.py     # Speaker embeddings (PostgreSQL + pgvector)
-│   │   ├── combined.py       # Multi-file transcription+diarization
-│   │   ├── database.py       # SQLAlchemy ORM (embeddings, segments, analysis, RAG, graph)
-│   │   ├── analysis.py       # Session analysis via Copilot
-│   │   ├── s3.py             # S3/MinIO client and transparent download helpers
-│   │   └── queue_listener.py # Background job worker
-│   └── utils/
-├── pawn_agent/
-│   ├── __main__.py           # Entry point → pawn-agent
-│   ├── cli/commands.py       # chat, tools, models
-│   ├── core/
-│   │   ├── sallm_*.py        # Embedded sallm harness (factory/session/registry/skills/tools)
-│   │   ├── agent_runner.py   # Persisted turn helper for API/queue/scheduler
-│   │   ├── scheduler.py      # Durable agent scheduler service
-│   │   └── session_candidates.py
-│   ├── tools/                # *_impl helpers + cli/ CliTool entrypoints
-│   └── utils/
-│       ├── config.py         # AgentConfig loader (incl. agent.sallm)
-│       ├── db.py             # Agent/schedule ORM helpers
-│       ├── transcript.py     # Fetch/format session transcripts
-│       └── analysis.py       # Analysis runner
-├── pawn_server/
-│   ├── __main__.py           # Entry point → pawn-server
-│   ├── cli/commands.py       # serve and schedules commands
-│   └── core/
-│       ├── api_server.py     # FastAPI OpenAI-compatible API
-│       ├── matrix_bot.py     # Inbound Matrix chatbot worker
-│       └── queue_listener.py # pawn-agent queue consumer
-├── migrations/               # Alembic schema versions
-├── pawnai.yaml               # Project configuration
-└── alembic.ini
+├── pawn_core/              # Shared config, DB base, transcription, TTS, vault store
+├── pawn_diarize/           # CLI + audio business logic
+├── pawn_agent/             # CLI, sallm harness, scheduler, CliTools, coworker/people
+├── pawn_server/            # FastAPI, queue listener, Matrix, vault watcher, jobs/captures
+├── obsidian-plugin/pawn/   # Obsidian desktop/mobile plugin
+├── browser-extension/pawn/ # MV3 capture side panel
+├── thunderbird-extension/pawn/
+├── migrations/             # Alembic
+├── docs/                   # Feature docs (see index below)
+├── docker/                 # Postgres compose, litellm image
+├── pawnai.example.yaml
+└── pyproject.toml
 ```
+
+Transcription engine lives in `pawn_core/transcription.py`; `pawn_diarize/core/transcription.py` is a compatibility re-export.
 
 ## Technologies
 
 | Category | Technology |
-|----------|-----------|
-| Speaker diarization | pyannote.audio 4.0+ |
-| Transcription | NeMo Parakeet (nvidia/parakeet-tdt-0.6b-v3), faster-whisper |
-| Speaker embeddings | PostgreSQL + pgvector (512-dim cosine similarity) |
-| RAG embeddings | sentence-transformers / Qwen3-Embedding-0.6B (1024-dim) |
-| Database ORM | SQLAlchemy 2.0 + Alembic migrations |
-| LLM agent | PydanticAI (multi-provider) + GitHub Copilot SDK |
-| S3 storage | boto3 / aioboto3 |
-| Job queue | pawn-queue (S3-backed) |
+|----------|------------|
+| Speaker diarization | pyannote.audio 4.x (optional Nemotron/Sortformer) |
+| Transcription | NeMo Parakeet, faster-whisper |
+| Speaker embeddings | PostgreSQL + pgvector; TitaNet gallery enrollments |
+| RAG / related | sentence-transformers / Qwen3-Embedding (and Ollama for sallm) |
+| Database | SQLAlchemy 2 + Alembic; PostgreSQL + pgvector |
+| LLM agent | sallm ReAct + LiteLLM providers catalog |
+| HTTP | FastAPI + uvicorn |
+| S3 / queue | boto3 / aioboto3, pawn-queue |
 | Scheduler | PostgreSQL + croniter |
-| Notes integration | Obsidian vault (S3 + Sync Engine + plugin) |
+| Notes | Obsidian Sync Engine + plugin |
 | CLI | Typer + Rich |
 
 ## Development
 
 ```bash
-# Install with dev dependencies
-pip install -e ".[dev]"
+uv sync --extra dev
 
-# Format
 black pawn_diarize pawn_agent tests
 isort pawn_diarize pawn_agent tests
-
-# Lint
 flake8 pawn_diarize pawn_agent tests
 mypy pawn_diarize pawn_agent
 
-# Test
-pytest
-pytest tests/test_cli.py::test_status
-pytest --cov=pawn_diarize --cov-report=html
+pytest --no-cov          # faster
+pytest                   # default includes --cov=pawn_diarize
 ```
+
+Mypy checks `pawn_diarize` and `pawn_agent` unless paths are added. Agent operating notes for coding agents: [AGENTS.md](AGENTS.md).
+
+## Documentation
+
+| Doc | Topic |
+|-----|--------|
+| [docs/OBSIDIAN_AGENT.md](docs/OBSIDIAN_AGENT.md) | Vault, plugin chat/jobs, task loop |
+| [docs/COWORKER.md](docs/COWORKER.md) | Items, Goals, Inbox, crons |
+| [docs/SPEAKERS.md](docs/SPEAKERS.md) | Speakers gallery |
+| [docs/PEOPLE.md](docs/PEOPLE.md) | People bios |
+| [docs/BROWSER_CAPTURE.md](docs/BROWSER_CAPTURE.md) | Browser extension |
+| [docs/THUNDERBIRD_CAPTURE.md](docs/THUNDERBIRD_CAPTURE.md) | Thunderbird add-on |
+| [docs/MATRIX_BOT.md](docs/MATRIX_BOT.md) | Inbound Matrix chatbot |
+| [docs/OPENAI_API.md](docs/OPENAI_API.md) | HTTP API / Copilot compat |
+| [docs/AGENT_SCHEDULER.md](docs/AGENT_SCHEDULER.md) | Durable schedules |
+| [docs/TOOLS.md](docs/TOOLS.md) | Agent tools |
+| [docs/TTS.md](docs/TTS.md) | Speech endpoint |
+| [docs/COMBINED_FEATURE.md](docs/COMBINED_FEATURE.md) | Multi-file transcribe-diarize |

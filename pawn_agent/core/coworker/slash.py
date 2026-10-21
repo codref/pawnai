@@ -20,7 +20,7 @@ logger = logging.getLogger(__name__)
 SLASH_HELP = (
     "Supported slash commands: /idea <line>, /goal <line>, /goal apply, "
     "/park <line>, /goals, /inbox, /model [id|reset], /stats, /reset, /exit, /quit. "
-    "Triage an inbox item with file, task, later, or ignore plus its id."
+    "Triage an inbox item with todo, file, task, delete, ignore, or later plus its id."
 )
 
 _IDEA_USAGE = "Usage: /idea <one line>\nExample: /idea implement multi-model in pawnai"
@@ -175,22 +175,25 @@ def _list_goals(cfg: AgentConfig, store: Any) -> str:
 def _list_inbox(cfg: AgentConfig) -> str:
     from pawn_agent.core.coworker import db as itemdb  # noqa: PLC0415
 
+    limit = 50
     try:
-        rows = itemdb.list_items(cfg.db_dsn, statuses=["new", "notified"], limit=30)
+        total = itemdb.count_items(cfg.db_dsn, statuses=list(itemdb.OPEN_STATUSES))
+        rows = itemdb.list_items(cfg.db_dsn, statuses=list(itemdb.OPEN_STATUSES), limit=limit)
     except Exception as exc:
         logger.warning("inbox list failed: %s", exc)
         return f"Error: could not read the inbox ({exc})"
-    waiting = [row for row in rows if row.get("interrupt")]
-    if not waiting:
-        return "Nothing needs a tap."
-    lines = ["Needs you:"]
-    for item in waiting:
+    if not rows:
+        return "Nothing open."
+    lines = ["Open items:"]
+    for item in rows:
         short_id = item.get("short_id") or item.get("id") or ""
         kind = item.get("kind") or "item"
         text = " ".join(str(item.get("text") or "").split())
         thread = item.get("thread") or ""
         suffix = f" ({thread})" if thread else ""
         lines.append(f"- {short_id} {kind} — {text}{suffix}")
+    if total > len(rows):
+        lines.append(f"… and {total - len(rows)} more.")
     return "\n".join(lines)
 
 

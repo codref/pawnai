@@ -10,6 +10,18 @@ from pawn_core.vault import dump_frontmatter, parse_frontmatter
 TERMINAL_STATUSES = frozenset({"filed", "task", "dismissed"})
 
 
+def _meta_str(value: Any) -> str:
+    """Frontmatter scalars may arrive as datetime from YAML; keep ISO text."""
+    if value is None:
+        return ""
+    if hasattr(value, "isoformat"):
+        try:
+            return str(value.isoformat())
+        except Exception:
+            return str(value).strip()
+    return str(value).strip()
+
+
 def render_item_note(
     *,
     item_id: str,
@@ -18,12 +30,16 @@ def render_item_note(
     kind: str,
     text: str,
     thread: str = "",
+    context: str = "",
     quote: str = "",
     source_link: str = "",
+    source_kind: str = "",
+    source_ref: str = "",
     reason: str = "",
     interrupt: bool = False,
     related: list[str] | None = None,
     action: str = "",
+    opened_at: str = "",
 ) -> str:
     """Serialize one ``pawn: item`` note."""
     meta: dict[str, Any] = {
@@ -35,7 +51,20 @@ def render_item_note(
         "thread": thread or "",
         "action": action or "",
     }
+    sk = (source_kind or "").strip()
+    sr = (source_ref or "").strip()
+    if sk:
+        meta["source_kind"] = sk
+    if sr:
+        meta["source_ref"] = sr
+    opened = (opened_at or "").strip()
+    if opened:
+        meta["opened_at"] = opened
     body_parts = [text.strip() or "(empty)"]
+    if context.strip():
+        body_parts.append("")
+        body_parts.append("## Context")
+        body_parts.append(context.strip())
     if quote.strip():
         body_parts.append("")
         for line in quote.strip().splitlines():
@@ -67,6 +96,10 @@ def parse_item_note(text: str) -> dict[str, Any]:
         "kind": str(meta.get("kind") or "").strip(),
         "thread": str(meta.get("thread") or "").strip(),
         "action": str(meta.get("action") or "").strip().lower(),
+        "opened_at": _meta_str(meta.get("opened_at")),
+        "todo_project": _meta_str(meta.get("todo_project")),
+        "source_kind": _meta_str(meta.get("source_kind")),
+        "source_ref": _meta_str(meta.get("source_ref")),
         "body": body,
         "meta": meta,
     }

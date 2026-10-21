@@ -1,0 +1,1420 @@
+/** Side panel: target picker, ordered tray, save to /v1/captures. */
+
+const DEFAULTS = {
+  serverUrl: "http://127.0.0.1:8000",
+  apiToken: "",
+};
+
+/** Lucide-style outlines (viewBox 0 0 24 24), matching Obsidian clickable-icon usage. */
+const ICONS = {
+  settings:
+    '<path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/>',
+  "text-select":
+    '<path d="M7 8h10"/><path d="M7 12h8"/><path d="M7 16h6"/><path d="M3 4h1"/><path d="M3 20h1"/><path d="M20 4h1"/><path d="M20 20h1"/><path d="M4 3v1"/><path d="M4 20v1"/><path d="M20 3v1"/><path d="M20 20v1"/>',
+  crop: '<path d="M6 2v14a2 2 0 0 0 2 2h14"/><path d="M18 22V8a2 2 0 0 0-2-2H2"/>',
+  save: '<path d="M15.2 3a2 2 0 0 1 1.4.6l3.8 3.8a2 2 0 0 1 .6 1.4V19a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2z"/><path d="M17 21v-7a1 1 0 0 0-1-1H8a1 1 0 0 0-1 1v7"/><path d="M7 3v4a1 1 0 0 0 1 1h7"/>',
+  "file-plus":
+    '<path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/><path d="M9 15h6"/><path d="M12 12v6"/>',
+  type: '<polyline points="4 7 4 4 20 4 20 7"/><line x1="9" x2="15" y1="20" y2="20"/><line x1="12" x2="12" y1="4" y2="20"/>',
+  image:
+    '<rect width="18" height="18" x="3" y="3" rx="2" ry="2"/><circle cx="9" cy="9" r="2"/><path d="m21 15-3.086-3.086a2 2 0 0 0-2.828 0L6 21"/>',
+  "chevron-up": '<path d="m18 15-6-6-6 6"/>',
+  "chevron-down": '<path d="m6 9 6 6 6-6"/>',
+  x: '<path d="M18 6 6 18"/><path d="m6 6 12 12"/>',
+  search: '<circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/>',
+  monitor:
+    '<rect width="20" height="14" x="2" y="3" rx="2" ry="2"/><line x1="8" x2="16" y1="21" y2="21"/><line x1="12" x2="12" y1="17" y2="21"/>',
+};
+
+function setIcon(node, name) {
+  const body = ICONS[name];
+  if (!body) return;
+  node.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" aria-hidden="true">${body}</svg>`;
+}
+
+function iconButton(icon, label, onClick) {
+  const b = document.createElement("button");
+  b.type = "button";
+  b.className = "clickable-icon";
+  b.setAttribute("aria-label", label);
+  b.title = label;
+  setIcon(b, icon);
+  b.onclick = onClick;
+  return b;
+}
+
+const CLIP_MODES = [
+  { value: "region", label: "Region", icon: "crop", snip: "pawn-snip-region" },
+  { value: "visible", label: "Visible area", icon: "monitor", snip: "pawn-snip-visible" },
+];
+
+const state = {
+  settings: { ...DEFAULTS },
+  targetKind: "new",
+  stickyPath: "",
+  sessionId: "",
+  title: "",
+  sourceUrl: "",
+  collection: "",
+  hint: "",
+  vaultName: "",
+  clipMode: "region",
+  clipBusy: false,
+  captures: [],
+  sessions: [],
+  collections: [],
+  tray: [],
+  settingsOpen: false,
+};
+
+const TARGET_KIND_OPTIONS = [
+  { value: "new", label: "New page" },
+  { value: "research", label: "Research…" },
+  { value: "capture", label: "Recent capture…" },
+  { value: "session", label: "Session…" },
+  { value: "note", label: "Other note…" },
+];
+
+const el = {
+  targetKind: null,
+  targetExtra: document.getElementById("target-extra"),
+  title: document.getElementById("title-input"),
+  titleField: document.getElementById("title-field"),
+  status: document.getElementById("status-dot"),
+  settingsPanel: document.getElementById("settings-panel"),
+  body: document.querySelector(".pawn-body"),
+  serverUrl: document.getElementById("server-url"),
+  apiToken: document.getElementById("api-token"),
+  btnSaveSettings: document.getElementById("btn-save-settings"),
+  btnSelection: document.getElementById("btn-selection"),
+  btnRegion: document.getElementById("btn-region"),
+  btnClipMenu: document.getElementById("btn-clip-menu"),
+  clipControl: document.getElementById("clip-control"),
+  clipMenu: document.getElementById("clip-menu"),
+  btnSettings: document.getElementById("btn-settings"),
+  btnSave: document.getElementById("btn-save"),
+  destination: document.getElementById("destination"),
+  notice: document.getElementById("notice"),
+  tray: document.getElementById("tray"),
+  empty: document.getElementById("empty"),
+};
+
+init();
+
+async function init() {
+  mountChromeIcons();
+  el.targetKind = mountTargetKindSelect(document.getElementById("target-kind"));
+  mountClipMenu();
+  await loadSettings();
+  await loadTray();
+  bind();
+  syncSettingsUi();
+  syncClipUi();
+  await refreshConnection();
+  await drainPending();
+  render();
+  chrome.storage.onChanged.addListener((changes, area) => {
+    if (area !== "local") return;
+    if (changes.pendingSnippets || changes.pendingNotice) {
+      void drainPending();
+    }
+  });
+}
+
+/**
+ * DOM combobox instead of native <select>.
+ * Edge/Chromium side panels often never show the OS select popup (no console error).
+ */
+function mountTargetKindSelect(host) {
+  if (!host) {
+    return {
+      value: "new",
+      addEventListener() {},
+    };
+  }
+
+  const trigger = document.createElement("button");
+  trigger.type = "button";
+  trigger.className = "pawn-select-trigger";
+  trigger.setAttribute("aria-haspopup", "listbox");
+  trigger.setAttribute("aria-expanded", "false");
+  trigger.title = host.getAttribute("title") || "Target";
+
+  const valueEl = document.createElement("span");
+  valueEl.className = "pawn-select-value";
+  const chevron = document.createElement("span");
+  chevron.className = "clickable-icon";
+  chevron.setAttribute("aria-hidden", "true");
+  setIcon(chevron, "chevron-down");
+  trigger.append(valueEl, chevron);
+
+  const menu = document.createElement("div");
+  menu.className = "pawn-select-menu";
+  menu.hidden = true;
+  menu.setAttribute("role", "listbox");
+
+  for (const opt of TARGET_KIND_OPTIONS) {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "pawn-select-option";
+    btn.setAttribute("role", "option");
+    btn.dataset.value = opt.value;
+    btn.textContent = opt.label;
+    btn.addEventListener("click", (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      setValue(opt.value, true);
+      closeMenu();
+    });
+    menu.appendChild(btn);
+  }
+
+  host.replaceChildren(trigger, menu);
+
+  let current = "new";
+  let onChange = null;
+  let activeIndex = 0;
+
+  const syncLabel = () => {
+    const hit = TARGET_KIND_OPTIONS.find((o) => o.value === current);
+    valueEl.textContent = hit?.label || current;
+    const options = [...menu.querySelectorAll(".pawn-select-option")];
+    options.forEach((btn, i) => {
+      const selected = btn.dataset.value === current;
+      btn.classList.toggle("is-selected", selected);
+      btn.classList.toggle("is-active", i === activeIndex);
+      btn.setAttribute("aria-selected", selected ? "true" : "false");
+    });
+  };
+
+  const closeMenu = () => {
+    if (menu.hidden) return;
+    menu.hidden = true;
+    trigger.setAttribute("aria-expanded", "false");
+    setIcon(chevron, "chevron-down");
+    document.removeEventListener("pointerdown", onOutside, true);
+    document.removeEventListener("keydown", onDocKey, true);
+  };
+
+  const openMenu = () => {
+    if (!menu.hidden) return;
+    activeIndex = Math.max(
+      0,
+      TARGET_KIND_OPTIONS.findIndex((o) => o.value === current),
+    );
+    syncLabel();
+    menu.hidden = false;
+    trigger.setAttribute("aria-expanded", "true");
+    setIcon(chevron, "chevron-up");
+    document.addEventListener("pointerdown", onOutside, true);
+    document.addEventListener("keydown", onDocKey, true);
+  };
+
+  const onOutside = (ev) => {
+    if (!host.contains(ev.target)) closeMenu();
+  };
+
+  const onDocKey = (ev) => {
+    if (menu.hidden) return;
+    const options = TARGET_KIND_OPTIONS;
+    if (ev.key === "Escape") {
+      ev.preventDefault();
+      closeMenu();
+      return;
+    }
+    if (ev.key === "ArrowDown") {
+      ev.preventDefault();
+      activeIndex = Math.min(activeIndex + 1, options.length - 1);
+      syncLabel();
+      return;
+    }
+    if (ev.key === "ArrowUp") {
+      ev.preventDefault();
+      activeIndex = Math.max(activeIndex - 1, 0);
+      syncLabel();
+      return;
+    }
+    if (ev.key === "Enter" || ev.key === " ") {
+      ev.preventDefault();
+      const opt = options[activeIndex];
+      if (opt) {
+        setValue(opt.value, true);
+        closeMenu();
+      }
+    }
+  };
+
+  const setValue = (v, fire) => {
+    const next = TARGET_KIND_OPTIONS.some((o) => o.value === v) ? v : "new";
+    const changed = current !== next;
+    current = next;
+    syncLabel();
+    if (fire && changed && typeof onChange === "function") onChange();
+  };
+
+  trigger.addEventListener("click", (ev) => {
+    ev.preventDefault();
+    if (menu.hidden) openMenu();
+    else closeMenu();
+  });
+
+  syncLabel();
+
+  return {
+    get value() {
+      return current;
+    },
+    set value(v) {
+      setValue(v, false);
+    },
+    addEventListener(type, fn) {
+      if (type === "change") onChange = fn;
+    },
+  };
+}
+
+function mountChromeIcons() {
+  setIcon(el.btnSettings, "settings");
+  setIcon(el.btnSelection, "text-select");
+  setIcon(el.btnClipMenu, "chevron-down");
+  syncClipUi();
+}
+
+function clipModeInfo(mode) {
+  return CLIP_MODES.find((m) => m.value === mode) || CLIP_MODES[0];
+}
+
+function syncClipUi() {
+  const info = clipModeInfo(state.clipMode);
+  if (el.btnRegion) {
+    setIcon(el.btnRegion, info.icon);
+    el.btnRegion.setAttribute("aria-label", info.label);
+    el.btnRegion.title = info.label;
+    el.btnRegion.disabled = state.clipBusy;
+  }
+  if (el.btnClipMenu) el.btnClipMenu.disabled = state.clipBusy;
+  if (el.clipMenu && !el.clipMenu.hidden) {
+    for (const btn of el.clipMenu.querySelectorAll(".pawn-select-option")) {
+      btn.classList.toggle("is-selected", btn.dataset.value === state.clipMode);
+    }
+  }
+}
+
+function mountClipMenu() {
+  if (!el.clipMenu) return;
+  el.clipMenu.replaceChildren();
+  for (const mode of CLIP_MODES) {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "pawn-select-option";
+    btn.setAttribute("role", "menuitem");
+    btn.dataset.value = mode.value;
+    btn.textContent = mode.label;
+    btn.addEventListener("click", (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      void setClipMode(mode.value);
+      closeClipMenu();
+    });
+    el.clipMenu.appendChild(btn);
+  }
+}
+
+function openClipMenu() {
+  if (!el.clipMenu || state.clipBusy) return;
+  el.clipMenu.hidden = false;
+  el.btnClipMenu.setAttribute("aria-expanded", "true");
+  setIcon(el.btnClipMenu, "chevron-up");
+  syncClipUi();
+  document.addEventListener("pointerdown", onClipMenuOutside, true);
+}
+
+function closeClipMenu() {
+  if (!el.clipMenu || el.clipMenu.hidden) return;
+  el.clipMenu.hidden = true;
+  el.btnClipMenu.setAttribute("aria-expanded", "false");
+  setIcon(el.btnClipMenu, "chevron-down");
+  document.removeEventListener("pointerdown", onClipMenuOutside, true);
+}
+
+function onClipMenuOutside(ev) {
+  if (el.clipControl && !el.clipControl.contains(ev.target)) closeClipMenu();
+}
+
+async function setClipMode(mode) {
+  if (!CLIP_MODES.some((m) => m.value === mode)) return;
+  state.clipMode = mode;
+  await chrome.storage.local.set({ clipMode: mode });
+  syncClipUi();
+}
+
+function syncSettingsUi() {
+  el.settingsPanel.hidden = !state.settingsOpen;
+  el.btnSettings.classList.toggle("is-active", state.settingsOpen);
+  el.btnSettings.setAttribute("aria-pressed", state.settingsOpen ? "true" : "false");
+  if (el.titleField) el.titleField.hidden = state.settingsOpen;
+  if (el.targetExtra) el.targetExtra.hidden = state.settingsOpen;
+  if (el.body) el.body.hidden = state.settingsOpen;
+}
+
+function bind() {
+  el.targetKind.addEventListener("change", async () => {
+    state.targetKind = el.targetKind.value;
+    if (state.targetKind === "new" || state.targetKind === "research") {
+      state.stickyPath = "";
+      state.sessionId = "";
+    }
+    await persistTarget();
+    await loadPickerData();
+    renderTargetExtra();
+    render();
+    if (state.targetKind !== "new" && state.targetKind !== "research") {
+      void openTargetPicker();
+    }
+  });
+  el.title.addEventListener("input", () => {
+    state.title = el.title.value;
+    void persistTarget();
+  });
+  el.btnSaveSettings.addEventListener("click", () => void saveSettings());
+  el.btnSettings.addEventListener("click", () => {
+    state.settingsOpen = !state.settingsOpen;
+    syncSettingsUi();
+  });
+  el.btnSelection.addEventListener("click", () => {
+    void requestSnip("pawn-snip-selection");
+  });
+  el.btnRegion.addEventListener("click", () => {
+    const info = clipModeInfo(state.clipMode);
+    void requestSnip(info.snip, { clip: true });
+  });
+  el.btnClipMenu.addEventListener("click", (ev) => {
+    ev.preventDefault();
+    ev.stopPropagation();
+    if (el.clipMenu.hidden) openClipMenu();
+    else closeClipMenu();
+  });
+  el.btnSave.addEventListener("click", () => void saveTray());
+}
+
+async function saveSettings() {
+  const btn = el.btnSaveSettings;
+  const prev = btn.textContent;
+  btn.disabled = true;
+  btn.classList.add("is-busy");
+  btn.textContent = "Saving…";
+  showNotice("Saving settings…", false, true);
+  try {
+    state.settings.serverUrl = el.serverUrl.value.trim().replace(/\/+$/, "");
+    state.settings.apiToken = el.apiToken.value.trim();
+    await chrome.storage.local.set({ settings: state.settings });
+    await refreshConnection();
+    render();
+    showNotice("Settings saved");
+  } catch (err) {
+    showNotice(String(err.message || err), true);
+  } finally {
+    btn.disabled = false;
+    btn.classList.remove("is-busy");
+    btn.textContent = prev;
+  }
+}
+
+async function loadSettings() {
+  const stored = await chrome.storage.local.get(["settings", "target", "clipMode"]);
+  state.settings = { ...DEFAULTS, ...(stored.settings || {}) };
+  el.serverUrl.value = state.settings.serverUrl;
+  el.apiToken.value = state.settings.apiToken;
+  if (stored.clipMode && CLIP_MODES.some((m) => m.value === stored.clipMode)) {
+    state.clipMode = stored.clipMode;
+  }
+  const t = stored.target || {};
+  state.targetKind = t.kind || "new";
+  state.stickyPath = t.path || "";
+  state.sessionId = t.sessionId || "";
+  state.title = t.title || "";
+  state.sourceUrl = t.sourceUrl || "";
+  state.collection = t.collection || "";
+  state.hint = t.hint || "";
+  el.targetKind.value = state.targetKind;
+  el.title.value = state.title;
+  await loadPickerData();
+  renderTargetExtra();
+}
+
+async function persistTarget() {
+  await chrome.storage.local.set({
+    target: {
+      kind: state.targetKind,
+      path: state.stickyPath,
+      sessionId: state.sessionId,
+      title: state.title,
+      sourceUrl: state.sourceUrl,
+      collection: state.collection,
+      hint: state.hint,
+    },
+  });
+}
+
+async function loadTray() {
+  const key = trayKey();
+  const data = await chrome.storage.local.get(key);
+  state.tray = Array.isArray(data[key]) ? data[key] : [];
+}
+
+async function persistTray() {
+  await chrome.storage.local.set({ [trayKey()]: state.tray });
+}
+
+function trayKey() {
+  if (state.targetKind === "research") {
+    const coll = (state.collection || "").trim() || "_";
+    return `tray:research:${coll}`;
+  }
+  if (state.targetKind === "session" && state.sessionId) {
+    return `tray:session:${state.sessionId}`;
+  }
+  if (state.stickyPath) return `tray:path:${state.stickyPath}`;
+  return "tray:new";
+}
+
+async function drainPending() {
+  const data = await chrome.storage.local.get([
+    "pendingSnippets",
+    "pendingNotice",
+    "lastPageTitle",
+    "lastPageUrl",
+  ]);
+  if (data.pendingNotice?.error) {
+    showNotice(data.pendingNotice.error, true);
+    await chrome.storage.local.remove("pendingNotice");
+  }
+  const pending = data.pendingSnippets || [];
+  if (!pending.length) {
+    render();
+    return;
+  }
+  if (!state.title && data.lastPageTitle) {
+    state.title = data.lastPageTitle;
+    el.title.value = state.title;
+  }
+  if (data.lastPageUrl) state.sourceUrl = data.lastPageUrl;
+  for (const snip of pending) {
+    if (state.tray.some((s) => s.id === snip.id)) continue;
+    state.tray.push({ ...snip, saved: false });
+  }
+  await chrome.storage.local.set({ pendingSnippets: [] });
+  await persistTray();
+  await persistTarget();
+  render();
+}
+
+async function requestSnip(type, opts = {}) {
+  const isClip = !!opts.clip;
+  if (isClip) {
+    if (state.clipBusy) return;
+    state.clipBusy = true;
+    syncClipUi();
+  }
+  try {
+    // Visible-area capture runs in the side panel (extension page). Doing it in
+    // the MV3 service worker often kills the one-shot reply channel mid-write.
+    if (type === "pawn-snip-visible") {
+      await captureVisibleInPanel();
+      return;
+    }
+    const resp = await snipOverPort(type);
+    await drainPending();
+    if (resp && resp.ok === false) {
+      const err = resp.error || "Capture failed";
+      if (!/already in progress|cancelled/i.test(err)) showNotice(err, true);
+    }
+  } catch (err) {
+    await drainPending();
+    const msg = String(err?.message || err || "");
+    // Port can drop after a successful enqueue; storage already delivered the clip.
+    if (
+      /connection closed|message port closed/i.test(msg) &&
+      state.tray.some((s) => !s.saved)
+    ) {
+      return;
+    }
+    if (!/already in progress|cancelled/i.test(msg)) {
+      showNotice(msg || "Capture failed", true);
+    }
+  } finally {
+    if (isClip) {
+      state.clipBusy = false;
+      syncClipUi();
+    }
+  }
+}
+
+function newSnippetId() {
+  if (crypto?.randomUUID) return crypto.randomUUID().replace(/-/g, "").slice(0, 16);
+  return `s${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
+}
+
+async function findContentTab() {
+  const focused = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+  let tab = focused.find((t) => t.id != null && /^https?:/i.test(t.url || ""));
+  if (tab) return tab;
+  const active = await chrome.tabs.query({ active: true });
+  tab = active.find((t) => t.id != null && /^https?:/i.test(t.url || ""));
+  return tab || focused[0] || active[0] || null;
+}
+
+async function captureVisibleInPanel() {
+  const tab = await findContentTab();
+  if (!tab?.id) throw new Error("No active tab");
+  if (!/^https?:|^file:/i.test(tab.url || "")) {
+    throw new Error("Cannot capture this page (open an http(s) tab).");
+  }
+  const dataUrl = await chrome.tabs.captureVisibleTab(tab.windowId, {
+    format: "jpeg",
+    quality: 90,
+  });
+  const b64 = String(dataUrl || "").split(",", 2)[1] || "";
+  if (!b64) throw new Error("Visible capture failed");
+  if (!state.title && tab.title) {
+    state.title = tab.title;
+    el.title.value = state.title;
+  }
+  if (tab.url) state.sourceUrl = tab.url;
+  state.tray.push({
+    id: newSnippetId(),
+    kind: "image",
+    text: "",
+    data_base64: b64,
+    media_type: "image/jpeg",
+    source_url: tab.url || "",
+    page_title: tab.title || "",
+    captured_at: new Date().toISOString(),
+    saved: false,
+  });
+  await persistTarget();
+  await persistTray();
+  render();
+}
+
+/** Long-lived port handoff — survives full-viewport capture in MV3. */
+function snipOverPort(type) {
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    let port;
+    const finish = (fn, value) => {
+      if (settled) return;
+      settled = true;
+      try {
+        port?.disconnect();
+      } catch (_) {
+        /* ignore */
+      }
+      fn(value);
+    };
+    try {
+      port = chrome.runtime.connect({ name: "pawn-snip" });
+    } catch (err) {
+      reject(err);
+      return;
+    }
+    port.onMessage.addListener((msg) => {
+      finish(resolve, msg || { ok: true });
+    });
+    port.onDisconnect.addListener(() => {
+      if (settled) return;
+      const err = chrome.runtime.lastError;
+      finish(
+        reject,
+        new Error(err?.message || "Capture connection closed"),
+      );
+    });
+    try {
+      port.postMessage({ type });
+    } catch (err) {
+      finish(reject, err);
+    }
+  });
+}
+
+async function api(method, path, body) {
+  const base = state.settings.serverUrl.replace(/\/+$/, "");
+  const headers = { Accept: "application/json" };
+  if (state.settings.apiToken) {
+    headers.Authorization = `Bearer ${state.settings.apiToken}`;
+  }
+  const opts = { method, headers };
+  if (body !== undefined) {
+    headers["Content-Type"] = "application/json";
+    opts.body = JSON.stringify(body);
+  }
+  const resp = await fetch(`${base}${path}`, opts);
+  const text = await resp.text();
+  let data = null;
+  try {
+    data = text ? JSON.parse(text) : null;
+  } catch (_) {
+    data = { detail: text };
+  }
+  if (!resp.ok) {
+    const detail = data?.detail || data?.message || text || resp.statusText;
+    throw new Error(typeof detail === "string" ? detail : JSON.stringify(detail));
+  }
+  return data;
+}
+
+async function refreshConnection() {
+  try {
+    await api("GET", "/health");
+    el.status.classList.add("is-online");
+    el.status.classList.remove("is-offline");
+    el.status.title = "Online";
+  } catch (_) {
+    try {
+      // /health may be unauthenticated; try captures list with token
+      await api("GET", "/v1/captures?limit=1");
+      el.status.classList.add("is-online");
+      el.status.classList.remove("is-offline");
+      el.status.title = "Online";
+    } catch (err) {
+      el.status.classList.remove("is-online");
+      el.status.classList.add("is-offline");
+      el.status.title = String(err.message || "Offline");
+      state.vaultName = "";
+      return;
+    }
+  }
+  await loadMeta();
+}
+
+async function loadMeta() {
+  try {
+    const data = await api("GET", "/v1/meta");
+    state.vaultName = String(data?.obsidian_vault_name || "").trim();
+  } catch (_) {
+    state.vaultName = "";
+  }
+}
+
+/** Mirror pawn_server.core.vault_protocol.build_obsidian_open_url */
+function buildObsidianOpenUrl(vaultName, filePath) {
+  const vault = encodeURIComponent(vaultName || "");
+  const normalized = String(filePath || "")
+    .replace(/^\/+/, "")
+    .replace(/\\/g, "/")
+    .replace(/\/+/g, "/");
+  // encodeURIComponent turns `/` into `%2F` (same effect as server replace).
+  const file = encodeURIComponent(normalized);
+  if (!vault || !file) return "";
+  return `obsidian://open?vault=${vault}&file=${file}`;
+}
+
+function pathBasename(path) {
+  const parts = String(path || "").replace(/\\/g, "/").split("/").filter(Boolean);
+  return parts[parts.length - 1] || path || "";
+}
+
+function destinationTitleForPath(path) {
+  if (!path) return "";
+  const hit = state.captures.find((c) => c.path === path);
+  if (hit?.title) return hit.title;
+  return pathBasename(path).replace(/\.md$/i, "");
+}
+
+async function loadPickerData() {
+  if (state.targetKind === "capture" || state.targetKind === "note") {
+    try {
+      const data = await api("GET", "/v1/captures?limit=40");
+      state.captures = data.data || [];
+    } catch (err) {
+      state.captures = [];
+      if (state.targetKind === "capture") {
+        showNotice(String(err.message || err), true);
+      }
+    }
+  }
+  if (state.targetKind === "session") {
+    try {
+      const data = await api("GET", "/v1/sessions?limit=30");
+      state.sessions = data.data || [];
+    } catch (err) {
+      state.sessions = [];
+      showNotice(String(err.message || err), true);
+    }
+  }
+  if (state.targetKind === "research") {
+    try {
+      const data = await api("GET", "/v1/captures/collections");
+      state.collections = data.data || [];
+    } catch (_) {
+      state.collections = [];
+    }
+  }
+}
+
+function renderTargetExtra() {
+  el.targetExtra.innerHTML = "";
+  if (state.targetKind === "new") return;
+
+  if (state.targetKind === "research") {
+    const collField = document.createElement("label");
+    collField.className = "pawn-field";
+    const collSpan = document.createElement("span");
+    collSpan.textContent = "Collection (optional)";
+    const collRow = document.createElement("div");
+    collRow.className = "pawn-research-row";
+    const collInput = document.createElement("input");
+    collInput.type = "text";
+    collInput.placeholder = "Leave blank — Pawn proposes";
+    collInput.value = state.collection;
+    collInput.addEventListener("input", () => {
+      state.collection = collInput.value.trim();
+      void persistTarget();
+      render();
+    });
+    const pickBtn = document.createElement("button");
+    pickBtn.type = "button";
+    pickBtn.className = "clickable-icon";
+    pickBtn.title = "Pick existing collection";
+    pickBtn.setAttribute("aria-label", "Pick existing collection");
+    setIcon(pickBtn, "search");
+    pickBtn.addEventListener("click", () => void openCollectionPicker());
+    collRow.append(collInput, pickBtn);
+    collField.append(collSpan, collRow);
+
+    const hintField = document.createElement("label");
+    hintField.className = "pawn-field";
+    const hintSpan = document.createElement("span");
+    hintSpan.textContent = "Hint (optional)";
+    const hintInput = document.createElement("input");
+    hintInput.type = "text";
+    hintInput.placeholder = "e.g. Blade Runner";
+    hintInput.value = state.hint;
+    hintInput.addEventListener("input", () => {
+      state.hint = hintInput.value;
+      void persistTarget();
+    });
+    hintField.append(hintSpan, hintInput);
+
+    el.targetExtra.append(collField, hintField);
+    return;
+  }
+
+  const trigger = document.createElement("button");
+  trigger.type = "button";
+  trigger.className = "pawn-pick-trigger";
+  const label = document.createElement("span");
+  label.className = "pawn-pick-label";
+  const current = currentPickLabel();
+  if (current) {
+    label.textContent = current;
+  } else {
+    label.textContent = pickPlaceholder();
+    label.classList.add("is-placeholder");
+  }
+  const icon = document.createElement("span");
+  icon.className = "clickable-icon";
+  icon.setAttribute("aria-hidden", "true");
+  setIcon(icon, "search");
+  trigger.append(label, icon);
+  trigger.addEventListener("click", () => void openTargetPicker());
+  el.targetExtra.appendChild(trigger);
+}
+
+function pickPlaceholder() {
+  if (state.targetKind === "capture") return "Choose a capture…";
+  if (state.targetKind === "session") return "Choose a session…";
+  return "Choose a note path…";
+}
+
+async function openCollectionPicker() {
+  await loadPickerData();
+  const items = state.collections.map((row) => ({
+    id: row.id,
+    title: row.title || row.id,
+    detail: row.id,
+    value: row.id,
+  }));
+  openSuggestModal({
+    placeholder: "Find a collection…",
+    items,
+    emptyText: "No collections yet — type a new name or leave blank",
+    onChoose: async (item) => {
+      state.collection = item.value;
+      await persistTarget();
+      renderTargetExtra();
+      render();
+    },
+  });
+}
+
+function currentPickLabel() {
+  if (state.targetKind === "capture") {
+    if (!state.stickyPath) return "";
+    const hit = state.captures.find((c) => c.path === state.stickyPath);
+    return hit?.title || state.stickyPath;
+  }
+  if (state.targetKind === "session") {
+    if (!state.sessionId) return "";
+    const hit = state.sessions.find((s) => s.session_id === state.sessionId);
+    return hit?.title || state.sessionId;
+  }
+  if (state.targetKind === "note") return state.stickyPath || "";
+  return "";
+}
+
+async function openTargetPicker() {
+  if (state.targetKind === "new" || state.targetKind === "research") return;
+  await loadPickerData();
+  if (state.targetKind === "capture") {
+    const items = state.captures.map((row) => ({
+      id: row.path,
+      title: row.title || row.path,
+      detail: row.path,
+      value: row.path,
+    }));
+    openSuggestModal({
+      placeholder: "Find a capture…",
+      items,
+      emptyText: "No captures yet",
+      onChoose: async (item) => {
+        state.stickyPath = item.value;
+        const hit = state.captures.find((c) => c.path === item.value);
+        if (hit?.title) {
+          state.title = hit.title;
+          el.title.value = state.title;
+        }
+        await persistTarget();
+        await loadTray();
+        renderTargetExtra();
+        render();
+      },
+    });
+    return;
+  }
+  if (state.targetKind === "session") {
+    const items = state.sessions.map((row) => ({
+      id: row.session_id,
+      title: row.title || row.session_id,
+      detail: row.transcript_path || "no transcript yet",
+      value: row.session_id,
+    }));
+    openSuggestModal({
+      placeholder: "Find a session…",
+      items,
+      emptyText: "No sessions",
+      onChoose: async (item) => {
+        state.sessionId = item.value;
+        const hit = state.sessions.find((s) => s.session_id === item.value);
+        if (hit) {
+          state.title = hit.title || hit.session_id;
+          el.title.value = state.title;
+          state.stickyPath = hit.transcript_path || "";
+        }
+        await persistTarget();
+        await loadTray();
+        renderTargetExtra();
+        render();
+      },
+    });
+    return;
+  }
+  if (state.targetKind === "note") {
+    // No vault-wide note index on the capture API — suggest recent captures + free path.
+    const items = state.captures.map((row) => ({
+      id: row.path,
+      title: row.title || row.path,
+      detail: row.path,
+      value: row.path,
+    }));
+    openSuggestModal({
+      placeholder: "Note path (type to filter or enter a vault path)…",
+      items,
+      emptyText: "Type a vault path and press Enter",
+      allowCustom: true,
+      initialQuery: state.stickyPath || "",
+      onChoose: async (item) => {
+        state.stickyPath = item.value.trim();
+        await persistTarget();
+        await loadTray();
+        renderTargetExtra();
+        render();
+      },
+    });
+  }
+}
+
+/** Obsidian-style fuzzy suggest overlay. */
+function openSuggestModal(opts) {
+  const existing = document.querySelector(".pawn-suggest");
+  if (existing) existing.remove();
+
+  const overlay = document.createElement("div");
+  overlay.className = "pawn-suggest";
+  overlay.setAttribute("role", "dialog");
+  overlay.setAttribute("aria-modal", "true");
+
+  const card = document.createElement("div");
+  card.className = "pawn-suggest-card";
+  const inputRow = document.createElement("div");
+  inputRow.className = "pawn-suggest-input-row";
+  const input = document.createElement("input");
+  input.type = "search";
+  input.placeholder = opts.placeholder || "Filter…";
+  input.autocomplete = "off";
+  input.spellcheck = false;
+  if (opts.initialQuery) input.value = opts.initialQuery;
+  const clearBtn = document.createElement("button");
+  clearBtn.type = "button";
+  clearBtn.className = "clickable-icon";
+  clearBtn.setAttribute("aria-label", "Close");
+  setIcon(clearBtn, "x");
+  inputRow.append(input, clearBtn);
+
+  const list = document.createElement("div");
+  list.className = "pawn-suggest-list";
+  card.append(inputRow, list);
+  overlay.appendChild(card);
+  document.body.appendChild(overlay);
+
+  let active = 0;
+  let filtered = [];
+
+  const close = () => {
+    overlay.remove();
+    document.removeEventListener("keydown", onDocKey, true);
+  };
+
+  const choose = async (item) => {
+    close();
+    await opts.onChoose(item);
+  };
+
+  const renderList = () => {
+    const q = input.value.trim();
+    filtered = rankSuggestItems(opts.items || [], q);
+    if (!filtered.length && opts.allowCustom && q) {
+      filtered = [{ id: `custom:${q}`, title: q, detail: "Use this path", value: q, custom: true }];
+    }
+    list.innerHTML = "";
+    if (!filtered.length) {
+      const empty = document.createElement("div");
+      empty.className = "pawn-suggest-empty";
+      empty.textContent = opts.emptyText || "No matches";
+      list.appendChild(empty);
+      return;
+    }
+    if (active >= filtered.length) active = filtered.length - 1;
+    if (active < 0) active = 0;
+    filtered.forEach((item, i) => {
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "pawn-suggest-item" + (i === active ? " is-active" : "");
+      const title = document.createElement("div");
+      title.className = "pawn-suggest-item-title";
+      title.textContent = item.title;
+      btn.appendChild(title);
+      if (item.detail) {
+        const detail = document.createElement("div");
+        detail.className = "pawn-suggest-item-detail";
+        detail.textContent = item.detail;
+        btn.appendChild(detail);
+      }
+      btn.addEventListener("mouseenter", () => {
+        active = i;
+        renderList();
+      });
+      btn.addEventListener("click", () => void choose(item));
+      list.appendChild(btn);
+    });
+    const activeEl = list.querySelector(".is-active");
+    if (activeEl) activeEl.scrollIntoView({ block: "nearest" });
+  };
+
+  const onDocKey = (ev) => {
+    if (ev.key === "Escape") {
+      ev.preventDefault();
+      close();
+    }
+  };
+
+  clearBtn.addEventListener("click", close);
+  overlay.addEventListener("click", (ev) => {
+    if (ev.target === overlay) close();
+  });
+  input.addEventListener("input", () => {
+    active = 0;
+    renderList();
+  });
+  input.addEventListener("keydown", (ev) => {
+    if (ev.key === "ArrowDown") {
+      ev.preventDefault();
+      active = Math.min(active + 1, Math.max(filtered.length - 1, 0));
+      renderList();
+    } else if (ev.key === "ArrowUp") {
+      ev.preventDefault();
+      active = Math.max(active - 1, 0);
+      renderList();
+    } else if (ev.key === "Enter") {
+      ev.preventDefault();
+      if (filtered[active]) void choose(filtered[active]);
+      else if (opts.allowCustom && input.value.trim()) {
+        void choose({
+          id: `custom:${input.value.trim()}`,
+          title: input.value.trim(),
+          value: input.value.trim(),
+          custom: true,
+        });
+      }
+    } else if (ev.key === "Escape") {
+      ev.preventDefault();
+      close();
+    }
+  });
+  document.addEventListener("keydown", onDocKey, true);
+  renderList();
+  requestAnimationFrame(() => input.focus());
+}
+
+function rankSuggestItems(items, query) {
+  if (!query) return items.slice();
+  const q = query.toLowerCase();
+  const scored = [];
+  for (const item of items) {
+    const title = String(item.title || "");
+    const detail = String(item.detail || "");
+    const hay = `${title} ${detail}`.toLowerCase();
+    let score = 0;
+    if (hay.includes(q)) score += 10;
+    if (title.toLowerCase().startsWith(q)) score += 5;
+    if (detail.toLowerCase().includes(q)) score += 2;
+    if (!score && fuzzySubsequence(q, hay)) score += 1;
+    if (score) scored.push({ item, score, title });
+  }
+  scored.sort((a, b) => b.score - a.score || a.title.localeCompare(b.title));
+  return scored.map((s) => s.item);
+}
+
+function fuzzySubsequence(query, text) {
+  let i = 0;
+  for (const ch of text) {
+    if (ch === query[i]) i += 1;
+    if (i >= query.length) return true;
+  }
+  return false;
+}
+
+function render() {
+  renderDestination();
+  el.tray.innerHTML = "";
+  el.empty.hidden = state.tray.length > 0;
+  if (el.empty && state.tray.length === 0 && state.targetKind === "research") {
+    el.empty.textContent =
+      "Select text or capture a region. Save writes one inbox note per snippet and queues enrich.";
+  } else if (el.empty && state.tray.length === 0) {
+    el.empty.textContent =
+      "Select text or capture a region. Snippets stack here in order, then Save appends them to the target note.";
+  }
+  state.tray.forEach((snip, index) => {
+    el.tray.appendChild(renderCard(snip, index));
+  });
+  const unsaved = state.tray.some((s) => !s.saved);
+  el.btnSave.disabled = !unsaved;
+}
+
+function showStartNewNoteButton() {
+  if (state.targetKind === "research") return state.tray.length > 0;
+  if (state.stickyPath) return true;
+  if (state.targetKind === "session" && state.sessionId) return true;
+  if (state.targetKind !== "new") return true;
+  return state.tray.length > 0;
+}
+
+function renderDestination() {
+  if (!el.destination) return;
+  el.destination.replaceChildren();
+
+  const body = document.createElement("div");
+  body.className = "pawn-destination-body";
+
+  let titleText = "";
+  let pathText = "";
+  let openUrl = "";
+  let muted = false;
+
+  if (state.targetKind === "research") {
+    const coll = (state.collection || "").trim();
+    titleText = coll ? `Research · ${coll}` : "Research · Inbox";
+    pathText = coll
+      ? "One inbox note per snippet; enrich files into this collection"
+      : "Pawn proposes a collection on enrich";
+    muted = true;
+  } else if (state.stickyPath) {
+    titleText = destinationTitleForPath(state.stickyPath);
+    pathText = state.stickyPath;
+    openUrl = buildObsidianOpenUrl(state.vaultName, state.stickyPath);
+  } else if (state.targetKind === "session" && state.sessionId) {
+    const hit = state.sessions.find((s) => s.session_id === state.sessionId);
+    titleText = hit?.title || `Session ${state.sessionId}`;
+    pathText = hit?.transcript_path || `session:${state.sessionId}`;
+    if (hit?.transcript_path) {
+      openUrl = buildObsidianOpenUrl(state.vaultName, hit.transcript_path);
+    } else {
+      muted = true;
+    }
+  } else {
+    titleText = "New capture on save";
+    pathText = "Creates a note under Pawn/Captures/ on Save";
+    muted = true;
+  }
+
+  if (openUrl) {
+    const link = document.createElement("a");
+    link.className = "pawn-destination-title";
+    link.href = openUrl;
+    link.textContent = titleText;
+    link.title = "Open in Obsidian";
+    link.addEventListener("click", (ev) => {
+      ev.preventDefault();
+      void chrome.tabs.create({ url: openUrl });
+    });
+    body.appendChild(link);
+  } else {
+    const title = document.createElement("div");
+    title.className = "pawn-destination-title" + (muted ? " is-muted" : "");
+    title.textContent = titleText;
+    body.appendChild(title);
+  }
+
+  if (pathText && pathText !== titleText) {
+    const pathEl = document.createElement("div");
+    pathEl.className = "pawn-destination-path";
+    pathEl.textContent = pathText;
+    body.appendChild(pathEl);
+  }
+
+  el.destination.appendChild(body);
+
+  if (showStartNewNoteButton()) {
+    const btn = iconButton("file-plus", "Start new note", () => void startNewPage());
+    el.destination.appendChild(btn);
+  }
+}
+
+function renderCard(snip, index) {
+  const card = document.createElement("article");
+  card.className = "pawn-item" + (snip.saved ? " is-saved" : "");
+  const top = document.createElement("div");
+  top.className = "pawn-item-top";
+
+  const kind = document.createElement("span");
+  kind.className = `pawn-item-kind is-kind-${snip.kind}`;
+  kind.title = snip.kind === "image" ? "Image" : "Text";
+  setIcon(kind, snip.kind === "image" ? "image" : "type");
+  top.appendChild(kind);
+
+  const body = document.createElement("div");
+  body.className = "pawn-item-body";
+  if (snip.kind === "image" && snip.data_base64) {
+    const img = document.createElement("img");
+    img.src = `data:${snip.media_type || "image/png"};base64,${snip.data_base64}`;
+    img.alt = "Snippet";
+    body.appendChild(img);
+  } else {
+    const text = document.createElement("div");
+    text.className = "pawn-item-text";
+    text.textContent = (snip.text || "").slice(0, 400) || "(empty)";
+    body.appendChild(text);
+  }
+  top.appendChild(body);
+
+  const metaRow = document.createElement("div");
+  metaRow.className = "pawn-item-meta-row";
+  const meta = document.createElement("div");
+  meta.className = "pawn-item-meta";
+  const when = snip.captured_at ? new Date(snip.captured_at).toLocaleString() : "";
+  meta.textContent = [snip.saved ? "saved" : "unsaved", when, snip.source_url || ""]
+    .filter(Boolean)
+    .join(" · ");
+  const actions = document.createElement("div");
+  actions.className = "pawn-item-actions";
+  const up = iconButton("chevron-up", "Move up", () => void moveSnippet(index, -1));
+  up.disabled = index === 0 || snip.saved;
+  const down = iconButton("chevron-down", "Move down", () => void moveSnippet(index, 1));
+  down.disabled = index >= state.tray.length - 1 || snip.saved;
+  const del = iconButton("x", "Remove", () => void removeSnippet(index));
+  actions.append(up, down, del);
+  metaRow.append(meta, actions);
+
+  card.append(top, metaRow);
+  return card;
+}
+
+async function moveSnippet(index, delta) {
+  const next = index + delta;
+  if (next < 0 || next >= state.tray.length) return;
+  if (state.tray[index].saved || state.tray[next].saved) return;
+  const tmp = state.tray[index];
+  state.tray[index] = state.tray[next];
+  state.tray[next] = tmp;
+  await persistTray();
+  render();
+}
+
+async function removeSnippet(index) {
+  const snip = state.tray[index];
+  if (snip.saved && state.stickyPath) {
+    try {
+      await api(
+        "DELETE",
+        `/v1/captures/snippets/${encodeURIComponent(snip.id)}?path=${encodeURIComponent(state.stickyPath)}`,
+      );
+    } catch (err) {
+      showNotice(String(err.message || err), true);
+      return;
+    }
+  }
+  state.tray.splice(index, 1);
+  await persistTray();
+  render();
+}
+
+function buildTarget() {
+  if (state.targetKind === "research") {
+    return {
+      kind: "research",
+      title: state.title || "capture",
+      source_url: state.sourceUrl,
+      collection: state.collection || undefined,
+      hint: state.hint || undefined,
+    };
+  }
+  if (state.targetKind === "session") {
+    return {
+      kind: "session",
+      session_id: state.sessionId,
+      title: state.title,
+      source_url: state.sourceUrl,
+      path: state.stickyPath || undefined,
+    };
+  }
+  if (state.targetKind === "note") {
+    return {
+      kind: "note",
+      path: state.stickyPath,
+      title: state.title,
+      source_url: state.sourceUrl,
+    };
+  }
+  if (state.targetKind === "capture") {
+    return {
+      kind: "capture",
+      path: state.stickyPath,
+      title: state.title,
+      source_url: state.sourceUrl,
+    };
+  }
+  // new — sticky path after first save continues the same page
+  return {
+    kind: "new",
+    path: state.stickyPath || undefined,
+    title: state.title || "capture",
+    source_url: state.sourceUrl,
+  };
+}
+
+async function saveTray() {
+  const unsaved = state.tray.filter((s) => !s.saved);
+  if (!unsaved.length) return;
+  if (state.targetKind === "session" && !state.sessionId) {
+    showNotice("Pick a session first", true);
+    void openTargetPicker();
+    return;
+  }
+  if ((state.targetKind === "capture" || state.targetKind === "note") && !state.stickyPath) {
+    showNotice("Pick or enter a note path first", true);
+    void openTargetPicker();
+    return;
+  }
+  const btn = el.btnSave;
+  const prev = btn.textContent;
+  btn.disabled = true;
+  btn.classList.add("is-busy");
+  btn.textContent = "Saving…";
+  showNotice(`Saving ${unsaved.length} snippet(s)…`, false, true);
+  try {
+    const payload = {
+      target: buildTarget(),
+      snippets: unsaved.map((s) => ({
+        id: s.id,
+        kind: s.kind,
+        text: s.text || "",
+        data_base64: s.data_base64 || undefined,
+        media_type: s.media_type || undefined,
+        source_url: s.source_url || state.sourceUrl,
+        captured_at: s.captured_at,
+      })),
+    };
+    const result = await api("POST", "/v1/captures", payload);
+    if (state.targetKind !== "research") {
+      state.stickyPath = result.path;
+    }
+    const written = new Set(result.written || []);
+    const skipped = new Set(result.skipped || []);
+    for (const s of state.tray) {
+      if (written.has(s.id) || skipped.has(s.id)) s.saved = true;
+    }
+    await persistTarget();
+    await persistTray();
+    if (result.mode === "research") {
+      const n = written.size;
+      const jobs = (result.jobs || []).length;
+      const where = (result.paths && result.paths[0]) || result.path || "Inbox";
+      showNotice(
+        jobs
+          ? `Saved ${n} → Inbox (enriching ${jobs}…)`
+          : `Saved ${n} → ${where}`,
+      );
+    } else {
+      const mode = result.mode === "annotations" ? "annotations" : "note";
+      showNotice(`Saved ${written.size} → ${result.path} (${mode})`);
+    }
+    render();
+  } catch (err) {
+    showNotice(String(err.message || err), true);
+  } finally {
+    btn.classList.remove("is-busy");
+    btn.textContent = prev;
+    const still = state.tray.some((s) => !s.saved);
+    btn.disabled = !still;
+  }
+}
+
+async function startNewPage() {
+  if (state.targetKind === "research") {
+    state.tray = [];
+    await persistTray();
+    render();
+    showNotice("Tray cleared — next Save creates fresh inbox atoms");
+    return;
+  }
+  state.targetKind = "new";
+  state.stickyPath = "";
+  state.sessionId = "";
+  state.title = "";
+  el.targetKind.value = "new";
+  el.title.value = "";
+  state.tray = [];
+  await persistTarget();
+  await persistTray();
+  renderTargetExtra();
+  render();
+  showNotice("New page — next Save creates a fresh capture note");
+}
+
+function showNotice(text, isError = false, isBusy = false) {
+  el.notice.hidden = !text;
+  el.notice.textContent = text || "";
+  el.notice.classList.toggle("is-error", !!isError);
+  el.notice.classList.toggle("is-busy", !!isBusy && !isError);
+}

@@ -867,6 +867,27 @@ def _ensure_project_note(
     return stem
 
 
+def ensure_project_and_board(cfg: AgentConfig, store: Any, project: str) -> str:
+    """Ensure a project stub and kanban board. Return the project wikilink stem."""
+    name = " ".join((project or "").split())
+    if not name:
+        return ""
+    projects_dir = _dirs(cfg)["projects"]
+    used = _used_stems([], store, projects_dir)
+    stem = _ensure_project_note(store, projects_dir=projects_dir, project=name, used=used)
+    _write_board(
+        store,
+        cfg,
+        name=name,
+        assignee="",
+        project=name,
+        group_by="status",
+        swimlane="",
+        file_stem=_claim_stem(f"{name} project", set()),
+    )
+    return stem
+
+
 def _apply_selection(items: list[dict[str, Any]], *, pick: str, take_all: bool) -> list[str]:
     if take_all:
         for item in items:

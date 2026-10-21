@@ -22,7 +22,9 @@ CERT_CN         ?= localhost
 CERT_SAN        ?= DNS:localhost,IP:127.0.0.1
 
 .PHONY: build push run mlflow clean ssl-cert \
-	obsidian-plugin obsidian-plugin-dist obsidian-plugin-adb obsidian-plugin-list-vaults
+	obsidian-plugin obsidian-plugin-dist obsidian-plugin-adb obsidian-plugin-list-vaults \
+	browser-extension browser-extension-dist \
+	thunderbird-extension thunderbird-extension-dist
 
 build:
 	docker build -f $(DOCKERFILE) -t $(IMAGE):$(TAG) .
@@ -46,6 +48,26 @@ obsidian-plugin-adb:
 		ADB_SERIAL="$(ADB_SERIAL)" \
 		ADB_CONFIG="$(ADB_CONFIG)" \
 		ADB_RESTART="$(ADB_RESTART)"
+
+# Browser Pawn Capture extension (MV3 — no compile step).
+# Example: make browser-extension-dist
+browser-extension:
+	$(MAKE) -C browser-extension/pawn build
+
+# pawn-capture.zip (Chrome/Edge) + pawn-capture-firefox.zip (background.scripts).
+# Unzip, then Load unpacked / temporary add-on → pawn-capture/
+browser-extension-dist:
+	$(MAKE) -C browser-extension/pawn dist
+
+# Thunderbird Pawn Capture MailExtension (MV3, TB 128+ — companion window tray).
+# Example: make thunderbird-extension-dist
+thunderbird-extension:
+	$(MAKE) -C thunderbird-extension/pawn build
+
+# pawn-capture-thunderbird.xpi (manifest.json at zip root).
+# Temporary: Add-ons → Debug Add-ons → Load Temporary Add-on → manifest.json
+thunderbird-extension-dist:
+	$(MAKE) -C thunderbird-extension/pawn dist
 
 push:
 	docker push $(IMAGE):$(TAG)

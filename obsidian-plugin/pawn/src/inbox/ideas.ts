@@ -105,11 +105,27 @@ export async function setIdeaStatus(app: App, file: TFile, status: string): Prom
 }
 
 export async function listInboxIdeas(app: App): Promise<IdeaCard[]> {
-  const files = app.vault.getMarkdownFiles().filter((file) => file.path.startsWith(`${IDEAS_FOLDER}/`));
+  const files = app.vault
+    .getMarkdownFiles()
+    .filter((file) => file.path.startsWith(`${IDEAS_FOLDER}/`));
   const cards: IdeaCard[] = [];
   for (const file of files) {
-    const text = await app.vault.read(file);
-    if (frontmatterStatus(text) !== "inbox") continue;
+    const cache = app.metadataCache.getFileCache(file);
+    const status = cache?.frontmatter?.status;
+    if (status !== undefined && String(status).trim() !== "inbox") continue;
+    // Only read body for notes that look like inbox (or lack cache).
+    if (status === undefined) {
+      const text = await app.vault.cachedRead(file);
+      if (frontmatterStatus(text) !== "inbox") continue;
+      cards.push({
+        path: file.path,
+        title: ideaTitle(text, file.basename),
+        line: ideaLine(text),
+        file,
+      });
+      continue;
+    }
+    const text = await app.vault.cachedRead(file);
     cards.push({
       path: file.path,
       title: ideaTitle(text, file.basename),

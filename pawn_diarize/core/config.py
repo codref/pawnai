@@ -66,6 +66,7 @@ class DiarizeConfig(PawnConfig):
             "transcription_backend": lambda: self.models.transcription_backend,
             "whisper_model": lambda: self.models.whisper_model,
             "diarization_model": lambda: self.models.diarization_model,
+            "diarization_backend": lambda: self.models.diarization_backend,
             "embedding_model": lambda: self.models.embedding_model,
             "hf_token": lambda: self.models.hf_token,
             "model_idle_timeout_minutes": lambda: self.models.model_idle_timeout_minutes,
@@ -75,6 +76,7 @@ class DiarizeConfig(PawnConfig):
             "s3": lambda: self.s3.model_dump() if self.s3 else None,
             "queue": lambda: self.diarize_queue.model_dump() if self.diarize_queue else None,
             "rag": lambda: self.rag.model_dump(),
+            "speakers": lambda: self.speakers.model_dump(),
         }
         if key in _flat_map:
             value = _flat_map[key]()

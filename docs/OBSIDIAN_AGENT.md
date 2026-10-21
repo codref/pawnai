@@ -8,13 +8,46 @@ Three ways to use Pawn from Obsidian:
 
 1. **Pawn plugin — chat** (`obsidian-plugin/pawn/`): a Copilot-style side
    pane. Streams replies over `POST /v1/pawn/chat` with the active note,
-   selection and `@`-mentioned notes as structured context.
+   selection and `@`-mentioned notes as structured context. Assistant
+   replies turn vault paths (for example `Pawn/Notes/foo.md` or
+   `Pawn/TaskNotes/Views/board.base`) into clickable note links; existing
+   `[[wiki]]` links open the same way.
 2. **Pawn plugin — background jobs**: long work (agent tasks, note pushes,
    uploads) goes to `POST /v1/jobs`. It is accepted at once and reports back
    in the chat thread / Jobs tab. `Pawn/Tasks/*.md` notes mirror `ask` jobs
    for offline and mobile devices.
 3. **Stock [obsidian-copilot](https://github.com/logancyang/obsidian-copilot)**
    pointed at Pawn's OpenAI-compatible endpoint (see below).
+
+Primary tabs in the Pawn pane: **Chat**, **Jobs**, **Inbox**, **Sessions**.
+
+### Sessions tab
+
+Navigate diarization sessions from `GET /v1/sessions` (default scope: **All**).
+Response includes speaker facets and analysis decoration when
+`session_analyze` has run (`tags`, `topics`, `summary`, `sentiment`).
+
+Filters:
+
+- **All** / **Needs speakers** — primary scope chips
+- Frequent **speaker** chips from facets (toggle to narrow)
+- Search over title, session id, speakers, tags, and topics
+
+Each card can:
+
+- **Open** the vault transcript (`transcript_path` / `Pawn/Transcripts/…`)
+- **Chat** — soft bind: opens the transcript note and switches the
+  conversation to `note:{path}` (not the raw diarization session id)
+- **Reprocess** — queue `rediarize` (default; keep ASR text) or
+  `retranscribe` (wipe + ASR with Parakeet/Whisper + optional Whisper
+  language). Thresholds match CLI. Creates a `session_reprocess` job;
+  vault note refreshes when the diarize worker finishes
+  (`POST /v1/sessions/{id}/reprocess`).
+- **Train** — secondary modal to create Speakers, enroll a label centroid,
+  reidentify, or display-only relabel (same gates as CLI; no audio preview)
+
+Offline: vault scan of `pawn: transcript` notes for browse/Open only; Train
+and Reprocess need the server. Speakers training details: [SPEAKERS.md](SPEAKERS.md).
 
 Session key for a note: `note:{path}` (e.g. `note:Projects/Roadmap.md`).
 Free-standing plugin chats use `chat:{uuid}`.
@@ -27,7 +60,7 @@ Free-standing plugin chats use `chat:{uuid}`.
 | `Pawn/Analyses/{session_id}.md` | Pawn | `session_analyze --save` |
 | `Pawn/Tasks/{id}.md` | Shared | Mirror of one `ask` job (status decides who may write) |
 | `Pawn/Notes/…` | Pawn | Free-form agent notes / scheduled output / "Save as new note" |
-| `Pawn/Items/{id}.md` | Pawn | One coworker inbox item. Set `action:` to file, task, later, or ignore |
+| `Pawn/Items/{date}-{slug}-{short_id}.md` | Pawn | One coworker inbox item. Triage from the Inbox tab or set `action:` to todo, file, task, delete, or ignore |
 | `Pawn/Threads/…` | Pawn | Filed items and open loops for one goal thread |
 | `Pawn/Today.md` | Pawn | What needs a tap, then what was filed quietly |
 | `Pawn/Daily/{date}.md` | Pawn | Morning briefing |
@@ -55,14 +88,15 @@ api:
   include_system_prompt: false    # prepend obsidian-copilot's system prompt
   stream_progress: true           # tool steps as reasoning_content deltas
   stream_keepalive_seconds: 10
-  upload_audio_target: diarize    # queue_producers target for audio uploads
+  upload_audio_target: diarize    # preferred queue_producers target for audio
   upload_s3_prefix: uploads/obsidian
 
-# Audio uploads: staged in the main s3: bucket, then published to the
-# diarize listener's topic (transcribe-diarize).
+# Audio uploads / session reprocess: staged in s3, then published for the
+# diarize listener. Prefer queue_producers[upload_audio_target]; if that name
+# is missing, Pawn falls back to publishing via diarize_queue: (topic/bucket).
 queue_producers:
   diarize:
-    topic: audio-chunks
+    topic: audio-chunks           # should match diarize_queue.topic
     bucket_name: my-bucket
 
 vault:
@@ -76,7 +110,7 @@ vault:
     path_style: true
   agent_root: Pawn
   auto_push_transcript: true
-  obsidian_vault_name: "MyVault"   # for Matrix obsidian:// links
+  obsidian_vault_name: "MyVault"   # Matrix + browser capture obsidian:// links
 
 vault_watcher:
   enabled: true
@@ -166,13 +200,20 @@ the release tag, BRAT, and the full feature list.
 ## Chat (plugin)
 
 - Right-side pane (ribbon icon or **Pawn: Open chat**). The conversation
-  follows the active note (`note:{path}`) by default; pick another note, a
-  recent chat, or **New chat** (`chat:{uuid}`) from the header.
+  follows the active note (`note:{path}`) by default; on the Chat tab, pick
+  another note or a recent chat from the searchable picker, or **New chat**
+  (`chat:{uuid}`). Delete removes the local entry and clears sallm memory for
+  that key (`/reset`). The picker lists local plugin history (up to 40
+  conversations), not diarization **Sessions**.
 - Context chips above the composer: the open note (× unpins that file; a
   dashed pin chip attaches it again), current selection, and extra notes via
   `@`, the `+` chip, or drag-and-drop from the file explorer. With **Send
   local note content** on, the plugin sends note bodies (including unsynced
-  edits); otherwise the server reads the vault.
+  edits); otherwise the server reads the vault. Each note body is inlined
+  once per conversation (up to a soft character budget); later turns send a
+  path pointer and the agent can `note_read` if needed. A changed note, or
+  the refresh button / `/vision refresh`, re-sends the body. The chip stays
+  muted while the next send would be path-only.
 - When the selected model is flagged `vision: true`, dropping or pasting a
   png, jpeg, gif, or webp into the composer attaches it to the next message.
   Images embedded in attached
@@ -182,8 +223,8 @@ the release tag, BRAT, and the full feature list.
   device, so the diagram is included even when note text is read from the
   vault bucket. Each picture is captioned once in that conversation. A
   changed drawing is exported and captioned again. The refresh button
-  beside the paperclip (or `/vision refresh`) reads the same bytes again
-  on the next message. Other files still go to the Inbox
+  beside the paperclip (or `/vision refresh`) re-reads attached notes and
+  images on the next message. Other files still go to the Inbox
   upload job. A page with several images captions up to four per message, in
   document order, and later messages pick up the ones not captioned yet. The
   model sees pixels for one of them; the others stay searchable by caption.

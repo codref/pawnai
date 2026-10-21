@@ -1,6 +1,8 @@
 """Shared pgvector index over notes, transcripts, and coworker items.
 
 Embeddings use the same Ollama model as sallm (``agent.sallm.embedding_*``).
+Documents are embedded raw; queries use sallm's instruct composer so the
+asymmetric Qwen template matches what the Agent memory path expects.
 """
 
 from __future__ import annotations
@@ -74,13 +76,43 @@ def substantial_change(old: str, new: str, *, min_chars: int = 40) -> bool:
     return bool(new_heads - old_heads)
 
 
+def _embedding_profile(cfg: AgentConfig):
+    from sallm.models import EmbeddingProfile  # noqa: PLC0415
+
+    dimensions = int(getattr(cfg.coworker, "embed_dim", 1024) or 1024)
+    return EmbeddingProfile(
+        model=cfg.sallm.embedding_model,
+        api_base=cfg.sallm.embedding_api_base,
+        dimensions=dimensions,
+    )
+
+
 def _embedder(cfg: AgentConfig) -> Callable[[str], list[float]]:
+    """Raw document embedder (no instruct prefix)."""
     from sallm.memory.embedding import make_embed_fn  # noqa: PLC0415
 
-    model = cfg.sallm.embedding_model
-    api_base = cfg.sallm.embedding_api_base
-    dimensions = int(getattr(cfg.coworker, "embed_dim", 1024) or 1024)
-    return cast(Callable[[str], list[float]], make_embed_fn(model, api_base, dimensions))
+    profile = _embedding_profile(cfg)
+    return cast(
+        Callable[[str], list[float]],
+        make_embed_fn(profile.model, profile.api_base, profile.dimensions),
+    )
+
+
+def compose_search_query(cfg: AgentConfig, query: str) -> str:
+    """Apply sallm's instruct template so query vectors match the embedding model."""
+    from sallm.memory.retrieval import DefaultQueryComposer  # noqa: PLC0415
+
+    text = (query or "").strip()
+    if not text:
+        return ""
+    return DefaultQueryComposer(_embedding_profile(cfg)).compose(text, mode="instruct")
+
+
+def _embed_query(cfg: AgentConfig, query: str) -> list[float]:
+    composed = compose_search_query(cfg, query)
+    if not composed:
+        return []
+    return _embedder(cfg)(composed)
 
 
 def index_text(
@@ -130,24 +162,42 @@ def delete_source(dsn: str, source_ref: str) -> None:
 
 
 def search_chunks(
-    cfg: AgentConfig, query: str, *, limit: int = 8, kind: str = ""
+    cfg: AgentConfig,
+    query: str,
+    *,
+    limit: int = 8,
+    kind: str = "",
+    max_distance: float | None = None,
+    fetch_multiplier: int = 1,
 ) -> list[dict[str, Any]]:
-    """Nearest chunks for *query*. Returns plain dicts."""
+    """Nearest chunks for *query*.
+
+    Query text is instruct-composed (sallm). Each hit includes ``distance``
+    (pgvector cosine distance: 0 identical, 2 opposite). When *max_distance*
+    is set, farther neighbors are dropped.
+    """
     text = (query or "").strip()
     if not text:
         return []
-    vector = _embedder(cfg)(text)
+    vector = _embed_query(cfg, text)
+    if not vector:
+        return []
+    fetch = max(1, int(limit) * max(1, int(fetch_multiplier)))
     with Session(get_engine(cfg.db_dsn)) as db:
-        stmt = select(KnowledgeChunk).order_by(KnowledgeChunk.embedding.cosine_distance(vector))
+        distance = KnowledgeChunk.embedding.cosine_distance(vector)
+        stmt = select(KnowledgeChunk, distance.label("distance")).order_by(distance)
         if kind:
             stmt = stmt.where(KnowledgeChunk.source_kind == kind)
-        rows = db.scalars(stmt.limit(max(1, limit))).all()
+        if max_distance is not None:
+            stmt = stmt.where(distance <= float(max_distance))
+        rows = db.execute(stmt.limit(fetch)).all()
         return [
             {
                 "source_kind": row.source_kind,
                 "source_ref": row.source_ref,
                 "heading": row.heading or "",
                 "text": row.text,
+                "distance": float(dist) if dist is not None else 2.0,
             }
-            for row in rows
+            for row, dist in rows
         ]

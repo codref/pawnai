@@ -15,6 +15,8 @@ Packages:
 - `pawn_agent/`: CLI, sallm harness, scheduler, domain tool impls + CliTool CLIs, agent DB models.
 - `pawn_server/`: HTTP API, queue listener, Matrix bot, vault watcher, scheduler CLI/server runner.
 - `obsidian-plugin/pawn/`: Obsidian desktop/mobile plugin (Copilot-style chat pane, prompt commands, background jobs, uploads). MIT, written from scratch; do not copy obsidian-copilot (AGPL) code into it.
+- `browser-extension/pawn/`: MV3 side panel that appends ordered text/image snippets to vault capture notes or session Annotations (no chat UI). See `docs/BROWSER_CAPTURE.md`.
+- `thunderbird-extension/pawn/`: MV3 MailExtension (TB 128+) companion-window tray that captures messages/selections/image attachments into the same `/v1/captures` API. See `docs/THUNDERBIRD_CAPTURE.md`.
 
 ## Setup / Commands
 
@@ -56,20 +58,24 @@ Notes: pytest defaults to `--cov=pawn_diarize --cov-report=term-missing`; pass `
 - Matrix bot (`pawn_server/core/matrix_bot.py`) is an optional `serve` worker: in-process `run_agent_turn` with `source="matrix"` (same tools/skills as CLI chat). When `matrix_bot.notify_room_id` is set, it also consumes `queue_producers.matrix` for outbound alerts. See `docs/MATRIX_BOT.md`.
 - Obsidian (`docs/OBSIDIAN_AGENT.md`): Sync Engine keeps devices ↔ S3 in sync; Pawn reads/writes the bucket via `pawn_core/vault.py`. Three modes:
   - Plugin chat: `POST /v1/pawn/chat` (SSE `progress`/`answer`/`job`/`error`/`done`; prompt built server-side in `pawn_server/core/chat_context.py`).
-  - Background jobs: `POST /v1/jobs` (+ `/upload`, `/events` SSE, `/approve`, `/cancel`, `/dismiss`). Always 202, no sync/async race. Logic in `pawn_server/core/jobs.py`; rows in `vault_tasks` (`kind` = ask | push_note | upload, `payload`, `result_text`). `ask` jobs mirror to `Pawn/Tasks/{id}.md`. Offline plugin writes `todo` task notes for `vault_watcher`. Status events: `pawn_server/core/job_events.py` (in-process only).
+  - Background jobs: `POST /v1/jobs` (+ `/upload`, `/events` SSE, `/approve`, `/cancel`, `/dismiss`). Always 202, no sync/async race. Logic in `pawn_server/core/jobs.py`; rows in `vault_tasks` (`kind` = ask | push_note | upload | capture_enrich, `payload`, `result_text`). `ask` jobs mirror to `Pawn/Tasks/{id}.md`. Offline plugin writes `todo` task notes for `vault_watcher`. Status events: `pawn_server/core/job_events.py` (in-process only).
   - Stock obsidian-copilot → `/v1/chat/completions` + `/v1/models` (list content parts, CORS, `X-Pawn-Conversation`, streamed keep-alives/`reasoning_content` progress via `pawn_server/core/progress.py`).
   - `/v1/vault/tasks*` are deprecated aliases. Approve indexes into sallm memory. Session keys `note:{path}` / `chat:{uuid}`.
+- Browser capture (`docs/BROWSER_CAPTURE.md`): MV3 extension side panel (no chat) posts ordered text/image snippets via `GET/POST /v1/captures` and `GET /v1/sessions`. `GET /v1/meta` exposes `vault.obsidian_vault_name` for destination `obsidian://open` links. Default note is `Pawn/Captures/{date} {title}.md`; session attach splices into transcript `## Annotations` when mapped. Images under `Pawn/Captures/assets/`. **Research** target (`kind: research`) writes one inbox atom per snippet under `capture.inbox_dir`, optionally enqueues `capture_enrich` (sallm ReAct, skill `research_capture`) using `capture.model` or the background default; collections emerge under `capture.enriched_dir`. Obsidian Inbox **Captures** chip files/ignores via `POST /v1/captures/file`. Config: `capture:` on `AgentConfig`. Logic in `pawn_server/core/captures.py` + `capture_enrich.py`.
 - Agent run persistence is centralized in `pawn_agent/core/agent_runner.py`.
-- Coworker loop (`coworker:` in config, off by default): after diarization, `chain_agent.command: session_completed` extracts items, scores them against `Goals.md`, writes `Pawn/Items` and `Pawn/Today.md`, and notifies only on an active-thread interrupt. Triage is `file|task|later|ignore` from Matrix, item-note frontmatter, `GET/POST /v1/items`, or the same words in chat. `/idea` writes one note under `Ideas/` (`status: inbox`) and does not start a model turn. The plugin Inbox lists those notes (Keep / Goal / Task / Drop). Idea notes are not extracted. `/goal` and `/park` write `Goals.md`, and a normal prompt only drafts `Pawn/Reviews/goal-proposal.md` until `/goal apply`. Morning and weekly crons live in `pawn_server/core/coworker_worker.py`. See `docs/COWORKER.md`.
+- Coworker loop (`coworker:` in config, off by default): after diarization, `chain_agent.command: session_completed` extracts items, scores them against `Goals.md`, writes `Pawn/Items` and `Pawn/Today.md`, and notifies only on an active-thread interrupt. Chunked recorders send `chain_agent: false` on intermediate uploads and only finalize with `{"command": "session_completed"}` on stop (re-publish of the last chunk URI is a no-op for already-processed audio). Duplicate finalize for the same segment count is skipped. Triage is `todo|file|task|delete|ignore` (plus Matrix `later`) from the plugin Inbox timeline, item-note frontmatter, `GET/POST /v1/items`, or chat. `/idea` writes one note under `Ideas/` (`status: inbox`) and does not start a model turn. The plugin Inbox is open Items (time-grouped; Add TODO / File / Delete; multi-select and delete-all); the Ideas chip lists idea notes (Keep / Goal / Task / Drop); the Captures chip lists research inbox atoms (`status: inbox|proposed`) with File / Ignore. Idea notes are not extracted. `/goal` and `/park` write `Goals.md`, and a normal prompt only drafts `Pawn/Reviews/goal-proposal.md` until `/goal apply`. Morning and weekly crons live in `pawn_server/core/coworker_worker.py`. See `docs/COWORKER.md`.
+- People bios (`docs/PEOPLE.md`): vault notes `People/{speaker_id}.md` linked to the Speakers gallery. After `session_completed`, `speakers_refresh` appends Appearances and proposes or applies Facts under autonomy `people_refresh`. Transcript Speakers tables wikilink into People notes. Tools: `people_show` / `people_ensure` / `people_append`. One-off CLI: `pawn-server coworker people-refresh --session ID` (does not create Items; use `coworker process` for Items only).
 
 ## Agent Tools / Skills
 
 Domain logic stays in `pawn_agent/tools/*_impl`. Production path uses **CliTools** under `pawn_agent/tools/cli/` registered in `sallm_tools.py`.
 
 Migrated CliTools: `sessions_list`, `session_transcript`, `session_analyze`,
-`session_screenshots`, `session_delete`, `session_relabel`, `note_read`, `note_search`,
-`note_write`, `note_append`, `task_update`, `schedule_propose`, `queue_push`,
-`goal_propose`.
+`session_screenshots`, `session_delete`, `session_relabel`, `speakers_list`,
+`speakers_show`, `speakers_update`, `speaker_enroll`, `session_reidentify`,
+`people_show`, `people_ensure`, `people_append`, `note_read`, `note_search`,
+`note_write`, `note_append`, `capture_update`, `task_update`, `schedule_propose`,
+`queue_push`, `goal_propose`.
 
 `session_analyze --save` / `note_write`: prefer `--save` for analysis Markdown
 under `Pawn/Analyses/`. Free-form notes use `note_write --content-file @note`
@@ -88,10 +94,17 @@ in chat before calling. It does not clear sallm chat memory or vault notes.
 
 `session_relabel` renames a speaker across one session (`--from SPEAKER_00
 --to Davide` or a wrong display name). Updates transcript labels,
-`speaker_names` (so embedding matches resolve to the new name), and
-`session_state` prior-speaker keys. Same core as `pawn-diarize session-relabel`.
-Existing vault Speakers+Transcript notes refresh automatically after
-relabel; pass `--push-vault` to create/update even without a prior mapping.
+`speaker_names`, `session_speaker_map`, and `session_state` prior-speaker
+keys. Same core as `pawn-diarize session-relabel`. For lasting voice
+identity use the curated Speakers gallery (`docs/SPEAKERS.md`):
+`speakers create/enroll`, then `reidentify` / `session_reidentify`.
+Runtime diarization never auto-enrolls voiceprints.
+
+`pawn-diarize rediarize --session X --confirm` re-runs diarization labels
+only (keeps ASR text). `pawn-diarize retranscribe --session X --confirm`
+repairs/downloads the session's stored S3 audio, wipes segments/state, and
+runs a full transcribe-diarize overwrite — use this when transcript text
+is missing or wrong.
 
 Vault diary transcripts (diarize, not agent): `pawn-diarize push-vault`
 creates/updates a stable session note (Speakers, Transcript, and Screenshots
@@ -103,7 +116,7 @@ background vision model; `session_screenshots --summarize` can do that later.
 Mapping table: `vault_notes`.
 
 Skills (modes): `converse`, `sessions`, `notes`, `scheduling`, `ops`,
-`vault_tasks`, `tasknotes`, `coworker` — see `sallm_skills.py`.
+`vault_tasks`, `tasknotes`, `coworker`, `research_capture` — see `sallm_skills.py`.
 
 `tasknotes` writes TaskNotes-compatible notes under `{agent_root}/TaskNotes/`
 (tasks, project stubs, `.base` boards, and a checklist proposal). The user
@@ -180,6 +193,8 @@ Default DB uses PostgreSQL on port `5433` and requires `pgvector`.
 - Vault: `tests/test_vault_store.py`, `tests/test_vault_transcript.py`, `tests/test_vault_tasks.py`, `tests/test_vault_watcher.py`.
 - HTTP API: `tests/test_api_chat_compat.py` (OpenAI/Copilot compat), `tests/test_api_jobs.py` (jobs + `/v1/pawn/chat`).
 - Plugin: `cd obsidian-plugin/pawn && npm run build` (bumps the `manifest.json` patch version, then `tsc -noEmit`); no JS test runner. CI sets `CI=true`, which skips the bump so an `obsidian-plugin-v*` tag still matches the manifest. `make dist` in that directory (or `make obsidian-plugin-dist` from the repo root) writes `pawn.zip` (`pawn/main.js`, `manifest.json`, `styles.css`). `.github/workflows/obsidian-plugin.yml` uploads that zip as the `pawn-obsidian-plugin` artifact and, on an `obsidian-plugin-v*` tag whose version matches `manifest.json`, publishes it on the GitHub release.
+- Browser capture extension: plain MV3 JS (no compile). `make browser-extension` verifies files; `make browser-extension-dist` writes `pawn-capture.zip` (Chrome `service_worker`) and `pawn-capture-firefox.zip` (`background.scripts` + sidebar). See `docs/BROWSER_CAPTURE.md`.
+- Thunderbird capture add-on: plain MV3 JS (no compile). `make thunderbird-extension` verifies files; `make thunderbird-extension-dist` writes `pawn-capture-thunderbird.xpi`. Companion window (no docked sidebar API). See `docs/THUNDERBIRD_CAPTURE.md`.
 - No CI workflows are present in `.github/workflows/`.
 
 ## Constraints / Gotchas

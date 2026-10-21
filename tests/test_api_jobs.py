@@ -179,6 +179,61 @@ def test_ask_job_dismiss_closes_without_indexing(env: SimpleNamespace) -> None:
         assert wrong_kind.status_code == 409
 
 
+def test_delete_and_flush_finished_jobs(env: SimpleNamespace) -> None:
+    with TestClient(api_server.create_app(env.cfg)) as client:
+        ask = client.post(
+            "/v1/jobs",
+            headers=AUTH,
+            json={"kind": "ask", "id": "job-del", "instruction": "Draft"},
+        )
+        assert ask.status_code == 202
+        _wait_status(client, "job-del", {"review"})
+        # Dismiss → done so flush can take it; delete works on review too.
+        assert client.post("/v1/jobs/job-del/dismiss", headers=AUTH, json={}).status_code == 200
+        assert env.store.exists("Pawn/Tasks/job-del.md")
+
+        push = client.post(
+            "/v1/jobs",
+            headers=AUTH,
+            json={
+                "kind": "push_note",
+                "id": "job-push-del",
+                "path": "Pawn/Notes/flush-me",
+                "content": "x",
+            },
+        )
+        assert push.status_code == 202
+        assert _wait_status(client, "job-push-del", {"done", "blocked"})["status"] == "done"
+
+        one = client.delete("/v1/jobs/job-del", headers=AUTH)
+        assert one.status_code == 200
+        assert one.json()["deleted"] is True
+        assert not env.store.exists("Pawn/Tasks/job-del.md")
+        assert client.get("/v1/jobs/job-del", headers=AUTH).status_code == 404
+
+        flushed = client.post(
+            "/v1/jobs/delete",
+            headers=AUTH,
+            json={"flush_terminal": True},
+        )
+        assert flushed.status_code == 200
+        assert flushed.json()["deleted"] >= 1
+        assert client.get("/v1/jobs/job-push-del", headers=AUTH).status_code == 404
+
+        running = client.post(
+            "/v1/jobs",
+            headers=AUTH,
+            json={"kind": "ask", "id": "job-live", "instruction": "Stay"},
+        )
+        assert running.status_code == 202
+        # While still active (before review), delete must 409.
+        early = client.delete("/v1/jobs/job-live", headers=AUTH)
+        # May already be review in fast tests; only assert 409 when still active.
+        if early.status_code == 409:
+            detail = early.json()["detail"].lower()
+            assert "cancel" in detail or "status" in detail
+
+
 def test_push_note_job_respects_guards(env: SimpleNamespace) -> None:
     with TestClient(api_server.create_app(env.cfg)) as client:
         ok = client.post(

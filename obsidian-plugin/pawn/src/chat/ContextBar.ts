@@ -67,6 +67,9 @@ export interface ContextSnapshot {
   extra: TFile[];
 }
 
+/** Paths whose body was already inlined this conversation (next send is pointer-only). */
+export type NoteSentLookup = (path: string) => boolean;
+
 /** Context chips above the chat composer: active note, selection, extra notes. */
 export class ContextBar {
   /** Setting default. Per-file pin/unpin below overrides it. */
@@ -79,12 +82,22 @@ export class ContextBar {
   private extra: TFile[] = [];
   private el: HTMLElement | null = null;
   private imageChips: { label: string; title: string; onRemove: () => void }[] = [];
+  /** When true for a path, chip is muted (body already in chat). */
+  private noteSent: NoteSentLookup = () => false;
+  private forceReread = false;
 
   constructor(
     private app: App,
     defaultIncludeActive: boolean,
   ) {
     this.defaultIncludeActive = defaultIncludeActive;
+  }
+
+  /** Update muted "already sent" state; pass forceReread when refresh is armed. */
+  setNoteSentState(lookup: NoteSentLookup, forceReread = false): void {
+    this.noteSent = lookup;
+    this.forceReread = forceReread;
+    this.render();
   }
 
   mount(container: HTMLElement): void {
@@ -106,6 +119,13 @@ export class ContextBar {
 
   openPicker(): void {
     new NotePickerModal(this.app, (f) => this.addFile(f)).open();
+  }
+
+  /** True when the active note is pinned or extra notes are queued. */
+  hasAttachedNotes(): boolean {
+    const active = resolveActiveMarkdownFile(this.app);
+    if (active && this.isAttached(active)) return true;
+    return this.extra.length > 0;
   }
 
   /** Current context; resets per-message toggles afterwards when `consume` is set. */
@@ -154,15 +174,21 @@ export class ContextBar {
     this.render();
   }
 
+  private pathIsPointer(path: string): boolean {
+    return !this.forceReread && this.noteSent(path);
+  }
+
   private stateKey(): string {
     const active = resolveActiveMarkdownFile(this.app);
     const sel = captureSelection(this.app);
     return [
       active?.path ?? "",
       active ? this.isAttached(active) : false,
+      active ? this.pathIsPointer(active.path) : false,
+      this.forceReread,
       this.includeSelection,
       sel ? `${sel.path}:${sel.from.line}:${sel.from.ch}:${sel.to.line}:${sel.to.ch}` : "",
-      this.extra.map((f) => f.path).join("|"),
+      this.extra.map((f) => `${f.path}:${this.pathIsPointer(f.path)}`).join("|"),
     ].join("\n");
   }
 
@@ -180,10 +206,14 @@ export class ContextBar {
     el.empty();
     const active = resolveActiveMarkdownFile(this.app);
     if (active && this.isAttached(active)) {
+      const pointer = this.pathIsPointer(active.path);
       this.chip(el, {
         icon: "file-text",
         label: active.basename,
-        title: `${active.path} is attached to the next message`,
+        title: pointer
+          ? `${active.path} already in this chat (path only next send; refresh to re-send body)`
+          : `${active.path} is attached to the next message`,
+        muted: pointer,
         removeLabel: `Unpin ${active.basename}`,
         onRemove: () => this.detach(active.path),
       });
@@ -214,10 +244,14 @@ export class ContextBar {
       });
     }
     for (const file of this.extra) {
+      const pointer = this.pathIsPointer(file.path);
       this.chip(el, {
         icon: "link",
         label: file.basename,
-        title: file.path,
+        title: pointer
+          ? `${file.path} already in this chat (path only; refresh to re-send body)`
+          : file.path,
+        muted: pointer,
         removeLabel: `Remove ${file.basename}`,
         onRemove: () => {
           this.extra = this.extra.filter((f) => f.path !== file.path);

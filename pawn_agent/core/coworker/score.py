@@ -54,9 +54,11 @@ def _format_threads(threads: list[GoalThread]) -> str:
 def _format_items(items: list[dict[str, Any]]) -> str:
     lines = []
     for index, item in enumerate(items):
+        context = " ".join(str(item.get("context") or "").split())[:120]
+        extra = f" | {context}" if context else ""
         lines.append(
             f"{index}. [{item.get('kind')}] {item.get('text')} "
-            f"(owner={item.get('owner') or '-'})"
+            f"(owner={item.get('owner') or '-'}){extra}"
         )
     return "\n".join(lines) or "(none)"
 

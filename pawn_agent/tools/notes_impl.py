@@ -79,9 +79,11 @@ def note_read_impl(cfg: AgentConfig, path: str, *, follow_links: int = 0) -> str
     except Exception as exc:
         return f"Error reading {key!r}: {exc}"
 
-    parts: list[str] = [f"# Vault: {key}\n", text.rstrip()]
+    # Return raw note bytes so agents cannot round-trip a "# Vault:" envelope
+    # into the file and break Obsidian frontmatter (must stay at byte 0).
+    parts: list[str] = [text.rstrip()]
     if follow_links <= 0:
-        return "\n".join(parts).rstrip() + "\n"
+        return parts[0] + "\n"
 
     agent_root = _agent_root(cfg)
     visited: set[str] = {key}
@@ -108,7 +110,7 @@ def note_read_impl(cfg: AgentConfig, path: str, *, follow_links: int = 0) -> str
                     continue
                 except Exception:
                     continue
-                parts.append(f"\n---\n\n# Vault: {target}\n\n{linked.rstrip()}")
+                parts.append(f"\n\n===== linked: {target} =====\n\n{linked.rstrip()}")
                 frontier.append((target, depth + 1))
                 break
 

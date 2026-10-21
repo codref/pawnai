@@ -5,12 +5,24 @@ import { jobFromTaskNote, offlineJobs, queueOffline } from "../offline";
 import { parseTaskNote, setApproved, setDismissed, tasksFolder } from "../tasks";
 
 const TERMINAL = new Set(["review", "done", "blocked"]);
+const DELETABLE = new Set(["review", "done", "blocked"]);
+const FLUSHABLE = new Set(["done", "blocked"]);
 const ACTIVE_POLL_MS = 5000;
 const IDLE_POLL_MS = 30000;
 const MAX_BACKOFF_MS = 60000;
 
+export type JobsStatusScope = "all" | "active" | "review" | "done" | "blocked";
+
 export function isActive(job: Job): boolean {
   return !TERMINAL.has(job.status);
+}
+
+export function isDeletable(job: Job): boolean {
+  return DELETABLE.has(job.status);
+}
+
+export function isFlushable(job: Job): boolean {
+  return FLUSHABLE.has(job.status);
 }
 
 /** Client-side job registry: server list + live events, merged with local task notes. */
@@ -20,7 +32,12 @@ export class JobStore {
   private abort: AbortController | null = null;
   private timer: number | null = null;
   private stopped = true;
+  private flushing = false;
   online = false;
+  scope: JobsStatusScope = "all";
+  kind = "";
+  q = "";
+  conversationOnly = false;
 
   constructor(
     private plugin: PawnPlugin,
@@ -65,10 +82,49 @@ export class JobStore {
     for (const fn of this.listeners) fn();
   }
 
+  setQuery(partial: {
+    scope?: JobsStatusScope;
+    kind?: string;
+    q?: string;
+    conversationOnly?: boolean;
+  }): void {
+    if (partial.scope !== undefined) this.scope = partial.scope;
+    if (partial.kind !== undefined) this.kind = partial.kind;
+    if (partial.q !== undefined) this.q = partial.q;
+    if (partial.conversationOnly !== undefined) this.conversationOnly = partial.conversationOnly;
+  }
+
   all(): Job[] {
     return [...this.jobs.values()].sort((a, b) =>
-      (b.created_at ?? b.id).localeCompare(a.created_at ?? a.id),
+      (b.updated_at ?? b.created_at ?? b.id).localeCompare(a.updated_at ?? a.created_at ?? a.id),
     );
+  }
+
+  filtered(conversation: string | null): Job[] {
+    const needle = this.q.trim().toLowerCase();
+    return this.all().filter((job) => {
+      if (this.conversationOnly && conversation && job.conversation !== conversation) return false;
+      if (this.kind && job.kind !== this.kind) return false;
+      if (this.scope === "active" && !isActive(job)) return false;
+      if (this.scope === "review" && !(job.status === "review" && !job.approved)) return false;
+      if (this.scope === "done" && job.status !== "done") return false;
+      if (this.scope === "blocked" && job.status !== "blocked") return false;
+      if (!needle) return true;
+      const hay = [job.title, job.instruction, job.result, job.conversation, job.kind, job.status]
+        .join("\n")
+        .toLowerCase();
+      return hay.includes(needle);
+    });
+  }
+
+  flushableCount(): number {
+    let n = 0;
+    for (const j of this.jobs.values()) if (isFlushable(j)) n++;
+    return n;
+  }
+
+  isFlushing(): boolean {
+    return this.flushing;
   }
 
   get(id: string): Job | undefined {
@@ -85,7 +141,17 @@ export class JobStore {
     return { active, review };
   }
 
+  remove(id: string): void {
+    if (!this.jobs.has(id)) return;
+    this.jobs.delete(id);
+    this.emit();
+  }
+
   upsert(job: Job, opts: { quiet?: boolean } = {}): void {
+    if (job.status === "deleted") {
+      this.remove(job.id);
+      return;
+    }
     const prev = this.jobs.get(job.id);
     if (prev && !prev.offline && job.offline) return; // server state wins
     // Server payloads omit `offline`; clear a sticky flag from an earlier offline card.
@@ -109,7 +175,13 @@ export class JobStore {
     try {
       const jobs = await this.client.listJobs({ limit: 100 });
       this.online = true;
+      const seen = new Set(jobs.map((j) => j.id));
       for (const job of jobs) this.upsert(job, { quiet: !this.jobs.has(job.id) });
+      // Drop server-backed jobs that disappeared (deleted elsewhere).
+      for (const id of [...this.jobs.keys()]) {
+        const cur = this.jobs.get(id);
+        if (cur && !cur.offline && !seen.has(id) && isDeletable(cur)) this.jobs.delete(id);
+      }
     } catch {
       this.online = false;
     }
@@ -243,6 +315,97 @@ export class JobStore {
       new Notice(`Cancel failed: ${e instanceof Error ? e.message : e}`);
     }
     this.plugin.updateStatusBar();
+  }
+
+  private async trashTaskNote(job: Job): Promise<void> {
+    const path = job.task_key;
+    if (!path) return;
+    const file = this.plugin.app.vault.getAbstractFileByPath(path);
+    if (file instanceof TFile) {
+      try {
+        await this.plugin.app.vault.trash(file, true);
+      } catch {
+        /* best effort */
+      }
+    }
+  }
+
+  async deleteIds(ids: string[]): Promise<number> {
+    let deleted = 0;
+    const offlineIds: string[] = [];
+    const onlineIds: string[] = [];
+    for (const id of ids) {
+      const job = this.jobs.get(id);
+      if (!job || !isDeletable(job)) continue;
+      if (job.offline) offlineIds.push(id);
+      else onlineIds.push(id);
+    }
+    for (const id of offlineIds) {
+      const job = this.jobs.get(id);
+      if (job) await this.trashTaskNote(job);
+      this.jobs.delete(id);
+      deleted += 1;
+    }
+    if (onlineIds.length) {
+      try {
+        const result = await this.client.deleteJobs({ ids: onlineIds });
+        this.online = true;
+        for (const id of result.ids) {
+          const job = this.jobs.get(id);
+          if (job) await this.trashTaskNote(job);
+          this.jobs.delete(id);
+        }
+        deleted += result.deleted;
+      } catch (e) {
+        if (!(e instanceof ServerUnreachable)) throw e;
+        this.online = false;
+        for (const id of onlineIds) {
+          const job = this.jobs.get(id);
+          if (job) await this.trashTaskNote(job);
+          this.jobs.delete(id);
+          deleted += 1;
+        }
+      }
+    }
+    this.emit();
+    this.plugin.updateStatusBar();
+    return deleted;
+  }
+
+  async flushTerminal(): Promise<number> {
+    if (this.flushing) throw new Error("Flush already in progress.");
+    this.flushing = true;
+    this.emit();
+    try {
+      const localFlush = this.all().filter(isFlushable);
+      if (this.online) {
+        try {
+          const result = await this.client.deleteJobs({ flush_terminal: true });
+          for (const id of result.ids) {
+            const job = this.jobs.get(id);
+            if (job) await this.trashTaskNote(job);
+            this.jobs.delete(id);
+          }
+          // Also clear any leftover offline done/blocked cards.
+          for (const job of localFlush) {
+            if (job.offline && this.jobs.has(job.id)) {
+              await this.trashTaskNote(job);
+              this.jobs.delete(job.id);
+            }
+          }
+          this.emit();
+          this.plugin.updateStatusBar();
+          return result.deleted;
+        } catch (e) {
+          if (!(e instanceof ServerUnreachable)) throw e;
+          this.online = false;
+        }
+      }
+      return this.deleteIds(localFlush.map((j) => j.id));
+    } finally {
+      this.flushing = false;
+      this.emit();
+    }
   }
 }
 

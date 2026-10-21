@@ -757,10 +757,11 @@ def _mirror_proposal_to_inbox(
             status="new",
             interrupt=True,
         )
+        from pawn_agent.core.coworker.actions import item_note_key  # noqa: PLC0415
         from pawn_agent.core.coworker.notes import render_item_note  # noqa: PLC0415
         from pawn_core.vault_config import vault_store_from_config  # noqa: PLC0415
 
-        key = f"{cfg.coworker.items_dir.strip('/')}/{row['short_id']}.md"
+        key = item_note_key(cfg, short_id=row["short_id"], text=text)
         note = render_item_note(
             item_id=row["id"],
             short_id=row["short_id"],

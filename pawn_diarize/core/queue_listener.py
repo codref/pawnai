@@ -57,7 +57,9 @@ class ModelCache:
     def has_models(self) -> bool:
         return self._transcription_engine is not None or self._diarization_engine is not None
 
-    def get_transcription_engine(self, device: str, backend: str) -> Any:
+    def get_transcription_engine(
+        self, device: str, backend: str, language: Optional[str] = None
+    ) -> Any:
         """Return a cached (or newly created) :class:`TranscriptionEngine`."""
         key: Tuple[str, str] = (device, backend)
         if self._transcription_engine is None or self._transcription_key != key:
@@ -70,6 +72,8 @@ class ModelCache:
             )
             self._transcription_engine = TranscriptionEngine(device=device, backend=backend)
             self._transcription_key = key
+        lang = (language or "").strip() or None
+        self._transcription_engine.language = lang
         return self._transcription_engine
 
     def get_diarization_engine(self, device: str) -> Any:
@@ -119,14 +123,17 @@ COMMAND_DEFAULTS: Dict[str, Dict[str, Any]] = {
         "session": None,
         "db_dsn": None,  # None → AppConfig default
         "threshold": 0.7,
-        "store_new": True,
+        "store_new": False,
         "device": "cuda",
         "chunk_duration": None,
-        "cross_file_threshold": 0.85,
+        "cross_file_threshold": 0.55,
         "no_timestamps": False,
         "verbose": False,
         "backend": "nemo",
-        "chain_agent": None,  # None = use config; True = enable; str = custom prompt; False = disable
+        "language": None,  # Whisper only; ignored for nemo
+        # None = config fallback; False = skip (intermediate chunks);
+        # dict e.g. {"command": "session_completed"} = finalize; True/str = legacy.
+        "chain_agent": None,
     },
     "transcribe": {
         "audio_paths": [],
@@ -137,13 +144,36 @@ COMMAND_DEFAULTS: Dict[str, Dict[str, Any]] = {
         "device": "cuda",
         "chunk_duration": None,
         "backend": "nemo",
+        "language": None,
+    },
+    "rediarize": {
+        "session": None,  # required
+        "db_dsn": None,
+        "threshold": 0.7,
+        "cross_file_threshold": 0.55,
+        "margin": None,
+        "device": "auto",
+        "push_vault": True,
+    },
+    "retranscribe": {
+        "session": None,  # required
+        "db_dsn": None,
+        "threshold": 0.7,
+        "cross_file_threshold": 0.55,
+        "device": "cuda",
+        "chunk_duration": None,
+        "backend": "nemo",
+        "language": None,
+        "no_timestamps": False,
+        "verbose": False,
+        "push_vault": True,
     },
     "diarize": {
         "audio_paths": [],
         "output": None,
         "db_dsn": None,
         "threshold": 0.7,
-        "store_new": True,
+        "store_new": False,
     },
     "embed": {
         "audio_paths": [],
@@ -226,6 +256,10 @@ async def dispatch(
         await loop.run_in_executor(None, _run_embed, params, cfg)
     elif command == "push-vault":
         await loop.run_in_executor(None, _run_push_vault, params, cfg)
+    elif command == "rediarize":
+        await loop.run_in_executor(None, _run_rediarize, params, cfg, model_cache)
+    elif command == "retranscribe":
+        await loop.run_in_executor(None, _run_retranscribe, params, cfg, model_cache)
     else:
         raise ValueError(f"Unsupported command: {command!r}")
 
@@ -235,15 +269,21 @@ async def dispatch(
 # ──────────────────────────────────────────────────────────────────────────────
 
 
-def _resolve_audio_paths(paths: List[str], cfg: Any) -> tuple[List[str], List[str]]:
-    """Download any s3:// paths and return (resolved_local, temp_dirs)."""
+def _resolve_audio_paths(
+    paths: List[str], cfg: Any
+) -> tuple[List[str], List[str], Dict[str, str]]:
+    """Download any s3:// paths and return (resolved_local, temp_dirs, path_map).
+
+    *path_map* maps each local temp path → the original ``s3://`` URI so
+    callers can persist canonical object keys instead of ``/tmp/...``.
+    """
     import tempfile
     from pathlib import Path
 
     from .s3 import S3Client, expand_s3_glob, is_s3_path, parse_s3_uri
 
     if not any(is_s3_path(p) for p in paths):
-        return paths, []
+        return paths, [], {p: p for p in paths}
 
     s3_cfg = cfg.get_s3_config()
     if s3_cfg is None:
@@ -270,17 +310,20 @@ def _resolve_audio_paths(paths: List[str], cfg: Any) -> tuple[List[str], List[st
             expanded.append(path)
 
     resolved: List[str] = []
+    path_map: Dict[str, str] = {}
     for path in expanded:
         if not is_s3_path(path):
+            path_map[path] = path
             resolved.append(path)
             continue
         bucket, key = parse_s3_uri(path, configured_bucket=client.bucket)
         local_path = tmp_dir / Path(key).name
         logger.info("Downloading s3://%s/%s → %s", bucket, key, local_path)
         client.download_file(key, str(local_path), bucket=bucket)
+        path_map[str(local_path)] = path
         resolved.append(str(local_path))
 
-    return resolved, [str(tmp_dir)]
+    return resolved, [str(tmp_dir)], path_map
 
 
 def _cleanup(temp_dirs: List[str]) -> None:
@@ -293,6 +336,67 @@ def _cleanup(temp_dirs: List[str]) -> None:
             pass
 
 
+def _pending_audio_paths(
+    audio_paths: List[str], processed_files: List[str]
+) -> Tuple[List[str], int]:
+    """Drop paths already listed in ``session_state.processed_files``.
+
+    Recorders finalize by re-publishing the last chunk URI with
+    ``chain_agent: {command: session_completed}``. Skipping those paths
+    avoids duplicate segments while still letting the job succeed so the
+    chain runs.
+    """
+    if not processed_files:
+        return list(audio_paths), 0
+    processed_set = {str(p) for p in processed_files}
+    pending = [p for p in audio_paths if str(p) not in processed_set]
+    return pending, len(audio_paths) - len(pending)
+
+
+def _post_session_side_effects(
+    cfg: Any,
+    session: str,
+    db_dsn: str,
+    engine: Any,
+    *,
+    time_cursor: float,
+    audio_end: Optional[float] = None,
+    assign_offsets: bool = False,
+) -> None:
+    """Screenshot vision + vault push (+ optional capture offset assign)."""
+    if assign_offsets:
+        try:
+            from .session_captures import assign_audio_offsets
+
+            end = float(time_cursor if audio_end is None else audio_end)
+            assign_audio_offsets(
+                engine,
+                session,
+                audio_start=float(time_cursor),
+                audio_end=end,
+            )
+        except Exception as exc:
+            logger.warning(
+                "session capture offsets failed for %r (non-fatal): %s",
+                session,
+                exc,
+            )
+    try:
+        from pawn_agent.core.screenshot_vision import maybe_summarize_screenshots
+
+        maybe_summarize_screenshots(cfg, session, db_dsn)
+    except Exception as exc:
+        logger.warning(
+            "screenshot vision failed for %r (non-fatal): %s",
+            session,
+            exc,
+        )
+
+    from .vault_transcript import maybe_push_transcript_to_vault
+
+    maybe_push_transcript_to_vault(session, cfg, db_dsn=db_dsn)
+
+
 def _run_transcribe_diarize(
     params: Dict[str, Any], cfg: Any, model_cache: Optional[ModelCache] = None
 ) -> None:
@@ -300,7 +404,6 @@ def _run_transcribe_diarize(
     from pathlib import Path as _Path
 
     from .combined import format_transcript_with_speakers, transcribe_with_diarization
-    from .config import DEFAULT_DB_DSN
     from .database import (
         get_engine,
         init_db,
@@ -309,59 +412,78 @@ def _run_transcribe_diarize(
         save_transcription_segments,
     )
 
-    audio_paths: List[str] = params.get("audio_paths") or []
+    audio_paths: List[str] = list(params.get("audio_paths") or [])
     if not audio_paths:
         raise ValueError("transcribe-diarize: 'audio_paths' is required")
 
-    resolved, temps = _resolve_audio_paths(audio_paths, cfg)
-    try:
-        db_dsn = _resolve_db_dsn(params, cfg)
-        session = params.get("session")
-        threshold = float(params.get("threshold", 0.7))
-        store_new = bool(params.get("store_new", True))
-        device = params.get("device", "cuda")
-        chunk_duration = params.get("chunk_duration")
-        cross_file_threshold = float(params.get("cross_file_threshold", 0.85))
-        no_timestamps = bool(params.get("no_timestamps", False))
-        verbose = bool(params.get("verbose", False))
-        backend = params.get("backend", "nemo")
-        output = params.get("output")
+    db_dsn = _resolve_db_dsn(params, cfg)
+    session = params.get("session")
+    threshold = float(params.get("threshold", 0.7))
+    store_new = bool(params.get("store_new", False))
+    device = params.get("device", "cuda")
+    chunk_duration = params.get("chunk_duration")
+    cross_file_threshold = float(params.get("cross_file_threshold", 0.55))
+    no_timestamps = bool(params.get("no_timestamps", False))
+    verbose = bool(params.get("verbose", False))
+    backend = params.get("backend", "nemo")
+    language = params.get("language")
+    output = params.get("output")
 
-        # Load session state if a session name was provided
-        engine = get_engine(db_dsn)
-        init_db(engine)
+    engine = get_engine(db_dsn)
+    init_db(engine)
 
-        prior_embeddings: Optional[Dict[str, Any]] = None
-        time_cursor: float = 0.0
-        processed_files: List[str] = []
-        prior_segment_count: int = 0
+    prior_embeddings: Optional[Dict[str, Any]] = None
+    time_cursor: float = 0.0
+    processed_files: List[str] = []
+    prior_segment_count: int = 0
 
-        if session:
-            # load_session_state returns (embeddings, time_cursor, processed_files, segment_count)
-            prior_embeddings, time_cursor, processed_files, prior_segment_count = (
-                load_session_state(session, engine)
+    if session:
+        # load_session_state returns (embeddings, time_cursor, processed_files, segment_count)
+        prior_embeddings, time_cursor, processed_files, prior_segment_count = (
+            load_session_state(session, engine)
+        )
+        audio_paths, skipped = _pending_audio_paths(audio_paths, processed_files)
+        if skipped:
+            logger.info(
+                "session %r: skipping %d already-processed audio path(s)",
+                session,
+                skipped,
             )
-            # Persist notes/screenshots before transcription so a retry of this
-            # message cannot duplicate them, and a later vault push still sees them.
-            try:
-                from datetime import datetime, timezone
+        # Persist notes/screenshots before transcription so a retry of this
+        # message cannot duplicate them, and a later vault push still sees them.
+        # Also covers finalize re-publishes that carry leftover captures only.
+        try:
+            from datetime import datetime, timezone
 
-                from .session_captures import ingest_session_captures
+            from .session_captures import ingest_session_captures
 
-                ingest_session_captures(
-                    engine,
-                    session,
-                    params,
-                    chunk_audio_start=float(time_cursor),
-                    received_at=datetime.now(timezone.utc),
-                )
-            except Exception as exc:
-                logger.warning(
-                    "session captures ingest failed for %r (non-fatal): %s",
-                    session,
-                    exc,
-                )
+            ingest_session_captures(
+                engine,
+                session,
+                params,
+                chunk_audio_start=float(time_cursor),
+                received_at=datetime.now(timezone.utc),
+            )
+        except Exception as exc:
+            logger.warning(
+                "session captures ingest failed for %r (non-fatal): %s",
+                session,
+                exc,
+            )
 
+    if not audio_paths:
+        # Finalize re-publish of the last chunk URI: nothing new to diarize.
+        # Job still succeeds so chain_agent (session_completed) can run.
+        logger.info(
+            "session %r: all audio paths already processed — skipping transcription",
+            session,
+        )
+        if session:
+            _post_session_side_effects(cfg, session, db_dsn, engine, time_cursor=time_cursor)
+        return
+
+    resolved, temps, path_map = _resolve_audio_paths(audio_paths, cfg)
+    try:
         result = transcribe_with_diarization(
             audio_path=resolved if len(resolved) > 1 else resolved[0],
             db_dsn=db_dsn,
@@ -372,10 +494,13 @@ def _run_transcribe_diarize(
             cross_file_threshold=cross_file_threshold,
             verbose=verbose,
             backend=backend,
+            language=language,
             prior_speaker_embeddings=prior_embeddings,
             time_cursor=time_cursor,
+            source_map=path_map,
+            session_id=session,
             transcription_engine=(
-                model_cache.get_transcription_engine(device, backend)
+                model_cache.get_transcription_engine(device, backend, language=language)
                 if model_cache is not None
                 else None
             ),
@@ -386,9 +511,10 @@ def _run_transcribe_diarize(
 
         # Save session state
         if session and result:
-            new_processed = processed_files + (
-                resolved if isinstance(resolved, list) else [resolved]
-            )
+            from .s3 import to_canonical_paths
+
+            # Persist canonical s3:// URIs (not /tmp downloads) in processed_files.
+            new_processed = processed_files + to_canonical_paths(resolved, path_map)
             save_session_state(
                 session,
                 result.get("session_speaker_embeddings") or {},
@@ -415,37 +541,16 @@ def _run_transcribe_diarize(
             logger.info("Transcript:\n%s", text)
 
         if session:
-            try:
-                from .session_captures import assign_audio_offsets
-
-                raw_end = result.get("new_time_cursor") if result else None
-                audio_end = float(time_cursor if raw_end is None else raw_end)
-                assign_audio_offsets(
-                    engine,
-                    session,
-                    audio_start=float(time_cursor),
-                    audio_end=audio_end,
-                )
-            except Exception as exc:
-                logger.warning(
-                    "session capture offsets failed for %r (non-fatal): %s",
-                    session,
-                    exc,
-                )
-            try:
-                from pawn_agent.core.screenshot_vision import maybe_summarize_screenshots
-
-                maybe_summarize_screenshots(cfg, session, db_dsn)
-            except Exception as exc:
-                logger.warning(
-                    "screenshot vision failed for %r (non-fatal): %s",
-                    session,
-                    exc,
-                )
-
-            from .vault_transcript import maybe_push_transcript_to_vault
-
-            maybe_push_transcript_to_vault(session, cfg, db_dsn=db_dsn)
+            raw_end = result.get("new_time_cursor") if result else None
+            _post_session_side_effects(
+                cfg,
+                session,
+                db_dsn,
+                engine,
+                time_cursor=time_cursor,
+                audio_end=float(raw_end) if raw_end is not None else None,
+                assign_offsets=True,
+            )
 
     finally:
         _cleanup(temps)
@@ -512,20 +617,21 @@ def _run_transcribe(
     if not audio_paths:
         raise ValueError("transcribe: 'audio_paths' is required")
 
-    resolved, temps = _resolve_audio_paths(audio_paths, cfg)
+    resolved, temps, _path_map = _resolve_audio_paths(audio_paths, cfg)
     try:
         device = params.get("device", "cuda")
         backend = params.get("backend", "nemo")
+        language = params.get("language")
         timestamps = bool(params.get("timestamps", True))
         chunk_duration = params.get("chunk_duration")
         output = params.get("output")
 
         if model_cache is not None:
-            engine = model_cache.get_transcription_engine(device, backend)
+            engine = model_cache.get_transcription_engine(device, backend, language=language)
         else:
             from .transcription import TranscriptionEngine
 
-            engine = TranscriptionEngine(device=device, backend=backend)
+            engine = TranscriptionEngine(device=device, backend=backend, language=language)
         results = engine.transcribe(
             resolved,
             include_timestamps=timestamps,
@@ -553,11 +659,11 @@ def _run_diarize(
     if not audio_paths:
         raise ValueError("diarize: 'audio_paths' is required")
 
-    resolved, temps = _resolve_audio_paths(audio_paths, cfg)
+    resolved, temps, path_map = _resolve_audio_paths(audio_paths, cfg)
     try:
         db_dsn = _resolve_db_dsn(params, cfg)
         threshold = float(params.get("threshold", 0.7))
-        store_new = bool(params.get("store_new", True))
+        store_new = bool(params.get("store_new", False))
         output = params.get("output")
         device = params.get("device", "cuda")
 
@@ -572,6 +678,7 @@ def _run_diarize(
             db_dsn=db_dsn,
             similarity_threshold=threshold,
             store_new_speakers=store_new,
+            source_map=path_map,
         )
 
         text = _json.dumps(result, indent=2, default=str)
@@ -585,6 +692,69 @@ def _run_diarize(
         _cleanup(temps)
 
 
+def _run_rediarize(
+    params: Dict[str, Any], cfg: Any, model_cache: Optional[ModelCache] = None
+) -> None:
+    from .reprocess import rediarize_session_job
+
+    session = params.get("session")
+    if not session:
+        raise ValueError("rediarize: 'session' is required")
+    db_dsn = _resolve_db_dsn(params, cfg)
+    margin = params.get("margin")
+    rediarize_session_job(
+        str(session),
+        db_dsn,
+        cfg,
+        threshold=float(params.get("threshold", 0.7)),
+        cross_file_threshold=float(params.get("cross_file_threshold", 0.55)),
+        margin=float(margin) if margin is not None else None,
+        device=str(params.get("device") or "auto"),
+        push_vault=bool(params.get("push_vault", True)),
+        resolve_audio=_resolve_audio_paths,
+        cleanup_temps=_cleanup,
+    )
+    _ = model_cache  # reserved for future diarization engine reuse
+
+
+def _run_retranscribe(
+    params: Dict[str, Any], cfg: Any, model_cache: Optional[ModelCache] = None
+) -> None:
+    from .reprocess import retranscribe_session
+
+    session = params.get("session")
+    if not session:
+        raise ValueError("retranscribe: 'session' is required")
+    db_dsn = _resolve_db_dsn(params, cfg)
+    device = str(params.get("device") or "cuda")
+    backend = str(params.get("backend") or "nemo")
+    language = params.get("language")
+    transcription_engine = None
+    diarization_engine = None
+    if model_cache is not None:
+        transcription_engine = model_cache.get_transcription_engine(
+            device, backend, language=language
+        )
+        diarization_engine = model_cache.get_diarization_engine(device)
+    retranscribe_session(
+        str(session),
+        db_dsn,
+        cfg,
+        backend=backend,
+        language=language,
+        threshold=float(params.get("threshold", 0.7)),
+        cross_file_threshold=float(params.get("cross_file_threshold", 0.55)),
+        device=device,
+        chunk_duration=params.get("chunk_duration"),
+        verbose=bool(params.get("verbose", False)),
+        push_vault=bool(params.get("push_vault", True)),
+        resolve_audio=_resolve_audio_paths,
+        cleanup_temps=_cleanup,
+        transcription_engine=transcription_engine,
+        diarization_engine=diarization_engine,
+    )
+
+
 def _run_embed(params: Dict[str, Any], cfg: Any) -> None:
     from .embeddings import EmbeddingManager
 
@@ -595,13 +765,20 @@ def _run_embed(params: Dict[str, Any], cfg: Any) -> None:
     if not speaker_id:
         raise ValueError("embed: 'speaker_id' is required")
 
-    resolved, temps = _resolve_audio_paths(audio_paths, cfg)
+    resolved, temps, path_map = _resolve_audio_paths(audio_paths, cfg)
     try:
         db_dsn = _resolve_db_dsn(params, cfg)
         manager = EmbeddingManager(db_dsn=db_dsn)
         for path in resolved:
-            manager.add_speaker(speaker_id=speaker_id, audio_path=path)
-            logger.info("Embedding stored for speaker '%s' from %s", speaker_id, path)
+            canonical = path_map.get(path, path)
+            from .diarization import DiarizationEngine
+            from .s3 import to_canonical_paths
+
+            eng = DiarizationEngine()
+            emb = eng.extract_embeddings(path)
+            canonical = to_canonical_paths([path], path_map)[0]
+            manager.add_embedding(speaker_id, emb, canonical)
+            logger.info("Embedding stored for speaker '%s' from %s", speaker_id, canonical)
     finally:
         _cleanup(temps)
 
@@ -617,11 +794,17 @@ def _resolve_chain_cfg(
     """Return effective chain-agent config, or *None* to skip chaining.
 
     Resolution order (first match wins):
-    - ``params["chain_agent"] is False``  → skip
+    - ``params["chain_agent"] is False``  → skip (intermediate recorder chunks)
+    - ``params["chain_agent"]`` is a dict → use it (finalize:
+      ``{"command": "session_completed"}``)
     - ``params["chain_agent"]`` is a str  → use as prompt
     - ``params["chain_agent"] is True``   → use config default prompt
     - ``params["chain_agent"] is None``   → fall back to ``queue_cfg["chain_agent"]``
     - ``queue_cfg["chain_agent"]["enabled"]`` is falsy → skip
+
+    Chunked recorders should send ``false`` on every per-chunk upload and only
+    attach ``{"command": "session_completed"}`` on stop/finalize. One-shot
+    uploads may chain on the single message.
     """
     msg_override = params.get("chain_agent")
     config_chain: Dict[str, Any] = queue_cfg.get("chain_agent") or {}

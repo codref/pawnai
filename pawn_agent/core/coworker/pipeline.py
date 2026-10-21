@@ -52,7 +52,7 @@ def _read_goals(cfg: AgentConfig, store: Any) -> Goals:
     return load_goals_text(text)
 
 
-def _source_link(cfg: AgentConfig, session_id: str) -> str:
+def _vault_note_key(cfg: AgentConfig, session_id: str) -> str:
     try:
         from pawn_core.vault_db import get_vault_note  # noqa: PLC0415
 
@@ -61,7 +61,37 @@ def _source_link(cfg: AgentConfig, session_id: str) -> str:
         return ""
     if row is None or not getattr(row, "key", None):
         return ""
-    return f"[[{row.key}]]"
+    return str(row.key)
+
+
+def _source_link(cfg: AgentConfig, session_id: str) -> str:
+    key = _vault_note_key(cfg, session_id)
+    return f"[[{key}]]" if key else ""
+
+
+def _session_annotations(cfg: AgentConfig, session_id: str, store: Any) -> str:
+    """User-written ## Annotations from the vault transcript, or empty."""
+    key = _vault_note_key(cfg, session_id)
+    if not key or store is None:
+        return ""
+    try:
+        md = store.read(key)
+    except Exception:
+        return ""
+    try:
+        from pawn_diarize.core.vault_transcript import user_annotations  # noqa: PLC0415
+
+        return user_annotations(md or "")
+    except Exception as exc:
+        logger.debug("session annotations unavailable for %s: %s", session_id, exc)
+        return ""
+
+
+def _source_with_annotations(transcript: str, annotations: str) -> str:
+    ann = (annotations or "").strip()
+    if not ann:
+        return transcript
+    return f"## User annotations\n{ann}\n\n## Transcript\n{transcript}"
 
 
 def _local_now(goals: Goals, cfg: AgentConfig) -> datetime:
@@ -145,7 +175,12 @@ async def process_source(
         try:
             from pawn_agent.core.coworker.link import related_lines  # noqa: PLC0415
 
-            related, recurrence = related_lines(cfg, item.get("text") or "", source_ref)
+            related, recurrence = related_lines(
+                cfg,
+                item.get("text") or "",
+                source_ref,
+                quote=item.get("quote") or "",
+            )
         except Exception as exc:
             logger.debug("coworker link skipped: %s", exc)
         row = itemdb.insert_item(
@@ -157,6 +192,7 @@ async def process_source(
             owner=item.get("owner") or None,
             due=item.get("due") or None,
             quote=item.get("quote") or None,
+            context=item.get("context") or None,
             thread=thread or None,
             interrupt=interrupt,
             movement=bool(item.get("movement")),
@@ -165,7 +201,9 @@ async def process_source(
             recurrence=recurrence,
             status="new",
         )
-        note_key = f"{cfg.coworker.items_dir.strip('/')}/{row['short_id']}.md"
+        from pawn_agent.core.coworker.actions import item_note_key  # noqa: PLC0415
+
+        note_key = item_note_key(cfg, short_id=row["short_id"], text=row.get("text") or "")
         note = render_item_note(
             item_id=row["id"],
             short_id=row["short_id"],
@@ -173,8 +211,11 @@ async def process_source(
             kind=row["kind"],
             text=row["text"],
             thread=thread,
+            context=item.get("context") or "",
             quote=item.get("quote") or "",
             source_link=source_link,
+            source_kind=source_kind,
+            source_ref=source_ref,
             reason=row.get("reason") or "",
             interrupt=interrupt,
             related=related,
@@ -185,6 +226,23 @@ async def process_source(
             row["note_key"] = note_key
         except Exception as exc:
             logger.warning("could not write item note %s: %s", note_key, exc)
+        else:
+            try:
+                from pawn_core.knowledge_index import index_text  # noqa: PLC0415
+
+                index_body = "\n".join(
+                    part
+                    for part in (row.get("text") or "", item.get("quote") or "")
+                    if (part or "").strip()
+                )
+                index_text(
+                    cfg,
+                    source_kind="item",
+                    source_ref=note_key,
+                    text=index_body,
+                )
+            except Exception as exc:
+                logger.debug("item knowledge index skipped: %s", exc)
         if thread:
             try:
                 itemdb.upsert_thread(
@@ -223,14 +281,20 @@ async def process_session(
     """Run the coworker loop for one diarization session."""
     from pawn_agent.utils.transcript import fetch_transcript  # noqa: PLC0415
 
+    if store is None:
+        from pawn_core.vault_config import vault_store_from_config  # noqa: PLC0415
+
+        store = vault_store_from_config(cfg)
     transcript = fetch_transcript(cfg, session_id)
     if transcript.startswith("Error") or transcript.startswith("No transcript"):
         raise ValueError(transcript)
+    annotations = _session_annotations(cfg, session_id, store)
+    source_text = _source_with_annotations(transcript, annotations)
     return await process_source(
         cfg,
         source_kind="session",
         source_ref=session_id,
-        source_text=transcript,
+        source_text=source_text,
         store=store,
         source_link=_source_link(cfg, session_id),
     )

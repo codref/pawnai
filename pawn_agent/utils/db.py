@@ -183,6 +183,7 @@ class CoworkerItem(_Base):
     owner: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     due: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     quote: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    context: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     thread: Mapped[Optional[str]] = mapped_column(String, nullable=True, index=True)
     interrupt: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     movement: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
@@ -587,6 +588,16 @@ def claim_vault_task(dsn: str, task_id: str) -> bool:
             return False
         row.status = "claimed"
         row.updated_at = now
+        return True
+
+
+def delete_vault_task(dsn: str, task_id: str) -> bool:
+    """Delete one vault task row. Returns True if a row was removed."""
+    with _get_session(dsn) as db:
+        row = db.get(VaultTask, task_id)
+        if row is None:
+            return False
+        db.delete(row)
         return True
 
 

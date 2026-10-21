@@ -29,7 +29,16 @@ CONVERSE = Skill(
         "session_relabel --session-id <id> --from SPEAKER_00 --to Davide\n"
         "```\n"
         "Resolve the session id first (sessions_list / ask). This updates "
-        "transcript labels and propagates the name across embeddings.\n"
+        "transcript labels for that session.\n"
+        "For lasting voice identity, use the curated Speakers gallery:\n"
+        "speakers_list, then after the user confirms a good span:\n"
+        "```run\n"
+        "speaker_enroll --speaker Davide --session <id> --from SPEAKER_00\n"
+        "```\n"
+        "then session_reidentify --session-id <id>. Never auto-enroll.\n"
+        "For who someone is (bio, facts, past meetings), use people_show / "
+        "speakers_show — not chat memory. Durable facts go to people_append "
+        "(confirm with the user). Person notes live under People/{speaker_id}.md.\n"
         "Existing vault transcript notes refresh automatically; if the user "
         "also wants a vault note and none exists yet, add --push-vault.\n"
         "To delete a diarization session, ALWAYS ask the user to confirm the "
@@ -72,7 +81,11 @@ SESSIONS = Skill(
     prompt=(
         "Active skill: sessions.\n"
         "Use sessions_list / session_transcript / session_analyze / "
-        "session_screenshots / session_relabel / session_delete via ```run blocks.\n"
+        "session_screenshots / session_relabel / session_delete / "
+        "speakers_list / speakers_show / speaker_enroll / session_reidentify / "
+        "people_show / people_ensure / people_append via ```run blocks.\n"
+        "When the user asks who a speaker is, call people_show (vault bio) and "
+        "speakers_show (gallery card). Do not invent biography.\n"
         "Never invent session ids — list first when the id is unclear.\n"
         "Do NOT pass --save unless the user explicitly asks for vault notes. "
         "When they want analysis AND vault, prefer a single "
@@ -81,11 +94,15 @@ SESSIONS = Skill(
         "```run\n"
         "session_relabel --session-id <id> --from SPEAKER_00 --to Davide\n"
         "```\n"
+        "For lasting voice identity (after the user confirms quality):\n"
+        "```run\n"
+        "speaker_enroll --speaker Davide --session <id> --from SPEAKER_00\n"
+        "```\n"
+        "then session_reidentify --session-id <id>. Never auto-enroll.\n"
         "--from may be a raw SPEAKER_XX label or the wrong display name shown "
-        "in the transcript. This updates segments and propagates the name to "
-        "embeddings via speaker_names. Existing vault Speakers+Transcript "
-        "notes refresh automatically. If the user also asks to create a vault "
-        "note and none exists yet:\n"
+        "in the transcript. session_relabel updates segments for that session. "
+        "Existing vault Speakers+Transcript notes refresh automatically. "
+        "If the user also asks to create a vault note and none exists yet:\n"
         "```run\n"
         "session_relabel --session-id <id> --from X --to Y --push-vault\n"
         "```\n"
@@ -113,6 +130,14 @@ SESSIONS = Skill(
         "session_screenshots",
         "session_relabel",
         "session_delete",
+        "speakers_list",
+        "speakers_show",
+        "speakers_update",
+        "speaker_enroll",
+        "session_reidentify",
+        "people_show",
+        "people_ensure",
+        "people_append",
         "knowledge_search",
     ),
 )
@@ -163,6 +188,10 @@ NOTES = Skill(
         "note_search",
         "note_write",
         "note_append",
+        "people_show",
+        "people_ensure",
+        "people_append",
+        "speakers_show",
         "knowledge_search",
         "tasknotes_list",
         "tasknotes_commit",
@@ -322,6 +351,41 @@ COWORKER = Skill(
     ),
 )
 
+RESEARCH_CAPTURE = Skill(
+    name="research_capture",
+    description=(
+        "Background research capture enrich: catalogue a browser-capture inbox "
+        "note (propose collection/entity, update frontmatter, optionally file)."
+    ),
+    prompt=(
+        "Active skill: research_capture.\n"
+        "You are enriching one research capture inbox note.\n"
+        "Use note_read / note_search / capture_update / note_append only. "
+        "Never call note_write on the capture atom — that breaks Obsidian "
+        "frontmatter when captions contain ':' .\n"
+        "Propose a collection slug when missing; prefer an existing folder "
+        "under the enriched Research dir. Create a new entity note with "
+        "note_write ONLY for a missing entity path "
+        "(pawn: entity under {enriched_dir}/{collection}/{entity}.md); "
+        "never note_write the capture inbox atom. Append to ## Captures with "
+        "note_append.\n"
+        "Update capture frontmatter with capture_update --path … "
+        "--collection --entity --type --caption --proposed-tags "
+        "--status proposed (or filed). Entity and collection are slugified. "
+        "Keep the snippet block intact.\n"
+        "File (status: filed + ## Captures link via note_append) only when "
+        "auto_file is true and the match is clear; otherwise status: proposed.\n"
+        "Never dump tool errors into notes. Never touch .obsidian/."
+    ),
+    tools=(
+        "note_read",
+        "note_search",
+        "capture_update",
+        "note_append",
+        "note_write",
+    ),
+)
+
 VAULT_TASKS = Skill(
     name="vault_tasks",
     description=(
@@ -363,5 +427,15 @@ VAULT_TASKS = Skill(
 def build_pawn_skills() -> SkillRegistry:
     """Return the pawn skill registry (converse is registered explicitly)."""
     return SkillRegistry(
-        [CONVERSE, SESSIONS, NOTES, SCHEDULING, OPS, TASKNOTES, COWORKER, VAULT_TASKS]
+        [
+            CONVERSE,
+            SESSIONS,
+            NOTES,
+            SCHEDULING,
+            OPS,
+            TASKNOTES,
+            COWORKER,
+            RESEARCH_CAPTURE,
+            VAULT_TASKS,
+        ]
     )

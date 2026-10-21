@@ -32,6 +32,9 @@ from pawn_core.database import (  # noqa: F401
     Base,
     GraphTriple,
     SessionAnalysis,
+    SessionSpeakerMap,
+    Speaker,
+    SpeakerEnrollment,
     SpeakerName,
     TranscriptionSegment,
     _get_session,
@@ -92,6 +95,9 @@ class SessionState(Base):
         ``{"embedding": [...], "total_duration": float}``.
     time_cursor:
         Accumulated audio duration in seconds across all processed files.
+    speakers_trained_at:
+        When set, the Sessions UI treats speaker training as done for this
+        session (suppresses ``needs training`` even if anonymous labels remain).
     updated_at:
         UTC timestamp of the last update.
     """
@@ -102,6 +108,9 @@ class SessionState(Base):
     processed_files: Mapped[Optional[Any]] = mapped_column(JSONB, nullable=True)
     speaker_embeddings: Mapped[Optional[Any]] = mapped_column(JSONB, nullable=True)
     time_cursor: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    speakers_trained_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True, default=None
+    )
     updated_at: Mapped[Optional[datetime]] = mapped_column(
         DateTime, nullable=True, default=lambda: datetime.now(timezone.utc)
     )
@@ -198,15 +207,23 @@ def save_session_state(
     processed_files: List[str],
     engine,
 ) -> None:
-    """Upsert ``SessionState`` for *session_id*."""
-    row = SessionState(
-        session_id=session_id,
-        speaker_embeddings=speaker_embeddings,
-        time_cursor=time_cursor,
-        processed_files=processed_files,
-        updated_at=datetime.now(timezone.utc),
-    )
+    """Upsert ``SessionState`` for *session_id*.
+
+    Preserves ``speakers_trained_at`` when the row already exists.
+    """
     with get_session(engine) as db:
+        existing = db.get(SessionState, session_id)
+        trained_at = (
+            getattr(existing, "speakers_trained_at", None) if existing is not None else None
+        )
+        row = SessionState(
+            session_id=session_id,
+            speaker_embeddings=speaker_embeddings,
+            time_cursor=time_cursor,
+            processed_files=processed_files,
+            speakers_trained_at=trained_at,
+            updated_at=datetime.now(timezone.utc),
+        )
         db.merge(row)
 
 

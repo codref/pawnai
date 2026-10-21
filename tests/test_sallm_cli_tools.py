@@ -27,10 +27,19 @@ def test_build_pawn_clitools_names() -> None:
         "session_screenshots",
         "session_delete",
         "session_relabel",
+        "speakers_list",
+        "speakers_show",
+        "speakers_update",
+        "speaker_enroll",
+        "session_reidentify",
+        "people_show",
+        "people_ensure",
+        "people_append",
         "note_read",
         "note_search",
         "note_write",
         "note_append",
+        "capture_update",
         "task_update",
         "schedule_propose",
         "knowledge_search",
@@ -49,12 +58,15 @@ def test_build_pawn_skills_includes_sessions() -> None:
     assert "converse" in registry.names()
     assert "sessions" in registry.names()
     assert "vault_tasks" in registry.names()
+    assert "research_capture" in registry.names()
     sessions = registry.get("sessions")
     assert sessions.tools is not None
     assert "sessions_list" in sessions.tools
     assert "session_delete" in sessions.tools
     assert "session_relabel" in sessions.tools
     assert "session_screenshots" in sessions.tools
+    assert "people_show" in sessions.tools
+    assert "speakers_show" in sessions.tools
 
 
 def test_tasknotes_skill_hides_generic_note_writes() -> None:
