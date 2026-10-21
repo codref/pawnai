@@ -69,6 +69,71 @@ export function groupByDay(items: InboxItem[]): { key: string; label: string; it
     .map(([key, group]) => ({ key, label: dayLabel(key), items: group }));
 }
 
+export type ItemsGroupBy = "day" | "session";
+
+export interface SessionItemGroup {
+  key: string;
+  label: string;
+  items: InboxItem[];
+}
+
+export interface DaySessionGroup {
+  key: string;
+  label: string;
+  sessions: SessionItemGroup[];
+}
+
+/** Session origin key for grouping; non-session sources → ``other``. */
+export function itemSessionKey(item: InboxItem): string {
+  if ((item.source_kind || "").trim() === "session") {
+    const ref = (item.source_ref || "").trim();
+    return ref || "other";
+  }
+  return "other";
+}
+
+/**
+ * Nest items as day → session (source_ref). *titles* maps session_id → display title.
+ */
+export function groupBySession(
+  items: InboxItem[],
+  titles?: Map<string, string> | Record<string, string>,
+): DaySessionGroup[] {
+  const titleOf = (ref: string): string => {
+    if (!ref || ref === "other") return "Other";
+    if (titles instanceof Map) return titles.get(ref) || ref;
+    if (titles && typeof titles === "object") return titles[ref] || ref;
+    return ref;
+  };
+  const byDay = new Map<string, Map<string, InboxItem[]>>();
+  for (const item of items) {
+    const d = dayKey(item.created_at);
+    const sk = itemSessionKey(item);
+    const dayMap = byDay.get(d) ?? new Map<string, InboxItem[]>();
+    const list = dayMap.get(sk) ?? [];
+    list.push(item);
+    dayMap.set(sk, list);
+    byDay.set(d, dayMap);
+  }
+  return Array.from(byDay.entries())
+    .sort((a, b) => b[0].localeCompare(a[0]))
+    .map(([key, sessionMap]) => ({
+      key,
+      label: dayLabel(key),
+      sessions: Array.from(sessionMap.entries())
+        .sort((a, b) => {
+          if (a[0] === "other") return 1;
+          if (b[0] === "other") return -1;
+          return titleOf(a[0]).localeCompare(titleOf(b[0]));
+        })
+        .map(([sk, group]) => ({
+          key: sk,
+          label: sk === "other" ? "Other" : titleOf(sk),
+          items: group,
+        })),
+    }));
+}
+
 function frontmatterBody(text: string): { meta: string; rest: string } | null {
   if (!text.startsWith("---\n")) return null;
   const end = text.indexOf("\n---", 3);
@@ -142,6 +207,8 @@ export function parseItemNote(
   const created =
     mtime != null ? window.moment(mtime).toISOString() : window.moment().toISOString();
   const openedAt = metaValue(parsed.meta, "opened_at") || null;
+  const sourceKind = metaValue(parsed.meta, "source_kind") || null;
+  const sourceRef = metaValue(parsed.meta, "source_ref") || null;
   return {
     id,
     short_id: shortId,
@@ -156,6 +223,8 @@ export function parseItemNote(
     note_key: path,
     created_at: created,
     opened_at: openedAt,
+    source_kind: sourceKind,
+    source_ref: sourceRef,
   };
 }
 
@@ -272,6 +341,14 @@ export async function listItemNotes(
         .replace(/-[a-f0-9]{8}$/i, "");
       const label = base.replace(/-/g, " ").trim() || shortId;
       const openedRaw = fm.opened_at != null ? String(fm.opened_at).trim() : "";
+      const sourceKind =
+        fm.source_kind != null && String(fm.source_kind).trim()
+          ? String(fm.source_kind).trim()
+          : null;
+      const sourceRef =
+        fm.source_ref != null && String(fm.source_ref).trim()
+          ? String(fm.source_ref).trim()
+          : null;
       items.push({
         id,
         short_id: shortId,
@@ -283,6 +360,8 @@ export async function listItemNotes(
         note_key: file.path,
         created_at: window.moment(file.stat.mtime).toISOString(),
         opened_at: openedRaw || null,
+        source_kind: sourceKind,
+        source_ref: sourceRef,
       });
       continue;
     }

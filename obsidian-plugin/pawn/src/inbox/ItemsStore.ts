@@ -3,6 +3,7 @@ import type { InboxItem } from "../api";
 import { ServerUnreachable } from "../api";
 import type PawnPlugin from "../main";
 import {
+  ItemsGroupBy,
   ItemsScope,
   PAGE_SIZE,
   CLOSED_STATUSES,
@@ -22,6 +23,8 @@ export interface ItemsQuery {
   kind: string;
   q: string;
   scope: ItemsScope;
+  groupBy: ItemsGroupBy;
+  sourceRef: string;
 }
 
 const DEBOUNCE_MS = 400;
@@ -49,6 +52,8 @@ export class ItemsStore {
   kind = "";
   q = "";
   scope: ItemsScope = "open";
+  groupBy: ItemsGroupBy = "day";
+  sourceRef = "";
 
   constructor(private plugin: PawnPlugin) {}
 
@@ -142,6 +147,8 @@ export class ItemsStore {
     if (partial.kind !== undefined) this.kind = partial.kind;
     if (partial.q !== undefined) this.q = partial.q;
     if (partial.scope !== undefined) this.scope = partial.scope;
+    if (partial.groupBy !== undefined) this.groupBy = partial.groupBy;
+    if (partial.sourceRef !== undefined) this.sourceRef = partial.sourceRef;
   }
 
   scheduleRefresh(): void {
@@ -157,11 +164,20 @@ export class ItemsStore {
     return [
       this.offline,
       this.scope,
+      this.groupBy,
+      this.sourceRef,
+      this.kind,
+      this.q,
       this.total,
       this.openTotal,
       this.vaultNotes,
       this.flushable,
-      this.items.map((i) => `${i.id}:${i.status}:${i.opened_at || ""}`).join(","),
+      this.items
+        .map(
+          (i) =>
+            `${i.id}:${i.status}:${i.opened_at || ""}:${i.source_ref || ""}`,
+        )
+        .join(","),
     ].join("|");
   }
 
@@ -251,6 +267,8 @@ export class ItemsStore {
       statuses: statusesForScope(this.scope),
       kind: this.kind || undefined,
       q: this.q.trim() || undefined,
+      source_ref: this.sourceRef.trim() || undefined,
+      source_kind: this.sourceRef.trim() ? "session" : undefined,
       limit: PAGE_SIZE,
       offset,
     };
@@ -300,6 +318,12 @@ export class ItemsStore {
         if (this.stopped || generation !== this.generation) return;
         let filtered = items;
         if (this.kind) filtered = filtered.filter((i) => i.kind === this.kind);
+        if (this.sourceRef.trim()) {
+          const ref = this.sourceRef.trim();
+          filtered = filtered.filter(
+            (i) => i.source_kind === "session" && i.source_ref === ref,
+          );
+        }
         if (this.q.trim()) {
           const needle = this.q.trim().toLowerCase();
           filtered = filtered.filter(

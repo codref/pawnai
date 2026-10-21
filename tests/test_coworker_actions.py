@@ -15,6 +15,8 @@ def test_item_note_roundtrip():
         context="Davide and Mira agreed not to migrate before Friday.",
         quote="we stay on S3",
         source_link="[[Pawn/Transcripts/s.md]]",
+        source_kind="session",
+        source_ref="meet-1",
         reason="New commitment.",
         interrupt=True,
         opened_at="2026-10-16T12:00:00+00:00",
@@ -23,14 +25,18 @@ def test_item_note_roundtrip():
     assert parsed["short_id"] == "abcd1234"
     assert parsed["action"] == ""
     assert parsed["opened_at"] == "2026-10-16T12:00:00+00:00"
+    assert parsed["source_kind"] == "session"
+    assert parsed["source_ref"] == "meet-1"
     assert "opened_at:" in raw
+    assert "source_kind: session" in raw
+    assert "source_ref: meet-1" in raw
     assert "Keep it on our S3." in raw
     assert "## Context" in raw
     assert "Davide and Mira agreed" in raw
     assert "Why you were notified" in raw
 
 
-def test_rewrite_note_preserves_opened_at():
+def test_rewrite_note_preserves_opened_at_and_source():
     from unittest.mock import MagicMock
 
     from pawn_agent.core.coworker import actions
@@ -42,6 +48,8 @@ def test_rewrite_note_preserves_opened_at():
         status="new",
         kind="decision",
         text="Ship it",
+        source_kind="session",
+        source_ref="meet-1",
         opened_at="2026-10-16T12:00:00+00:00",
     )
     store.read.return_value = existing
@@ -65,6 +73,8 @@ def test_rewrite_note_preserves_opened_at():
     parsed = parse_item_note(written["Pawn/Items/x.md"])
     assert parsed["status"] == "dismissed"
     assert parsed["opened_at"] == "2026-10-16T12:00:00+00:00"
+    assert parsed["source_kind"] == "session"
+    assert parsed["source_ref"] == "meet-1"
 
 
 def test_today_groups():

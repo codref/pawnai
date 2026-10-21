@@ -8,7 +8,10 @@ Three ways to use Pawn from Obsidian:
 
 1. **Pawn plugin — chat** (`obsidian-plugin/pawn/`): a Copilot-style side
    pane. Streams replies over `POST /v1/pawn/chat` with the active note,
-   selection and `@`-mentioned notes as structured context.
+   selection and `@`-mentioned notes as structured context. Assistant
+   replies turn vault paths (for example `Pawn/Notes/foo.md` or
+   `Pawn/TaskNotes/Views/board.base`) into clickable note links; existing
+   `[[wiki]]` links open the same way.
 2. **Pawn plugin — background jobs**: long work (agent tasks, note pushes,
    uploads) goes to `POST /v1/jobs`. It is accepted at once and reports back
    in the chat thread / Jobs tab. `Pawn/Tasks/*.md` notes mirror `ask` jobs
@@ -197,13 +200,20 @@ the release tag, BRAT, and the full feature list.
 ## Chat (plugin)
 
 - Right-side pane (ribbon icon or **Pawn: Open chat**). The conversation
-  follows the active note (`note:{path}`) by default; pick another note, a
-  recent chat, or **New chat** (`chat:{uuid}`) from the header.
+  follows the active note (`note:{path}`) by default; on the Chat tab, pick
+  another note or a recent chat from the searchable picker, or **New chat**
+  (`chat:{uuid}`). Delete removes the local entry and clears sallm memory for
+  that key (`/reset`). The picker lists local plugin history (up to 40
+  conversations), not diarization **Sessions**.
 - Context chips above the composer: the open note (× unpins that file; a
   dashed pin chip attaches it again), current selection, and extra notes via
   `@`, the `+` chip, or drag-and-drop from the file explorer. With **Send
   local note content** on, the plugin sends note bodies (including unsynced
-  edits); otherwise the server reads the vault.
+  edits); otherwise the server reads the vault. Each note body is inlined
+  once per conversation (up to a soft character budget); later turns send a
+  path pointer and the agent can `note_read` if needed. A changed note, or
+  the refresh button / `/vision refresh`, re-sends the body. The chip stays
+  muted while the next send would be path-only.
 - When the selected model is flagged `vision: true`, dropping or pasting a
   png, jpeg, gif, or webp into the composer attaches it to the next message.
   Images embedded in attached
@@ -213,8 +223,8 @@ the release tag, BRAT, and the full feature list.
   device, so the diagram is included even when note text is read from the
   vault bucket. Each picture is captioned once in that conversation. A
   changed drawing is exported and captioned again. The refresh button
-  beside the paperclip (or `/vision refresh`) reads the same bytes again
-  on the next message. Other files still go to the Inbox
+  beside the paperclip (or `/vision refresh`) re-reads attached notes and
+  images on the next message. Other files still go to the Inbox
   upload job. A page with several images captions up to four per message, in
   document order, and later messages pick up the ones not captioned yet. The
   model sees pixels for one of them; the others stay searchable by caption.

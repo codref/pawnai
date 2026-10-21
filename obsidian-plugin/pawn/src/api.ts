@@ -49,6 +49,8 @@ export interface Job {
 export interface NoteContext {
   path: string;
   content?: string;
+  /** false = path pointer only; server must not vault-fill the body */
+  inline?: boolean;
 }
 
 export interface ChatRequest {
@@ -133,6 +135,8 @@ export interface InboxItem {
   updated_at?: string | null;
   /** ISO timestamp when the user first opened the item note (vault frontmatter). */
   opened_at?: string | null;
+  source_kind?: string | null;
+  source_ref?: string | null;
 }
 
 export interface ListItemsParams {
@@ -140,8 +144,16 @@ export interface ListItemsParams {
   statuses?: string;
   kind?: string;
   q?: string;
+  source_kind?: string;
+  source_ref?: string;
   limit?: number;
   offset?: number;
+}
+
+export interface SessionExtractResult {
+  session_id: string;
+  items: { source_ref?: string; items?: number; interrupts?: number } | null;
+  people: Record<string, unknown> | null;
 }
 
 export interface ListItemsResult {
@@ -503,6 +515,8 @@ export class PawnClient {
     if (opts.statuses) qs.set("statuses", opts.statuses);
     if (opts.kind) qs.set("kind", opts.kind);
     if (opts.q) qs.set("q", opts.q);
+    if (opts.source_kind) qs.set("source_kind", opts.source_kind);
+    if (opts.source_ref) qs.set("source_ref", opts.source_ref);
     if (opts.limit != null) qs.set("limit", String(opts.limit));
     if (opts.offset != null) qs.set("offset", String(opts.offset));
     const query = qs.toString() ? `?${qs}` : "";
@@ -510,6 +524,21 @@ export class PawnClient {
     const body = resp.json as { items?: InboxItem[]; total?: number };
     const items = body.items ?? [];
     return { items, total: body.total ?? items.length };
+  }
+
+  async extractSession(
+    sessionId: string,
+    body: { items?: boolean; people?: boolean } = {},
+  ): Promise<SessionExtractResult> {
+    const resp = await this.request(
+      "POST",
+      `/v1/sessions/${encodeURIComponent(sessionId)}/extract`,
+      {
+        items: body.items !== false,
+        people: Boolean(body.people),
+      },
+    );
+    return resp.json as SessionExtractResult;
   }
 
   async itemAction(id: string, action: string, arg?: string): Promise<string> {

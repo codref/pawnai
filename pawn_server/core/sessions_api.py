@@ -190,9 +190,7 @@ def _speakers_summary(
             break
 
     anon_count = sum(
-        1
-        for label in labels
-        if _is_anon(label) and not _is_ignored(mapping.get(label))
+        1 for label in labels if _is_anon(label) and not _is_ignored(mapping.get(label))
     )
     return pills, anon_count if anon_count else unmapped, needs
 
@@ -677,9 +675,7 @@ async def enqueue_session_reprocess(
 
     mode_norm = (mode or "rediarize").strip().lower()
     if mode_norm not in ("rediarize", "retranscribe"):
-        raise SessionsApiError(
-            "mode must be 'rediarize' or 'retranscribe'", status_code=422
-        )
+        raise SessionsApiError("mode must be 'rediarize' or 'retranscribe'", status_code=422)
     backend_norm = (backend or "nemo").strip().lower()
     if backend_norm not in ("nemo", "whisper"):
         raise SessionsApiError("backend must be 'nemo' or 'whisper'", status_code=422)
@@ -688,9 +684,7 @@ async def enqueue_session_reprocess(
         lang = None
 
     try:
-        audio_files, _engine = await asyncio.to_thread(
-            prepare_session_audio, sid, cfg.db_dsn, cfg
-        )
+        audio_files, _engine = await asyncio.to_thread(prepare_session_audio, sid, cfg.db_dsn, cfg)
     except ValueError as exc:
         raise SessionsApiError(str(exc), status_code=422) from exc
 
@@ -714,11 +708,7 @@ async def enqueue_session_reprocess(
     title = (
         f"Rediarize session {sid}"
         if mode_norm == "rediarize"
-        else (
-            f"Retranscribe session {sid} ({backend_norm}"
-            + (f", {lang}" if lang else "")
-            + ")"
-        )
+        else (f"Retranscribe session {sid} ({backend_norm}" + (f", {lang}" if lang else "") + ")")
     )
     row = jobs.create_session_reprocess_job_row(
         cfg,
@@ -819,9 +809,7 @@ def ignore_session_speaker(
     mapping = gallery.load_session_map(sid)
     trained = bool(_speakers_trained_flags(cfg.db_dsn, [sid]).get(sid))
     labels = _label_stats(cfg.db_dsn, [sid]).get(sid, {})
-    speakers, unmapped, needs = _speakers_summary(
-        labels, mapping, speakers_trained=trained
-    )
+    speakers, unmapped, needs = _speakers_summary(labels, mapping, speakers_trained=trained)
     return {
         "session_id": sid,
         "from_label": label,
@@ -834,9 +822,7 @@ def ignore_session_speaker(
     }
 
 
-def set_speakers_trained(
-    cfg: Any, session_id: str, *, trained: bool = True
-) -> dict[str, Any]:
+def set_speakers_trained(cfg: Any, session_id: str, *, trained: bool = True) -> dict[str, Any]:
     """Mark the session as speaker-trained (or clear the flag)."""
     from datetime import datetime, timezone
 
@@ -871,9 +857,7 @@ def set_speakers_trained(
 
     labels = _label_stats(cfg.db_dsn, [sid]).get(sid, {})
     mapping = _session_maps(cfg.db_dsn, [sid]).get(sid, {})
-    speakers, unmapped, needs = _speakers_summary(
-        labels, mapping, speakers_trained=bool(trained)
-    )
+    speakers, unmapped, needs = _speakers_summary(labels, mapping, speakers_trained=bool(trained))
     return {
         "session_id": sid,
         "speakers_trained": bool(trained),
@@ -917,3 +901,46 @@ def relabel_session_api(
         "vault_refreshed": vault_refreshed,
         "vault_error": vault_error,
     }
+
+
+async def extract_session(
+    cfg: Any,
+    session_id: str,
+    *,
+    items: bool = True,
+    people: bool = False,
+) -> dict[str, Any]:
+    """Run coworker item extract and/or people refresh for one session.
+
+    Items require ``coworker.enabled``. People refresh runs even when coworker
+    is off (same as the CLI). Vault ``## Annotations`` are included in item
+    extract via :func:`process_session`.
+    """
+    sid = (session_id or "").strip()
+    if not sid:
+        raise SessionsApiError("session_id is required", status_code=422)
+    if not items and not people:
+        raise SessionsApiError("Provide items=true and/or people=true", status_code=422)
+
+    out: dict[str, Any] = {"session_id": sid, "items": None, "people": None}
+
+    if items:
+        if not getattr(getattr(cfg, "coworker", None), "enabled", False):
+            raise SessionsApiError(
+                "coworker is disabled; enable coworker to extract items "
+                "(people-only extract still works)",
+                status_code=400,
+            )
+        from pawn_agent.core.coworker.pipeline import process_session  # noqa: PLC0415
+
+        try:
+            out["items"] = await process_session(cfg, sid)
+        except ValueError as exc:
+            raise SessionsApiError(str(exc), status_code=422) from exc
+
+    if people:
+        from pawn_agent.core.people.refresh import refresh_people_for_session  # noqa: PLC0415
+
+        out["people"] = await refresh_people_for_session(cfg, sid, force=True)
+
+    return out

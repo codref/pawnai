@@ -48,23 +48,30 @@ def _store(cfg: AgentConfig, store: Any) -> Any:
     return vault_store_from_config(cfg)
 
 
-def _existing_opened_at(store: Any, key: str) -> str:
-    """Keep ``opened_at`` across triage rewrites."""
+def _existing_note_fields(store: Any, key: str) -> dict[str, str]:
+    """Keep ``opened_at`` / source fields across triage rewrites."""
+    out = {"opened_at": "", "source_kind": "", "source_ref": ""}
     try:
         text = store.read(key)
     except Exception:
-        return ""
+        return out
     try:
-        return str(parse_item_note(text).get("opened_at") or "").strip()
+        parsed = parse_item_note(text)
     except ValueError:
-        return ""
+        return out
+    out["opened_at"] = str(parsed.get("opened_at") or "").strip()
+    out["source_kind"] = str(parsed.get("source_kind") or "").strip()
+    out["source_ref"] = str(parsed.get("source_ref") or "").strip()
+    return out
 
 
 def _rewrite_note(store: Any, item: dict[str, Any], *, status: str, action: str = "") -> None:
     key = item.get("note_key")
     if not key or store is None:
         return
-    opened_at = _existing_opened_at(store, key)
+    existing = _existing_note_fields(store, key)
+    source_kind = (item.get("source_kind") or existing["source_kind"] or "").strip()
+    source_ref = (item.get("source_ref") or existing["source_ref"] or "").strip()
     body = render_item_note(
         item_id=item["id"],
         short_id=item["short_id"],
@@ -74,10 +81,12 @@ def _rewrite_note(store: Any, item: dict[str, Any], *, status: str, action: str 
         thread=item.get("thread") or "",
         context=item.get("context") or "",
         quote=item.get("quote") or "",
+        source_kind=source_kind,
+        source_ref=source_ref,
         reason=item.get("reason") or "",
         interrupt=bool(item.get("interrupt")),
         action=action,
-        opened_at=opened_at,
+        opened_at=existing["opened_at"],
     )
     store.write(key, body)
 

@@ -30,7 +30,7 @@ DELETE /v1/jobs/{id}, POST /v1/jobs/delete, GET /v1/jobs/events
     ``/v1/vault/tasks*`` remain as deprecated aliases.
 
 GET /v1/sessions, GET /v1/sessions/{id}, POST /v1/speakers,
-POST /v1/sessions/{id}/enroll|reidentify|relabel|reprocess|ignore|speakers-trained,
+POST /v1/sessions/{id}/enroll|reidentify|relabel|reprocess|extract|ignore|speakers-trained,
 GET /v1/meta
     Small authenticated config for clients (e.g. ``obsidian_vault_name`` for
     ``obsidian://open`` links in the browser capture panel).
@@ -326,6 +326,8 @@ class ContextNote(BaseModel):
 
     path: str
     content: Optional[str] = None
+    # False = path pointer only; server must not vault-fill or inline the body.
+    inline: bool = True
 
 
 class ChatImage(BaseModel):
@@ -469,6 +471,15 @@ class SessionSpeakersTrainedRequest(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
     trained: bool = True
+
+
+class SessionExtractRequest(BaseModel):
+    """POST /v1/sessions/{session_id}/extract — coworker items and/or people."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    items: bool = True
+    people: bool = False
 
 
 class VaultTaskCreateRequest(BaseModel):
@@ -1466,6 +1477,33 @@ async def sessions_speakers_trained(
         raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
 
 
+@app.post(
+    "/v1/sessions/{session_id}/extract",
+    dependencies=[Depends(_require_token)],
+)
+async def sessions_extract(
+    session_id: str,
+    body: SessionExtractRequest,
+    cfg: Any = Depends(_get_cfg),
+) -> dict:
+    """Re-run coworker item extract and/or people refresh for a session.
+
+    Item extract includes vault ``## Annotations`` as user context. Replaces
+    untriaged items for this session; triaged fingerprints stay suppressed.
+    """
+    from pawn_server.core import sessions_api  # noqa: PLC0415
+
+    try:
+        return await sessions_api.extract_session(
+            cfg,
+            session_id,
+            items=bool(body.items),
+            people=bool(body.people),
+        )
+    except sessions_api.SessionsApiError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+
+
 @app.get("/v1/captures", dependencies=[Depends(_require_token)])
 async def captures_list(
     limit: int = Query(default=40, ge=1, le=200),
@@ -1681,6 +1719,8 @@ async def items_list(
     statuses: Optional[str] = None,
     kind: Optional[str] = None,
     q: Optional[str] = None,
+    source_kind: Optional[str] = None,
+    source_ref: Optional[str] = None,
     limit: int = 100,
     offset: int = 0,
     cfg: Any = Depends(_get_cfg),
@@ -1701,6 +1741,8 @@ async def items_list(
         status_list = list(itemdb.OPEN_STATUSES)
     capped = min(max(1, limit), 200)
     start = max(0, offset)
+    sk = (source_kind or "").strip() or None
+    sr = (source_ref or "").strip() or None
 
     def _load() -> tuple[list, int]:
         rows = itemdb.list_items(
@@ -1709,6 +1751,8 @@ async def items_list(
             statuses=status_list,
             kind=kind or None,
             q=q or None,
+            source_kind=sk,
+            source_ref=sr,
             limit=capped,
             offset=start,
         )
@@ -1718,6 +1762,8 @@ async def items_list(
             statuses=status_list,
             kind=kind or None,
             q=q or None,
+            source_kind=sk,
+            source_ref=sr,
         )
         return rows, total
 
@@ -1906,13 +1952,20 @@ async def pawn_chat(body: PawnChatRequest, cfg: Any = Depends(_get_cfg)) -> Stre
         except Exception:
             store = None
         active = (
-            NoteRef(path=body.active_note.path, content=body.active_note.content)
+            NoteRef(
+                path=body.active_note.path,
+                content=body.active_note.content,
+                inline=body.active_note.inline,
+            )
             if body.active_note
             else None
         )
         if active is not None:
             active = (await resolve_notes(store, [active]))[0]
-        extra = await resolve_notes(store, [NoteRef(n.path, n.content) for n in body.context])
+        extra = await resolve_notes(
+            store,
+            [NoteRef(n.path, n.content, inline=n.inline) for n in body.context],
+        )
         if resolved.rewritten:
             prompt = agent_message
         else:

@@ -23,22 +23,138 @@
   border-bottom: 1px solid var(--background-modifier-border);
 }
 
-.pawn-header-row {
+.pawn-chat-toolbar {
+  flex-shrink: 0;
   display: flex;
   align-items: center;
   gap: var(--size-4-1);
+  padding: var(--size-4-2);
+  border-bottom: 1px solid var(--background-modifier-border);
 }
 
-.pawn-conv-select {
+.pawn-conv-trigger {
   flex: 1;
   min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: var(--size-4-1);
+  justify-content: space-between;
+  text-align: left;
+}
+
+.pawn-conv-trigger-label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pawn-conv-trigger-chevron {
+  display: flex;
+  flex: 0 0 auto;
+  width: 14px;
+  height: 14px;
+  color: var(--text-muted);
+}
+
+.pawn-conv-trigger-chevron svg {
+  width: 14px;
+  height: 14px;
+}
+
+.pawn-conv-pop {
+  position: fixed;
+  z-index: 1000;
+  display: flex;
+  flex-direction: column;
+  max-height: min(420px, 55vh);
+  padding: 6px;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--radius-m);
+  background: var(--background-primary);
+  box-shadow: var(--shadow-s);
+}
+
+.pawn-conv-search {
+  width: 100%;
+  margin: 0 0 4px;
+}
+
+.pawn-conv-list {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.pawn-conv-empty {
+  padding: 8px;
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+}
+
+.pawn-conv-option {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  border-radius: var(--radius-s);
+}
+
+.pawn-conv-option.is-active,
+.pawn-conv-option:hover {
+  background: var(--background-modifier-hover);
+}
+
+button.pawn-conv-option-pick {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 1px;
+  margin: 0;
+  padding: 6px 8px;
+  height: auto;
+  border: none !important;
+  border-radius: 0;
+  background: transparent !important;
+  box-shadow: none !important;
+  text-align: left;
+  color: var(--text-normal);
+  cursor: pointer;
+  font: inherit;
+}
+
+.pawn-conv-option-title {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pawn-conv-option-date {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+}
+
+.pawn-conv-option-delete {
+  flex: 0 0 auto;
+  opacity: 0.55;
+}
+
+.pawn-conv-option-delete:hover {
+  opacity: 1;
+  color: var(--text-error);
 }
 
 .pawn-tabs {
   display: flex;
   align-items: center;
   gap: var(--size-4-1);
-  margin-top: var(--size-4-2);
 }
 
 .pawn-tabs button {
@@ -162,6 +278,19 @@
 
 .pawn-msg .markdown-rendered > :last-child {
   margin-bottom: 0;
+}
+
+.pawn-msg-text a.internal-link,
+.pawn-job-result a.internal-link {
+  color: var(--link-color);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  cursor: pointer;
+}
+
+.pawn-msg-text a.internal-link:hover,
+.pawn-job-result a.internal-link:hover {
+  color: var(--link-color-hover, var(--link-color));
 }
 
 .pawn-progress-log {
@@ -822,7 +951,28 @@ button.pawn-chip-pin:hover {
 .pawn-inbox-kinds {
   display: flex;
   flex-wrap: wrap;
+  align-items: center;
   gap: 4px;
+}
+
+.pawn-inbox-groupby {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: auto;
+  padding-left: var(--size-4-2);
+}
+
+.pawn-inbox-groupby-label {
+  font-size: var(--font-ui-smaller);
+  color: var(--text-faint);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.pawn-inbox-groupby-select {
+  font-size: var(--font-ui-smaller);
+  max-width: 9em;
 }
 
 .pawn-inbox-search {
@@ -895,6 +1045,36 @@ button.pawn-chip-pin:hover {
   margin: var(--size-4-3) 0 var(--size-4-1);
   text-transform: uppercase;
   letter-spacing: 0.04em;
+}
+
+.pawn-inbox-session {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin: var(--size-4-3) 0 var(--size-4-1);
+  padding: 4px 0 4px 12px;
+  border-left: 4px solid var(--interactive-accent);
+  font-size: var(--font-ui-small);
+  font-weight: var(--font-semibold);
+  color: var(--text-normal);
+}
+
+.pawn-inbox-session-title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pawn-inbox-session-count {
+  flex-shrink: 0;
+  font-size: var(--font-ui-smaller);
+  font-weight: var(--font-medium);
+  color: var(--text-muted);
+  background: var(--background-modifier-hover);
+  border-radius: var(--radius-s);
+  padding: 0 6px;
+  line-height: 1.5;
 }
 
 .pawn-item-top {

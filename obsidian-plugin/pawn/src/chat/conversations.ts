@@ -37,6 +37,18 @@ export interface Conversation {
   reasoning?: string;
   /** OpenRouter route chosen in the composer. */
   route?: string;
+  /** Vault path → hash of last inlined note body in this conversation. */
+  noteBodyHashes?: Record<string, string>;
+}
+
+/** Sync string hash for note-body dedupe (FNV-1a 32-bit). */
+export function hashNoteBody(text: string): string {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < text.length; i++) {
+    h ^= text.charCodeAt(i);
+    h = Math.imul(h, 0x01000193);
+  }
+  return (h >>> 0).toString(16);
 }
 
 const MAX_MESSAGES = 60;
@@ -96,11 +108,24 @@ export class ConversationStore {
     return !!this.items[id];
   }
 
-  recent(limit = 15): Conversation[] {
-    return Object.values(this.items)
+  /** Non-empty conversations, newest first. Omit ``limit`` to return all stored. */
+  recent(limit?: number): Conversation[] {
+    const all = Object.values(this.items)
       .filter((c) => c.messages.length > 0)
-      .sort((a, b) => b.updatedAt - a.updatedAt)
-      .slice(0, limit);
+      .sort((a, b) => b.updatedAt - a.updatedAt);
+    return limit == null ? all : all.slice(0, limit);
+  }
+
+  /** Filter ``recent()`` by title, label, or id (case-insensitive). */
+  search(query: string): Conversation[] {
+    const q = query.trim().toLowerCase();
+    const all = this.recent();
+    if (!q) return all;
+    return all.filter((c) => {
+      const label = conversationLabel(c.id, c.title).toLowerCase();
+      const title = (c.title || "").toLowerCase();
+      return label.includes(q) || title.includes(q) || c.id.toLowerCase().includes(q);
+    });
   }
 
   add(id: string, msg: ChatMessage): ChatMessage {
@@ -141,8 +166,27 @@ export class ConversationStore {
     const conv = this.items[id];
     if (!conv) return;
     conv.messages = [];
+    conv.noteBodyHashes = undefined;
     conv.updatedAt = Date.now();
     this.persist();
+  }
+
+  getNoteBodyHash(id: string, path: string): string | undefined {
+    return this.get(id).noteBodyHashes?.[normalizeVaultKey(path)];
+  }
+
+  setNoteBodyHash(id: string, path: string, hash: string): void {
+    const conv = this.get(id);
+    const key = normalizeVaultKey(path);
+    if (!conv.noteBodyHashes) conv.noteBodyHashes = {};
+    conv.noteBodyHashes[key] = hash;
+    conv.updatedAt = Date.now();
+    this.persist();
+  }
+
+  /** True when this path was inlined earlier and ``hash`` still matches. */
+  noteBodyAlreadySent(id: string, path: string, hash: string): boolean {
+    return this.getNoteBodyHash(id, path) === hash;
   }
 
   remove(id: string): void {

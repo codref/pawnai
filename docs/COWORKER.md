@@ -1,6 +1,6 @@
 # Using the coworker loop
 
-The coworker loop keeps a short list of what you are trying to move, files what comes out of meetings and notes, and interrupts you only when an active thread is affected. You triage meeting items from the plugin Inbox (time-grouped timeline), the item note, Matrix, or chat. The Inbox **Ideas** chip lists idea notes you have not filed. The loop stays off until `coworker.enabled` is true.
+The coworker loop keeps a short list of what you are trying to move, files what comes out of meetings and notes, and interrupts you only when an active thread is affected. You triage meeting items from the plugin Inbox (Date or Session grouping), the item note, Matrix, or chat. The Inbox **Ideas** chip lists idea notes you have not filed. The loop stays off until `coworker.enabled` is true.
 
 ## Turn it on
 
@@ -122,7 +122,10 @@ When a `transcribe-diarize` job finishes and chaining resolves to `session_compl
 1. Extracts decisions, commitments, open questions, blocks, and contradictions.
    Each item has a one-line `text` claim, a self-contained `context` (who / about
    what / stakes; repetition across siblings is fine), and a longer verbatim
-   `quote` from the source.
+   `quote` from the source. Extract source is the DB transcript plus any
+   non-empty vault `## Annotations` on the session note (the default stub is
+   ignored). Edit Annotations to explain people, relations, or what to skip,
+   then re-run extract.
 2. Scores them against the active threads. A hit has to name one of those threads.
 3. Writes `Pawn/Items/{YYYY-MM-DD}-{slug}-{short_id}.md` and refreshes `Pawn/Today.md`.
 4. Pushes Matrix (and optional ntfy) only for interrupts.
@@ -142,6 +145,20 @@ pawn-server coworker process --session <diarization-session-id>
 pawn-server coworker people-refresh --session <diarization-session-id>
 ```
 
+From the Obsidian Sessions tab, **Extract** opens a modal (Items on by default;
+optional People refresh) that calls `POST /v1/sessions/{id}/extract`. That path
+always re-runs (no queue dedupe). Untriaged items for the session are replaced;
+triaged fingerprints stay suppressed. **Show items** opens the Inbox filtered
+to that session with Session grouping.
+
+```http
+POST /v1/sessions/{session_id}/extract
+{ "items": true, "people": false }
+```
+
+`GET /v1/items` accepts optional `source_ref` / `source_kind` filters (plugin
+deep-link uses `source_ref=<session_id>`).
+
 An item note looks like this. The eight-character `short_id` is what you reply with in Matrix or chat.
 
 ```markdown
@@ -152,6 +169,8 @@ short_id: a1b2c3d4
 status: notified
 kind: decision
 thread: Project X storage
+source_kind: session
+source_ref: session-id
 action:
 ---
 
@@ -194,7 +213,7 @@ Use any of the surfaces. They call the same actions.
 
 `<id>` is the `short_id` or the full UUID.
 
-**Obsidian.** The plugin Inbox tab (and **Show inbox**) is a time-grouped timeline of open meeting items from `GET /v1/items`. Each row shows the claim plus a short `context` subtitle (or quote fallback). **Review** mode highlights one row and supports keyboard triage (`j`/`k`, `d` Done, `x` Delete, `t` TODO, `f` File, `e` expand, Enter open note) with optimistic remove and no jump-to-top. **Select** mode plus **Select all**, then **Delete**, clears noise in bulk. Row actions: **Done**, **Add TODO**, **File to thread** (when threaded), **Delete**; **Ask Pawn** lives under expand. A missing item note shows as an orphan. Expand a row for full context, quote, and source. The same primary actions appear on an open item note. The **Ideas** chip lists idea notes (`status: inbox`) with Keep / Goal / Task / Drop. The status bar counts open items (and ideas) and opens the Inbox.
+**Obsidian.** The plugin Inbox tab (and **Show inbox**) lists open meeting items from `GET /v1/items`. Toggle **Date** (default) or **Session** grouping: Session mode nests day → originating session → items (`source_ref`). A dismissible “Filtered: …” chip appears when opened from a session card. Each row shows the claim plus a short `context` subtitle (or quote fallback); session-origin rows can open the transcript. **Review** mode highlights one row and supports keyboard triage (`j`/`k`, `d` Done, `x` Delete, `t` TODO, `f` File, `e` expand, Enter open note) with optimistic remove and no jump-to-top. **Select** mode plus **Select all**, then **Delete**, clears noise in bulk. Row actions: **Done**, **Add TODO**, **File to thread** (when threaded), **Delete**; **Ask Pawn** lives under expand. A missing item note shows as an orphan. Expand a row for full context, quote, and source. The same primary actions appear on an open item note. Triage rewrites preserve `source_kind` / `source_ref` frontmatter. The **Ideas** chip lists idea notes (`status: inbox`) with Keep / Goal / Task / Drop. The status bar counts open items (and ideas) and opens the Inbox.
 
 **The item note.** Set `action:` to `todo`, `file`, `task`, `delete`, or `ignore` and let it sync. The vault watcher applies it on its next poll (default 15 seconds). A note already filed, tasked, or dismissed is left alone.
 

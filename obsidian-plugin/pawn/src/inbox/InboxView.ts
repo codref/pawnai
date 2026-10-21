@@ -22,7 +22,15 @@ import {
   parkIdea,
   setIdeaStatus,
 } from "./ideas";
-import { ItemsScope, groupByDay, isItemUnread, kindClass, kindLabel } from "./items";
+import {
+  ItemsGroupBy,
+  ItemsScope,
+  groupByDay,
+  groupBySession,
+  isItemUnread,
+  kindClass,
+  kindLabel,
+} from "./items";
 import type { ItemsSection } from "./ItemsStore";
 import { pickTodoProject } from "./projects";
 
@@ -442,6 +450,46 @@ export function mountItemActions(
   iconBtn("trash-2", "Delete", "delete");
 }
 
+async function openItemSessionTranscript(
+  plugin: PawnPlugin,
+  sessionId: string,
+): Promise<void> {
+  const sessions = plugin.sessions?.all() ?? [];
+  const match = sessions.find((s) => s.session_id === sessionId);
+  if (match) {
+    const file = plugin.sessions?.resolveTranscript(match);
+    if (file) {
+      await plugin.app.workspace.getLeaf(false).openFile(file);
+      return;
+    }
+  }
+  // Offline / not in list: scan vault for pawn: transcript with this session_id.
+  for (const file of plugin.app.vault.getMarkdownFiles()) {
+    const fm = plugin.app.metadataCache.getFileCache(file)?.frontmatter;
+    if (!fm || fm.pawn !== "transcript") continue;
+    if (String(fm.session_id || file.basename).trim() === sessionId) {
+      await plugin.app.workspace.getLeaf(false).openFile(file);
+      return;
+    }
+  }
+  new Notice("Transcript not in vault yet.", 4000);
+}
+
+/**
+ * Switch to Inbox Items, group by session, and filter to one session origin.
+ */
+export function focusInboxOnSession(plugin: PawnPlugin, sessionId: string): void {
+  uiState.section = "items";
+  plugin.items.setQuery({
+    groupBy: "session",
+    sourceRef: sessionId,
+    scope: "open",
+  });
+  void plugin.openChat({ tab: "inbox" }).then(() => {
+    void plugin.items.refresh();
+  });
+}
+
 export function renderInbox(parent: HTMLElement, plugin: PawnPlugin): void {
   const scrollTop = pendingJobsScroll ?? parent.scrollTop;
   pendingJobsScroll = null;
@@ -501,6 +549,41 @@ export function renderInbox(parent: HTMLElement, plugin: PawnPlugin): void {
     chip.onclick = () => {
       state.scope = scope;
       plugin.items.setQuery({ scope });
+      void plugin.items.refresh().then(() => renderInbox(parent, plugin));
+    };
+  }
+
+  const groupBy = plugin.items.groupBy;
+  const groupWrap = scopes.createDiv({ cls: "pawn-inbox-groupby" });
+  groupWrap.createSpan({ cls: "pawn-inbox-groupby-label", text: "Group" });
+  const groupSelect = groupWrap.createEl("select", {
+    cls: "dropdown pawn-inbox-groupby-select",
+    attr: { "aria-label": "Group items by" },
+  });
+  for (const [id, label] of [
+    ["day", "Date"],
+    ["session", "Session"],
+  ] as const) {
+    const opt = groupSelect.createEl("option", { text: label, value: id });
+    if (groupBy === id) opt.selected = true;
+  }
+  groupSelect.onchange = () => {
+    plugin.items.setQuery({ groupBy: groupSelect.value as ItemsGroupBy });
+    renderInbox(parent, plugin);
+  };
+
+  if (plugin.items.sourceRef.trim()) {
+    const filterRow = parent.createDiv({ cls: "pawn-inbox-flush" });
+    filterRow.createSpan({
+      cls: "pawn-inbox-hint",
+      text: `Filtered: ${plugin.items.sourceRef}`,
+    });
+    const clear = filterRow.createEl("button", {
+      text: "Clear",
+      cls: "pawn-chip",
+    });
+    clear.onclick = () => {
+      plugin.items.setQuery({ sourceRef: "" });
       void plugin.items.refresh().then(() => renderInbox(parent, plugin));
     };
   }
@@ -732,16 +815,41 @@ export function renderInbox(parent: HTMLElement, plugin: PawnPlugin): void {
       .catch(noticeError);
   };
 
-  for (const group of groupByDay(items)) {
-    list.createDiv({ cls: "pawn-inbox-day", text: group.label });
-    for (const item of group.items) {
-      renderItemRow(list, plugin, item, state, {
-        rerender,
-        onSelectToggle: () => updateBulkDeleteLabel(parent, state),
-        onActionStart: (id) => {
-          state.focusedId = anchorAfterRemove(listedIds, id);
-        },
-      });
+  const rowHandlers = {
+    rerender,
+    onSelectToggle: () => updateBulkDeleteLabel(parent, state),
+    onActionStart: (id: string) => {
+      state.focusedId = anchorAfterRemove(listedIds, id);
+    },
+  };
+  if (plugin.items.groupBy === "session") {
+    const titles = new Map<string, string>();
+    for (const s of plugin.sessions?.all() ?? []) {
+      titles.set(s.session_id, s.title || s.session_id);
+    }
+    for (const day of groupBySession(items, titles)) {
+      list.createDiv({ cls: "pawn-inbox-day", text: day.label });
+      for (const session of day.sessions) {
+        const sessionHead = list.createDiv({ cls: "pawn-inbox-session" });
+        sessionHead.createSpan({
+          cls: "pawn-inbox-session-title",
+          text: session.label,
+        });
+        sessionHead.createSpan({
+          cls: "pawn-inbox-session-count",
+          text: String(session.items.length),
+        });
+        for (const item of session.items) {
+          renderItemRow(list, plugin, item, state, rowHandlers);
+        }
+      }
+    }
+  } else {
+    for (const group of groupByDay(items)) {
+      list.createDiv({ cls: "pawn-inbox-day", text: group.label });
+      for (const item of group.items) {
+        renderItemRow(list, plugin, item, state, rowHandlers);
+      }
     }
   }
 
@@ -947,6 +1055,24 @@ function renderItemRow(
       onStart: () => onActionStart(item.id),
     },
   );
+  if (item.source_kind === "session" && item.source_ref) {
+    const actions = metaRow.querySelector(".pawn-item-actions");
+    if (actions instanceof HTMLElement) {
+      const openTx = actions.createEl("button", {
+        cls: "clickable-icon pawn-item-action",
+        attr: {
+          "aria-label": "Open transcript",
+          title: `Session ${item.source_ref}`,
+        },
+      });
+      setIcon(openTx, "file-text");
+      actions.insertBefore(openTx, actions.firstChild);
+      openTx.onclick = (ev) => {
+        ev.stopPropagation();
+        void openItemSessionTranscript(plugin, item.source_ref!);
+      };
+    }
+  }
 
   const expandBtn = card.createEl("button", {
     cls: "pawn-item-expand clickable-icon",

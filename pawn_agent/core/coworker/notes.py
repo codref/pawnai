@@ -33,6 +33,8 @@ def render_item_note(
     context: str = "",
     quote: str = "",
     source_link: str = "",
+    source_kind: str = "",
+    source_ref: str = "",
     reason: str = "",
     interrupt: bool = False,
     related: list[str] | None = None,
@@ -49,6 +51,12 @@ def render_item_note(
         "thread": thread or "",
         "action": action or "",
     }
+    sk = (source_kind or "").strip()
+    sr = (source_ref or "").strip()
+    if sk:
+        meta["source_kind"] = sk
+    if sr:
+        meta["source_ref"] = sr
     opened = (opened_at or "").strip()
     if opened:
         meta["opened_at"] = opened
@@ -90,6 +98,8 @@ def parse_item_note(text: str) -> dict[str, Any]:
         "action": str(meta.get("action") or "").strip().lower(),
         "opened_at": _meta_str(meta.get("opened_at")),
         "todo_project": _meta_str(meta.get("todo_project")),
+        "source_kind": _meta_str(meta.get("source_kind")),
+        "source_ref": _meta_str(meta.get("source_ref")),
         "body": body,
         "meta": meta,
     }

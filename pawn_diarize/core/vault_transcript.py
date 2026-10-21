@@ -74,6 +74,18 @@ def extract_annotations(markdown: str) -> str:
     return (body + "\n") if body else _DEFAULT_ANNOTATIONS
 
 
+def user_annotations(markdown: str) -> str:
+    """Return Annotations when the user wrote something; else empty.
+
+    Skips the default stub so extract/LLM paths do not treat the placeholder
+    as real context.
+    """
+    body = extract_annotations(markdown or "").strip()
+    if not body or body == _DEFAULT_ANNOTATIONS.strip():
+        return ""
+    return body
+
+
 def content_hash(speakers_md: str, transcript_md: str) -> str:
     """Hash only managed sections (Annotations are excluded on purpose)."""
     payload = (speakers_md + "\n" + transcript_md).encode("utf-8")

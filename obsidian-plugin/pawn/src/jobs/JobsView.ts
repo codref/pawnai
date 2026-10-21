@@ -2,6 +2,12 @@ import { Component, MarkdownRenderer, Modal, Notice, TFile, setIcon } from "obsi
 import type { Job } from "../api";
 import { ExtraAction, renderMessageActions } from "../chat/MessageActions";
 import { conversationLabel } from "../chat/conversations";
+import {
+  linkifyInlineCodePaths,
+  linkifyVaultPaths,
+  materializeVaultLinks,
+  wireInternalLinks,
+} from "../chat/vaultLinks";
 import { dayKey, dayLabel } from "../inbox/items";
 import type PawnPlugin from "../main";
 import { isActive, isDeletable, JobsStatusScope } from "./JobStore";
@@ -142,7 +148,13 @@ export function renderJobCard(
   if (result && !isActive(job)) {
     const body = card.createDiv({ cls: "pawn-job-result markdown-rendered" });
     if (job.status === "blocked") body.addClass("is-error");
-    void MarkdownRenderer.render(plugin.app, result, body, job.note_path ?? "", component);
+    const sourcePath = job.note_path ?? "";
+    const { markdown, paths } = linkifyVaultPaths(result);
+    void MarkdownRenderer.render(plugin.app, markdown, body, sourcePath, component).then(() => {
+      materializeVaultLinks(body, paths);
+      linkifyInlineCodePaths(body);
+      wireInternalLinks(plugin.app, body, sourcePath);
+    });
   }
 
   const extra: ExtraAction[] = [];

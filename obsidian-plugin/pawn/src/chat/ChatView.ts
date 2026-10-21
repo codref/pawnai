@@ -21,12 +21,24 @@ import { exportExcalidrawImage, fileIsExcalidraw } from "./excalidraw";
 import { bytesToBase64, isImageName, mimeForName, noteExcalidrawTargets, noteImageTargets } from "./noteImages";
 import { renderMessageActions, renderUserMessageActions } from "./MessageActions";
 import {
+  conversationPickerOptions,
+  DeleteConversationModal,
+  mountConversationPicker,
+} from "./ConversationPicker";
+import {
   ChatMessage,
-  conversationLabel,
+  hashNoteBody,
   newId,
+  normalizeVaultKey,
   noteConversationId,
   SelectionRef,
 } from "./conversations";
+import {
+  linkifyInlineCodePaths,
+  linkifyVaultPaths,
+  materializeVaultLinks,
+  wireInternalLinks,
+} from "./vaultLinks";
 
 export const PAWN_CHAT_VIEW = "pawn-chat";
 
@@ -89,10 +101,13 @@ export class PawnChatView extends ItemView {
   private modelButtonLabel: HTMLElement | null = null;
   private modelPop: HTMLElement | null = null;
   private modelPopCloser: (() => void) | null = null;
+  private convPopCloser: (() => void) | null = null;
   /** Pictures dropped on the composer; sent as question images. */
   private pendingImages: { filename: string; mediaType: string; data: ArrayBuffer }[] = [];
   /** One-shot: recaption images this conversation has already seen. */
   private rereadImages = false;
+  /** One-shot: re-inline note bodies this conversation has already sent. */
+  private rereadNotes = false;
 
   constructor(
     leaf: WorkspaceLeaf,
@@ -359,6 +374,7 @@ export class PawnChatView extends ItemView {
     this.unsubscribeSessions?.();
     this.unsubscribeJobs?.();
     this.closeModelPop();
+    this.closeConvPop();
     this.pending?.abort.abort();
     this.clearKeyboardInset();
     this.containerEl.empty();
@@ -624,6 +640,7 @@ export class PawnChatView extends ItemView {
 
   private render(): void {
     this.captureDraft();
+    this.closeConvPop();
     const root = this.contentEl;
     root.empty();
     root.addClass("pawn-root");
@@ -650,27 +667,41 @@ export class PawnChatView extends ItemView {
   }
 
   private renderHeader(header: HTMLElement): void {
-    const row = header.createDiv({ cls: "pawn-header-row" });
-    const select = row.createEl("select", { cls: "dropdown pawn-conv-select" });
-    const options: Array<[string, string]> = [];
+    this.tabsEl = header.createDiv({ cls: "pawn-tabs" });
+    this.renderTabs();
+  }
+
+  private closeConvPop(): void {
+    this.convPopCloser?.();
+    this.convPopCloser = null;
+  }
+
+  /** Conversation picker + New / Reset / unpin — Chat tab only. */
+  private renderChatToolbar(parent: HTMLElement): void {
+    this.closeConvPop();
+    const row = parent.createDiv({ cls: "pawn-chat-toolbar" });
     const active = resolveActiveMarkdownFile(this.app);
-    if (active) options.push([noteConversationId(active.path), `Note: ${active.basename}`]);
-    for (const conv of this.plugin.conversations.recent()) {
-      if (!options.some(([id]) => id === conv.id)) {
-        const prefix = conv.id.startsWith("note:") ? "Note: " : "";
-        options.push([conv.id, prefix + conversationLabel(conv.id, conv.title)]);
-      }
-    }
-    if (!options.some(([id]) => id === this.conversationId)) {
-      const conv = this.plugin.conversations.get(this.conversationId);
-      options.unshift([this.conversationId, conversationLabel(this.conversationId, conv.title)]);
-    }
-    for (const [id, label] of options) select.createEl("option", { value: id, text: label });
-    select.value = this.conversationId;
-    select.onchange = () => {
-      this.switchConversation(select.value, true);
-      this.render();
-    };
+    const mounted = mountConversationPicker(row, {
+      currentId: this.conversationId,
+      getOptions: (query) =>
+        conversationPickerOptions(
+          this.plugin.conversations,
+          this.conversationId,
+          active ? { path: active.path, basename: active.basename } : null,
+          query,
+        ),
+      onSelect: (id) => {
+        this.switchConversation(id, true);
+        this.render();
+      },
+      onDelete: (id, label) => {
+        this.closeConvPop();
+        new DeleteConversationModal(this.app, label, () => {
+          void this.deleteConversation(id);
+        }).open();
+      },
+    });
+    this.convPopCloser = mounted.close;
 
     const iconBtn = (icon: string, label: string, onClick: () => void) => {
       const b = row.createEl("button", { cls: "clickable-icon", attr: { "aria-label": label } });
@@ -679,23 +710,46 @@ export class PawnChatView extends ItemView {
       return b;
     };
     iconBtn("plus", "New chat", () => {
+      this.closeConvPop();
       this.switchConversation(this.newGlobalConversation(), true);
       this.tab = "chat";
       this.render();
     });
     iconBtn("rotate-ccw", "Reset conversation (clears Pawn's memory of it)", () => {
+      this.closeConvPop();
       void this.send("/reset");
     });
     if (this.pinned) {
       iconBtn("pin-off", "Follow the active note again", () => {
+        this.closeConvPop();
         this.pinned = false;
         this.conversationId = this.defaultConversation();
         this.render();
       });
     }
+  }
 
-    this.tabsEl = header.createDiv({ cls: "pawn-tabs" });
-    this.renderTabs();
+  /** Drop local transcript + clear sallm memory for one conversation key. */
+  private async deleteConversation(id: string): Promise<void> {
+    this.closeConvPop();
+    try {
+      await this.plugin.client.chat({ conversation: id, message: "/reset" }, {});
+    } catch (e) {
+      new Notice(`Delete failed: ${e instanceof Error ? e.message : e}`);
+      return;
+    }
+    this.plugin.conversations.remove(id);
+    if (this.plugin.data.lastGlobalConversation === id) {
+      this.plugin.data.lastGlobalConversation = "";
+      this.plugin.persistSoon();
+    }
+    if (this.conversationId === id) {
+      this.rereadNotes = false;
+      this.rereadImages = false;
+      this.switchConversation(this.defaultConversation(), false);
+    }
+    new Notice("Conversation deleted.");
+    this.render();
   }
 
   private renderTabs(): void {
@@ -767,6 +821,7 @@ export class PawnChatView extends ItemView {
       });
       return;
     }
+    this.renderChatToolbar(body);
     this.threadEl = body.createDiv({ cls: "pawn-thread" });
     this.registerDomEvent(this.threadEl, "scroll", () => {
       const t = this.threadEl;
@@ -851,9 +906,14 @@ export class PawnChatView extends ItemView {
       body.setText(msg.content);
       return;
     }
-    void MarkdownRenderer.render(this.app, msg.content, body, msg.notePath ?? "", scope).then(
-      () => this.scrollThreadToBottom(),
-    );
+    const { markdown, paths } = linkifyVaultPaths(msg.content);
+    const sourcePath = msg.notePath ?? "";
+    void MarkdownRenderer.render(this.app, markdown, body, sourcePath, scope).then(() => {
+      materializeVaultLinks(body, paths);
+      linkifyInlineCodePaths(body);
+      wireInternalLinks(this.app, body, sourcePath);
+      this.scrollThreadToBottom();
+    });
     renderMessageActions(el, {
       app: this.app,
       text: msg.content,
@@ -892,6 +952,7 @@ export class PawnChatView extends ItemView {
     this.renderComposerBanner();
     this.context.mount(wrap);
     this.syncImageChips();
+    this.syncNoteSentState();
     this.slashEl = wrap.createDiv({ cls: "pawn-slash is-hidden" });
     const ta = wrap.createEl("textarea", {
       cls: "pawn-input",
@@ -1053,16 +1114,12 @@ export class PawnChatView extends ItemView {
         run: () => void this.send("/inbox"),
       },
       { slug: "reset", label: "/reset", hint: "Clear this conversation", run: () => void this.send("/reset") },
-      ...(this.modelIsVision()
-        ? [
-            {
-              slug: "vision-refresh",
-              label: "/vision refresh",
-              hint: "Read attached images again on the next message",
-              run: () => this.armReread(),
-            },
-          ]
-        : []),
+      {
+        slug: "vision-refresh",
+        label: "/vision refresh",
+        hint: "Re-read attached notes (and images) on the next message",
+        run: () => this.armReread(),
+      },
       {
         slug: "model",
         label: "/model",
@@ -1231,36 +1288,81 @@ export class PawnChatView extends ItemView {
   }
 
   private toggleReread(): void {
-    if (!this.modelIsVision()) {
-      new Notice("This model can't see images. Pick a vision model in the model menu.");
+    const hasNotes = this.context.hasAttachedNotes();
+    const vision = this.modelIsVision();
+    if (!hasNotes && !vision) {
+      new Notice("Attach a note or pick a vision model to refresh context.");
       return;
     }
-    this.rereadImages = !this.rereadImages;
+    const next = !(this.rereadNotes || this.rereadImages);
+    this.rereadNotes = hasNotes && next;
+    this.rereadImages = vision && next;
     this.paintRereadButton();
+    this.syncNoteSentState();
   }
 
   private armReread(): void {
-    if (!this.modelIsVision()) {
-      new Notice("This model can't see images. Pick a vision model in the model menu.");
+    const hasNotes = this.context.hasAttachedNotes();
+    const vision = this.modelIsVision();
+    if (!hasNotes && !vision) {
+      new Notice("Attach a note or pick a vision model to refresh context.");
       return;
     }
-    this.rereadImages = true;
+    if (hasNotes) this.rereadNotes = true;
+    if (vision) this.rereadImages = true;
     this.paintRereadButton();
+    this.syncNoteSentState();
   }
 
   private paintRereadButton(): void {
     const button = this.rereadButton;
     if (!button) return;
+    const hasNotes = this.context.hasAttachedNotes();
     const vision = this.modelIsVision();
-    button.toggleClass("is-hidden", !vision);
-    button.toggleClass("is-active", vision && this.rereadImages);
-    button.setAttr("aria-pressed", this.rereadImages ? "true" : "false");
+    const useful = hasNotes || vision;
+    const active = this.rereadNotes || this.rereadImages;
+    button.toggleClass("is-hidden", !useful);
+    button.toggleClass("is-active", useful && active);
+    button.setAttr("aria-pressed", active ? "true" : "false");
+    const parts: string[] = [];
+    if (hasNotes) parts.push("notes");
+    if (vision) parts.push("images");
+    const what = parts.join(" and ") || "context";
     button.setAttr(
       "aria-label",
-      this.rereadImages
-        ? "Images on the next message will be read again"
-        : "Read images in attached notes again",
+      active ? `${what} on the next message will be read again` : `Read attached ${what} again`,
     );
+  }
+
+  private async currentNoteHash(file: TFile): Promise<string> {
+    if (this.plugin.settings.sendLocalNoteContent) {
+      return hashNoteBody(await this.app.vault.cachedRead(file));
+    }
+    return String(file.stat.mtime);
+  }
+
+  /** Mute context chips when the note body was already inlined and is unchanged. */
+  private syncNoteSentState(): void {
+    void this.syncNoteSentStateAsync();
+  }
+
+  private async syncNoteSentStateAsync(): Promise<void> {
+    const convs = this.plugin.conversations;
+    const id = this.conversationId;
+    const force = this.rereadNotes;
+    const pointer = new Set<string>();
+    if (!force) {
+      const snap = this.context.snapshot(false);
+      const files = [...(snap.activeNote ? [snap.activeNote] : []), ...snap.extra];
+      for (const file of files) {
+        const hash = await this.currentNoteHash(file);
+        if (convs.noteBodyAlreadySent(id, file.path, hash)) {
+          pointer.add(normalizeVaultKey(file.path));
+        }
+      }
+    }
+    this.context.setNoteSentState((path) => pointer.has(normalizeVaultKey(path)), force);
+    this.paintRereadButton();
   }
 
   private syncImageChips(): void {
@@ -1441,9 +1543,30 @@ export class PawnChatView extends ItemView {
     return out;
   }
 
-  private async noteContext(file: TFile): Promise<NoteContext> {
-    if (!this.plugin.settings.sendLocalNoteContent) return { path: file.path };
-    return { path: file.path, content: await this.app.vault.cachedRead(file) };
+  /**
+   * Build note context for one send: full body on first attach / change / refresh,
+   * otherwise a path pointer (``inline: false``).
+   */
+  private async noteContextForSend(
+    file: TFile,
+    conversationId: string,
+    force: boolean,
+    hashesToStore: { path: string; hash: string }[],
+  ): Promise<NoteContext> {
+    const hash = await this.currentNoteHash(file);
+    const already = this.plugin.conversations.noteBodyAlreadySent(conversationId, file.path, hash);
+    if (!force && already) {
+      return { path: file.path, inline: false };
+    }
+    hashesToStore.push({ path: file.path, hash });
+    if (!this.plugin.settings.sendLocalNoteContent) {
+      return { path: file.path, inline: true };
+    }
+    return {
+      path: file.path,
+      content: await this.app.vault.cachedRead(file),
+      inline: true,
+    };
   }
 
   async send(text: string, opts: { background?: boolean } = {}): Promise<void> {
@@ -1485,10 +1608,13 @@ export class PawnChatView extends ItemView {
       try {
         await this.plugin.client.chat({ conversation, message: "/reset" }, {});
         convs.clear(conversation);
+        this.rereadNotes = false;
+        this.rereadImages = false;
         new Notice("Conversation reset.");
       } catch (e) {
         new Notice(`Reset failed: ${e instanceof Error ? e.message : e}`);
       }
+      this.syncNoteSentState();
       this.render();
       return;
     }
@@ -1498,8 +1624,10 @@ export class PawnChatView extends ItemView {
     const notePath = snap.activeNote?.path ?? selection?.path;
     const contextPaths = snap.extra.map((f) => f.path);
     const questionImages = this.pendingImages.splice(0);
-    const reread = this.rereadImages;
+    const rereadImages = this.rereadImages;
+    const rereadNotes = this.rereadNotes;
     this.rereadImages = false;
+    this.rereadNotes = false;
     const imageNote = questionImages.map((image) => image.filename).join(", ");
     const message = text || "Look at this image.";
     convs.add(conversation, {
@@ -1513,7 +1641,8 @@ export class PawnChatView extends ItemView {
     });
 
     if (opts.background) {
-      this.rereadImages = reread;
+      this.rereadImages = rereadImages;
+      this.rereadNotes = rereadNotes;
       await this.sendBackground(text, conversation, snap);
       return;
     }
@@ -1522,9 +1651,14 @@ export class PawnChatView extends ItemView {
     this.pending = { abort, progress: [], el: null };
     this.renderBody();
     let answered = false;
+    const hashesToStore: { path: string; hash: string }[] = [];
     try {
-      const activeNote = snap.activeNote ? await this.noteContext(snap.activeNote) : undefined;
-      const context = await Promise.all(snap.extra.map((f) => this.noteContext(f)));
+      const activeNote = snap.activeNote
+        ? await this.noteContextForSend(snap.activeNote, conversation, rereadNotes, hashesToStore)
+        : undefined;
+      const context = await Promise.all(
+        snap.extra.map((f) => this.noteContextForSend(f, conversation, rereadNotes, hashesToStore)),
+      );
       const model = this.selectedModel();
       const includeNotes = this.plugin.settings.includeNoteImages && this.modelIsVision();
       const noteFiles = [...(snap.activeNote ? [snap.activeNote] : []), ...snap.extra];
@@ -1547,7 +1681,7 @@ export class PawnChatView extends ItemView {
           context,
           model: model || undefined,
           images: images.length ? images : undefined,
-          force_caption: reread || undefined,
+          force_caption: rereadImages || undefined,
           include_note_images: includeNotes,
           ...this.tuningFields(),
         },
@@ -1590,6 +1724,11 @@ export class PawnChatView extends ItemView {
         },
         abort.signal,
       );
+      if (!abort.signal.aborted) {
+        for (const { path, hash } of hashesToStore) {
+          convs.setNoteBodyHash(conversation, path, hash);
+        }
+      }
       if (abort.signal.aborted && !answered) {
         convs.add(conversation, {
           id: newId(),
@@ -1610,6 +1749,7 @@ export class PawnChatView extends ItemView {
       });
     } finally {
       if (this.pending?.abort === abort) this.pending = null;
+      this.syncNoteSentState();
       if (this.containerEl.isConnected) this.renderBody();
     }
   }

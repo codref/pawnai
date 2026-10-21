@@ -1,8 +1,10 @@
 import { Notice, setIcon } from "obsidian";
 import type { SessionSummary } from "../api";
+import { focusInboxOnSession } from "../inbox/InboxView";
 import { dayKey, dayLabel } from "../inbox/items";
 import type PawnPlugin from "../main";
 import { noteConversationId } from "../chat/conversations";
+import { ExtractModal } from "./ExtractModal";
 import { ReprocessModal } from "./ReprocessModal";
 import { TrainModal, iconButton } from "./TrainModal";
 import type { SessionsScope } from "./SessionsStore";
@@ -220,6 +222,21 @@ function renderSessionCard(
   iconButton(actions, "messages-square", "Chat about this session", () => {
     void openSessionChat(plugin, session, opts.onOpenChat);
   });
+  iconButton(actions, "inbox", "Show items from this session", () => {
+    focusInboxOnSession(plugin, session.session_id);
+  });
+  const extract = iconButton(actions, "list-checks", "Extract items / people", () => {
+    if (opts.offline) {
+      new Notice("Extract requires the Pawn server.", 4000);
+      return;
+    }
+    new ExtractModal(
+      plugin,
+      session.session_id,
+      session.transcript_path ?? null,
+      opts.onChanged,
+    ).open();
+  });
   const reprocess = iconButton(actions, "refresh-ccw", "Reprocess (rediarize / retranscribe)", () => {
     if (opts.offline) {
       new Notice("Reprocess requires the Pawn server.", 4000);
@@ -235,6 +252,7 @@ function renderSessionCard(
     new TrainModal(plugin, session.session_id, opts.onChanged).open();
   });
   if (opts.offline) {
+    extract.setAttr("disabled", "true");
     reprocess.setAttr("disabled", "true");
     train.setAttr("disabled", "true");
   }

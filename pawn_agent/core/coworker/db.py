@@ -158,6 +158,8 @@ def _items_filters(
     statuses: Optional[list[str]] = None,
     kind: Optional[str] = None,
     q: Optional[str] = None,
+    source_kind: Optional[str] = None,
+    source_ref: Optional[str] = None,
 ):
     """Shared WHERE clauses for list/count."""
     from sqlalchemy import or_  # noqa: PLC0415
@@ -169,6 +171,12 @@ def _items_filters(
         clauses.append(CoworkerItem.status.in_(statuses))
     if kind:
         clauses.append(CoworkerItem.kind == kind)
+    sk = (source_kind or "").strip()
+    if sk:
+        clauses.append(CoworkerItem.source_kind == sk)
+    sr = (source_ref or "").strip()
+    if sr:
+        clauses.append(CoworkerItem.source_ref == sr)
     needle = (q or "").strip()
     if needle:
         pattern = f"%{needle}%"
@@ -188,12 +196,21 @@ def list_items(
     statuses: Optional[list[str]] = None,
     kind: Optional[str] = None,
     q: Optional[str] = None,
+    source_kind: Optional[str] = None,
+    source_ref: Optional[str] = None,
     limit: int = 100,
     offset: int = 0,
 ) -> list[dict[str, Any]]:
     with Session(get_engine(dsn)) as db:
         query = select(CoworkerItem).order_by(CoworkerItem.created_at.desc())
-        for clause in _items_filters(status=status, statuses=statuses, kind=kind, q=q):
+        for clause in _items_filters(
+            status=status,
+            statuses=statuses,
+            kind=kind,
+            q=q,
+            source_kind=source_kind,
+            source_ref=source_ref,
+        ):
             query = query.where(clause)
         start = max(0, offset)
         rows = db.scalars(query.offset(start).limit(max(1, limit))).all()
@@ -207,10 +224,19 @@ def count_items(
     statuses: Optional[list[str]] = None,
     kind: Optional[str] = None,
     q: Optional[str] = None,
+    source_kind: Optional[str] = None,
+    source_ref: Optional[str] = None,
 ) -> int:
     with Session(get_engine(dsn)) as db:
         query = select(func.count()).select_from(CoworkerItem)
-        for clause in _items_filters(status=status, statuses=statuses, kind=kind, q=q):
+        for clause in _items_filters(
+            status=status,
+            statuses=statuses,
+            kind=kind,
+            q=q,
+            source_kind=source_kind,
+            source_ref=source_ref,
+        ):
             query = query.where(clause)
         return int(db.scalar(query) or 0)
 
@@ -222,12 +248,21 @@ def list_item_ids(
     statuses: Optional[list[str]] = None,
     kind: Optional[str] = None,
     q: Optional[str] = None,
+    source_kind: Optional[str] = None,
+    source_ref: Optional[str] = None,
     limit: int = 5000,
 ) -> list[str]:
     """Return item ids matching filters (for bulk delete)."""
     with Session(get_engine(dsn)) as db:
         query = select(CoworkerItem.id).order_by(CoworkerItem.created_at.desc())
-        for clause in _items_filters(status=status, statuses=statuses, kind=kind, q=q):
+        for clause in _items_filters(
+            status=status,
+            statuses=statuses,
+            kind=kind,
+            q=q,
+            source_kind=source_kind,
+            source_ref=source_ref,
+        ):
             query = query.where(clause)
         rows = db.scalars(query.limit(max(1, limit))).all()
         return list(rows)

@@ -66,7 +66,8 @@ force-stopped after push so the next open reloads the plugin.
 - Open with the ribbon icon, **Pawn: Open chat**, or **Ask Pawn** in the
   editor menu.
 - The conversation follows the active note (`note:<path>`) unless you pick
-  another one in the header (pinned) or start a **New chat** (`chat:<uuid>`).
+  another one in the Chat-tab searchable picker (pinned) or start a **New chat**
+  (`chat:<uuid>`). Delete removes the local entry and clears server memory.
 - **Context chips**: the open note (× unpins it; the dashed pin chip attaches
   it again), current selection, and extra notes added with `@`, the `+` chip,
   the file menu (**Add to Pawn chat context**), or by dragging notes from the
@@ -134,7 +135,7 @@ always attached as structured context.
 | Server URL | `http://127.0.0.1:8000` | `pawn-server` base URL |
 | API token | *(empty)* | `api.token` from `pawnai.yaml` |
 | Default conversation | Per note | Per note (`note:<path>`) or one global chat |
-| Include active note | on | Attach the active note by default |
+| Include active note | on | Pin the open note as focus; body sent once per chat (refresh to re-send) |
 | Send local note content | on | Send note bodies from this device (unsynced edits included) |
 | Prompt commands folder | `Pawn/Commands` | Markdown prompt commands |
 | Agent root | `Pawn` | Folder Pawn owns (`Tasks/`, `Notes/`, `Inbox/`) |
