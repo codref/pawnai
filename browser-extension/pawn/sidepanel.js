@@ -2115,13 +2115,35 @@ function mountModelSelect(host) {
     if (ev.key === "Escape") close();
   };
 
+  /** Keep the model pop above the trigger, fully on-screen, scrollable if tall. */
+  const fitModelPop = () => {
+    if (!pop) return;
+    const rect = trigger.getBoundingClientRect();
+    const margin = 8;
+    const gap = 6;
+    const maxW = Math.max(200, window.innerWidth - margin * 2);
+    const width = Math.min(Math.max(240, rect.width + 40), maxW);
+    pop.style.width = `${width}px`;
+    // Prefer left-align with trigger; never hang off the left edge.
+    let left = rect.left;
+    if (left + width > window.innerWidth - margin) {
+      left = window.innerWidth - margin - width;
+    }
+    left = Math.max(margin, left);
+    pop.style.left = `${left}px`;
+    const spaceAbove = Math.max(120, rect.top - margin - gap);
+    pop.style.maxHeight = `${spaceAbove}px`;
+    pop.style.overflowY = "auto";
+    // Anchor bottom of pop just above the trigger (grows upward as content grows).
+    pop.style.top = "auto";
+    pop.style.bottom = `${Math.max(margin, window.innerHeight - rect.top + gap)}px`;
+  };
+
   const openSubmenu = (parentPop, options, current, apply) => {
     parentPop.querySelector(".pawn-model-sub")?.remove();
     const sub = document.createElement("div");
-    // Side panels are narrow — stack the submenu inside the pop instead of a
-    // flyout that would clip against the extension window edge.
-    const stack = window.innerWidth < 420;
-    sub.className = "pawn-model-sub" + (stack ? " is-stacked" : "");
+    // Always stack inside the pop — never fly out left/right in the side panel.
+    sub.className = "pawn-model-sub is-stacked";
     for (const option of options) {
       const item = document.createElement("button");
       item.type = "button";
@@ -2129,6 +2151,7 @@ function mountModelSelect(host) {
         "pawn-model-sub-item" + (option.value === current ? " is-active" : "");
       if (option.disabled) item.disabled = true;
       const lab = document.createElement("span");
+      lab.className = "pawn-model-sub-label";
       lab.textContent = option.label;
       item.appendChild(lab);
       if (option.value === current) {
@@ -2145,18 +2168,14 @@ function mountModelSelect(host) {
       });
       sub.appendChild(item);
     }
-    if (stack) {
-      const openRow = parentPop.querySelector(".pawn-model-row.is-open");
-      if (openRow instanceof HTMLElement) openRow.insertAdjacentElement("afterend", sub);
-      else parentPop.appendChild(sub);
-    } else {
-      parentPop.appendChild(sub);
-      const openRow = parentPop.querySelector(".pawn-model-row.is-open");
-      if (openRow instanceof HTMLElement) sub.style.top = `${openRow.offsetTop}px`;
-      const overflow =
-        parentPop.getBoundingClientRect().right + 160 + 12 > window.innerWidth;
-      sub.classList.toggle("is-left", overflow);
-    }
+    const openRow = parentPop.querySelector(".pawn-model-row.is-open");
+    if (openRow instanceof HTMLElement) openRow.insertAdjacentElement("afterend", sub);
+    else parentPop.appendChild(sub);
+    fitModelPop();
+    // Keep the open row + list visible inside the scrollable pop.
+    requestAnimationFrame(() => {
+      openRow?.scrollIntoView({ block: "nearest" });
+    });
   };
 
   const addPopRow = (parentPop, key, value, onOpen) => {
@@ -2171,15 +2190,24 @@ function mountModelSelect(host) {
     valEl.textContent = value;
     const ch = document.createElement("span");
     ch.className = "pawn-model-row-chevron";
-    setIcon(ch, "chevron-right");
+    setIcon(ch, "chevron-down");
     row.append(keyEl, valEl, ch);
     row.addEventListener("click", (ev) => {
       ev.preventDefault();
       ev.stopPropagation();
+      const wasOpen = row.classList.contains("is-open");
+      parentPop.querySelector(".pawn-model-sub")?.remove();
       parentPop.querySelectorAll(".pawn-model-row.is-open").forEach((el) => {
         el.classList.remove("is-open");
+        const c = el.querySelector(".pawn-model-row-chevron");
+        if (c) setIcon(c, "chevron-down");
       });
+      if (wasOpen) {
+        fitModelPop();
+        return;
+      }
       row.classList.add("is-open");
+      setIcon(ch, "chevron-up");
       onOpen();
     });
     parentPop.appendChild(row);
@@ -2266,14 +2294,7 @@ function mountModelSelect(host) {
       });
     }
     document.body.appendChild(pop);
-    const rect = trigger.getBoundingClientRect();
-    pop.style.left = `${Math.max(8, Math.min(rect.left, window.innerWidth - 248))}px`;
-    pop.style.top = "0px";
-    requestAnimationFrame(() => {
-      if (!pop) return;
-      const top = Math.max(8, rect.top - pop.offsetHeight - 6);
-      pop.style.top = `${top}px`;
-    });
+    fitModelPop();
     trigger.setAttribute("aria-expanded", "true");
     setIcon(chevron, "chevron-up");
     document.addEventListener("pointerdown", onOutside, true);

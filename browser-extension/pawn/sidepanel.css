@@ -938,14 +938,17 @@ button.pawn-conv-option-pick {
 .pawn-model-pop {
   position: fixed;
   z-index: 2000;
-  min-width: 220px;
-  max-width: min(280px, calc(100vw - 16px));
+  min-width: 200px;
+  max-width: calc(100vw - 16px);
   padding: 4px;
   border: 1px solid var(--background-modifier-border);
   border-radius: var(--radius-m);
   background: var(--background-primary);
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.18);
   box-sizing: border-box;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
 }
 
 .pawn-model-row,
@@ -1008,36 +1011,25 @@ button.pawn-conv-option-pick {
   stroke-linejoin: round;
 }
 
-.pawn-model-sub {
-  position: absolute;
-  left: calc(100% + 4px);
-  top: 4px;
-  z-index: 1;
-  min-width: 140px;
-  max-width: min(220px, calc(100vw - 24px));
-  padding: 4px;
-  border: 1px solid var(--background-modifier-border);
-  border-radius: var(--radius-m);
-  background: var(--background-primary);
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.18);
-  box-sizing: border-box;
-}
-
-.pawn-model-sub.is-left {
-  left: auto;
-  right: calc(100% + 4px);
-}
-
 .pawn-model-sub.is-stacked {
   position: static;
-  left: auto;
-  right: auto;
-  top: auto;
   width: 100%;
   max-width: none;
   margin: 0 0 4px;
+  padding: 2px;
+  border: 1px dashed var(--background-modifier-border);
+  border-radius: var(--radius-s);
+  background: var(--background-secondary);
   box-shadow: none;
-  border-style: dashed;
+  box-sizing: border-box;
+}
+
+.pawn-model-sub-label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .pawn-chat-context {
