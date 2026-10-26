@@ -41,7 +41,8 @@ Layout mirrors the Obsidian plugin chat pane (no Background toggle):
    `active_note` (`inline: false`); attached text/images (max 4 images).
 3. Thread + suggested action chips (**Create TODO**, **Capture idea**,
    **Summarize**, **Use session** when Capture target is a session).
-4. Composer: message · **model** (bottom, like Obsidian) · Send / Stop.
+4. Composer: message · **model** (bottom; OpenRouter **Effort** / **Route**
+   when the catalog exposes them) · attach selection/Clip · Send / Stop.
 5. Conversations are local (`chat:{uuid}` keys, up to 40 non-empty); New chat
    starts a fresh id. Image turns prefer a `vision: true` model from
    `GET /v1/pawn/models`.

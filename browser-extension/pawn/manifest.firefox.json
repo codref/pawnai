@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Pawn Capture",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "Capture snippets into the Pawn vault and chat with Pawn about the page.",
   "permissions": [
     "activeTab",

@@ -100,7 +100,6 @@
                 aria-haspopup="menu"
                 aria-expanded="false"
               ></button>
-              <div id="clip-menu" class="pawn-select-menu pawn-clip-menu" hidden role="menu"></div>
             </div>
             <span class="pawn-toolbar-sep" aria-hidden="true"></span>
             <button type="button" id="btn-save" class="mod-cta" title="Save to vault">Save</button>
@@ -129,38 +128,6 @@
             aria-label="New chat"
             title="New chat"
           ></button>
-          <span class="pawn-toolbar-sep" aria-hidden="true"></span>
-          <button
-            type="button"
-            id="btn-chat-selection"
-            class="clickable-icon"
-            aria-label="Attach selection"
-            title="Attach selection"
-          ></button>
-          <div id="chat-clip-control" class="pawn-clip">
-            <button
-              type="button"
-              id="btn-chat-region"
-              class="clickable-icon"
-              aria-label="Attach region"
-              title="Attach region"
-            ></button>
-            <button
-              type="button"
-              id="btn-chat-clip-menu"
-              class="clickable-icon pawn-clip-chevron"
-              aria-label="Clip mode"
-              title="Clip mode"
-              aria-haspopup="menu"
-              aria-expanded="false"
-            ></button>
-            <div
-              id="chat-clip-menu"
-              class="pawn-select-menu pawn-clip-menu"
-              hidden
-              role="menu"
-            ></div>
-          </div>
         </div>
         <div id="chat-context" class="pawn-chat-context" aria-label="Attached context"></div>
         <div id="chat-thread" class="pawn-chat-thread" aria-live="polite"></div>
@@ -174,6 +141,31 @@
           <div class="pawn-chat-composer-row">
             <div id="chat-model" class="pawn-model" title="Model"></div>
             <span class="pawn-composer-spacer" aria-hidden="true"></span>
+            <button
+              type="button"
+              id="btn-chat-selection"
+              class="clickable-icon"
+              aria-label="Attach selection"
+              title="Attach selection"
+            ></button>
+            <div id="chat-clip-control" class="pawn-clip">
+              <button
+                type="button"
+                id="btn-chat-region"
+                class="clickable-icon"
+                aria-label="Attach region"
+                title="Attach region"
+              ></button>
+              <button
+                type="button"
+                id="btn-chat-clip-menu"
+                class="clickable-icon pawn-clip-chevron"
+                aria-label="Clip mode"
+                title="Clip mode"
+                aria-haspopup="menu"
+                aria-expanded="false"
+              ></button>
+            </div>
             <button type="button" id="btn-chat-stop" class="clickable-icon" hidden aria-label="Stop">
             </button>
             <button type="button" id="btn-chat-send" class="mod-cta">Send</button>

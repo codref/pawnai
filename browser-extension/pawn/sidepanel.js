@@ -23,6 +23,8 @@ const ICONS = {
     '<rect width="18" height="18" x="3" y="3" rx="2" ry="2"/><circle cx="9" cy="9" r="2"/><path d="m21 15-3.086-3.086a2 2 0 0 0-2.828 0L6 21"/>',
   "chevron-up": '<path d="m18 15-6-6-6 6"/>',
   "chevron-down": '<path d="m6 9 6 6 6-6"/>',
+  "chevron-right": '<path d="m9 18 6-6-6-6"/>',
+  check: '<path d="M20 6 9 17l-5-5"/>',
   x: '<path d="M18 6 6 18"/><path d="m6 6 12 12"/>',
   search: '<circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/>',
   monitor:
@@ -38,6 +40,14 @@ const ICONS = {
     '<path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/>',
   link: '<path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/>',
   paperclip: '<path d="m16 6-8.5 8.5a2.12 2.12 0 0 0 3 3L19 9"/><path d="m15 3 6 6"/>',
+};
+
+const REASONING_LABEL = { none: "Off", low: "Low", medium: "Medium", high: "High" };
+const ROUTE_LABEL = {
+  balanced: "Balanced",
+  nitro: "Nitro",
+  floor: "Floor",
+  exacto: "Exacto",
 };
 
 function setIcon(node, name) {
@@ -84,12 +94,14 @@ const state = {
   settingsOpen: false,
   chat: {
     conversationId: "",
-    /** @type {Record<string, {id:string,title:string,messages:any[],updatedAt:number,model?:string}>} */
+    /** @type {Record<string, {id:string,title:string,messages:any[],updatedAt:number,model?:string,reasoning?:string,route?:string}>} */
     conversations: {},
     messages: [],
     attachments: [],
     models: [],
     model: "",
+    reasoning: "",
+    route: "",
     abort: null,
     pageUrl: "",
     pageTitle: "",
@@ -125,7 +137,6 @@ const el = {
   btnRegion: document.getElementById("btn-region"),
   btnClipMenu: document.getElementById("btn-clip-menu"),
   clipControl: document.getElementById("clip-control"),
-  clipMenu: document.getElementById("clip-menu"),
   btnSettings: document.getElementById("btn-settings"),
   btnSave: document.getElementById("btn-save"),
   destination: document.getElementById("destination"),
@@ -136,7 +147,6 @@ const el = {
   btnChatRegion: document.getElementById("btn-chat-region"),
   btnChatClipMenu: document.getElementById("btn-chat-clip-menu"),
   chatClipControl: document.getElementById("chat-clip-control"),
-  chatClipMenu: document.getElementById("chat-clip-menu"),
   btnChatNew: document.getElementById("btn-chat-new"),
   chatConvHost: document.getElementById("chat-conv"),
   chatModelHost: document.getElementById("chat-model"),
@@ -148,6 +158,9 @@ const el = {
   btnChatStop: document.getElementById("btn-chat-stop"),
 };
 
+/** Fixed-position clip mode popover (Capture or Chat). */
+let clipMenuPop = null;
+
 let chatModelSelect = null;
 let chatConvPicker = null;
 
@@ -156,14 +169,13 @@ init();
 async function init() {
   mountChromeIcons();
   el.targetKind = mountTargetKindSelect(document.getElementById("target-kind"));
-  mountClipMenu(el.clipMenu, () => el.clipControl);
-  mountClipMenu(el.chatClipMenu, () => el.chatClipControl);
   chatConvPicker = mountConversationPicker(el.chatConvHost);
   chatModelSelect = mountModelSelect(el.chatModelHost);
   await loadSettings();
   await loadTray();
   await loadChatState();
   chatConvPicker?.refresh();
+  chatModelSelect?.refresh();
   bind();
   syncSettingsUi();
   syncClipUi();
@@ -359,21 +371,30 @@ function syncClipUi() {
   for (const btn of [el.btnClipMenu, el.btnChatClipMenu]) {
     if (btn) btn.disabled = state.clipBusy;
   }
-  for (const menu of [el.clipMenu, el.chatClipMenu]) {
-    if (!menu || menu.hidden) continue;
-    for (const btn of menu.querySelectorAll(".pawn-select-option")) {
+  if (clipMenuPop) {
+    for (const btn of clipMenuPop.querySelectorAll(".pawn-select-option")) {
       btn.classList.toggle("is-selected", btn.dataset.value === state.clipMode);
     }
   }
 }
 
-function mountClipMenu(menuEl, controlGetter) {
-  if (!menuEl) return;
-  menuEl.replaceChildren();
+function openClipMenu(which) {
+  if (state.clipBusy) return;
+  const trigger = which === "chat" ? el.btnChatClipMenu : el.btnClipMenu;
+  const control = which === "chat" ? el.chatClipControl : el.clipControl;
+  if (!trigger) return;
+  if (clipMenuPop) {
+    closeClipMenus();
+    return;
+  }
+  const pop = document.createElement("div");
+  pop.className = "pawn-fixed-pop pawn-clip-pop";
+  pop.setAttribute("role", "menu");
   for (const mode of CLIP_MODES) {
     const btn = document.createElement("button");
     btn.type = "button";
-    btn.className = "pawn-select-option";
+    btn.className =
+      "pawn-select-option" + (mode.value === state.clipMode ? " is-selected" : "");
     btn.setAttribute("role", "menuitem");
     btn.dataset.value = mode.value;
     btn.textContent = mode.label;
@@ -383,43 +404,34 @@ function mountClipMenu(menuEl, controlGetter) {
       void setClipMode(mode.value);
       closeClipMenus();
     });
-    menuEl.appendChild(btn);
+    pop.appendChild(btn);
   }
-  menuEl._controlGetter = controlGetter;
-}
-
-function openClipMenu(which) {
-  if (state.clipBusy) return;
-  closeClipMenus();
-  const menu = which === "chat" ? el.chatClipMenu : el.clipMenu;
-  const trigger = which === "chat" ? el.btnChatClipMenu : el.btnClipMenu;
-  if (!menu || !trigger) return;
-  menu.hidden = false;
+  document.body.appendChild(pop);
+  clipMenuPop = pop;
+  placeFixedPop(pop, trigger, { preferUp: which === "chat", align: "end", minWidth: 148 });
   trigger.setAttribute("aria-expanded", "true");
   setIcon(trigger, "chevron-up");
-  syncClipUi();
-  document.addEventListener("pointerdown", onClipMenuOutside, true);
+  const onOutside = (ev) => {
+    if (pop.contains(ev.target) || control?.contains(ev.target)) return;
+    closeClipMenus();
+  };
+  pop._onOutside = onOutside;
+  document.addEventListener("pointerdown", onOutside, true);
 }
 
 function closeClipMenus() {
-  for (const [menu, trigger] of [
-    [el.clipMenu, el.btnClipMenu],
-    [el.chatClipMenu, el.btnChatClipMenu],
-  ]) {
-    if (!menu || menu.hidden) continue;
-    menu.hidden = true;
-    if (trigger) {
-      trigger.setAttribute("aria-expanded", "false");
-      setIcon(trigger, "chevron-down");
+  if (clipMenuPop) {
+    if (clipMenuPop._onOutside) {
+      document.removeEventListener("pointerdown", clipMenuPop._onOutside, true);
     }
+    clipMenuPop.remove();
+    clipMenuPop = null;
   }
-  document.removeEventListener("pointerdown", onClipMenuOutside, true);
-}
-
-function onClipMenuOutside(ev) {
-  const inCapture = el.clipControl && el.clipControl.contains(ev.target);
-  const inChat = el.chatClipControl && el.chatClipControl.contains(ev.target);
-  if (!inCapture && !inChat) closeClipMenus();
+  for (const trigger of [el.btnClipMenu, el.btnChatClipMenu]) {
+    if (!trigger) continue;
+    trigger.setAttribute("aria-expanded", "false");
+    setIcon(trigger, "chevron-down");
+  }
 }
 
 async function setClipMode(mode) {
@@ -504,8 +516,7 @@ function bind() {
   el.btnClipMenu.addEventListener("click", (ev) => {
     ev.preventDefault();
     ev.stopPropagation();
-    if (el.clipMenu.hidden) openClipMenu("capture");
-    else closeClipMenus();
+    openClipMenu("capture");
   });
   el.btnSave.addEventListener("click", () => void saveTray());
 
@@ -521,8 +532,7 @@ function bind() {
   el.btnChatClipMenu?.addEventListener("click", (ev) => {
     ev.preventDefault();
     ev.stopPropagation();
-    if (el.chatClipMenu.hidden) openClipMenu("chat");
-    else closeClipMenus();
+    openClipMenu("chat");
   });
   el.btnChatNew?.addEventListener("click", () => void startNewChat());
   el.btnChatSend?.addEventListener("click", () => void sendChat());
@@ -1638,6 +1648,8 @@ function ensureConversationRecord(id) {
       messages: [],
       updatedAt: Date.now(),
       model: state.chat.model || "",
+      reasoning: state.chat.reasoning || "",
+      route: state.chat.route || "",
     };
   }
   return state.chat.conversations[key];
@@ -1649,6 +1661,8 @@ function snapshotCurrentConversation() {
   const rec = ensureConversationRecord(id);
   rec.messages = state.chat.messages.slice(-CHAT_MSG_LIMIT);
   rec.model = state.chat.model || "";
+  rec.reasoning = state.chat.reasoning || "";
+  rec.route = state.chat.route || "";
   if (rec.messages.length) {
     const firstUser = rec.messages.find((m) => m.role === "user");
     if (firstUser?.content && (!rec.title || rec.title === "Chat")) {
@@ -1711,11 +1725,11 @@ async function switchConversation(id) {
   state.chat.conversationId = id;
   const rec = ensureConversationRecord(id);
   state.chat.messages = Array.isArray(rec.messages) ? rec.messages.slice() : [];
-  if (rec.model != null && rec.model !== "") {
-    state.chat.model = rec.model;
-    chatModelSelect?.setValue(rec.model);
-  }
+  state.chat.model = rec.model || state.chat.model || "";
+  state.chat.reasoning = rec.reasoning || "";
+  state.chat.route = rec.route || "";
   state.chat.attachments = [];
+  chatModelSelect?.refresh();
   await persistChatState();
   renderChat();
 }
@@ -1743,6 +1757,8 @@ async function loadChatState() {
     state.chat.conversationId = store.currentId || newChatId();
     state.chat.attachments = Array.isArray(store.attachments) ? store.attachments : [];
     state.chat.model = store.model || "";
+    state.chat.reasoning = store.reasoning || "";
+    state.chat.route = store.route || "";
     state.chat.pageUrl = store.pageUrl || "";
     state.chat.pageTitle = store.pageTitle || "";
   } else {
@@ -1768,6 +1784,8 @@ async function loadChatState() {
   const rec = ensureConversationRecord(state.chat.conversationId);
   state.chat.messages = Array.isArray(rec.messages) ? rec.messages.slice() : [];
   if (!state.chat.model && rec.model) state.chat.model = rec.model;
+  if (!state.chat.reasoning && rec.reasoning) state.chat.reasoning = rec.reasoning;
+  if (!state.chat.route && rec.route) state.chat.route = rec.route;
 }
 
 async function persistChatState() {
@@ -1778,6 +1796,8 @@ async function persistChatState() {
       conversations: state.chat.conversations,
       attachments: state.chat.attachments,
       model: state.chat.model,
+      reasoning: state.chat.reasoning,
+      route: state.chat.route,
       pageUrl: state.chat.pageUrl,
       pageTitle: state.chat.pageTitle,
     },
@@ -1785,17 +1805,19 @@ async function persistChatState() {
   // Drop legacy single-thread blob after migration.
   await chrome.storage.local.remove("chatState");
   chatConvPicker?.refresh();
+  chatModelSelect?.refresh();
 }
 
 /** Position a fixed popover under (or above) an anchor without overflowing the viewport. */
-function placeFixedPop(pop, anchor, { preferUp = false, minWidth = 220 } = {}) {
+function placeFixedPop(pop, anchor, { preferUp = false, minWidth = 220, align = "start" } = {}) {
   const rect = anchor.getBoundingClientRect();
-  const width = Math.min(
-    Math.max(rect.width, minWidth),
-    Math.max(200, window.innerWidth - 16),
-  );
+  const maxW = Math.max(160, window.innerWidth - 16);
+  const width = Math.min(Math.max(rect.width, minWidth), maxW);
   pop.style.width = `${width}px`;
-  pop.style.left = `${Math.max(8, Math.min(rect.left, window.innerWidth - width - 8))}px`;
+  let left =
+    align === "end" ? rect.right - width : align === "center" ? rect.left + rect.width / 2 - width / 2 : rect.left;
+  left = Math.max(8, Math.min(left, window.innerWidth - width - 8));
+  pop.style.left = `${left}px`;
   const gap = 4;
   requestAnimationFrame(() => {
     const box = pop.getBoundingClientRect();
@@ -1950,18 +1972,55 @@ function mountConversationPicker(host) {
   return { refresh, close };
 }
 
-function shortModelLabel(id) {
+function shortModelLabel(id, allIds) {
   if (!id) return "Default";
-  const at = String(id).lastIndexOf("@");
-  if (at >= 0) return String(id).slice(at + 1);
-  return String(id);
+  const raw = String(id);
+  const at = raw.lastIndexOf("@");
+  const name = at >= 0 ? raw.slice(at + 1) : raw;
+  const ids = allIds || state.chat.models.map((m) => m.id);
+  const collisions = ids.filter((other) => {
+    if (!other || other === id) return false;
+    const oAt = String(other).lastIndexOf("@");
+    const oName = oAt >= 0 ? String(other).slice(oAt + 1) : String(other);
+    return oName === name;
+  });
+  if (collisions.length && at >= 0) return raw;
+  return name;
+}
+
+function currentModelChoice() {
+  const id = state.chat.model;
+  return state.chat.models.find((m) => m.id === id);
+}
+
+function effectiveReasoning() {
+  const choice = currentModelChoice();
+  if (!choice?.reasoning?.length) return "";
+  const stored = state.chat.reasoning;
+  if (stored && choice.reasoning.includes(stored)) return stored;
+  return choice.reasoning_default || choice.reasoning[0] || "low";
+}
+
+function effectiveRoute() {
+  const choice = currentModelChoice();
+  if (!choice?.routes?.length) return "";
+  const stored = state.chat.route;
+  if (stored && choice.routes.includes(stored)) return stored;
+  return choice.route_default || choice.routes[0] || "balanced";
+}
+
+function tuningFields() {
+  const choice = currentModelChoice();
+  return {
+    reasoning: choice?.reasoning?.length ? effectiveReasoning() : undefined,
+    route: choice?.routes?.length ? effectiveRoute() : undefined,
+  };
 }
 
 function mountModelSelect(host) {
   if (!host) {
     return {
-      setOptions() {},
-      setValue() {},
+      refresh() {},
       get value() {
         return "";
       },
@@ -1970,8 +2029,7 @@ function mountModelSelect(host) {
   const trigger = document.createElement("button");
   trigger.type = "button";
   trigger.className = "pawn-model-btn";
-  trigger.setAttribute("aria-haspopup", "listbox");
-  trigger.setAttribute("aria-expanded", "false");
+  trigger.setAttribute("aria-haspopup", "dialog");
   trigger.title = "Model";
   const valueEl = document.createElement("span");
   valueEl.className = "pawn-model-btn-label";
@@ -1983,14 +2041,23 @@ function mountModelSelect(host) {
   trigger.append(valueEl, chevron);
   host.replaceChildren(trigger);
 
-  let options = [{ id: "", label: "Default" }];
-  let current = "";
   let pop = null;
 
-  const sync = () => {
-    const hit = options.find((o) => o.id === current) || options[0];
-    valueEl.textContent = shortModelLabel(hit?.id) || hit?.label || "Default";
-    trigger.title = hit?.label || hit?.id || "Default model";
+  const refresh = () => {
+    const ids = state.chat.models.map((m) => m.id);
+    const current = state.chat.model;
+    const choice = currentModelChoice();
+    const name = current ? shortModelLabel(current, ids) : "Default";
+    const effort = choice?.reasoning?.length
+      ? REASONING_LABEL[effectiveReasoning()] || effectiveReasoning()
+      : "";
+    valueEl.textContent = [name, effort].filter(Boolean).join(" ");
+    const route = choice?.routes?.length
+      ? ROUTE_LABEL[effectiveRoute()] || effectiveRoute()
+      : "";
+    const vision = choice?.vision ? "Vision" : "";
+    trigger.title = [current || "Default", effort, route, vision].filter(Boolean).join(" · ");
+    trigger.setAttribute("aria-label", trigger.title);
   };
 
   const close = () => {
@@ -2011,36 +2078,165 @@ function mountModelSelect(host) {
     if (ev.key === "Escape") close();
   };
 
+  const openSubmenu = (parentPop, options, current, apply) => {
+    parentPop.querySelector(".pawn-model-sub")?.remove();
+    const sub = document.createElement("div");
+    // Side panels are narrow — stack the submenu inside the pop instead of a
+    // flyout that would clip against the extension window edge.
+    const stack = window.innerWidth < 420;
+    sub.className = "pawn-model-sub" + (stack ? " is-stacked" : "");
+    for (const option of options) {
+      const item = document.createElement("button");
+      item.type = "button";
+      item.className =
+        "pawn-model-sub-item" + (option.value === current ? " is-active" : "");
+      if (option.disabled) item.disabled = true;
+      const lab = document.createElement("span");
+      lab.textContent = option.label;
+      item.appendChild(lab);
+      if (option.value === current) {
+        const mark = document.createElement("span");
+        mark.className = "pawn-model-sub-check";
+        setIcon(mark, "check");
+        item.appendChild(mark);
+      }
+      item.addEventListener("click", (ev) => {
+        ev.preventDefault();
+        ev.stopPropagation();
+        if (option.disabled) return;
+        apply(option.value);
+      });
+      sub.appendChild(item);
+    }
+    if (stack) {
+      const openRow = parentPop.querySelector(".pawn-model-row.is-open");
+      if (openRow instanceof HTMLElement) openRow.insertAdjacentElement("afterend", sub);
+      else parentPop.appendChild(sub);
+    } else {
+      parentPop.appendChild(sub);
+      const openRow = parentPop.querySelector(".pawn-model-row.is-open");
+      if (openRow instanceof HTMLElement) sub.style.top = `${openRow.offsetTop}px`;
+      const overflow =
+        parentPop.getBoundingClientRect().right + 160 + 12 > window.innerWidth;
+      sub.classList.toggle("is-left", overflow);
+    }
+  };
+
+  const addPopRow = (parentPop, key, value, onOpen) => {
+    const row = document.createElement("button");
+    row.type = "button";
+    row.className = "pawn-model-row";
+    const keyEl = document.createElement("span");
+    keyEl.className = "pawn-model-row-key";
+    keyEl.textContent = key;
+    const valEl = document.createElement("span");
+    valEl.className = "pawn-model-row-value";
+    valEl.textContent = value;
+    const ch = document.createElement("span");
+    ch.className = "pawn-model-row-chevron";
+    setIcon(ch, "chevron-right");
+    row.append(keyEl, valEl, ch);
+    row.addEventListener("click", (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      parentPop.querySelectorAll(".pawn-model-row.is-open").forEach((el) => {
+        el.classList.remove("is-open");
+      });
+      row.classList.add("is-open");
+      onOpen();
+    });
+    parentPop.appendChild(row);
+  };
+
   const open = () => {
     if (pop) {
       close();
       return;
     }
     pop = document.createElement("div");
-    pop.className = "pawn-fixed-pop";
-    pop.setAttribute("role", "listbox");
-    for (const opt of options) {
-      const btn = document.createElement("button");
-      btn.type = "button";
-      btn.className =
-        "pawn-select-option" + (opt.id === current ? " is-selected" : "");
-      btn.dataset.value = opt.id;
-      btn.textContent = opt.label;
-      btn.title = opt.label;
-      btn.addEventListener("click", (ev) => {
-        ev.preventDefault();
-        current = opt.id;
-        state.chat.model = opt.id;
-        const rec = ensureConversationRecord(state.chat.conversationId);
-        rec.model = opt.id;
-        sync();
-        close();
-        void persistChatState();
+    pop.className = "pawn-model-pop";
+    const ids = state.chat.models.map((m) => m.id);
+    const current = state.chat.model;
+    const choice = currentModelChoice();
+    addPopRow(pop, "Model", current ? shortModelLabel(current, ids) : "Default", () => {
+      openSubmenu(
+        pop,
+        ids.length
+          ? ids.map((id) => {
+              const m = state.chat.models.find((x) => x.id === id);
+              return {
+                value: id,
+                label: shortModelLabel(id, ids) + (m?.vision ? " · vision" : ""),
+              };
+            })
+          : [{ value: "", label: "No models configured", disabled: true }],
+        current,
+        (id) => {
+          if (!id) return;
+          state.chat.model = id;
+          const rec = ensureConversationRecord(state.chat.conversationId);
+          rec.model = id;
+          // Reset tuning when model changes if values not in new catalog.
+          const next = state.chat.models.find((m) => m.id === id);
+          if (!next?.reasoning?.includes(state.chat.reasoning)) state.chat.reasoning = "";
+          if (!next?.routes?.includes(state.chat.route)) state.chat.route = "";
+          refresh();
+          close();
+          void persistChatState();
+        },
+      );
+    });
+    if (choice?.reasoning?.length) {
+      const effort = effectiveReasoning();
+      addPopRow(pop, "Effort", REASONING_LABEL[effort] || effort, () => {
+        openSubmenu(
+          pop,
+          choice.reasoning.map((value) => ({
+            value,
+            label: REASONING_LABEL[value] || value,
+          })),
+          effort,
+          (value) => {
+            state.chat.reasoning = value;
+            const rec = ensureConversationRecord(state.chat.conversationId);
+            rec.reasoning = value;
+            refresh();
+            close();
+            void persistChatState();
+          },
+        );
       });
-      pop.appendChild(btn);
+    }
+    if (choice?.routes?.length) {
+      const route = effectiveRoute();
+      addPopRow(pop, "Route", ROUTE_LABEL[route] || route, () => {
+        openSubmenu(
+          pop,
+          choice.routes.map((value) => ({
+            value,
+            label: ROUTE_LABEL[value] || value,
+          })),
+          route,
+          (value) => {
+            state.chat.route = value;
+            const rec = ensureConversationRecord(state.chat.conversationId);
+            rec.route = value;
+            refresh();
+            close();
+            void persistChatState();
+          },
+        );
+      });
     }
     document.body.appendChild(pop);
-    placeFixedPop(pop, trigger, { preferUp: true, minWidth: 220 });
+    const rect = trigger.getBoundingClientRect();
+    pop.style.left = `${Math.max(8, Math.min(rect.left, window.innerWidth - 248))}px`;
+    pop.style.top = "0px";
+    requestAnimationFrame(() => {
+      if (!pop) return;
+      const top = Math.max(8, rect.top - pop.offsetHeight - 6);
+      pop.style.top = `${top}px`;
+    });
     trigger.setAttribute("aria-expanded", "true");
     setIcon(chevron, "chevron-up");
     document.addEventListener("pointerdown", onOutside, true);
@@ -2053,18 +2249,11 @@ function mountModelSelect(host) {
     else open();
   });
 
+  refresh();
   return {
-    setOptions(list) {
-      options = [{ id: "", label: "Default" }, ...(list || [])];
-      if (!options.some((o) => o.id === current)) current = "";
-      sync();
-    },
-    setValue(id) {
-      current = options.some((o) => o.id === id) ? id : "";
-      sync();
-    },
+    refresh,
     get value() {
-      return current;
+      return state.chat.model || "";
     },
   };
 }
@@ -2074,16 +2263,16 @@ async function loadChatModels() {
     const data = await api("GET", "/v1/pawn/models");
     const models = Array.isArray(data?.models) ? data.models : [];
     state.chat.models = models;
-    const opts = models.map((m) => ({
-      id: m.id || "",
-      label: m.vision ? `${m.id} · vision` : m.id || "model",
-      vision: !!m.vision,
-    }));
-    chatModelSelect?.setOptions(opts);
-    if (state.chat.model) chatModelSelect?.setValue(state.chat.model);
+    if (state.chat.model && !models.some((m) => m.id === state.chat.model)) {
+      state.chat.model = data?.background || data?.default || models[0]?.id || "";
+    }
+    if (!state.chat.model) {
+      state.chat.model = data?.background || data?.default || models[0]?.id || "";
+    }
+    chatModelSelect?.refresh();
   } catch (_) {
     state.chat.models = [];
-    chatModelSelect?.setOptions([]);
+    chatModelSelect?.refresh();
   }
 }
 
@@ -2427,6 +2616,7 @@ async function sendChat(overrideMessage) {
 
   const conversation = chatConversationKey();
   const notePath = chatBoundNotePath();
+  const tuning = tuningFields();
   const body = {
     conversation,
     message,
@@ -2439,6 +2629,8 @@ async function sendChat(overrideMessage) {
       role: "question",
     })),
   };
+  if (tuning.reasoning) body.reasoning = tuning.reasoning;
+  if (tuning.route) body.route = tuning.route;
   if (notePath) {
     body.active_note = { path: notePath, inline: false };
   }
