@@ -8,24 +8,37 @@
   </head>
   <body>
     <div class="pawn-root">
-      <header class="pawn-header">
-        <div class="pawn-header-row">
-          <!-- Custom select: native <select> popups often fail to open in Edge/Chrome side panels. -->
-          <div id="target-kind" class="pawn-select" title="Target"></div>
+      <header class="pawn-topbar">
+        <nav class="pawn-tabs" role="tablist" aria-label="Panel">
           <button
             type="button"
-            id="btn-settings"
-            class="clickable-icon"
-            aria-label="Settings"
-            title="Settings"
-          ></button>
-          <span id="status-dot" class="pawn-dot is-offline" title="Server"></span>
-        </div>
-        <div id="target-extra" class="pawn-target-extra"></div>
-        <label id="title-field" class="pawn-field">
-          <span>Title</span>
-          <input id="title-input" type="text" placeholder="Capture title" />
-        </label>
+            id="tab-capture"
+            class="pawn-tab is-active"
+            role="tab"
+            aria-selected="true"
+            data-tab="capture"
+          >
+            Capture
+          </button>
+          <button
+            type="button"
+            id="tab-chat"
+            class="pawn-tab"
+            role="tab"
+            aria-selected="false"
+            data-tab="chat"
+          >
+            Chat
+          </button>
+        </nav>
+        <button
+          type="button"
+          id="btn-settings"
+          class="clickable-icon"
+          aria-label="Settings"
+          title="Settings"
+        ></button>
+        <span id="status-dot" class="pawn-dot is-offline" title="Server"></span>
       </header>
 
       <section id="settings-panel" class="pawn-settings" hidden>
@@ -47,44 +60,124 @@
 
       <p id="notice" class="pawn-notice" hidden></p>
 
-      <main class="pawn-body">
-        <div id="destination" class="pawn-destination"></div>
-        <div class="pawn-toolbar">
-          <button
-            type="button"
-            id="btn-selection"
-            class="clickable-icon"
-            aria-label="Capture selection"
-            title="Capture selection"
-          ></button>
-          <div id="clip-control" class="pawn-clip">
+      <div id="panel-capture" class="pawn-panel" role="tabpanel" aria-labelledby="tab-capture">
+        <header class="pawn-header">
+          <div class="pawn-header-row">
+            <!-- Custom select: native <select> popups often fail to open in Edge/Chrome side panels. -->
+            <div id="target-kind" class="pawn-select" title="Target"></div>
+          </div>
+          <div id="target-extra" class="pawn-target-extra"></div>
+          <label id="title-field" class="pawn-field">
+            <span>Title</span>
+            <input id="title-input" type="text" placeholder="Capture title" />
+          </label>
+        </header>
+
+        <main class="pawn-body">
+          <div id="destination" class="pawn-destination"></div>
+          <div class="pawn-toolbar">
             <button
               type="button"
-              id="btn-region"
+              id="btn-selection"
               class="clickable-icon"
-              aria-label="Capture region"
-              title="Capture region"
+              aria-label="Capture selection"
+              title="Capture selection"
+            ></button>
+            <div id="clip-control" class="pawn-clip">
+              <button
+                type="button"
+                id="btn-region"
+                class="clickable-icon"
+                aria-label="Capture region"
+                title="Capture region"
+              ></button>
+              <button
+                type="button"
+                id="btn-clip-menu"
+                class="clickable-icon pawn-clip-chevron"
+                aria-label="Clip mode"
+                title="Clip mode"
+                aria-haspopup="menu"
+                aria-expanded="false"
+              ></button>
+              <div id="clip-menu" class="pawn-select-menu pawn-clip-menu" hidden role="menu"></div>
+            </div>
+            <span class="pawn-toolbar-sep" aria-hidden="true"></span>
+            <button type="button" id="btn-save" class="mod-cta" title="Save to vault">Save</button>
+          </div>
+          <div id="tray" class="pawn-tray"></div>
+          <p id="empty" class="pawn-hint pawn-empty">
+            Select text or capture a region. Snippets stack here in order, then Save appends them to
+            the target note.
+          </p>
+        </main>
+      </div>
+
+      <div
+        id="panel-chat"
+        class="pawn-panel pawn-panel-chat"
+        role="tabpanel"
+        aria-labelledby="tab-chat"
+        hidden
+      >
+        <div class="pawn-chat-toolbar">
+          <button
+            type="button"
+            id="btn-chat-selection"
+            class="clickable-icon"
+            aria-label="Attach selection"
+            title="Attach selection"
+          ></button>
+          <div id="chat-clip-control" class="pawn-clip">
+            <button
+              type="button"
+              id="btn-chat-region"
+              class="clickable-icon"
+              aria-label="Attach region"
+              title="Attach region"
             ></button>
             <button
               type="button"
-              id="btn-clip-menu"
+              id="btn-chat-clip-menu"
               class="clickable-icon pawn-clip-chevron"
               aria-label="Clip mode"
               title="Clip mode"
               aria-haspopup="menu"
               aria-expanded="false"
             ></button>
-            <div id="clip-menu" class="pawn-select-menu pawn-clip-menu" hidden role="menu"></div>
+            <div
+              id="chat-clip-menu"
+              class="pawn-select-menu pawn-clip-menu"
+              hidden
+              role="menu"
+            ></div>
           </div>
           <span class="pawn-toolbar-sep" aria-hidden="true"></span>
-          <button type="button" id="btn-save" class="mod-cta" title="Save to vault">Save</button>
+          <button
+            type="button"
+            id="btn-chat-new"
+            class="clickable-icon"
+            aria-label="New chat"
+            title="New chat"
+          ></button>
+          <div id="chat-model" class="pawn-select pawn-chat-model" title="Model"></div>
         </div>
-        <div id="tray" class="pawn-tray"></div>
-        <p id="empty" class="pawn-hint pawn-empty">
-          Select text or capture a region. Snippets stack here in order, then Save appends them to
-          the target note.
-        </p>
-      </main>
+        <div id="chat-context" class="pawn-chat-context" aria-label="Attached context"></div>
+        <div id="chat-thread" class="pawn-chat-thread" aria-live="polite"></div>
+        <div id="chat-actions" class="pawn-chat-actions" aria-label="Suggested actions"></div>
+        <div class="pawn-chat-composer">
+          <textarea
+            id="chat-input"
+            rows="3"
+            placeholder="Ask Pawn about the page or attached clips…"
+          ></textarea>
+          <div class="pawn-chat-composer-row">
+            <button type="button" id="btn-chat-stop" class="clickable-icon" hidden aria-label="Stop">
+            </button>
+            <button type="button" id="btn-chat-send" class="mod-cta">Send</button>
+          </div>
+        </div>
+      </div>
     </div>
     <script src="sidepanel.js"></script>
   </body>

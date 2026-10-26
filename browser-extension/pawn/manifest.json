@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "Pawn Capture",
-  "version": "0.1.9",
-  "description": "Capture ordered text and image snippets into the Pawn vault.",
+  "version": "0.2.0",
+  "description": "Capture snippets into the Pawn vault and chat with Pawn about the page.",
   "permissions": [
     "activeTab",
     "tabs",

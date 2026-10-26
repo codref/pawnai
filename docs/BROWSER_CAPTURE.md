@@ -1,18 +1,27 @@
 # Browser snippet capture
 
 The **Pawn Capture** extension (`browser-extension/pawn/`) is a Chrome / Edge /
-Firefox side panel that appends ordered text and image snippets to a vault note.
-There is no chat UI in the extension — continue the conversation in Obsidian or
-Matrix after Sync Engine pulls the note.
+Firefox side panel with two tabs:
+
+- **Capture** — append ordered text and image snippets to a vault note (or
+  Research inbox / session Annotations).
+- **Chat** — talk to Pawn about the current page via `POST /v1/pawn/chat`
+  (same SSE agent path as the Obsidian plugin). Attach selections or
+  screenshots as context; use suggested action chips for common tasks.
+
+Vault writes still sync into Obsidian through Sync Engine. Chat memory lives
+in sallm under a `chat:{uuid}` conversation key (New chat starts a fresh id).
 
 ## Flow
+
+### Capture tab
 
 1. Open the side panel. The target defaults to **New page**.
 2. The **destination** row shows the sticky note (title + full path). When
    `vault.obsidian_vault_name` is set, the title is an `obsidian://open` link.
 3. Capture a **selection**, or use **Clip** (region drag on a frozen screenshot,
    or whole **visible area**). Items stack in the tray (reorder / delete before
-   save). Only one clip runs at a time.
+   save). Only one clip runs at a time. Each tray card can **Attach to chat**.
 4. **Save** appends unsaved items, in tray order, to the current target. The
    target stays selected so the next batch continues the same note (except
    Research, which writes one inbox atom per snippet).
@@ -21,6 +30,20 @@ Matrix after Sync Engine pulls the note.
 
 The panel does not guess which meeting you are in. Pick a diarization session
 from the list when you want snippets on that transcript.
+
+### Chat tab
+
+1. Switch to **Chat**. The page title/URL appears as a context chip; a sticky
+   capture note or session transcript (when selected on Capture) is offered as
+   `active_note` for `note_read`.
+2. Attach a **selection** or **Clip** (same tools as Capture) — snippets land
+   as removable context chips (max 4 images). Or attach from the Capture tray.
+3. Type a prompt, or tap a suggested chip (**Create TODO**, **Capture idea**,
+   **Summarize**, **Use session** when a session target is set).
+4. Send streams progress/answer over SSE. Stop cancels the in-flight turn.
+   **New chat** clears the thread and starts a new `chat:{uuid}`.
+5. Pick a catalog model when needed; image attaches prefer a `vision: true`
+   model from `GET /v1/pawn/models`.
 
 ## Targets
 
@@ -93,6 +116,18 @@ Recent markdown notes under `{agent_root}/Captures/` (assets excluded).
 
 Existing collection folder names under `capture.enriched_dir` (discovered from
 the vault, not from config).
+
+### `POST /v1/pawn/chat`
+
+Same native streaming chat as the Obsidian plugin (Bearer token, SSE
+`progress` / `answer` / `job` / `error` / `done`). The extension sends
+`conversation`, `message`, optional `selection` (attached text + page URL),
+optional `active_note` (sticky capture/transcript path, `inline: false`),
+optional `images[]` (`role: "question"`), and optional `model`.
+
+### `GET /v1/pawn/models`
+
+Catalog used by the Chat model picker (`vision` flag gates screenshot turns).
 
 ### `POST /v1/captures`
 

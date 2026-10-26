@@ -1,9 +1,12 @@
-/** Side panel: target picker, ordered tray, save to /v1/captures. */
+/** Side panel: Capture tray + Chat over /v1/pawn/chat. */
 
 const DEFAULTS = {
   serverUrl: "http://127.0.0.1:8000",
   apiToken: "",
 };
+
+const MAX_CHAT_IMAGES = 4;
+const CHAT_MSG_LIMIT = 80;
 
 /** Lucide-style outlines (viewBox 0 0 24 24), matching Obsidian clickable-icon usage. */
 const ICONS = {
@@ -24,6 +27,14 @@ const ICONS = {
   search: '<circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/>',
   monitor:
     '<rect width="20" height="14" x="2" y="3" rx="2" ry="2"/><line x1="8" x2="16" y1="21" y2="21"/><line x1="12" x2="12" y1="17" y2="21"/>',
+  "message-square":
+    '<path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>',
+  send: '<path d="m22 2-7 20-4-9-9-4Z"/><path d="M22 2 11 13"/>',
+  square: '<rect width="18" height="18" x="3" y="3" rx="2"/>',
+  "plus-circle":
+    '<circle cx="12" cy="12" r="10"/><path d="M8 12h8"/><path d="M12 8v8"/>',
+  link: '<path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/>',
+  paperclip: '<path d="m16 6-8.5 8.5a2.12 2.12 0 0 0 3 3L19 9"/><path d="m15 3 6 6"/>',
 };
 
 function setIcon(node, name) {
@@ -50,6 +61,7 @@ const CLIP_MODES = [
 
 const state = {
   settings: { ...DEFAULTS },
+  activeTab: "capture",
   targetKind: "new",
   stickyPath: "",
   sessionId: "",
@@ -60,11 +72,23 @@ const state = {
   vaultName: "",
   clipMode: "region",
   clipBusy: false,
+  /** "tray" | "chat" — where the next capture lands. */
+  captureDest: "tray",
   captures: [],
   sessions: [],
   collections: [],
   tray: [],
   settingsOpen: false,
+  chat: {
+    conversationId: "",
+    messages: [],
+    attachments: [],
+    models: [],
+    model: "",
+    abort: null,
+    pageUrl: "",
+    pageTitle: "",
+  },
 };
 
 const TARGET_KIND_OPTIONS = [
@@ -82,7 +106,11 @@ const el = {
   titleField: document.getElementById("title-field"),
   status: document.getElementById("status-dot"),
   settingsPanel: document.getElementById("settings-panel"),
-  body: document.querySelector(".pawn-body"),
+  panelCapture: document.getElementById("panel-capture"),
+  panelChat: document.getElementById("panel-chat"),
+  tabCapture: document.getElementById("tab-capture"),
+  tabChat: document.getElementById("tab-chat"),
+  body: document.querySelector("#panel-capture .pawn-body"),
   serverUrl: document.getElementById("server-url"),
   apiToken: document.getElementById("api-token"),
   btnSaveSettings: document.getElementById("btn-save-settings"),
@@ -97,22 +125,42 @@ const el = {
   notice: document.getElementById("notice"),
   tray: document.getElementById("tray"),
   empty: document.getElementById("empty"),
+  btnChatSelection: document.getElementById("btn-chat-selection"),
+  btnChatRegion: document.getElementById("btn-chat-region"),
+  btnChatClipMenu: document.getElementById("btn-chat-clip-menu"),
+  chatClipControl: document.getElementById("chat-clip-control"),
+  chatClipMenu: document.getElementById("chat-clip-menu"),
+  btnChatNew: document.getElementById("btn-chat-new"),
+  chatModelHost: document.getElementById("chat-model"),
+  chatContext: document.getElementById("chat-context"),
+  chatThread: document.getElementById("chat-thread"),
+  chatActions: document.getElementById("chat-actions"),
+  chatInput: document.getElementById("chat-input"),
+  btnChatSend: document.getElementById("btn-chat-send"),
+  btnChatStop: document.getElementById("btn-chat-stop"),
 };
+
+let chatModelSelect = null;
 
 init();
 
 async function init() {
   mountChromeIcons();
   el.targetKind = mountTargetKindSelect(document.getElementById("target-kind"));
-  mountClipMenu();
+  mountClipMenu(el.clipMenu, () => el.clipControl);
+  mountClipMenu(el.chatClipMenu, () => el.chatClipControl);
+  chatModelSelect = mountModelSelect(el.chatModelHost);
   await loadSettings();
   await loadTray();
+  await loadChatState();
   bind();
   syncSettingsUi();
   syncClipUi();
+  setActiveTab(state.activeTab, { persist: false });
   await refreshConnection();
   await drainPending();
   render();
+  renderChat();
   chrome.storage.onChanged.addListener((changes, area) => {
     if (area !== "local") return;
     if (changes.pendingSnippets || changes.pendingNotice) {
@@ -277,6 +325,10 @@ function mountChromeIcons() {
   setIcon(el.btnSettings, "settings");
   setIcon(el.btnSelection, "text-select");
   setIcon(el.btnClipMenu, "chevron-down");
+  if (el.btnChatSelection) setIcon(el.btnChatSelection, "text-select");
+  if (el.btnChatClipMenu) setIcon(el.btnChatClipMenu, "chevron-down");
+  if (el.btnChatNew) setIcon(el.btnChatNew, "plus-circle");
+  if (el.btnChatStop) setIcon(el.btnChatStop, "square");
   syncClipUi();
 }
 
@@ -286,23 +338,27 @@ function clipModeInfo(mode) {
 
 function syncClipUi() {
   const info = clipModeInfo(state.clipMode);
-  if (el.btnRegion) {
-    setIcon(el.btnRegion, info.icon);
-    el.btnRegion.setAttribute("aria-label", info.label);
-    el.btnRegion.title = info.label;
-    el.btnRegion.disabled = state.clipBusy;
+  for (const btn of [el.btnRegion, el.btnChatRegion]) {
+    if (!btn) continue;
+    setIcon(btn, info.icon);
+    btn.setAttribute("aria-label", info.label);
+    btn.title = info.label;
+    btn.disabled = state.clipBusy;
   }
-  if (el.btnClipMenu) el.btnClipMenu.disabled = state.clipBusy;
-  if (el.clipMenu && !el.clipMenu.hidden) {
-    for (const btn of el.clipMenu.querySelectorAll(".pawn-select-option")) {
+  for (const btn of [el.btnClipMenu, el.btnChatClipMenu]) {
+    if (btn) btn.disabled = state.clipBusy;
+  }
+  for (const menu of [el.clipMenu, el.chatClipMenu]) {
+    if (!menu || menu.hidden) continue;
+    for (const btn of menu.querySelectorAll(".pawn-select-option")) {
       btn.classList.toggle("is-selected", btn.dataset.value === state.clipMode);
     }
   }
 }
 
-function mountClipMenu() {
-  if (!el.clipMenu) return;
-  el.clipMenu.replaceChildren();
+function mountClipMenu(menuEl, controlGetter) {
+  if (!menuEl) return;
+  menuEl.replaceChildren();
   for (const mode of CLIP_MODES) {
     const btn = document.createElement("button");
     btn.type = "button";
@@ -314,31 +370,45 @@ function mountClipMenu() {
       ev.preventDefault();
       ev.stopPropagation();
       void setClipMode(mode.value);
-      closeClipMenu();
+      closeClipMenus();
     });
-    el.clipMenu.appendChild(btn);
+    menuEl.appendChild(btn);
   }
+  menuEl._controlGetter = controlGetter;
 }
 
-function openClipMenu() {
-  if (!el.clipMenu || state.clipBusy) return;
-  el.clipMenu.hidden = false;
-  el.btnClipMenu.setAttribute("aria-expanded", "true");
-  setIcon(el.btnClipMenu, "chevron-up");
+function openClipMenu(which) {
+  if (state.clipBusy) return;
+  closeClipMenus();
+  const menu = which === "chat" ? el.chatClipMenu : el.clipMenu;
+  const trigger = which === "chat" ? el.btnChatClipMenu : el.btnClipMenu;
+  if (!menu || !trigger) return;
+  menu.hidden = false;
+  trigger.setAttribute("aria-expanded", "true");
+  setIcon(trigger, "chevron-up");
   syncClipUi();
   document.addEventListener("pointerdown", onClipMenuOutside, true);
 }
 
-function closeClipMenu() {
-  if (!el.clipMenu || el.clipMenu.hidden) return;
-  el.clipMenu.hidden = true;
-  el.btnClipMenu.setAttribute("aria-expanded", "false");
-  setIcon(el.btnClipMenu, "chevron-down");
+function closeClipMenus() {
+  for (const [menu, trigger] of [
+    [el.clipMenu, el.btnClipMenu],
+    [el.chatClipMenu, el.btnChatClipMenu],
+  ]) {
+    if (!menu || menu.hidden) continue;
+    menu.hidden = true;
+    if (trigger) {
+      trigger.setAttribute("aria-expanded", "false");
+      setIcon(trigger, "chevron-down");
+    }
+  }
   document.removeEventListener("pointerdown", onClipMenuOutside, true);
 }
 
 function onClipMenuOutside(ev) {
-  if (el.clipControl && !el.clipControl.contains(ev.target)) closeClipMenu();
+  const inCapture = el.clipControl && el.clipControl.contains(ev.target);
+  const inChat = el.chatClipControl && el.chatClipControl.contains(ev.target);
+  if (!inCapture && !inChat) closeClipMenus();
 }
 
 async function setClipMode(mode) {
@@ -352,12 +422,41 @@ function syncSettingsUi() {
   el.settingsPanel.hidden = !state.settingsOpen;
   el.btnSettings.classList.toggle("is-active", state.settingsOpen);
   el.btnSettings.setAttribute("aria-pressed", state.settingsOpen ? "true" : "false");
-  if (el.titleField) el.titleField.hidden = state.settingsOpen;
-  if (el.targetExtra) el.targetExtra.hidden = state.settingsOpen;
-  if (el.body) el.body.hidden = state.settingsOpen;
+  const hidePanels = state.settingsOpen;
+  if (el.panelCapture) {
+    el.panelCapture.hidden = hidePanels || state.activeTab !== "capture";
+  }
+  if (el.panelChat) {
+    el.panelChat.hidden = hidePanels || state.activeTab !== "chat";
+  }
+}
+
+function setActiveTab(tab, opts = {}) {
+  const next = tab === "chat" ? "chat" : "capture";
+  state.activeTab = next;
+  state.captureDest = next === "chat" ? "chat" : "tray";
+  if (el.tabCapture) {
+    el.tabCapture.classList.toggle("is-active", next === "capture");
+    el.tabCapture.setAttribute("aria-selected", next === "capture" ? "true" : "false");
+  }
+  if (el.tabChat) {
+    el.tabChat.classList.toggle("is-active", next === "chat");
+    el.tabChat.setAttribute("aria-selected", next === "chat" ? "true" : "false");
+  }
+  syncSettingsUi();
+  if (opts.persist !== false) {
+    void chrome.storage.local.set({ activeTab: next });
+  }
+  if (next === "chat") {
+    void refreshPageContext();
+    void loadChatModels();
+    renderChat();
+  }
 }
 
 function bind() {
+  el.tabCapture?.addEventListener("click", () => setActiveTab("capture"));
+  el.tabChat?.addEventListener("click", () => setActiveTab("chat"));
   el.targetKind.addEventListener("change", async () => {
     state.targetKind = el.targetKind.value;
     if (state.targetKind === "new" || state.targetKind === "research") {
@@ -368,6 +467,7 @@ function bind() {
     await loadPickerData();
     renderTargetExtra();
     render();
+    renderChatContext();
     if (state.targetKind !== "new" && state.targetKind !== "research") {
       void openTargetPicker();
     }
@@ -382,19 +482,46 @@ function bind() {
     syncSettingsUi();
   });
   el.btnSelection.addEventListener("click", () => {
+    state.captureDest = "tray";
     void requestSnip("pawn-snip-selection");
   });
   el.btnRegion.addEventListener("click", () => {
+    state.captureDest = "tray";
     const info = clipModeInfo(state.clipMode);
     void requestSnip(info.snip, { clip: true });
   });
   el.btnClipMenu.addEventListener("click", (ev) => {
     ev.preventDefault();
     ev.stopPropagation();
-    if (el.clipMenu.hidden) openClipMenu();
-    else closeClipMenu();
+    if (el.clipMenu.hidden) openClipMenu("capture");
+    else closeClipMenus();
   });
   el.btnSave.addEventListener("click", () => void saveTray());
+
+  el.btnChatSelection?.addEventListener("click", () => {
+    state.captureDest = "chat";
+    void requestSnip("pawn-snip-selection");
+  });
+  el.btnChatRegion?.addEventListener("click", () => {
+    state.captureDest = "chat";
+    const info = clipModeInfo(state.clipMode);
+    void requestSnip(info.snip, { clip: true });
+  });
+  el.btnChatClipMenu?.addEventListener("click", (ev) => {
+    ev.preventDefault();
+    ev.stopPropagation();
+    if (el.chatClipMenu.hidden) openClipMenu("chat");
+    else closeClipMenus();
+  });
+  el.btnChatNew?.addEventListener("click", () => void startNewChat());
+  el.btnChatSend?.addEventListener("click", () => void sendChat());
+  el.btnChatStop?.addEventListener("click", () => stopChat());
+  el.chatInput?.addEventListener("keydown", (ev) => {
+    if (ev.key === "Enter" && !ev.shiftKey) {
+      ev.preventDefault();
+      void sendChat();
+    }
+  });
 }
 
 async function saveSettings() {
@@ -421,12 +548,15 @@ async function saveSettings() {
 }
 
 async function loadSettings() {
-  const stored = await chrome.storage.local.get(["settings", "target", "clipMode"]);
+  const stored = await chrome.storage.local.get(["settings", "target", "clipMode", "activeTab"]);
   state.settings = { ...DEFAULTS, ...(stored.settings || {}) };
   el.serverUrl.value = state.settings.serverUrl;
   el.apiToken.value = state.settings.apiToken;
   if (stored.clipMode && CLIP_MODES.some((m) => m.value === stored.clipMode)) {
     state.clipMode = stored.clipMode;
+  }
+  if (stored.activeTab === "chat" || stored.activeTab === "capture") {
+    state.activeTab = stored.activeTab;
   }
   const t = stored.target || {};
   state.targetKind = t.kind || "new";
@@ -494,19 +624,37 @@ async function drainPending() {
     render();
     return;
   }
-  if (!state.title && data.lastPageTitle) {
-    state.title = data.lastPageTitle;
-    el.title.value = state.title;
+  if (data.lastPageTitle) {
+    state.chat.pageTitle = data.lastPageTitle;
+    if (!state.title) {
+      state.title = data.lastPageTitle;
+      el.title.value = state.title;
+    }
   }
-  if (data.lastPageUrl) state.sourceUrl = data.lastPageUrl;
+  if (data.lastPageUrl) {
+    state.sourceUrl = data.lastPageUrl;
+    state.chat.pageUrl = data.lastPageUrl;
+  }
+  const toChat = state.captureDest === "chat";
   for (const snip of pending) {
-    if (state.tray.some((s) => s.id === snip.id)) continue;
-    state.tray.push({ ...snip, saved: false });
+    if (toChat) {
+      attachSnippetToChat(snip);
+    } else {
+      if (state.tray.some((s) => s.id === snip.id)) continue;
+      state.tray.push({ ...snip, saved: false });
+    }
   }
   await chrome.storage.local.set({ pendingSnippets: [] });
-  await persistTray();
-  await persistTarget();
-  render();
+  if (toChat) {
+    await persistChatState();
+    if (state.activeTab !== "chat") setActiveTab("chat");
+    else renderChat();
+    showNotice(`Attached ${pending.length} to chat`);
+  } else {
+    await persistTray();
+    await persistTarget();
+    render();
+  }
 }
 
 async function requestSnip(type, opts = {}) {
@@ -576,12 +724,18 @@ async function captureVisibleInPanel() {
   });
   const b64 = String(dataUrl || "").split(",", 2)[1] || "";
   if (!b64) throw new Error("Visible capture failed");
-  if (!state.title && tab.title) {
-    state.title = tab.title;
-    el.title.value = state.title;
+  if (tab.title) {
+    state.chat.pageTitle = tab.title;
+    if (!state.title) {
+      state.title = tab.title;
+      el.title.value = state.title;
+    }
   }
-  if (tab.url) state.sourceUrl = tab.url;
-  state.tray.push({
+  if (tab.url) {
+    state.sourceUrl = tab.url;
+    state.chat.pageUrl = tab.url;
+  }
+  const snip = {
     id: newSnippetId(),
     kind: "image",
     text: "",
@@ -591,7 +745,16 @@ async function captureVisibleInPanel() {
     page_title: tab.title || "",
     captured_at: new Date().toISOString(),
     saved: false,
-  });
+  };
+  if (state.captureDest === "chat") {
+    attachSnippetToChat(snip);
+    await persistChatState();
+    if (state.activeTab !== "chat") setActiveTab("chat");
+    else renderChat();
+    showNotice("Attached visible area to chat");
+    return;
+  }
+  state.tray.push(snip);
   await persistTarget();
   await persistTray();
   render();
@@ -1238,12 +1401,13 @@ function renderCard(snip, index) {
     .join(" · ");
   const actions = document.createElement("div");
   actions.className = "pawn-item-actions";
+  const attach = iconButton("message-square", "Attach to chat", () => void attachTrayToChat(index));
   const up = iconButton("chevron-up", "Move up", () => void moveSnippet(index, -1));
   up.disabled = index === 0 || snip.saved;
   const down = iconButton("chevron-down", "Move down", () => void moveSnippet(index, 1));
   down.disabled = index >= state.tray.length - 1 || snip.saved;
   const del = iconButton("x", "Remove", () => void removeSnippet(index));
-  actions.append(up, down, del);
+  actions.append(attach, up, down, del);
   metaRow.append(meta, actions);
 
   card.append(top, metaRow);
@@ -1417,4 +1581,702 @@ function showNotice(text, isError = false, isBusy = false) {
   el.notice.textContent = text || "";
   el.notice.classList.toggle("is-error", !!isError);
   el.notice.classList.toggle("is-busy", !!isBusy && !isError);
+}
+
+/* ── Chat ───────────────────────────────────────────────────────────────── */
+
+function newChatId() {
+  if (crypto?.randomUUID) return `chat:${crypto.randomUUID()}`;
+  return `chat:${Date.now().toString(36)}${Math.random().toString(36).slice(2, 10)}`;
+}
+
+async function loadChatState() {
+  const data = await chrome.storage.local.get(["chatState"]);
+  const c = data.chatState || {};
+  state.chat.conversationId = c.conversationId || newChatId();
+  state.chat.messages = Array.isArray(c.messages) ? c.messages.slice(-CHAT_MSG_LIMIT) : [];
+  state.chat.attachments = Array.isArray(c.attachments) ? c.attachments : [];
+  state.chat.model = c.model || "";
+  state.chat.pageUrl = c.pageUrl || "";
+  state.chat.pageTitle = c.pageTitle || "";
+}
+
+async function persistChatState() {
+  await chrome.storage.local.set({
+    chatState: {
+      conversationId: state.chat.conversationId,
+      messages: state.chat.messages.slice(-CHAT_MSG_LIMIT),
+      attachments: state.chat.attachments,
+      model: state.chat.model,
+      pageUrl: state.chat.pageUrl,
+      pageTitle: state.chat.pageTitle,
+    },
+  });
+}
+
+function mountModelSelect(host) {
+  if (!host) {
+    return {
+      setOptions() {},
+      setValue() {},
+      get value() {
+        return "";
+      },
+    };
+  }
+  const trigger = document.createElement("button");
+  trigger.type = "button";
+  trigger.className = "pawn-select-trigger";
+  trigger.setAttribute("aria-haspopup", "listbox");
+  trigger.setAttribute("aria-expanded", "false");
+  trigger.title = "Model";
+  const valueEl = document.createElement("span");
+  valueEl.className = "pawn-select-value";
+  valueEl.textContent = "Default";
+  const chevron = document.createElement("span");
+  chevron.className = "clickable-icon";
+  chevron.setAttribute("aria-hidden", "true");
+  setIcon(chevron, "chevron-down");
+  trigger.append(valueEl, chevron);
+  const menu = document.createElement("div");
+  menu.className = "pawn-select-menu";
+  menu.hidden = true;
+  menu.setAttribute("role", "listbox");
+  host.replaceChildren(trigger, menu);
+
+  let options = [{ id: "", label: "Default" }];
+  let current = "";
+
+  const sync = () => {
+    const hit = options.find((o) => o.id === current) || options[0];
+    valueEl.textContent = hit?.label || "Default";
+    for (const btn of menu.querySelectorAll(".pawn-select-option")) {
+      btn.classList.toggle("is-selected", btn.dataset.value === current);
+    }
+  };
+
+  const close = () => {
+    if (menu.hidden) return;
+    menu.hidden = true;
+    trigger.setAttribute("aria-expanded", "false");
+    setIcon(chevron, "chevron-down");
+    document.removeEventListener("pointerdown", onOutside, true);
+  };
+
+  const onOutside = (ev) => {
+    if (!host.contains(ev.target)) close();
+  };
+
+  const open = () => {
+    if (!menu.hidden) return;
+    menu.hidden = false;
+    trigger.setAttribute("aria-expanded", "true");
+    setIcon(chevron, "chevron-up");
+    document.addEventListener("pointerdown", onOutside, true);
+  };
+
+  trigger.addEventListener("click", (ev) => {
+    ev.preventDefault();
+    if (menu.hidden) open();
+    else close();
+  });
+
+  return {
+    setOptions(list) {
+      options = [{ id: "", label: "Default" }, ...(list || [])];
+      menu.replaceChildren();
+      for (const opt of options) {
+        const btn = document.createElement("button");
+        btn.type = "button";
+        btn.className = "pawn-select-option";
+        btn.dataset.value = opt.id;
+        btn.textContent = opt.label;
+        btn.addEventListener("click", (ev) => {
+          ev.preventDefault();
+          current = opt.id;
+          state.chat.model = opt.id;
+          sync();
+          close();
+          void persistChatState();
+        });
+        menu.appendChild(btn);
+      }
+      if (!options.some((o) => o.id === current)) current = "";
+      sync();
+    },
+    setValue(id) {
+      current = options.some((o) => o.id === id) ? id : "";
+      sync();
+    },
+    get value() {
+      return current;
+    },
+  };
+}
+
+async function loadChatModels() {
+  try {
+    const data = await api("GET", "/v1/pawn/models");
+    const models = Array.isArray(data?.models) ? data.models : [];
+    state.chat.models = models;
+    const opts = models.map((m) => ({
+      id: m.id || "",
+      label: m.vision ? `${m.id} · vision` : m.id || "model",
+      vision: !!m.vision,
+    }));
+    chatModelSelect?.setOptions(opts);
+    if (state.chat.model) chatModelSelect?.setValue(state.chat.model);
+  } catch (_) {
+    state.chat.models = [];
+    chatModelSelect?.setOptions([]);
+  }
+}
+
+async function refreshPageContext() {
+  try {
+    const tab = await findContentTab();
+    if (tab?.url && /^https?:/i.test(tab.url)) {
+      state.chat.pageUrl = tab.url;
+      state.chat.pageTitle = tab.title || "";
+    }
+  } catch (_) {
+    /* ignore */
+  }
+  renderChatContext();
+}
+
+function attachSnippetToChat(snip) {
+  if (!snip) return;
+  if (state.chat.attachments.some((a) => a.id === snip.id)) return;
+  if (snip.kind === "image") {
+    const images = state.chat.attachments.filter((a) => a.kind === "image");
+    if (images.length >= MAX_CHAT_IMAGES) {
+      showNotice(`Chat allows at most ${MAX_CHAT_IMAGES} images`, true);
+      return;
+    }
+  }
+  state.chat.attachments.push({
+    id: snip.id || newSnippetId(),
+    kind: snip.kind === "image" ? "image" : "text",
+    text: snip.text || "",
+    data_base64: snip.data_base64 || "",
+    media_type: snip.media_type || "image/png",
+    source_url: snip.source_url || "",
+    captured_at: snip.captured_at || new Date().toISOString(),
+  });
+}
+
+async function attachTrayToChat(index) {
+  const snip = state.tray[index];
+  if (!snip) return;
+  attachSnippetToChat(snip);
+  await persistChatState();
+  setActiveTab("chat");
+  showNotice("Attached to chat");
+}
+
+function removeChatAttachment(id) {
+  state.chat.attachments = state.chat.attachments.filter((a) => a.id !== id);
+  void persistChatState();
+  renderChatContext();
+  renderChatActions();
+}
+
+async function startNewChat() {
+  if (state.chat.abort) stopChat();
+  state.chat.conversationId = newChatId();
+  state.chat.messages = [];
+  state.chat.attachments = [];
+  await persistChatState();
+  renderChat();
+  showNotice("New chat");
+}
+
+function stopChat() {
+  try {
+    state.chat.abort?.abort();
+  } catch (_) {
+    /* ignore */
+  }
+  state.chat.abort = null;
+  syncChatBusy(false);
+}
+
+function syncChatBusy(busy) {
+  if (el.btnChatSend) {
+    el.btnChatSend.disabled = !!busy;
+    el.btnChatSend.textContent = busy ? "…" : "Send";
+  }
+  if (el.btnChatStop) el.btnChatStop.hidden = !busy;
+  for (const btn of el.chatActions?.querySelectorAll(".pawn-action-chip") || []) {
+    btn.disabled = !!busy;
+  }
+}
+
+function renderChat() {
+  renderChatContext();
+  renderChatThread();
+  renderChatActions();
+}
+
+function renderChatContext() {
+  if (!el.chatContext) return;
+  el.chatContext.replaceChildren();
+
+  if (state.chat.pageUrl || state.chat.pageTitle) {
+    el.chatContext.appendChild(
+      makeChip({
+        cls: "is-page",
+        icon: "link",
+        label: state.chat.pageTitle || hostnameOf(state.chat.pageUrl) || "Page",
+        title: state.chat.pageUrl || state.chat.pageTitle,
+      }),
+    );
+  }
+
+  const notePath = chatBoundNotePath();
+  if (notePath) {
+    el.chatContext.appendChild(
+      makeChip({
+        cls: "is-note",
+        icon: "paperclip",
+        label: pathBasename(notePath).replace(/\.md$/i, "") || notePath,
+        title: `Bound note: ${notePath}`,
+      }),
+    );
+  } else if (state.targetKind === "session" && state.sessionId) {
+    el.chatContext.appendChild(
+      makeChip({
+        cls: "is-note",
+        icon: "paperclip",
+        label: currentPickLabel() || state.sessionId,
+        title: `Session ${state.sessionId}`,
+      }),
+    );
+  }
+
+  for (const att of state.chat.attachments) {
+    const isImg = att.kind === "image";
+    el.chatContext.appendChild(
+      makeChip({
+        cls: isImg ? "is-image" : "is-text",
+        icon: isImg ? "image" : "type",
+        label: isImg
+          ? "Screenshot"
+          : (att.text || "Text").replace(/\s+/g, " ").trim().slice(0, 40) || "Text",
+        title: isImg ? "Attached image" : att.text || "Attached text",
+        onRemove: () => removeChatAttachment(att.id),
+      }),
+    );
+  }
+}
+
+function makeChip({ cls, icon, label, title, onRemove }) {
+  const chip = document.createElement("span");
+  chip.className = `pawn-chip ${cls || ""}`.trim();
+  if (title) chip.title = title;
+  if (icon) {
+    const ic = document.createElement("span");
+    ic.className = "pawn-chip-icon";
+    setIcon(ic, icon);
+    chip.appendChild(ic);
+  }
+  const lab = document.createElement("span");
+  lab.className = "pawn-chip-label";
+  lab.textContent = label;
+  chip.appendChild(lab);
+  if (onRemove) {
+    const rm = document.createElement("button");
+    rm.type = "button";
+    rm.className = "pawn-chip-remove";
+    rm.setAttribute("aria-label", "Remove");
+    setIcon(rm, "x");
+    rm.addEventListener("click", (ev) => {
+      ev.preventDefault();
+      onRemove();
+    });
+    chip.appendChild(rm);
+  }
+  return chip;
+}
+
+function hostnameOf(url) {
+  try {
+    return new URL(url).hostname;
+  } catch (_) {
+    return "";
+  }
+}
+
+function chatBoundNotePath() {
+  if (state.stickyPath) return state.stickyPath;
+  if (state.targetKind === "session" && state.sessionId) {
+    const hit = state.sessions.find((s) => s.session_id === state.sessionId);
+    return hit?.transcript_path || "";
+  }
+  return "";
+}
+
+function renderChatThread() {
+  if (!el.chatThread) return;
+  el.chatThread.replaceChildren();
+  if (!state.chat.messages.length) {
+    const empty = document.createElement("p");
+    empty.className = "pawn-chat-empty";
+    empty.textContent =
+      "Attach a selection or screenshot, then ask Pawn — or tap a suggested action below.";
+    el.chatThread.appendChild(empty);
+    return;
+  }
+  for (const msg of state.chat.messages) {
+    el.chatThread.appendChild(renderChatMessage(msg));
+  }
+  el.chatThread.scrollTop = el.chatThread.scrollHeight;
+}
+
+function renderChatMessage(msg) {
+  const wrap = document.createElement("div");
+  wrap.className = `pawn-msg is-${msg.role || "assistant"}`;
+  const role = document.createElement("div");
+  role.className = "pawn-msg-role";
+  role.textContent = msg.role === "user" ? "You" : "Pawn";
+  const bubble = document.createElement("div");
+  bubble.className = "pawn-msg-bubble";
+  if (msg.progress) {
+    const prog = document.createElement("div");
+    prog.className = "pawn-msg-progress";
+    prog.textContent = msg.progress;
+    bubble.appendChild(prog);
+  }
+  if (msg.error) {
+    const err = document.createElement("div");
+    err.className = "pawn-msg-error";
+    err.textContent = msg.error;
+    bubble.appendChild(err);
+  }
+  if (msg.content) {
+    const body = document.createElement("div");
+    body.innerHTML = formatChatHtml(msg.content);
+    bubble.appendChild(body);
+  }
+  wrap.append(role, bubble);
+  return wrap;
+}
+
+function formatChatHtml(text) {
+  const esc = String(text || "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+  const linked = esc.replace(
+    /(https?:\/\/[^\s<]+)/g,
+    '<a href="$1" target="_blank" rel="noopener noreferrer">$1</a>',
+  );
+  return linked.replace(/\n/g, "<br>");
+}
+
+function renderChatActions() {
+  if (!el.chatActions) return;
+  el.chatActions.replaceChildren();
+  const busy = !!state.chat.abort;
+  const hasAtt = state.chat.attachments.length > 0;
+  const hasPage = !!(state.chat.pageUrl || state.chat.pageTitle);
+  const hasSession = state.targetKind === "session" && !!state.sessionId;
+  const actions = [
+    {
+      id: "todo",
+      label: "Create TODO",
+      enabled: hasAtt || hasPage,
+      prompt:
+        "Create a TaskNotes TODO from the attached context (and page if present). Use a clear title and short body.",
+    },
+    {
+      id: "idea",
+      label: "Capture idea",
+      enabled: hasAtt || hasPage,
+      prompt: "/idea ",
+      prefill: true,
+    },
+    {
+      id: "summarize",
+      label: "Summarize",
+      enabled: hasAtt || hasPage,
+      prompt:
+        "Summarize the attached clips and page context. Keep it concise and cite the source URL when useful.",
+    },
+    {
+      id: "session",
+      label: "Use session",
+      enabled: hasSession && (hasAtt || hasPage),
+      prompt: `Relate the attached context to diarization session ${state.sessionId}. Extract action items and note anything that should land on the transcript or TaskNotes.`,
+    },
+  ];
+  for (const a of actions) {
+    if (!a.enabled) continue;
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "pawn-action-chip";
+    btn.textContent = a.label;
+    btn.disabled = busy;
+    btn.addEventListener("click", () => {
+      if (a.prefill) {
+        el.chatInput.value = a.prompt;
+        el.chatInput.focus();
+        return;
+      }
+      void sendChat(a.prompt);
+    });
+    el.chatActions.appendChild(btn);
+  }
+}
+
+async function sendChat(overrideMessage) {
+  if (state.chat.abort) return;
+  const typed = (overrideMessage != null ? overrideMessage : el.chatInput?.value || "").trim();
+  const images = state.chat.attachments.filter((a) => a.kind === "image" && a.data_base64);
+  const texts = state.chat.attachments.filter((a) => a.kind === "text" && (a.text || "").trim());
+  if (!typed && !images.length && !texts.length) {
+    showNotice("Type a message or attach a clip first", true);
+    return;
+  }
+
+  await refreshPageContext();
+
+  let model = state.chat.model || undefined;
+  if (images.length) {
+    const vision = state.chat.models.find((m) => m.vision);
+    const current = state.chat.models.find((m) => m.id === model);
+    if (model && current && !current.vision && vision) {
+      model = vision.id;
+      showNotice(`Using vision model ${model}`);
+    } else if (!model && vision) {
+      model = vision.id;
+    } else if (!vision && images.length) {
+      showNotice("No vision model available — images may be ignored", true);
+    }
+  }
+
+  const selectionParts = [];
+  for (const t of texts) selectionParts.push(t.text.trim());
+  if (state.chat.pageUrl) {
+    selectionParts.push(`Page: ${state.chat.pageTitle || ""} ${state.chat.pageUrl}`.trim());
+  }
+  const selection = selectionParts.join("\n\n").slice(0, 6000) || undefined;
+
+  let message = typed;
+  if (!message && images.length) message = "Look at this image.";
+  if (!message && texts.length) message = "Process the attached text.";
+
+  const conversation = chatConversationKey();
+  const notePath = chatBoundNotePath();
+  const body = {
+    conversation,
+    message,
+    selection,
+    model,
+    images: images.slice(0, MAX_CHAT_IMAGES).map((img, i) => ({
+      filename: `clip-${i + 1}.${extForMime(img.media_type)}`,
+      media_type: img.media_type || "image/png",
+      data_base64: img.data_base64,
+      role: "question",
+    })),
+  };
+  if (notePath) {
+    body.active_note = { path: notePath, inline: false };
+  }
+
+  const userMsg = {
+    id: newSnippetId(),
+    role: "user",
+    content: message,
+    at: new Date().toISOString(),
+  };
+  const assistantMsg = {
+    id: newSnippetId(),
+    role: "assistant",
+    content: "",
+    progress: "Thinking…",
+    at: new Date().toISOString(),
+  };
+  state.chat.messages.push(userMsg, assistantMsg);
+  if (overrideMessage == null && el.chatInput) el.chatInput.value = "";
+  // Clear one-shot attachments after send (like Obsidian pending images).
+  state.chat.attachments = [];
+  await persistChatState();
+  renderChat();
+  syncChatBusy(true);
+
+  const abort = new AbortController();
+  state.chat.abort = abort;
+  try {
+    await streamPawnChat(body, abort.signal, {
+      onProgress(text) {
+        assistantMsg.progress = text || "Working…";
+        renderChatThread();
+      },
+      onAnswer(content) {
+        assistantMsg.content = content || "";
+        assistantMsg.progress = "";
+        renderChatThread();
+      },
+      onJob(job) {
+        const id = job?.id || "";
+        assistantMsg.content =
+          (assistantMsg.content ? `${assistantMsg.content}\n\n` : "") +
+          (id ? `Background job ${id} queued.` : "Background job queued.");
+        assistantMsg.progress = "";
+        renderChatThread();
+      },
+      onError(message) {
+        assistantMsg.error = message || "Chat failed";
+        assistantMsg.progress = "";
+        renderChatThread();
+      },
+    });
+    if (!assistantMsg.content && !assistantMsg.error) {
+      assistantMsg.progress = "";
+      if (!assistantMsg.content) assistantMsg.content = "(no response)";
+    }
+  } catch (err) {
+    if (abort.signal.aborted) {
+      assistantMsg.progress = "";
+      if (!assistantMsg.content) assistantMsg.content = "(stopped)";
+    } else {
+      assistantMsg.error = String(err.message || err);
+      assistantMsg.progress = "";
+    }
+  } finally {
+    state.chat.abort = null;
+    syncChatBusy(false);
+    await persistChatState();
+    renderChat();
+  }
+}
+
+function chatConversationKey() {
+  // Always use chat:{uuid} so New chat resets memory. Bound vault notes are
+  // passed as active_note (inline:false) so the agent can note_read them.
+  if (!state.chat.conversationId) state.chat.conversationId = newChatId();
+  return state.chat.conversationId;
+}
+
+function extForMime(mime) {
+  const m = String(mime || "").toLowerCase();
+  if (m.includes("jpeg") || m.includes("jpg")) return "jpg";
+  if (m.includes("webp")) return "webp";
+  if (m.includes("gif")) return "gif";
+  return "png";
+}
+
+/** Incremental SSE parser (keep-alives / comments dropped). */
+class SseParser {
+  constructor() {
+    this.buffer = "";
+  }
+  push(chunk) {
+    this.buffer += String(chunk || "").replace(/\r\n/g, "\n");
+    const out = [];
+    let idx;
+    while ((idx = this.buffer.indexOf("\n\n")) >= 0) {
+      const block = this.buffer.slice(0, idx);
+      this.buffer = this.buffer.slice(idx + 2);
+      const ev = parseSseBlock(block);
+      if (ev) out.push(ev);
+    }
+    return out;
+  }
+  flush() {
+    const rest = this.buffer;
+    this.buffer = "";
+    const ev = rest.trim() ? parseSseBlock(rest) : null;
+    return ev ? [ev] : [];
+  }
+}
+
+function parseSseBlock(block) {
+  let event = "message";
+  const data = [];
+  for (const line of block.split("\n")) {
+    if (!line || line.startsWith(":")) continue;
+    const colon = line.indexOf(":");
+    const field = colon >= 0 ? line.slice(0, colon) : line;
+    let value = colon >= 0 ? line.slice(colon + 1) : "";
+    if (value.startsWith(" ")) value = value.slice(1);
+    if (field === "event") event = value;
+    else if (field === "data") data.push(value);
+  }
+  if (!data.length) return null;
+  return { event, data: data.join("\n") };
+}
+
+function dispatchChatEvent(ev, handlers) {
+  let data = {};
+  try {
+    data = JSON.parse(ev.data);
+  } catch (_) {
+    return;
+  }
+  switch (ev.event) {
+    case "progress":
+      handlers.onProgress?.(String(data.text ?? ""));
+      break;
+    case "answer":
+      handlers.onAnswer?.(String(data.content ?? ""));
+      break;
+    case "job":
+      handlers.onJob?.(data);
+      break;
+    case "error":
+      handlers.onError?.(String(data.message ?? "Unknown error"));
+      break;
+    default:
+      break;
+  }
+}
+
+async function streamPawnChat(body, signal, handlers) {
+  const base = state.settings.serverUrl.replace(/\/+$/, "");
+  const headers = {
+    Accept: "text/event-stream",
+    "Content-Type": "application/json",
+  };
+  if (state.settings.apiToken) {
+    headers.Authorization = `Bearer ${state.settings.apiToken}`;
+  }
+  const resp = await fetch(`${base}/v1/pawn/chat`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify(body),
+    signal,
+  });
+  if (!resp.ok) {
+    const text = await resp.text();
+    let detail = text;
+    try {
+      const j = JSON.parse(text);
+      detail = j.detail || j.message || text;
+    } catch (_) {
+      /* keep text */
+    }
+    throw new Error(typeof detail === "string" ? detail : JSON.stringify(detail));
+  }
+  if (!resp.body || typeof resp.body.getReader !== "function") {
+    const text = await resp.text();
+    const parser = new SseParser();
+    for (const ev of [...parser.push(text), ...parser.flush()]) {
+      dispatchChatEvent(ev, handlers);
+    }
+    return;
+  }
+  const reader = resp.body.getReader();
+  const decoder = new TextDecoder();
+  const parser = new SseParser();
+  for (;;) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    for (const ev of parser.push(decoder.decode(value, { stream: true }))) {
+      dispatchChatEvent(ev, handlers);
+    }
+  }
+  for (const ev of parser.flush()) dispatchChatEvent(ev, handlers);
 }
