@@ -107,10 +107,11 @@ disabled*.
 
 ### Chat
 
-1. Open the **Chat** tab. Attach selection/clips there (or from Capture).
+1. Open the **Chat** tab. The top bar has a **conversation picker** (past
+   chats), **New chat**, and attach selection/clip controls.
 2. Ask freely, or use chips: **Create TODO**, **Capture idea**, **Summarize**,
    **Use session** (when Capture target is a session).
-3. **New chat** resets the thread; model picker uses `/v1/pawn/models`.
+3. Model picker sits next to **Send** (bottom). Uses `/v1/pawn/models`.
 
 ## API
 

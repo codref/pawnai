@@ -45,6 +45,7 @@ html,
 body {
   margin: 0;
   height: 100%;
+  overflow: hidden;
   font: 13px/1.45 system-ui, -apple-system, Segoe UI, sans-serif;
   background: var(--background-primary);
   color: var(--text-normal);
@@ -55,6 +56,8 @@ body {
   flex-direction: column;
   height: 100%;
   min-height: 0;
+  overflow: hidden;
+  max-width: 100%;
 }
 
 .pawn-topbar {
@@ -102,6 +105,9 @@ body {
   flex-direction: column;
   flex: 1;
   min-height: 0;
+  min-width: 0;
+  overflow: hidden;
+  max-width: 100%;
 }
 
 .pawn-header {
@@ -725,18 +731,201 @@ button:disabled {
 .pawn-chat-toolbar {
   display: flex;
   align-items: center;
-  gap: var(--size-4-2);
+  gap: var(--size-4-1);
   flex-shrink: 0;
   padding: var(--size-4-2) var(--size-4-3);
   border-bottom: 1px solid var(--background-modifier-border);
   background: var(--background-secondary);
+  min-width: 0;
 }
 
-.pawn-chat-model {
+.pawn-conv {
   flex: 1;
   min-width: 0;
-  max-width: 180px;
-  margin-left: auto;
+  position: relative;
+}
+
+.pawn-conv-trigger {
+  display: flex;
+  align-items: center;
+  gap: var(--size-4-1);
+  width: 100%;
+  min-width: 0;
+  padding: 6px 8px;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--radius-s);
+  background: var(--background-primary);
+  color: var(--text-normal);
+  text-align: left;
+  cursor: pointer;
+  font: inherit;
+}
+
+.pawn-conv-trigger:hover {
+  background: var(--background-modifier-hover);
+}
+
+.pawn-conv-trigger-label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pawn-conv-trigger .clickable-icon {
+  width: 18px;
+  height: 18px;
+  pointer-events: none;
+  flex-shrink: 0;
+}
+
+.pawn-conv-trigger .clickable-icon svg {
+  width: 14px;
+  height: 14px;
+}
+
+/* Fixed popovers — avoid absolute menus overflowing the side panel width. */
+.pawn-fixed-pop {
+  position: fixed;
+  z-index: 2000;
+  display: flex;
+  flex-direction: column;
+  max-height: min(420px, 55vh);
+  padding: 6px;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--radius-m);
+  background: var(--background-primary);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.18);
+  overflow: hidden;
+  box-sizing: border-box;
+}
+
+.pawn-conv-search {
+  width: 100%;
+  margin: 0 0 4px;
+  padding: 6px 8px;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--radius-s);
+  background: var(--background-primary);
+  color: var(--text-normal);
+  font: inherit;
+  box-sizing: border-box;
+}
+
+.pawn-conv-list {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+
+.pawn-conv-empty {
+  padding: 8px;
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+}
+
+.pawn-conv-option {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  border-radius: var(--radius-s);
+  min-width: 0;
+}
+
+.pawn-conv-option.is-active,
+.pawn-conv-option:hover {
+  background: var(--background-modifier-hover);
+}
+
+button.pawn-conv-option-pick {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 1px;
+  margin: 0;
+  padding: 6px 8px;
+  border: none;
+  border-radius: var(--radius-s);
+  background: transparent;
+  color: var(--text-normal);
+  text-align: left;
+  cursor: pointer;
+  font: inherit;
+}
+
+.pawn-conv-option-title {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pawn-conv-option-date {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+}
+
+.pawn-model {
+  position: relative;
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: min(11rem, 46%);
+}
+
+.pawn-model-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  max-width: 100%;
+  min-width: 0;
+  margin: 0;
+  padding: 2px 4px 2px 8px;
+  border: none;
+  border-radius: var(--radius-s);
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  font: inherit;
+  font-size: var(--font-ui-smaller);
+}
+
+.pawn-model-btn:hover {
+  color: var(--text-normal);
+  background: var(--background-modifier-hover);
+}
+
+.pawn-model-btn-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+.pawn-model-btn .clickable-icon {
+  width: 14px;
+  height: 14px;
+  pointer-events: none;
+  flex-shrink: 0;
+  opacity: 0.7;
+}
+
+.pawn-model-btn .clickable-icon svg {
+  width: 12px;
+  height: 12px;
+}
+
+.pawn-fixed-pop .pawn-select-option {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .pawn-chat-context {
@@ -976,10 +1165,16 @@ button.pawn-chip-remove svg {
 .pawn-chat-composer-row {
   display: flex;
   align-items: center;
-  justify-content: flex-end;
   gap: var(--size-4-2);
+  min-width: 0;
+}
+
+.pawn-composer-spacer {
+  flex: 1;
+  min-width: 0;
 }
 
 .pawn-chat-composer-row .mod-cta {
   margin-left: 0;
+  flex-shrink: 0;
 }

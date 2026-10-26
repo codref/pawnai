@@ -121,6 +121,15 @@
         hidden
       >
         <div class="pawn-chat-toolbar">
+          <div id="chat-conv" class="pawn-conv" title="Conversation"></div>
+          <button
+            type="button"
+            id="btn-chat-new"
+            class="clickable-icon"
+            aria-label="New chat"
+            title="New chat"
+          ></button>
+          <span class="pawn-toolbar-sep" aria-hidden="true"></span>
           <button
             type="button"
             id="btn-chat-selection"
@@ -152,15 +161,6 @@
               role="menu"
             ></div>
           </div>
-          <span class="pawn-toolbar-sep" aria-hidden="true"></span>
-          <button
-            type="button"
-            id="btn-chat-new"
-            class="clickable-icon"
-            aria-label="New chat"
-            title="New chat"
-          ></button>
-          <div id="chat-model" class="pawn-select pawn-chat-model" title="Model"></div>
         </div>
         <div id="chat-context" class="pawn-chat-context" aria-label="Attached context"></div>
         <div id="chat-thread" class="pawn-chat-thread" aria-live="polite"></div>
@@ -172,6 +172,8 @@
             placeholder="Ask Pawn about the page or attached clips…"
           ></textarea>
           <div class="pawn-chat-composer-row">
+            <div id="chat-model" class="pawn-model" title="Model"></div>
+            <span class="pawn-composer-spacer" aria-hidden="true"></span>
             <button type="button" id="btn-chat-stop" class="clickable-icon" hidden aria-label="Stop">
             </button>
             <button type="button" id="btn-chat-send" class="mod-cta">Send</button>

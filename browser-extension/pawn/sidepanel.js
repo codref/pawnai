@@ -33,6 +33,9 @@ const ICONS = {
   square: '<rect width="18" height="18" x="3" y="3" rx="2"/>',
   "plus-circle":
     '<circle cx="12" cy="12" r="10"/><path d="M8 12h8"/><path d="M12 8v8"/>',
+  plus: '<path d="M5 12h14"/><path d="M12 5v14"/>',
+  trash:
+    '<path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/>',
   link: '<path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/>',
   paperclip: '<path d="m16 6-8.5 8.5a2.12 2.12 0 0 0 3 3L19 9"/><path d="m15 3 6 6"/>',
 };
@@ -81,6 +84,8 @@ const state = {
   settingsOpen: false,
   chat: {
     conversationId: "",
+    /** @type {Record<string, {id:string,title:string,messages:any[],updatedAt:number,model?:string}>} */
+    conversations: {},
     messages: [],
     attachments: [],
     models: [],
@@ -90,6 +95,8 @@ const state = {
     pageTitle: "",
   },
 };
+
+const MAX_CHAT_CONVERSATIONS = 40;
 
 const TARGET_KIND_OPTIONS = [
   { value: "new", label: "New page" },
@@ -131,6 +138,7 @@ const el = {
   chatClipControl: document.getElementById("chat-clip-control"),
   chatClipMenu: document.getElementById("chat-clip-menu"),
   btnChatNew: document.getElementById("btn-chat-new"),
+  chatConvHost: document.getElementById("chat-conv"),
   chatModelHost: document.getElementById("chat-model"),
   chatContext: document.getElementById("chat-context"),
   chatThread: document.getElementById("chat-thread"),
@@ -141,6 +149,7 @@ const el = {
 };
 
 let chatModelSelect = null;
+let chatConvPicker = null;
 
 init();
 
@@ -149,10 +158,12 @@ async function init() {
   el.targetKind = mountTargetKindSelect(document.getElementById("target-kind"));
   mountClipMenu(el.clipMenu, () => el.clipControl);
   mountClipMenu(el.chatClipMenu, () => el.chatClipControl);
+  chatConvPicker = mountConversationPicker(el.chatConvHost);
   chatModelSelect = mountModelSelect(el.chatModelHost);
   await loadSettings();
   await loadTray();
   await loadChatState();
+  chatConvPicker?.refresh();
   bind();
   syncSettingsUi();
   syncClipUi();
@@ -327,7 +338,7 @@ function mountChromeIcons() {
   setIcon(el.btnClipMenu, "chevron-down");
   if (el.btnChatSelection) setIcon(el.btnChatSelection, "text-select");
   if (el.btnChatClipMenu) setIcon(el.btnChatClipMenu, "chevron-down");
-  if (el.btnChatNew) setIcon(el.btnChatNew, "plus-circle");
+  if (el.btnChatNew) setIcon(el.btnChatNew, "plus");
   if (el.btnChatStop) setIcon(el.btnChatStop, "square");
   syncClipUi();
 }
@@ -1590,28 +1601,360 @@ function newChatId() {
   return `chat:${Date.now().toString(36)}${Math.random().toString(36).slice(2, 10)}`;
 }
 
+function conversationLabel(id, title) {
+  if (String(id || "").startsWith("note:")) {
+    const base = id.slice(5).replace(/\.md$/i, "");
+    return base.split("/").pop() || base;
+  }
+  return title || "Chat";
+}
+
+function formatUpdatedAt(ms) {
+  if (!ms) return "";
+  const d = new Date(ms);
+  if (Number.isNaN(d.getTime())) return "";
+  const now = new Date();
+  const startToday = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const startDay = new Date(d.getFullYear(), d.getMonth(), d.getDate());
+  const diff = Math.round((startToday - startDay) / 86400000);
+  const hm = d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  if (diff === 0) return `Today ${hm}`;
+  if (diff === 1) return `Yesterday ${hm}`;
+  if (diff < 7) {
+    return `${d.toLocaleDateString([], { weekday: "short", day: "numeric", month: "short" })} ${hm}`;
+  }
+  if (d.getFullYear() === now.getFullYear()) {
+    return d.toLocaleDateString([], { day: "numeric", month: "short" });
+  }
+  return d.toLocaleDateString([], { day: "numeric", month: "short", year: "numeric" });
+}
+
+function ensureConversationRecord(id) {
+  const key = id || state.chat.conversationId || newChatId();
+  if (!state.chat.conversations[key]) {
+    state.chat.conversations[key] = {
+      id: key,
+      title: conversationLabel(key),
+      messages: [],
+      updatedAt: Date.now(),
+      model: state.chat.model || "",
+    };
+  }
+  return state.chat.conversations[key];
+}
+
+function snapshotCurrentConversation() {
+  const id = state.chat.conversationId || newChatId();
+  state.chat.conversationId = id;
+  const rec = ensureConversationRecord(id);
+  rec.messages = state.chat.messages.slice(-CHAT_MSG_LIMIT);
+  rec.model = state.chat.model || "";
+  if (rec.messages.length) {
+    const firstUser = rec.messages.find((m) => m.role === "user");
+    if (firstUser?.content && (!rec.title || rec.title === "Chat")) {
+      rec.title = String(firstUser.content).split(/\r?\n/)[0].slice(0, 48) || "Chat";
+    }
+    rec.updatedAt = Date.now();
+  }
+  pruneConversations();
+}
+
+function pruneConversations() {
+  const entries = Object.values(state.chat.conversations)
+    .filter((c) => (c.messages || []).length > 0 || c.id === state.chat.conversationId)
+    .sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
+  const keep = new Set(entries.slice(0, MAX_CHAT_CONVERSATIONS).map((c) => c.id));
+  keep.add(state.chat.conversationId);
+  for (const id of Object.keys(state.chat.conversations)) {
+    if (!keep.has(id)) delete state.chat.conversations[id];
+  }
+}
+
+function listConversationOptions(query) {
+  const q = String(query || "")
+    .trim()
+    .toLowerCase();
+  const options = [];
+  const seen = new Set();
+  const push = (id, label, deletable, updatedAt) => {
+    if (seen.has(id)) return;
+    seen.add(id);
+    options.push({ id, label, deletable, updatedAt });
+  };
+
+  const currentId = state.chat.conversationId;
+  const current = state.chat.conversations[currentId];
+  push(
+    currentId,
+    conversationLabel(currentId, current?.title),
+    !!(current && (current.messages || []).length),
+    current?.updatedAt,
+  );
+
+  const recent = Object.values(state.chat.conversations)
+    .filter((c) => (c.messages || []).length > 0)
+    .sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
+  for (const conv of recent) {
+    push(conv.id, conversationLabel(conv.id, conv.title), true, conv.updatedAt);
+  }
+
+  if (!q) return options;
+  return options.filter(
+    (o) => o.label.toLowerCase().includes(q) || o.id.toLowerCase().includes(q),
+  );
+}
+
+async function switchConversation(id) {
+  if (!id || id === state.chat.conversationId) return;
+  if (state.chat.abort) stopChat();
+  snapshotCurrentConversation();
+  state.chat.conversationId = id;
+  const rec = ensureConversationRecord(id);
+  state.chat.messages = Array.isArray(rec.messages) ? rec.messages.slice() : [];
+  if (rec.model != null && rec.model !== "") {
+    state.chat.model = rec.model;
+    chatModelSelect?.setValue(rec.model);
+  }
+  state.chat.attachments = [];
+  await persistChatState();
+  renderChat();
+}
+
+async function deleteConversation(id) {
+  if (!id || !state.chat.conversations[id]) return;
+  delete state.chat.conversations[id];
+  if (state.chat.conversationId === id) {
+    if (state.chat.abort) stopChat();
+    state.chat.conversationId = newChatId();
+    state.chat.messages = [];
+    state.chat.attachments = [];
+    ensureConversationRecord(state.chat.conversationId);
+  }
+  await persistChatState();
+  renderChat();
+  showNotice("Conversation deleted");
+}
+
 async function loadChatState() {
-  const data = await chrome.storage.local.get(["chatState"]);
-  const c = data.chatState || {};
-  state.chat.conversationId = c.conversationId || newChatId();
-  state.chat.messages = Array.isArray(c.messages) ? c.messages.slice(-CHAT_MSG_LIMIT) : [];
-  state.chat.attachments = Array.isArray(c.attachments) ? c.attachments : [];
-  state.chat.model = c.model || "";
-  state.chat.pageUrl = c.pageUrl || "";
-  state.chat.pageTitle = c.pageTitle || "";
+  const data = await chrome.storage.local.get(["chatStore", "chatState"]);
+  const store = data.chatStore || null;
+  if (store && store.conversations) {
+    state.chat.conversations = store.conversations || {};
+    state.chat.conversationId = store.currentId || newChatId();
+    state.chat.attachments = Array.isArray(store.attachments) ? store.attachments : [];
+    state.chat.model = store.model || "";
+    state.chat.pageUrl = store.pageUrl || "";
+    state.chat.pageTitle = store.pageTitle || "";
+  } else {
+    // Migrate single-thread chatState from v0.2.0.
+    const c = data.chatState || {};
+    const id = c.conversationId || newChatId();
+    state.chat.conversationId = id;
+    state.chat.conversations = {};
+    if (Array.isArray(c.messages) && c.messages.length) {
+      state.chat.conversations[id] = {
+        id,
+        title: conversationLabel(id),
+        messages: c.messages.slice(-CHAT_MSG_LIMIT),
+        updatedAt: Date.now(),
+        model: c.model || "",
+      };
+    }
+    state.chat.attachments = Array.isArray(c.attachments) ? c.attachments : [];
+    state.chat.model = c.model || "";
+    state.chat.pageUrl = c.pageUrl || "";
+    state.chat.pageTitle = c.pageTitle || "";
+  }
+  const rec = ensureConversationRecord(state.chat.conversationId);
+  state.chat.messages = Array.isArray(rec.messages) ? rec.messages.slice() : [];
+  if (!state.chat.model && rec.model) state.chat.model = rec.model;
 }
 
 async function persistChatState() {
+  snapshotCurrentConversation();
   await chrome.storage.local.set({
-    chatState: {
-      conversationId: state.chat.conversationId,
-      messages: state.chat.messages.slice(-CHAT_MSG_LIMIT),
+    chatStore: {
+      currentId: state.chat.conversationId,
+      conversations: state.chat.conversations,
       attachments: state.chat.attachments,
       model: state.chat.model,
       pageUrl: state.chat.pageUrl,
       pageTitle: state.chat.pageTitle,
     },
   });
+  // Drop legacy single-thread blob after migration.
+  await chrome.storage.local.remove("chatState");
+  chatConvPicker?.refresh();
+}
+
+/** Position a fixed popover under (or above) an anchor without overflowing the viewport. */
+function placeFixedPop(pop, anchor, { preferUp = false, minWidth = 220 } = {}) {
+  const rect = anchor.getBoundingClientRect();
+  const width = Math.min(
+    Math.max(rect.width, minWidth),
+    Math.max(200, window.innerWidth - 16),
+  );
+  pop.style.width = `${width}px`;
+  pop.style.left = `${Math.max(8, Math.min(rect.left, window.innerWidth - width - 8))}px`;
+  const gap = 4;
+  requestAnimationFrame(() => {
+    const box = pop.getBoundingClientRect();
+    let top = preferUp ? rect.top - box.height - gap : rect.bottom + gap;
+    if (!preferUp && box.bottom > window.innerHeight - 8) {
+      top = Math.max(8, rect.top - box.height - gap);
+    } else if (preferUp && top < 8) {
+      top = Math.min(window.innerHeight - box.height - 8, rect.bottom + gap);
+    }
+    pop.style.top = `${Math.max(8, top)}px`;
+  });
+}
+
+function mountConversationPicker(host) {
+  if (!host) {
+    return { refresh() {} };
+  }
+  const trigger = document.createElement("button");
+  trigger.type = "button";
+  trigger.className = "pawn-conv-trigger";
+  trigger.setAttribute("aria-haspopup", "listbox");
+  trigger.setAttribute("aria-label", "Choose conversation");
+  const labelEl = document.createElement("span");
+  labelEl.className = "pawn-conv-trigger-label";
+  const chevron = document.createElement("span");
+  chevron.className = "clickable-icon";
+  chevron.setAttribute("aria-hidden", "true");
+  setIcon(chevron, "chevron-down");
+  trigger.append(labelEl, chevron);
+  host.replaceChildren(trigger);
+
+  let pop = null;
+  let query = "";
+
+  const refresh = () => {
+    const rec = state.chat.conversations[state.chat.conversationId];
+    labelEl.textContent = conversationLabel(state.chat.conversationId, rec?.title);
+  };
+
+  const close = () => {
+    pop?.remove();
+    pop = null;
+    document.removeEventListener("pointerdown", onOutside, true);
+    document.removeEventListener("keydown", onKey, true);
+    setIcon(chevron, "chevron-down");
+  };
+
+  const onOutside = (ev) => {
+    if (pop?.contains(ev.target) || trigger.contains(ev.target)) return;
+    close();
+  };
+
+  const onKey = (ev) => {
+    if (ev.key === "Escape") close();
+  };
+
+  const paintList = (list) => {
+    list.replaceChildren();
+    const options = listConversationOptions(query);
+    if (!options.length) {
+      const empty = document.createElement("div");
+      empty.className = "pawn-conv-empty";
+      empty.textContent = "No conversations match.";
+      list.appendChild(empty);
+      return;
+    }
+    for (const opt of options) {
+      const row = document.createElement("div");
+      row.className =
+        "pawn-conv-option" + (opt.id === state.chat.conversationId ? " is-active" : "");
+      const pick = document.createElement("button");
+      pick.type = "button";
+      pick.className = "pawn-conv-option-pick";
+      pick.title = opt.label;
+      const title = document.createElement("span");
+      title.className = "pawn-conv-option-title";
+      title.textContent = opt.label;
+      pick.appendChild(title);
+      const when = formatUpdatedAt(opt.updatedAt);
+      if (when) {
+        const date = document.createElement("span");
+        date.className = "pawn-conv-option-date";
+        date.textContent = when;
+        pick.appendChild(date);
+      }
+      pick.addEventListener("click", (ev) => {
+        ev.preventDefault();
+        close();
+        void switchConversation(opt.id);
+      });
+      row.appendChild(pick);
+      if (opt.deletable) {
+        const del = document.createElement("button");
+        del.type = "button";
+        del.className = "clickable-icon";
+        del.setAttribute("aria-label", `Delete ${opt.label}`);
+        del.title = "Delete conversation";
+        setIcon(del, "trash");
+        del.addEventListener("click", (ev) => {
+          ev.preventDefault();
+          ev.stopPropagation();
+          if (window.confirm(`Delete “${opt.label}”?`)) {
+            close();
+            void deleteConversation(opt.id);
+          }
+        });
+        row.appendChild(del);
+      }
+      list.appendChild(row);
+    }
+  };
+
+  const open = () => {
+    if (pop) {
+      close();
+      return;
+    }
+    query = "";
+    pop = document.createElement("div");
+    pop.className = "pawn-fixed-pop";
+    pop.setAttribute("role", "listbox");
+    const search = document.createElement("input");
+    search.type = "search";
+    search.className = "pawn-conv-search";
+    search.placeholder = "Search conversations…";
+    search.setAttribute("aria-label", "Search conversations");
+    const list = document.createElement("div");
+    list.className = "pawn-conv-list";
+    pop.append(search, list);
+    document.body.appendChild(pop);
+    paintList(list);
+    placeFixedPop(pop, trigger, { minWidth: 260 });
+    setIcon(chevron, "chevron-up");
+    search.addEventListener("input", () => {
+      query = search.value;
+      paintList(list);
+    });
+    document.addEventListener("pointerdown", onOutside, true);
+    document.addEventListener("keydown", onKey, true);
+    requestAnimationFrame(() => {
+      search.focus();
+      search.select();
+    });
+  };
+
+  trigger.addEventListener("click", (ev) => {
+    ev.preventDefault();
+    open();
+  });
+
+  refresh();
+  return { refresh, close };
+}
+
+function shortModelLabel(id) {
+  if (!id) return "Default";
+  const at = String(id).lastIndexOf("@");
+  if (at >= 0) return String(id).slice(at + 1);
+  return String(id);
 }
 
 function mountModelSelect(host) {
@@ -1626,81 +1969,93 @@ function mountModelSelect(host) {
   }
   const trigger = document.createElement("button");
   trigger.type = "button";
-  trigger.className = "pawn-select-trigger";
+  trigger.className = "pawn-model-btn";
   trigger.setAttribute("aria-haspopup", "listbox");
   trigger.setAttribute("aria-expanded", "false");
   trigger.title = "Model";
   const valueEl = document.createElement("span");
-  valueEl.className = "pawn-select-value";
+  valueEl.className = "pawn-model-btn-label";
   valueEl.textContent = "Default";
   const chevron = document.createElement("span");
   chevron.className = "clickable-icon";
   chevron.setAttribute("aria-hidden", "true");
   setIcon(chevron, "chevron-down");
   trigger.append(valueEl, chevron);
-  const menu = document.createElement("div");
-  menu.className = "pawn-select-menu";
-  menu.hidden = true;
-  menu.setAttribute("role", "listbox");
-  host.replaceChildren(trigger, menu);
+  host.replaceChildren(trigger);
 
   let options = [{ id: "", label: "Default" }];
   let current = "";
+  let pop = null;
 
   const sync = () => {
     const hit = options.find((o) => o.id === current) || options[0];
-    valueEl.textContent = hit?.label || "Default";
-    for (const btn of menu.querySelectorAll(".pawn-select-option")) {
-      btn.classList.toggle("is-selected", btn.dataset.value === current);
-    }
+    valueEl.textContent = shortModelLabel(hit?.id) || hit?.label || "Default";
+    trigger.title = hit?.label || hit?.id || "Default model";
   };
 
   const close = () => {
-    if (menu.hidden) return;
-    menu.hidden = true;
+    pop?.remove();
+    pop = null;
     trigger.setAttribute("aria-expanded", "false");
     setIcon(chevron, "chevron-down");
     document.removeEventListener("pointerdown", onOutside, true);
+    document.removeEventListener("keydown", onKey, true);
   };
 
   const onOutside = (ev) => {
-    if (!host.contains(ev.target)) close();
+    if (pop?.contains(ev.target) || trigger.contains(ev.target)) return;
+    close();
+  };
+
+  const onKey = (ev) => {
+    if (ev.key === "Escape") close();
   };
 
   const open = () => {
-    if (!menu.hidden) return;
-    menu.hidden = false;
+    if (pop) {
+      close();
+      return;
+    }
+    pop = document.createElement("div");
+    pop.className = "pawn-fixed-pop";
+    pop.setAttribute("role", "listbox");
+    for (const opt of options) {
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className =
+        "pawn-select-option" + (opt.id === current ? " is-selected" : "");
+      btn.dataset.value = opt.id;
+      btn.textContent = opt.label;
+      btn.title = opt.label;
+      btn.addEventListener("click", (ev) => {
+        ev.preventDefault();
+        current = opt.id;
+        state.chat.model = opt.id;
+        const rec = ensureConversationRecord(state.chat.conversationId);
+        rec.model = opt.id;
+        sync();
+        close();
+        void persistChatState();
+      });
+      pop.appendChild(btn);
+    }
+    document.body.appendChild(pop);
+    placeFixedPop(pop, trigger, { preferUp: true, minWidth: 220 });
     trigger.setAttribute("aria-expanded", "true");
     setIcon(chevron, "chevron-up");
     document.addEventListener("pointerdown", onOutside, true);
+    document.addEventListener("keydown", onKey, true);
   };
 
   trigger.addEventListener("click", (ev) => {
     ev.preventDefault();
-    if (menu.hidden) open();
-    else close();
+    if (pop) close();
+    else open();
   });
 
   return {
     setOptions(list) {
       options = [{ id: "", label: "Default" }, ...(list || [])];
-      menu.replaceChildren();
-      for (const opt of options) {
-        const btn = document.createElement("button");
-        btn.type = "button";
-        btn.className = "pawn-select-option";
-        btn.dataset.value = opt.id;
-        btn.textContent = opt.label;
-        btn.addEventListener("click", (ev) => {
-          ev.preventDefault();
-          current = opt.id;
-          state.chat.model = opt.id;
-          sync();
-          close();
-          void persistChatState();
-        });
-        menu.appendChild(btn);
-      }
       if (!options.some((o) => o.id === current)) current = "";
       sync();
     },
@@ -1784,7 +2139,9 @@ function removeChatAttachment(id) {
 
 async function startNewChat() {
   if (state.chat.abort) stopChat();
+  snapshotCurrentConversation();
   state.chat.conversationId = newChatId();
+  ensureConversationRecord(state.chat.conversationId);
   state.chat.messages = [];
   state.chat.attachments = [];
   await persistChatState();
@@ -1814,6 +2171,7 @@ function syncChatBusy(busy) {
 }
 
 function renderChat() {
+  chatConvPicker?.refresh();
   renderChatContext();
   renderChatThread();
   renderChatActions();

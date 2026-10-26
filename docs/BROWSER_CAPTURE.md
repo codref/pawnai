@@ -33,17 +33,18 @@ from the list when you want snippets on that transcript.
 
 ### Chat tab
 
-1. Switch to **Chat**. The page title/URL appears as a context chip; a sticky
-   capture note or session transcript (when selected on Capture) is offered as
-   `active_note` for `note_read`.
-2. Attach a **selection** or **Clip** (same tools as Capture) — snippets land
-   as removable context chips (max 4 images). Or attach from the Capture tray.
-3. Type a prompt, or tap a suggested chip (**Create TODO**, **Capture idea**,
-   **Summarize**, **Use session** when a session target is set).
-4. Send streams progress/answer over SSE. Stop cancels the in-flight turn.
-   **New chat** clears the thread and starts a new `chat:{uuid}`.
-5. Pick a catalog model when needed; image attaches prefer a `vision: true`
-   model from `GET /v1/pawn/models`.
+Layout mirrors the Obsidian plugin chat pane (no Background toggle):
+
+1. Toolbar: **conversation picker** (searchable history) · **New chat** ·
+   attach selection / Clip.
+2. Context chips: page title/URL; sticky capture/session note as
+   `active_note` (`inline: false`); attached text/images (max 4 images).
+3. Thread + suggested action chips (**Create TODO**, **Capture idea**,
+   **Summarize**, **Use session** when Capture target is a session).
+4. Composer: message · **model** (bottom, like Obsidian) · Send / Stop.
+5. Conversations are local (`chat:{uuid}` keys, up to 40 non-empty); New chat
+   starts a fresh id. Image turns prefer a `vision: true` model from
+   `GET /v1/pawn/models`.
 
 ## Targets
 
