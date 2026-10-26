@@ -40,6 +40,9 @@ const ICONS = {
     '<path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/>',
   link: '<path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/>',
   paperclip: '<path d="m16 6-8.5 8.5a2.12 2.12 0 0 0 3 3L19 9"/><path d="m15 3 6 6"/>',
+  "file-text":
+    '<path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/><path d="M10 9H8"/><path d="M16 13H8"/><path d="M16 17H8"/>',
+  mic: '<path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" x2="12" y1="19" y2="22"/>',
   copy: '<rect width="14" height="14" x="8" y="8" rx="2" ry="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/>',
   pencil: '<path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/><path d="m15 5 4 4"/>',
   "external-link":
@@ -104,6 +107,10 @@ const state = {
     conversations: {},
     messages: [],
     attachments: [],
+    /** Vault notes / sessions attached as chat context (Obsidian @ notes). */
+    noteContext: [],
+    /** When true, Capture sticky/session is not auto-included. */
+    omitBound: false,
     models: [],
     model: "",
     reasoning: "",
@@ -113,6 +120,8 @@ const state = {
     pageTitle: "",
   },
 };
+
+const MAX_NOTE_CONTEXT = 8;
 
 const MAX_CHAT_CONVERSATIONS = 40;
 
@@ -547,6 +556,17 @@ function bind() {
     if (ev.key === "Enter" && !ev.shiftKey) {
       ev.preventDefault();
       void sendChat();
+      return;
+    }
+    // "@" at start or after whitespace opens the note/session picker (Obsidian-like).
+    if (ev.key === "@") {
+      const ta = el.chatInput;
+      const pos = ta.selectionStart ?? 0;
+      const before = ta.value.slice(0, pos);
+      if (pos === 0 || /\s$/.test(before)) {
+        ev.preventDefault();
+        void openNoteContextPicker();
+      }
     }
   });
 }
@@ -1762,6 +1782,8 @@ async function loadChatState() {
     state.chat.conversations = store.conversations || {};
     state.chat.conversationId = store.currentId || newChatId();
     state.chat.attachments = Array.isArray(store.attachments) ? store.attachments : [];
+    state.chat.noteContext = Array.isArray(store.noteContext) ? store.noteContext : [];
+    state.chat.omitBound = !!store.omitBound;
     state.chat.model = store.model || "";
     state.chat.reasoning = store.reasoning || "";
     state.chat.route = store.route || "";
@@ -1783,6 +1805,8 @@ async function loadChatState() {
       };
     }
     state.chat.attachments = Array.isArray(c.attachments) ? c.attachments : [];
+    state.chat.noteContext = [];
+    state.chat.omitBound = false;
     state.chat.model = c.model || "";
     state.chat.pageUrl = c.pageUrl || "";
     state.chat.pageTitle = c.pageTitle || "";
@@ -1801,6 +1825,8 @@ async function persistChatState() {
       currentId: state.chat.conversationId,
       conversations: state.chat.conversations,
       attachments: state.chat.attachments,
+      noteContext: state.chat.noteContext,
+      omitBound: state.chat.omitBound,
       model: state.chat.model,
       reasoning: state.chat.reasoning,
       route: state.chat.route,
@@ -2439,23 +2465,34 @@ function renderChatContext() {
     );
   }
 
-  const notePath = chatBoundNotePath();
-  if (notePath) {
+  // Capture sticky / session (auto) unless the user detached it.
+  if (!state.chat.omitBound) {
+    const bound = describeBoundContext();
+    if (bound && !noteContextHas(bound)) {
+      el.chatContext.appendChild(
+        makeChip({
+          cls: bound.kind === "session" ? "is-session" : "is-note",
+          icon: bound.kind === "session" ? "mic" : "file-text",
+          label: bound.label,
+          title: bound.title,
+          onRemove: () => {
+            state.chat.omitBound = true;
+            void persistChatState();
+            renderChatContext();
+          },
+        }),
+      );
+    }
+  }
+
+  for (const note of state.chat.noteContext) {
     el.chatContext.appendChild(
       makeChip({
-        cls: "is-note",
-        icon: "paperclip",
-        label: pathBasename(notePath).replace(/\.md$/i, "") || notePath,
-        title: `Bound note: ${notePath}`,
-      }),
-    );
-  } else if (state.targetKind === "session" && state.sessionId) {
-    el.chatContext.appendChild(
-      makeChip({
-        cls: "is-note",
-        icon: "paperclip",
-        label: currentPickLabel() || state.sessionId,
-        title: `Session ${state.sessionId}`,
+        cls: note.kind === "session" ? "is-session" : "is-note",
+        icon: note.kind === "session" ? "mic" : "file-text",
+        label: note.label || pathBasename(note.path || "").replace(/\.md$/i, "") || "Note",
+        title: note.title || note.path || note.sessionId || "",
+        onRemove: () => removeNoteContext(note.id),
       }),
     );
   }
@@ -2474,6 +2511,18 @@ function renderChatContext() {
       }),
     );
   }
+
+  const add = document.createElement("button");
+  add.type = "button";
+  add.className = "pawn-chip pawn-chip-add";
+  add.setAttribute("aria-label", "Add note or session as context");
+  add.title = "Add note or session (@)";
+  const addIcon = document.createElement("span");
+  addIcon.className = "pawn-chip-icon";
+  setIcon(addIcon, "plus");
+  add.appendChild(addIcon);
+  add.addEventListener("click", () => void openNoteContextPicker());
+  el.chatContext.appendChild(add);
 }
 
 function makeChip({ cls, icon, label, title, onRemove }) {
@@ -2505,6 +2554,166 @@ function makeChip({ cls, icon, label, title, onRemove }) {
   return chip;
 }
 
+function describeBoundContext() {
+  if (state.stickyPath) {
+    return {
+      kind: "note",
+      path: state.stickyPath,
+      label: pathBasename(state.stickyPath).replace(/\.md$/i, "") || state.stickyPath,
+      title: `Capture target: ${state.stickyPath}`,
+    };
+  }
+  if (state.targetKind === "session" && state.sessionId) {
+    const hit = state.sessions.find((s) => s.session_id === state.sessionId);
+    const path = hit?.transcript_path || "";
+    return {
+      kind: "session",
+      path,
+      sessionId: state.sessionId,
+      label: hit?.title || state.sessionId,
+      title: path
+        ? `Session ${state.sessionId} · ${path}`
+        : `Session ${state.sessionId} (no transcript note yet)`,
+    };
+  }
+  return null;
+}
+
+function noteContextHas(ref) {
+  return state.chat.noteContext.some((n) => {
+    if (ref.path && n.path && n.path === ref.path) return true;
+    if (ref.sessionId && n.sessionId && n.sessionId === ref.sessionId) return true;
+    return false;
+  });
+}
+
+function removeNoteContext(id) {
+  state.chat.noteContext = state.chat.noteContext.filter((n) => n.id !== id);
+  void persistChatState();
+  renderChatContext();
+}
+
+function addNoteContext(ref) {
+  if (!ref) return;
+  if (state.chat.noteContext.length >= MAX_NOTE_CONTEXT) {
+    showNotice(`At most ${MAX_NOTE_CONTEXT} notes/sessions as context`, true);
+    return;
+  }
+  if (noteContextHas(ref)) {
+    showNotice("Already attached");
+    return;
+  }
+  state.chat.noteContext.push({
+    id: newSnippetId(),
+    kind: ref.kind === "session" ? "session" : "note",
+    path: ref.path || "",
+    sessionId: ref.sessionId || "",
+    label: ref.label || "",
+    title: ref.title || ref.path || "",
+  });
+  // Explicit attach supersedes "omit bound" for overlapping paths.
+  if (ref.path && ref.path === state.stickyPath) state.chat.omitBound = false;
+  void persistChatState();
+  renderChatContext();
+  showNotice(`Attached ${ref.label || ref.path || "context"}`);
+}
+
+/** Notes/sessions that will be sent on the next chat turn. */
+function notesForSend() {
+  const out = [];
+  const seen = new Set();
+  const push = (ref) => {
+    if (!ref) return;
+    const key = ref.path || (ref.sessionId ? `session:${ref.sessionId}` : "");
+    if (!key || seen.has(key)) return;
+    seen.add(key);
+    out.push(ref);
+  };
+  for (const n of state.chat.noteContext) push(n);
+  if (!state.chat.omitBound) push(describeBoundContext());
+  return out;
+}
+
+async function openNoteContextPicker() {
+  showNotice("Loading notes & sessions…", false, true);
+  try {
+    const [capData, sessData] = await Promise.all([
+      api("GET", "/v1/captures?limit=50").catch(() => ({ data: [] })),
+      api("GET", "/v1/sessions?limit=40").catch(() => ({ data: [] })),
+    ]);
+    state.captures = capData.data || state.captures || [];
+    state.sessions = sessData.data || state.sessions || [];
+  } catch (_) {
+    /* keep cached */
+  }
+  showNotice("");
+
+  const items = [];
+  for (const row of state.sessions || []) {
+    const path = row.transcript_path || "";
+    items.push({
+      id: `session:${row.session_id}`,
+      title: row.title || row.session_id,
+      detail: path ? `Session · ${path}` : `Session · ${row.session_id} (no transcript yet)`,
+      value: row.session_id,
+      kind: "session",
+      path,
+      sessionId: row.session_id,
+      label: row.title || row.session_id,
+    });
+  }
+  for (const row of state.captures || []) {
+    items.push({
+      id: `note:${row.path}`,
+      title: row.title || pathBasename(row.path).replace(/\.md$/i, ""),
+      detail: row.path,
+      value: row.path,
+      kind: "note",
+      path: row.path,
+      label: row.title || pathBasename(row.path).replace(/\.md$/i, ""),
+    });
+  }
+
+  openSuggestModal({
+    placeholder: "Attach a note or session… (type a vault path)",
+    items,
+    emptyText: "No matches — type a vault path and press Enter",
+    allowCustom: true,
+    onChoose: async (item) => {
+      if (item.custom || (!item.kind && item.value)) {
+        let path = String(item.value || item.title || "").trim();
+        path = path.replace(/^\[\[|\]\]$/g, "").split("|")[0].trim();
+        if (!path) return;
+        if (!/\.(md|base|canvas)$/i.test(path)) path = `${path}.md`;
+        path = path.replace(/^\/+/, "");
+        addNoteContext({
+          kind: "note",
+          path,
+          label: pathBasename(path).replace(/\.md$/i, ""),
+          title: path,
+        });
+        return;
+      }
+      if (item.kind === "session") {
+        addNoteContext({
+          kind: "session",
+          path: item.path || "",
+          sessionId: item.sessionId || item.value,
+          label: item.label || item.title,
+          title: item.detail || item.title,
+        });
+        return;
+      }
+      addNoteContext({
+        kind: "note",
+        path: item.path || item.value,
+        label: item.label || item.title,
+        title: item.path || item.value,
+      });
+    },
+  });
+}
+
 function hostnameOf(url) {
   try {
     return new URL(url).hostname;
@@ -2529,7 +2738,7 @@ function renderChatThread() {
     const empty = document.createElement("p");
     empty.className = "pawn-chat-empty";
     empty.textContent =
-      "Attach a selection or screenshot, then ask Pawn — or tap a suggested action below.";
+      "Attach a selection, screenshot, or note/session (+ or @), then ask Pawn — or use a chip below.";
     el.chatThread.appendChild(empty);
     return;
   }
@@ -2884,15 +3093,26 @@ async function sendChat(overrideMessage) {
   if (state.chat.pageUrl) {
     selectionParts.push(`Page: ${state.chat.pageTitle || ""} ${state.chat.pageUrl}`.trim());
   }
-  const selection = selectionParts.join("\n\n").slice(0, 6000) || undefined;
+  let selection = selectionParts.join("\n\n").slice(0, 6000) || undefined;
 
   let message = typed;
   if (!message && images.length) message = "Look at this image.";
   if (!message && texts.length) message = "Process the attached text.";
 
   const conversation = chatConversationKey();
-  const notePath = chatBoundNotePath();
   const tuning = tuningFields();
+  const notes = notesForSend();
+  const pathNotes = notes.filter((n) => n.path);
+  const sessionOnly = notes.filter((n) => n.kind === "session" && !n.path && n.sessionId);
+  if (sessionOnly.length) {
+    const hint = sessionOnly
+      .map((n) => `Diarization session ${n.sessionId}${n.label ? ` (${n.label})` : ""}`)
+      .join("; ");
+    selection = [selection, `Attached sessions (use sessions_list / session_transcript): ${hint}`]
+      .filter(Boolean)
+      .join("\n\n")
+      .slice(0, 6000);
+  }
   const body = {
     conversation,
     message,
@@ -2907,8 +3127,9 @@ async function sendChat(overrideMessage) {
   };
   if (tuning.reasoning) body.reasoning = tuning.reasoning;
   if (tuning.route) body.route = tuning.route;
-  if (notePath) {
-    body.active_note = { path: notePath, inline: false };
+  if (pathNotes.length) {
+    body.active_note = { path: pathNotes[0].path, inline: false };
+    body.context = pathNotes.slice(1).map((n) => ({ path: n.path, inline: false }));
   }
 
   const userMsg = {

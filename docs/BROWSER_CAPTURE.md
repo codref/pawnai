@@ -37,8 +37,11 @@ Layout mirrors the Obsidian plugin chat pane (no Background toggle):
 
 1. Toolbar: **conversation picker** (searchable history) · **New chat** ·
    attach selection / Clip.
-2. Context chips: page title/URL; sticky capture/session note as
-   `active_note` (`inline: false`); attached text/images (max 4 images).
+2. Context chips: page title/URL; Capture sticky/session (detachable);
+   **+ / `@`** searchable overlay to attach vault notes or diarization
+   sessions (`active_note` + `context[]`, `inline: false`); text/images
+   (max 4 images). Type a vault path in the overlay when the note is not
+   in recent captures.
 3. Thread with Markdown replies (vault paths / `[[wikilinks]]` →
    `obsidian://open` when `vault.obsidian_vault_name` is set). Message actions:
    user **Copy** / **Edit in composer**; assistant **Copy** / **Open in

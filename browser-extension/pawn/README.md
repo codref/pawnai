@@ -108,10 +108,12 @@ disabled*.
 ### Chat
 
 1. Open the **Chat** tab. The top bar has a **conversation picker** (past
-   chats), **New chat**, and attach selection/clip controls.
-2. Ask freely, or use chips: **Create TODO**, **Capture idea**, **Summarize**,
-   **Use session** (when Capture target is a session).
-3. Model picker sits next to **Send** (bottom). Uses `/v1/pawn/models`.
+   chats) and **New chat**.
+2. Attach page clips (selection/region) or vault context via the **+** chip /
+   typing **@** — searchable overlay of sessions and recent captures (or type
+   a vault path).
+3. Ask freely, or use chips that inject prompts (`Create TODO`, `/idea`, …).
+4. Model picker sits next to **Send** (bottom). Uses `/v1/pawn/models`.
 
 ## API
 

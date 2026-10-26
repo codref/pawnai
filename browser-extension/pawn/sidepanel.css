@@ -1042,9 +1042,7 @@ button.pawn-conv-option-pick {
   min-height: 0;
 }
 
-.pawn-chat-context:empty {
-  display: none;
-}
+/* Keep the + chip visible even with no other context. */
 
 .pawn-chip {
   display: inline-flex;
@@ -1122,12 +1120,34 @@ button.pawn-chip-remove svg {
   border-color: rgba(74, 158, 142, 0.45);
 }
 
+.pawn-chip.is-session {
+  border-color: rgba(106, 140, 175, 0.55);
+}
+
 .pawn-chip.is-image {
   border-color: rgba(74, 158, 142, 0.35);
 }
 
 .pawn-chip.is-text {
   border-color: rgba(106, 140, 175, 0.45);
+}
+
+button.pawn-chip-add {
+  padding: 3px 8px;
+  border-style: dashed;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+button.pawn-chip-add:hover {
+  color: var(--text-normal);
+  background: var(--background-modifier-hover);
+  border-color: var(--interactive-accent);
+}
+
+.pawn-chat-context:empty {
+  display: flex;
 }
 
 .pawn-chat-thread {
