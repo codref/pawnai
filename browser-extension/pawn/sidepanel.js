@@ -1200,6 +1200,15 @@ function openSuggestModal(opts) {
     await opts.onChoose(item);
   };
 
+  const paintActive = () => {
+    const buttons = [...list.querySelectorAll(".pawn-suggest-item")];
+    buttons.forEach((btn, i) => {
+      btn.classList.toggle("is-active", i === active);
+    });
+    const activeEl = list.querySelector(".is-active");
+    if (activeEl) activeEl.scrollIntoView({ block: "nearest" });
+  };
+
   const renderList = () => {
     const q = input.value.trim();
     filtered = rankSuggestItems(opts.items || [], q);
@@ -1230,15 +1239,21 @@ function openSuggestModal(opts) {
         detail.textContent = item.detail;
         btn.appendChild(detail);
       }
+      // Highlight only — do not rebuild the list (that ate click events).
       btn.addEventListener("mouseenter", () => {
+        if (active === i) return;
         active = i;
-        renderList();
+        paintActive();
       });
-      btn.addEventListener("click", () => void choose(item));
+      // pointerdown is reliable; click was lost when the node was recreated.
+      btn.addEventListener("pointerdown", (ev) => {
+        ev.preventDefault();
+        ev.stopPropagation();
+        void choose(item);
+      });
       list.appendChild(btn);
     });
-    const activeEl = list.querySelector(".is-active");
-    if (activeEl) activeEl.scrollIntoView({ block: "nearest" });
+    paintActive();
   };
 
   const onDocKey = (ev) => {
@@ -1260,11 +1275,11 @@ function openSuggestModal(opts) {
     if (ev.key === "ArrowDown") {
       ev.preventDefault();
       active = Math.min(active + 1, Math.max(filtered.length - 1, 0));
-      renderList();
+      paintActive();
     } else if (ev.key === "ArrowUp") {
       ev.preventDefault();
       active = Math.max(active - 1, 0);
-      renderList();
+      paintActive();
     } else if (ev.key === "Enter") {
       ev.preventDefault();
       if (filtered[active]) void choose(filtered[active]);
@@ -2651,15 +2666,24 @@ async function openNoteContextPicker() {
   const items = [];
   for (const row of state.sessions || []) {
     const path = row.transcript_path || "";
+    const when =
+      formatSuggestDate(row.updated_at) || formatSuggestDate(row.created_at) || "";
+    const whenLabel = when
+      ? row.updated_at
+        ? `Updated ${when}`
+        : `Created ${when}`
+      : "";
+    const bits = ["Session", whenLabel, path || "(no transcript yet)"].filter(Boolean);
     items.push({
       id: `session:${row.session_id}`,
       title: row.title || row.session_id,
-      detail: path ? `Session · ${path}` : `Session · ${row.session_id} (no transcript yet)`,
+      detail: bits.join(" · "),
       value: row.session_id,
       kind: "session",
       path,
       sessionId: row.session_id,
       label: row.title || row.session_id,
+      updatedAt: row.updated_at || row.created_at || "",
     });
   }
   for (const row of state.captures || []) {
@@ -2680,7 +2704,27 @@ async function openNoteContextPicker() {
     emptyText: "No matches — type a vault path and press Enter",
     allowCustom: true,
     onChoose: async (item) => {
-      if (item.custom || (!item.kind && item.value)) {
+      try {
+        if (item.kind === "session") {
+          addNoteContext({
+            kind: "session",
+            path: item.path || "",
+            sessionId: item.sessionId || item.value,
+            label: item.label || item.title,
+            title: item.detail || item.title,
+          });
+          return;
+        }
+        if (item.kind === "note" && !item.custom) {
+          addNoteContext({
+            kind: "note",
+            path: item.path || item.value,
+            label: item.label || item.title,
+            title: item.path || item.value,
+          });
+          return;
+        }
+        // Typed vault path (custom) or legacy items without kind.
         let path = String(item.value || item.title || "").trim();
         path = path.replace(/^\[\[|\]\]$/g, "").split("|")[0].trim();
         if (!path) return;
@@ -2692,26 +2736,19 @@ async function openNoteContextPicker() {
           label: pathBasename(path).replace(/\.md$/i, ""),
           title: path,
         });
-        return;
+      } catch (err) {
+        showNotice(String(err?.message || err), true);
       }
-      if (item.kind === "session") {
-        addNoteContext({
-          kind: "session",
-          path: item.path || "",
-          sessionId: item.sessionId || item.value,
-          label: item.label || item.title,
-          title: item.detail || item.title,
-        });
-        return;
-      }
-      addNoteContext({
-        kind: "note",
-        path: item.path || item.value,
-        label: item.label || item.title,
-        title: item.path || item.value,
-      });
     },
   });
+}
+
+/** Compact date for suggest rows (Today 14:32, 19 Oct, …). */
+function formatSuggestDate(iso) {
+  if (!iso) return "";
+  const ms = Date.parse(iso);
+  if (!Number.isFinite(ms)) return "";
+  return formatUpdatedAt(ms);
 }
 
 function hostnameOf(url) {
