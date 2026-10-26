@@ -1808,23 +1808,53 @@ async function persistChatState() {
   chatModelSelect?.refresh();
 }
 
-/** Position a fixed popover under (or above) an anchor without overflowing the viewport. */
-function placeFixedPop(pop, anchor, { preferUp = false, minWidth = 220, align = "start" } = {}) {
+/**
+ * Position a fixed popover relative to an anchor.
+ * @param {"down"|"up"} [opts.placement="down"] Prefer open direction. Conversation
+ *   pickers should stay ``down`` (Obsidian-style) and shrink height instead of flipping.
+ * @param {boolean} [opts.flip=true] Allow flipping when the preferred side overflows.
+ */
+function placeFixedPop(
+  pop,
+  anchor,
+  { placement = "down", preferUp = false, flip = true, minWidth = 220, align = "start" } = {},
+) {
+  const preferDown = preferUp ? false : placement !== "up";
   const rect = anchor.getBoundingClientRect();
   const maxW = Math.max(160, window.innerWidth - 16);
   const width = Math.min(Math.max(rect.width, minWidth), maxW);
   pop.style.width = `${width}px`;
   let left =
-    align === "end" ? rect.right - width : align === "center" ? rect.left + rect.width / 2 - width / 2 : rect.left;
+    align === "end"
+      ? rect.right - width
+      : align === "center"
+        ? rect.left + rect.width / 2 - width / 2
+        : rect.left;
   left = Math.max(8, Math.min(left, window.innerWidth - width - 8));
   pop.style.left = `${left}px`;
   const gap = 4;
+  const spaceBelow = Math.max(80, window.innerHeight - rect.bottom - 12);
+  const spaceAbove = Math.max(80, rect.top - 12);
+  if (preferDown && !flip) {
+    // Stay below the control; cap height so the menu scrolls inside.
+    pop.style.maxHeight = `${Math.min(420, spaceBelow)}px`;
+    pop.style.top = `${rect.bottom + gap}px`;
+    return;
+  }
+  if (!preferDown && !flip) {
+    pop.style.maxHeight = `${Math.min(420, spaceAbove)}px`;
+    pop.style.top = "0px";
+    requestAnimationFrame(() => {
+      pop.style.top = `${Math.max(8, rect.top - pop.offsetHeight - gap)}px`;
+    });
+    return;
+  }
   requestAnimationFrame(() => {
     const box = pop.getBoundingClientRect();
-    let top = preferUp ? rect.top - box.height - gap : rect.bottom + gap;
-    if (!preferUp && box.bottom > window.innerHeight - 8) {
+    let top = preferDown ? rect.bottom + gap : rect.top - box.height - gap;
+    if (preferDown && flip && box.bottom > window.innerHeight - 8) {
       top = Math.max(8, rect.top - box.height - gap);
-    } else if (preferUp && top < 8) {
+    } else if (!preferDown && flip && top < 8) {
       top = Math.min(window.innerHeight - box.height - 8, rect.bottom + gap);
     }
     pop.style.top = `${Math.max(8, top)}px`;
@@ -1949,7 +1979,8 @@ function mountConversationPicker(host) {
     pop.append(search, list);
     document.body.appendChild(pop);
     paintList(list);
-    placeFixedPop(pop, trigger, { minWidth: 260 });
+    // Always open below the trigger (Obsidian); never flip over the toolbar.
+    placeFixedPop(pop, trigger, { placement: "down", flip: false, minWidth: 260 });
     setIcon(chevron, "chevron-up");
     search.addEventListener("input", () => {
       query = search.value;

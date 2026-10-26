@@ -797,6 +797,12 @@ button:disabled {
   box-sizing: border-box;
 }
 
+/* Conversation picker: list scrolls inside the capped pop below the trigger. */
+.pawn-fixed-pop .pawn-conv-list {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
 .pawn-conv-search {
   width: 100%;
   margin: 0 0 4px;
