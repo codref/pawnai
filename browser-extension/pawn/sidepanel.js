@@ -40,6 +40,12 @@ const ICONS = {
     '<path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/>',
   link: '<path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/>',
   paperclip: '<path d="m16 6-8.5 8.5a2.12 2.12 0 0 0 3 3L19 9"/><path d="m15 3 6 6"/>',
+  copy: '<rect width="14" height="14" x="8" y="8" rx="2" ry="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/>',
+  pencil: '<path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/><path d="m15 5 4 4"/>',
+  "external-link":
+    '<path d="M15 3h6v6"/><path d="M10 14 21 3"/><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/>',
+  "list-todo":
+    '<rect width="6" height="6" x="3" y="5" rx="1"/><path d="m3 17 2 2 4-4"/><path d="M13 6h8"/><path d="M13 12h8"/><path d="M13 18h8"/>',
 };
 
 const REASONING_LABEL = { none: "Off", low: "Low", medium: "Medium", high: "High" };
@@ -2515,42 +2521,259 @@ function renderChatThread() {
 function renderChatMessage(msg) {
   const wrap = document.createElement("div");
   wrap.className = `pawn-msg is-${msg.role || "assistant"}`;
-  const role = document.createElement("div");
-  role.className = "pawn-msg-role";
-  role.textContent = msg.role === "user" ? "You" : "Pawn";
-  const bubble = document.createElement("div");
-  bubble.className = "pawn-msg-bubble";
-  if (msg.progress) {
+  const role = msg.role === "user" ? "user" : msg.error ? "error" : "assistant";
+
+  if (msg.progress && role === "assistant" && !msg.content) {
     const prog = document.createElement("div");
     prog.className = "pawn-msg-progress";
     prog.textContent = msg.progress;
-    bubble.appendChild(prog);
+    wrap.appendChild(prog);
+  } else if (msg.progress && role === "assistant" && msg.content) {
+    const det = document.createElement("details");
+    det.className = "pawn-progress-log";
+    const sum = document.createElement("summary");
+    sum.textContent = "Working…";
+    det.appendChild(sum);
+    const line = document.createElement("div");
+    line.textContent = msg.progress;
+    det.appendChild(line);
+    wrap.appendChild(det);
   }
+
   if (msg.error) {
     const err = document.createElement("div");
     err.className = "pawn-msg-error";
     err.textContent = msg.error;
-    bubble.appendChild(err);
+    wrap.appendChild(err);
   }
+
   if (msg.content) {
     const body = document.createElement("div");
-    body.innerHTML = formatChatHtml(msg.content);
-    bubble.appendChild(body);
+    body.className = "pawn-msg-text" + (role === "assistant" ? " markdown-rendered" : "");
+    if (role === "user") {
+      body.textContent = msg.content;
+    } else {
+      body.innerHTML = formatChatHtml(msg.content);
+      wireObsidianLinks(body);
+    }
+    wrap.appendChild(body);
   }
-  wrap.append(role, bubble);
+
+  if (msg.content && !msg.error) {
+    if (role === "user") {
+      wrap.appendChild(renderUserMsgActions(msg.content));
+    } else if (role === "assistant") {
+      wrap.appendChild(renderAssistantMsgActions(msg.content));
+    }
+  }
   return wrap;
 }
 
-function formatChatHtml(text) {
-  const esc = String(text || "")
+function renderUserMsgActions(text) {
+  const bar = document.createElement("div");
+  bar.className = "pawn-msg-actions is-user";
+  bar.appendChild(
+    iconButton("copy", "Copy", () => {
+      void copyText(text);
+    }),
+  );
+  bar.appendChild(
+    iconButton("pencil", "Edit in composer", () => {
+      injectComposer(text);
+    }),
+  );
+  return bar;
+}
+
+function renderAssistantMsgActions(text) {
+  const bar = document.createElement("div");
+  bar.className = "pawn-msg-actions";
+  bar.appendChild(
+    iconButton("copy", "Copy", () => {
+      void copyText(text);
+    }),
+  );
+  const paths = extractVaultPaths(text);
+  if (paths.length && state.vaultName) {
+    const first = paths[0];
+    bar.appendChild(
+      iconButton("external-link", `Open in Obsidian · ${pathBasename(first)}`, () => {
+        openVaultPath(first);
+      }),
+    );
+  } else if (paths.length) {
+    bar.appendChild(
+      iconButton("external-link", "Open in Obsidian (set vault.obsidian_vault_name)", () => {
+        showNotice("Set vault.obsidian_vault_name on the server for obsidian:// links", true);
+      }),
+    );
+  }
+  bar.appendChild(
+    iconButton("list-todo", "Follow-up: TaskNotes TODO", () => {
+      injectComposer(
+        "Create a TaskNotes TODO from your last answer. Use a clear title and short body.\n\n",
+      );
+    }),
+  );
+  bar.appendChild(
+    iconButton("pencil", "Follow-up in composer", () => {
+      injectComposer("");
+      el.chatInput?.focus();
+    }),
+  );
+  return bar;
+}
+
+async function copyText(text) {
+  try {
+    await navigator.clipboard.writeText(text || "");
+    showNotice("Copied");
+  } catch (_) {
+    showNotice("Copy failed", true);
+  }
+}
+
+function injectComposer(text) {
+  if (!el.chatInput) return;
+  el.chatInput.value = text || "";
+  el.chatInput.focus();
+  const len = el.chatInput.value.length;
+  el.chatInput.setSelectionRange(len, len);
+  el.chatInput.scrollIntoView({ block: "nearest" });
+}
+
+function openVaultPath(path) {
+  const url = buildObsidianOpenUrl(state.vaultName, path);
+  if (!url) {
+    showNotice("Set vault.obsidian_vault_name on the server", true);
+    return;
+  }
+  void chrome.tabs.create({ url });
+}
+
+/** Vault paths and wikilink targets from assistant markdown. */
+function extractVaultPaths(md) {
+  const found = [];
+  const seen = new Set();
+  const push = (p) => {
+    const path = String(p || "")
+      .trim()
+      .replace(/\\/g, "/")
+      .replace(/^\/+/, "");
+    if (!path || seen.has(path)) return;
+    seen.add(path);
+    found.push(path);
+  };
+  const wiki = /\[\[([^\]|#]+)(?:\|[^\]]+)?\]\]/g;
+  let m;
+  while ((m = wiki.exec(md || ""))) push(m[1].trim());
+  const pathRe =
+    /["']?([A-Za-z0-9_.-]+(?:\/[A-Za-z0-9_ .'-]+)+\.(?:md|base|canvas))["']?/gi;
+  while ((m = pathRe.exec(md || ""))) push(m[1]);
+  return found;
+}
+
+function escapeHtml(text) {
+  return String(text || "")
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;");
-  const linked = esc.replace(
-    /(https?:\/\/[^\s<]+)/g,
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
+function formatChatHtml(text) {
+  const raw = String(text || "");
+  const blocks = [];
+  let work = raw.replace(/```([\w-]*)\n?([\s\S]*?)```/g, (_, lang, code) => {
+    const i = blocks.length;
+    blocks.push(
+      `<pre class="pawn-md-pre"><code class="language-${escapeHtml(lang || "")}">${escapeHtml(code.replace(/\n$/, ""))}</code></pre>`,
+    );
+    return `\u0000BLOCK${i}\u0000`;
+  });
+
+  work = escapeHtml(work);
+
+  // Wikilinks [[path]] or [[path|alias]]
+  work = work.replace(/\[\[([^\]|#\n]+)(?:\|([^\]]+))?\]\]/g, (_, path, alias) => {
+    const p = path.trim();
+    const label = (alias || p).trim();
+    return obsidianAnchorHtml(p, label);
+  });
+
+  // Bare vault paths (Pawn/.../file.md)
+  work = work.replace(
+    /(["']?)([A-Za-z0-9_.-]+(?:\/[A-Za-z0-9_ .'-]+)+\.(?:md|base|canvas))\1/g,
+    (full, _q, path, offset, whole) => {
+      const before = whole[offset - 1];
+      const after = whole[offset + full.length];
+      if (before && /[\w./-]/.test(before)) return full;
+      if (after && /[\w/-]/.test(after)) return full;
+      if (full.includes("data-vault-path")) return full;
+      return obsidianAnchorHtml(path, path);
+    },
+  );
+
+  // Inline code
+  work = work.replace(/`([^`\n]+)`/g, (_, code) => `<code class="pawn-md-code">${code}</code>`);
+
+  // Bold / italic
+  work = work.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
+  work = work.replace(/(^|[^*\w])\*([^*\n]+)\*(?!\*)/g, "$1<em>$2</em>");
+
+  // Task / bullet lines
+  work = work.replace(
+    /(^|\n)([-*]|\d+\.) \[([ xX])\] (.+?)(?=\n|$)/g,
+    (_, br, _m, checked, body) =>
+      `${br}<div class="pawn-md-li">${checked === " " ? "☐" : "☑"} ${body}</div>`,
+  );
+  work = work.replace(
+    /(^|\n)([-*]) (.+?)(?=\n|$)/g,
+    (_, br, _m, body) => `${br}<div class="pawn-md-li">• ${body}</div>`,
+  );
+
+  // External http(s) links (skip ones already in anchors)
+  work = work.replace(
+    /(?<!["|=])(https?:\/\/[^\s<]+)/g,
     '<a href="$1" target="_blank" rel="noopener noreferrer">$1</a>',
   );
-  return linked.replace(/\n/g, "<br>");
+
+  work = work.replace(/\n\n+/g, "</p><p>");
+  work = work.replace(/\n/g, "<br>");
+  work = `<p>${work}</p>`;
+
+  work = work.replace(/\u0000BLOCK(\d+)\u0000/g, (_, i) => blocks[Number(i)] || "");
+  return work;
+}
+
+function obsidianAnchorHtml(path, label) {
+  const p = String(path || "")
+    .trim()
+    .replace(/\\/g, "/")
+    .replace(/^\/+/, "");
+  const lab = escapeHtml(label || p);
+  const url = buildObsidianOpenUrl(state.vaultName, p);
+  if (url) {
+    return `<a class="pawn-vault-link" href="${escapeHtml(url)}" data-vault-path="${escapeHtml(p)}" title="Open in Obsidian">${lab}</a>`;
+  }
+  return `<a class="pawn-vault-link is-disabled" href="#" data-vault-path="${escapeHtml(p)}" title="Set vault.obsidian_vault_name to open in Obsidian">${lab}</a>`;
+}
+
+function wireObsidianLinks(root) {
+  if (!root) return;
+  for (const a of root.querySelectorAll("a.pawn-vault-link")) {
+    a.addEventListener("click", (ev) => {
+      ev.preventDefault();
+      const path = a.getAttribute("data-vault-path") || "";
+      const href = a.getAttribute("href") || "";
+      if (href && href.startsWith("obsidian://")) {
+        void chrome.tabs.create({ url: href });
+        return;
+      }
+      if (path) openVaultPath(path);
+      else showNotice("Set vault.obsidian_vault_name on the server", true);
+    });
+  }
 }
 
 function renderChatActions() {
@@ -2560,33 +2783,40 @@ function renderChatActions() {
   const hasAtt = state.chat.attachments.length > 0;
   const hasPage = !!(state.chat.pageUrl || state.chat.pageTitle);
   const hasSession = state.targetKind === "session" && !!state.sessionId;
+  const hasCtx = hasAtt || hasPage;
+  // Chips inject into the composer so the user can steer attached context.
   const actions = [
     {
       id: "todo",
       label: "Create TODO",
-      enabled: hasAtt || hasPage,
-      prompt:
-        "Create a TaskNotes TODO from the attached context (and page if present). Use a clear title and short body.",
+      enabled: hasCtx,
+      inject:
+        "Create a TaskNotes TODO from the attached context (and page if present). Title: ",
     },
     {
       id: "idea",
-      label: "Capture idea",
-      enabled: hasAtt || hasPage,
-      prompt: "/idea ",
-      prefill: true,
+      label: "/idea",
+      enabled: hasCtx,
+      inject: "/idea ",
     },
     {
       id: "summarize",
       label: "Summarize",
-      enabled: hasAtt || hasPage,
-      prompt:
-        "Summarize the attached clips and page context. Keep it concise and cite the source URL when useful.",
+      enabled: hasCtx,
+      inject:
+        "Summarize the attached clips and page context. Keep it concise and cite the source URL when useful.\n\n",
+    },
+    {
+      id: "goal",
+      label: "/goal",
+      enabled: true,
+      inject: "/goal ",
     },
     {
       id: "session",
       label: "Use session",
-      enabled: hasSession && (hasAtt || hasPage),
-      prompt: `Relate the attached context to diarization session ${state.sessionId}. Extract action items and note anything that should land on the transcript or TaskNotes.`,
+      enabled: hasSession && hasCtx,
+      inject: `Relate the attached context to diarization session ${state.sessionId}. Extract action items.\n\n`,
     },
   ];
   for (const a of actions) {
@@ -2595,15 +2825,9 @@ function renderChatActions() {
     btn.type = "button";
     btn.className = "pawn-action-chip";
     btn.textContent = a.label;
+    btn.title = "Inject into composer — edit, then Send";
     btn.disabled = busy;
-    btn.addEventListener("click", () => {
-      if (a.prefill) {
-        el.chatInput.value = a.prompt;
-        el.chatInput.focus();
-        return;
-      }
-      void sendChat(a.prompt);
-    });
+    btn.addEventListener("click", () => injectComposer(a.inject));
     el.chatActions.appendChild(btn);
   }
 }

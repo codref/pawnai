@@ -1163,40 +1163,90 @@ button.pawn-chip-remove svg {
   flex-direction: column;
   gap: 4px;
   max-width: 100%;
-}
-
-.pawn-msg-role {
-  font-size: 0.7rem;
-  font-weight: 600;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
-  color: var(--text-muted);
-}
-
-.pawn-msg.is-user .pawn-msg-bubble {
-  align-self: flex-end;
-  background: var(--background-secondary);
-  border: 1px solid var(--background-modifier-border);
-}
-
-.pawn-msg.is-assistant .pawn-msg-bubble {
-  align-self: stretch;
-  background: transparent;
-  border: none;
-  padding: 0;
-}
-
-.pawn-msg-bubble {
-  padding: var(--size-4-2) var(--size-4-3);
   border-radius: var(--radius-m);
-  white-space: pre-wrap;
+  padding: var(--size-4-2) var(--size-4-3);
   word-break: break-word;
+  user-select: text;
+}
+
+.pawn-msg.is-user {
+  align-self: flex-end;
+  max-width: 92%;
+  background: var(--interactive-accent);
+  color: var(--text-on-accent);
+  white-space: pre-wrap;
+}
+
+.pawn-msg.is-assistant {
+  align-self: stretch;
+  background: var(--background-secondary);
+}
+
+.pawn-msg-text {
   font-size: 0.92em;
   line-height: 1.5;
 }
 
-.pawn-msg-bubble a {
+.pawn-msg.is-user .pawn-msg-text {
+  white-space: pre-wrap;
+}
+
+.pawn-msg-text.markdown-rendered p {
+  margin: 0 0 0.55em;
+}
+
+.pawn-msg-text.markdown-rendered p:last-child {
+  margin-bottom: 0;
+}
+
+.pawn-msg-text.markdown-rendered strong {
+  font-weight: 600;
+}
+
+.pawn-md-code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.88em;
+  padding: 0.1em 0.35em;
+  border-radius: 3px;
+  background: var(--background-modifier-hover);
+}
+
+.pawn-md-pre {
+  margin: 0.4em 0;
+  padding: var(--size-4-2);
+  overflow: auto;
+  border-radius: var(--radius-s);
+  background: var(--background-primary);
+  border: 1px solid var(--background-modifier-border);
+  font-size: 0.82em;
+  line-height: 1.4;
+}
+
+.pawn-md-pre code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  white-space: pre;
+}
+
+.pawn-md-li {
+  margin: 0.15em 0;
+}
+
+.pawn-msg-text a,
+.pawn-vault-link {
   color: var(--interactive-accent);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  cursor: pointer;
+  word-break: break-all;
+}
+
+.pawn-msg.is-user .pawn-msg-text a {
+  color: var(--text-on-accent);
+}
+
+.pawn-vault-link.is-disabled {
+  opacity: 0.75;
+  cursor: help;
 }
 
 .pawn-msg-progress {
@@ -1205,9 +1255,47 @@ button.pawn-chip-remove svg {
   font-style: italic;
 }
 
+.pawn-progress-log {
+  font-size: var(--font-ui-smaller);
+  color: var(--text-muted);
+  margin-bottom: 4px;
+}
+
 .pawn-msg-error {
   color: var(--color-red);
   font-size: var(--font-ui-smaller);
+}
+
+.pawn-msg-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px;
+  margin-top: 4px;
+  opacity: 0.55;
+}
+
+.pawn-msg:hover .pawn-msg-actions,
+.pawn-msg:focus-within .pawn-msg-actions {
+  opacity: 1;
+}
+
+.pawn-msg.is-user .pawn-msg-actions {
+  opacity: 0;
+  justify-content: flex-end;
+}
+
+.pawn-msg.is-user:hover .pawn-msg-actions,
+.pawn-msg.is-user:focus-within .pawn-msg-actions {
+  opacity: 1;
+}
+
+.pawn-msg.is-user .pawn-msg-actions .clickable-icon {
+  color: var(--text-on-accent);
+}
+
+.pawn-msg.is-user .pawn-msg-actions .clickable-icon:hover {
+  background: rgba(255, 255, 255, 0.18);
+  color: var(--text-on-accent);
 }
 
 .pawn-chat-actions {

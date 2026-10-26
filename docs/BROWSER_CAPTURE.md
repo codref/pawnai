@@ -39,8 +39,11 @@ Layout mirrors the Obsidian plugin chat pane (no Background toggle):
    attach selection / Clip.
 2. Context chips: page title/URL; sticky capture/session note as
    `active_note` (`inline: false`); attached text/images (max 4 images).
-3. Thread + suggested action chips (**Create TODO**, **Capture idea**,
-   **Summarize**, **Use session** when Capture target is a session).
+3. Thread with Markdown replies (vault paths / `[[wikilinks]]` →
+   `obsidian://open` when `vault.obsidian_vault_name` is set). Message actions:
+   user **Copy** / **Edit in composer**; assistant **Copy** / **Open in
+   Obsidian** / follow-up chips. Suggested action chips inject editable prompts
+   or slash commands (`/idea`, `/goal`, Create TODO, …) into the composer.
 4. Composer: message · **model** (bottom; OpenRouter **Effort** / **Route**
    when the catalog exposes them) · attach selection/Clip · Send / Stop.
 5. Conversations are local (`chat:{uuid}` keys, up to 40 non-empty); New chat
