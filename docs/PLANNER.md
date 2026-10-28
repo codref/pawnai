@@ -38,6 +38,10 @@ _(written by meeting_prep)_
 Capture / Outlook clip also enriches frontmatter from invite text when the
 browser tab title is a stub (`Calendar | Microsoft Teams`, …): subject,
 `(Organizer|Required|Optional)` people, times, location, and Teams/Zoom links.
+When the clip includes an image (whole-view / region) and fields are still
+thin, the server runs one vision call on the background model (must be
+flagged `vision: true` in `agent.providers`) to fill title / attendees /
+times / location.
 
 Config:
 
@@ -81,10 +85,11 @@ link need the server.
 
 1. Open the meeting in Outlook Web.
 2. Side panel → **Add to planner** (or target **Planner event…** and Save).
-3. Extension scrapes title / times / attendees / organizer / location /
-   meeting link when it can; otherwise uses the tab title and any selection.
-   You can edit start/end before Save. The server re-parses clip text so a
-   later whole-view clip upgrades a stub title and people list.
+3. **Add to planner** scrapes title / times / people / meeting link into the
+   Capture target and stages a lean tray note (join URL / meeting id /
+   passcode). It does **not** Save — review the tray, then click Save.
+   Chrome labels (`Tracking`, `Chat`, …) are filtered. The server also
+   re-parses clip text / screenshots so a later whole-view can upgrade a stub.
 4. Later clips (selection / whole-view screenshot) on the same **Planner event**
    target append into that note under `Events/assets/` (snippet markers), not a
    new stub.

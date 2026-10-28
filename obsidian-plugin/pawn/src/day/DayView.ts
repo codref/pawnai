@@ -264,17 +264,27 @@ function renderBlock(
       text: session.summary.replace(/\s+/g, " ").trim().slice(0, 160),
     });
   } else if (event?.body) {
-    // Strip snippet chrome; show a short plain preview when there is no prep.
+    // Strip snippet chrome + fields already shown on the card.
+    const title = (event.title || "").trim();
     const preview = event.body
       .replace(/<!--\s*\/?pawn-snippet:[^>]+-->/g, "")
       .replace(/^###\s*Snippet[^\n]*$/gm, "")
       .replace(/^Source:\s*\S+$/gm, "")
-      .replace(/!\[\[[^\]]+\]\]/g, "[image]")
+      .replace(/^#+\s+.+$/gm, "")
+      .replace(/^Outlook event:\s*.+$/gim, "")
+      .replace(/^(Start|End|Attendees|Organizer|Location|Meeting|Meeting ID|Passcode|Topics):\s*.+$/gim, "")
+      .replace(/!\[\[[^\]]+\]\]/g, "")
       .replace(/\s+/g, " ")
-      .trim()
-      .slice(0, 160);
-    if (preview) {
-      card.createDiv({ cls: "pawn-session-summary", text: preview });
+      .trim();
+    const deduped =
+      title && preview.toLowerCase().startsWith(title.toLowerCase())
+        ? preview.slice(title.length).trim()
+        : preview;
+    if (deduped) {
+      card.createDiv({
+        cls: "pawn-session-summary",
+        text: deduped.slice(0, 160),
+      });
     }
   }
 

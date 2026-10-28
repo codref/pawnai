@@ -315,78 +315,130 @@ async function scrapeOutlookEvent(tab) {
     target: { tabId: tab.id },
     func: () => {
       const norm = (s) => String(s || "").replace(/\s+/g, " ").trim();
+      const CHROME_TITLE =
+        /^(?:\(\d+\)\s*)?(?:calendar|mail|outlook|microsoft\s*teams|tracking|accepted|declined|busy|free|tentative|reminder|categorize|private|details|organizer|attendees|participants|chat|join|copilot|prepare|meeting|inbox|day|week|work week|month)\b/i;
       const isStubTitle = (t) =>
-        /^(?:\(\d+\)\s*)?(calendar|mail|outlook|microsoft\s*teams)\b/i.test(t) ||
+        !t ||
+        CHROME_TITLE.test(t) ||
         /calendar\s*[|–—-]\s*microsoft\s*teams/i.test(t) ||
         /-\s*outlook\s*$/i.test(t) ||
-        /^calendar\s*-/i.test(t);
-      const junkPerson = /^(required|optional|organizer|attendees|participants|accepted|tentative|invite)$/i;
+        /^calendar\s*-/i.test(t) ||
+        /^prepare for this meeting$/i.test(t) ||
+        /^microsoft teams meeting$/i.test(t) ||
+        /^add a (?:title|room)/i.test(t);
+      const junkPerson =
+        /^(required|optional|organizer|attendees|participants|accepted|tentative|invite|chat|join|copy|delete|archive|reply|forward|busy|reminder|categorize|private|prepare|copilot|viva|tracking|meeting|calendar|more|close|cancel|save|send|help|you|me)$/i;
+      const isJunkPerson = (name) =>
+        !name ||
+        junkPerson.test(name) ||
+        /\[(?:image|object)[^\]]*\]/i.test(name) ||
+        /^https?:/i.test(name) ||
+        name.length < 2 ||
+        name.length > 80 ||
+        !/[A-Za-zÀ-ÿ]/.test(name) ||
+        // Toolbar singles are lowercase ("chat"); allow "Ada" / emails.
+        (!name.includes(" ") && !name.includes("@") && !/^[A-ZÀ-Ÿ]/.test(name));
 
-      const candidates = [];
-      const push = (t) => {
-        const v = norm(t);
-        if (v && v.length >= 2 && v.length < 200) candidates.push(v);
+      const subjectFromChrome = (raw) => {
+        const s = norm(raw);
+        // "Review Insights Connector - Meeting - Calendar"
+        let m = s.match(/^(.+?)\s*[–—|-]\s*Meeting\s*[–—|-]\s*Calendar\b/i);
+        if (m) return norm(m[1]);
+        m = s.match(/^(.+?)\s*[–—|-]\s*(?:Mail|Outlook|Calendar)\b/i);
+        if (m && !isStubTitle(m[1])) return norm(m[1]);
+        return "";
       };
+
+      const scored = [];
+      const pushTitle = (t, score) => {
+        let v = norm(t);
+        if (!v || v.length < 2 || v.length > 160) return;
+        const fromBreadcrumb = subjectFromChrome(v);
+        if (fromBreadcrumb) {
+          scored.push({ t: fromBreadcrumb, score: score + 50 });
+          return;
+        }
+        v = v.replace(/\s+[–—|-]\s+Mail.*$/i, "").trim();
+        if (isStubTitle(v)) return;
+        scored.push({ t: v, score });
+      };
+
+      // Strong signals first (breadcrumb / tab / event composition).
+      pushTitle(document.title || "", 80);
+      const crumb = document.querySelector(
+        '[role="navigation"] [aria-current], [data-app-section*="Breadcrumb" i], nav',
+      );
+      if (crumb) pushTitle(crumb.textContent, 70);
       for (const sel of [
         'input[aria-label*="Add a title" i]',
         'input[aria-label*="Event title" i]',
         'input[aria-label*="title" i]',
         'textarea[aria-label*="title" i]',
-        '[aria-label="Event"] [role="heading"]',
-        '[data-app-section="CalendarItemComposition"] h1',
         '[data-app-section="CalendarItemComposition"] [role="heading"]',
+        '[data-app-section="CalendarItemComposition"] h1',
         '[data-tid="meeting-title"]',
         '[data-tid="event-title"]',
         '[data-tid="calendar-event-title"]',
-        '[role="heading"][aria-level="1"]',
-        '[role="heading"][aria-level="2"]',
-        "h1",
-        "h2",
+        '[aria-label="Event"] [role="heading"]',
       ]) {
         document.querySelectorAll(sel).forEach((n) => {
-          push(n.value || n.getAttribute("aria-label") || n.textContent);
+          pushTitle(n.value || n.textContent, 60);
         });
       }
-      // Prefer raw innerText (keeps newlines for person-role lines).
-      const bodyRaw = String(document.body?.innerText || "").slice(0, 16000);
-      const bodyText = norm(bodyRaw);
-      const teamsIdx = bodyText.search(/Microsoft Teams meeting/i);
-      if (teamsIdx > 0) {
-        const before = bodyText.slice(Math.max(0, teamsIdx - 220), teamsIdx);
-        const lines = before
-          .split(/\n| {2,}/)
-          .map(norm)
-          .filter(Boolean);
-        if (lines.length) push(lines[lines.length - 1]);
-      }
-      document
-        .querySelectorAll('[role="dialog"] [role="heading"], [role="dialog"] h1, [role="dialog"] h2')
-        .forEach((n) => push(n.textContent));
-      const subjectLine = bodyRaw.match(/(?:^|\n)\s*Subject\s*:\s*([^\n]+)/i);
-      if (subjectLine) push(subjectLine[1]);
 
-      let title = "";
-      for (const c of candidates) {
-        if (!isStubTitle(c)) {
-          title = c;
-          break;
+      const bodyRaw = String(document.body?.innerText || "").slice(0, 16000);
+      const subjectLine = bodyRaw.match(/(?:^|\n)\s*Subject\s*:\s*([^\n]+)/i);
+      if (subjectLine) pushTitle(subjectLine[1], 55);
+      // Title often sits just above the attendee line or Teams block.
+      const peopleLine = bodyRaw.match(
+        /(?:^|\n)([^\n]{4,120})\n+[^\n]*?(?:Mehrdad|Required|Optional|Organizer|; ).{0,80}\n/i,
+      );
+      // Prefer explicit "Name; Name" attendee strip's preceding heading via lines.
+      const lines = bodyRaw
+        .split("\n")
+        .map(norm)
+        .filter(Boolean);
+      for (let i = 0; i < lines.length; i++) {
+        if (/^(Mehrdad|Davide|[A-Z][a-z]+\s+[A-Z])/.test(lines[i]) && /;/.test(lines[i])) {
+          if (i > 0) pushTitle(lines[i - 1], 45);
+        }
+        if (/^Microsoft Teams meeting$/i.test(lines[i]) && i > 0) {
+          // Walk back past date/location chrome to a subject-like line.
+          for (let j = i - 1; j >= Math.max(0, i - 6); j--) {
+            if (
+              !isStubTitle(lines[j]) &&
+              !/^\d{1,2}\/\d{1,2}\/\d{4}/.test(lines[j]) &&
+              !/^(Wed|Thu|Fri|Sat|Sun|Mon|Tue)\b/i.test(lines[j]) &&
+              !/^https?:/i.test(lines[j]) &&
+              !/;/.test(lines[j])
+            ) {
+              pushTitle(lines[j], 40);
+              break;
+            }
+          }
         }
       }
-      if (!title) title = candidates.find((c) => !isStubTitle(c)) || "";
+      void peopleLine;
+
+      scored.sort((a, b) => b.score - a.score || b.t.length - a.t.length);
+      let title = scored[0]?.t || "";
       if (!title || isStubTitle(title)) {
-        const page = norm(document.title || "");
-        title = isStubTitle(page) ? title || page : page;
+        const pageSub = subjectFromChrome(document.title || "");
+        title = pageSub || title;
       }
-      title = title.replace(/\s+[–—|-]\s+Mail.*$/i, "").trim();
 
       let start = "";
       let end = "";
       const range = bodyRaw.match(
         /(\d{1,2}\/\d{1,2}\/\d{4}),?\s+(\d{1,2}:\d{2}\s*[AP]M)\s*[–—-]\s*(\d{1,2}:\d{2}\s*[AP]M)/i,
       );
-      if (range) {
-        start = `${range[1]}, ${range[2]}`;
-        end = `${range[1]}, ${range[3]}`;
+      const range2 = bodyRaw.match(
+        /(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun)\w*\s+(\d{1,2}\/\d{1,2}\/\d{4})\s+(\d{1,2}:\d{2}\s*[AP]M)\s*[–—-]\s*(\d{1,2}:\d{2}\s*[AP]M)/i,
+      );
+      const hit = range || range2;
+      if (hit) {
+        start = `${hit[1]}, ${hit[2]}`;
+        end = `${hit[1]}, ${hit[3]}`;
       } else {
         const timeBits = Array.from(
           document.querySelectorAll(
@@ -408,9 +460,12 @@ async function scrapeOutlookEvent(tab) {
       const people = [];
       let organizer = "";
       const pushPerson = (raw, role) => {
-        const name = norm(String(raw || "").replace(/\s*\([^)]*\)\s*$/, ""));
-        if (!name || name.length > 80 || junkPerson.test(name)) return;
-        if (/^https?:/i.test(name)) return;
+        const name = norm(
+          String(raw || "")
+            .replace(/\s*\([^)]*\)\s*$/, "")
+            .replace(/\s*\[(?:image|object)[^\]]*\]/gi, ""),
+        );
+        if (isJunkPerson(name)) return;
         if (role === "organizer" && !organizer) organizer = name;
         if (!people.some((p) => p.toLowerCase() === name.toLowerCase())) {
           people.push(name);
@@ -420,6 +475,24 @@ async function scrapeOutlookEvent(tab) {
         /^(.{2,80}?)\s*\((Organizer|Required|Optional|Accepted|Tentative)\)\s*$/gim,
       )) {
         pushPerson(m[1], m[2].toLowerCase());
+      }
+      // "Mehrdad Kiani; Davide Dal Farra" on its own line.
+      for (const line of lines) {
+        if (
+          /;/.test(line) &&
+          line.length < 160 &&
+          !/^https?:/i.test(line) &&
+          !/meeting id/i.test(line)
+        ) {
+          const parts = line.split(";").map(norm).filter(Boolean);
+          if (
+            parts.length >= 2 &&
+            parts.length <= 12 &&
+            parts.every((p) => p.includes(" ") || p.includes("@"))
+          ) {
+            parts.forEach((p) => pushPerson(p));
+          }
+        }
       }
       const attLine = bodyRaw.match(
         /(?:^|\n)\s*(?:Attendees|Participants|Required attendees|Invitees)\s*:\s*([^\n]+)/i,
@@ -431,24 +504,18 @@ async function scrapeOutlookEvent(tab) {
         /(?:^|\n)\s*(?:Organizer|From|Hosted by)\s*:\s*([^\n]+)/i,
       );
       if (orgLine) pushPerson(orgLine[1], "organizer");
-      document
-        .querySelectorAll(
-          '[aria-label*="Attendee" i], [aria-label*="Participant" i], [data-testid*="attendee" i], [data-tid*="attendee" i], [aria-label*="Invitee" i]',
-        )
-        .forEach((n) => pushPerson(n.textContent || n.getAttribute("aria-label")));
+      // Tracking pane often labels the organizer explicitly.
+      const trackingOrg = bodyRaw.match(
+        /(?:^|\n)\s*([A-Z][^\n]{1,60})\n+Invitation sent\b/i,
+      );
+      if (trackingOrg) pushPerson(trackingOrg[1], "organizer");
 
       let location = "";
       const locLine = bodyRaw.match(
         /(?:^|\n)\s*(?:Location|Where|Room)\s*:\s*([^\n]+)/i,
       );
-      if (locLine) location = norm(locLine[1]).slice(0, 160);
-      else {
-        const locNode = document.querySelector(
-          'input[aria-label*="Location" i], [data-tid*="location" i], [aria-label*="Location" i]',
-        );
-        if (locNode) {
-          location = norm(locNode.value || locNode.textContent).slice(0, 160);
-        }
+      if (locLine && !/^add a room/i.test(locLine[1])) {
+        location = norm(locLine[1]).slice(0, 160);
       }
 
       let meeting_url = "";
@@ -463,6 +530,13 @@ async function scrapeOutlookEvent(tab) {
         if (a?.href) meeting_url = a.href;
       }
 
+      let meeting_id = "";
+      const mid = bodyRaw.match(/Meeting ID:\s*([0-9\s]+)/i);
+      if (mid) meeting_id = norm(mid[1]);
+      let passcode = "";
+      const pc = bodyRaw.match(/Passcode:\s*(\S+)/i);
+      if (pc) passcode = norm(pc[1]);
+
       const selection = norm(window.getSelection?.()?.toString() || "");
       return {
         title,
@@ -472,6 +546,8 @@ async function scrapeOutlookEvent(tab) {
         organizer,
         location,
         meeting_url,
+        meeting_id,
+        passcode,
         selection,
         url: window.location.href,
         page_title: document.title || "",

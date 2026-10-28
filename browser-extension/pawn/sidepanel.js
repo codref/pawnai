@@ -1766,17 +1766,65 @@ function isStubEventTitle(t) {
   const s = String(t || "").trim();
   return (
     !s ||
-    /^(?:\(\d+\)\s*)?(calendar|mail|outlook|microsoft\s*teams)\b/i.test(s) ||
+    /^(?:\(\d+\)\s*)?(calendar|mail|outlook|microsoft\s*teams|tracking|accepted|declined|busy|free|tentative|reminder|details|chat|join|meeting|inbox)\b/i.test(
+      s,
+    ) ||
     /calendar\s*[|–—-]\s*microsoft\s*teams/i.test(s) ||
     /^calendar\s*-/i.test(s) ||
-    /-\s*outlook\s*$/i.test(s)
+    /-\s*outlook\s*$/i.test(s) ||
+    /^prepare for this meeting$/i.test(s) ||
+    /^microsoft teams meeting$/i.test(s)
   );
+}
+
+function subjectFromPageTitle(raw) {
+  const s = String(raw || "").trim();
+  let m = s.match(/^(.+?)\s*[–—|-]\s*Meeting\s*[–—|-]\s*Calendar\b/i);
+  if (m) return m[1].trim();
+  m = s.match(/^(.+?)\s*[–—|-]\s*(?:Mail|Outlook|Calendar)\b/i);
+  if (m && !isStubEventTitle(m[1])) return m[1].trim();
+  return "";
+}
+
+function isJunkAttendee(name) {
+  const s = String(name || "")
+    .replace(/\s*\[(?:image|object)[^\]]*\]/gi, "")
+    .trim();
+  if (!s || s.length < 2 || s.length > 80) return true;
+  if (/\[(?:image|object)/i.test(name || "")) return true;
+  if (
+    /^(required|optional|organizer|attendees|participants|accepted|tentative|invite|chat|join|copy|delete|archive|reply|forward|busy|reminder|categorize|private|prepare|copilot|viva|tracking|meeting|calendar|more|close|cancel|save|send|help|you|me)$/i.test(
+      s,
+    )
+  ) {
+    return true;
+  }
+  if (!/[A-Za-zÀ-ÿ]/.test(s)) return true;
+  // Toolbar singles are lowercase ("chat"); allow "Ada" / emails.
+  if (!s.includes(" ") && !s.includes("@") && !/^[A-ZÀ-Ÿ]/.test(s)) return true;
+  return false;
+}
+
+function cleanAttendees(list) {
+  const out = [];
+  const seen = new Set();
+  for (const raw of list || []) {
+    const name = String(raw || "")
+      .replace(/\s*\[(?:image|object)[^\]]*\]/gi, "")
+      .trim();
+    if (isJunkAttendee(name)) continue;
+    const key = name.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(name);
+  }
+  return out;
 }
 
 /** Prefer a real meeting subject from tray text over tab-title stubs. */
 function titleFromTrayContent(fallback) {
   const skip =
-    /^(source:|attendees:|participants:|organizer:|location:|where:|meeting:|join:|start:|end:|when:|topics:|tags:|https?:|### snippet|microsoft teams meeting)/i;
+    /^(source:|attendees:|participants:|organizer:|location:|where:|meeting:|meeting id:|passcode:|join:|start:|end:|when:|topics:|tags:|https?:|### snippet|microsoft teams meeting)/i;
   const candidates = [];
   for (const s of state.tray) {
     if (s.kind !== "text" || !s.text) continue;
@@ -1790,13 +1838,14 @@ function titleFromTrayContent(fallback) {
     }
   }
   if (!candidates.length) return fallback;
-  candidates.sort((a, b) => a.length - b.length);
+  // Prefer longer subject-like lines (chrome words are short).
+  candidates.sort((a, b) => b.length - a.length);
   return candidates[0];
 }
 
 /**
- * One-gesture Outlook → planner: scrape event detail (or tab title), set
- * Planner event target, enqueue a text snippet, save.
+ * Outlook → planner: scrape obvious fields into the Capture target + tray.
+ * Does **not** Save — user reviews and clicks Save.
  */
 async function addToPlanner() {
   showNotice("Reading Outlook event…", false, true);
@@ -1809,27 +1858,31 @@ async function addToPlanner() {
   }
   const url = scraped?.url || state.sourceUrl || "";
   let title = (scraped?.title || "").trim();
-  if (isStubEventTitle(title)) {
+  const fromPage =
+    subjectFromPageTitle(scraped?.page_title) || subjectFromPageTitle(scraped?.title);
+  if (fromPage) title = fromPage;
+  else if (isStubEventTitle(title)) {
     const page = (scraped?.page_title || "").trim();
     title = !isStubEventTitle(page) ? page : title;
   }
   const start = normalizeScrapedTime(scraped?.start);
   const end = normalizeScrapedTime(scraped?.end);
-  const attendees = Array.isArray(scraped?.attendees)
-    ? scraped.attendees.map((a) => String(a || "").trim()).filter(Boolean)
-    : [];
-  const organizer = String(scraped?.organizer || "").trim();
+  const attendees = cleanAttendees(
+    Array.isArray(scraped?.attendees) ? scraped.attendees : [],
+  );
+  let organizer = String(scraped?.organizer || "").trim();
+  if (isJunkAttendee(organizer)) organizer = "";
   const location = String(scraped?.location || "").trim();
   const meetingUrl = String(scraped?.meeting_url || "").trim();
+  const meetingId = String(scraped?.meeting_id || "").trim();
+  const passcode = String(scraped?.passcode || "").trim();
+  // Lean tray note: extras only — title/people/times live on the target.
   const bodyParts = [];
-  if (title && !isStubEventTitle(title)) bodyParts.push(`Outlook event: ${title}`);
-  if (start) bodyParts.push(`Start: ${start}`);
-  if (end) bodyParts.push(`End: ${end}`);
-  if (organizer) bodyParts.push(`Organizer: ${organizer}`);
-  if (attendees.length) bodyParts.push("Attendees: " + attendees.join(", "));
-  if (location) bodyParts.push(`Location: ${location}`);
   if (meetingUrl) bodyParts.push(`Meeting: ${meetingUrl}`);
-  if (scraped?.selection) bodyParts.push(scraped.selection);
+  if (meetingId) bodyParts.push(`Meeting ID: ${meetingId}`);
+  if (passcode) bodyParts.push(`Passcode: ${passcode}`);
+  if (location && !/^add a room/i.test(location)) bodyParts.push(`Location: ${location}`);
+  if (scraped?.selection) bodyParts.push(String(scraped.selection).trim());
   if (!scraped?.ok && scraped?.error && !/calendar event first/i.test(scraped.error || "")) {
     showNotice(scraped.error, true);
   }
@@ -1839,30 +1892,46 @@ async function addToPlanner() {
   state.sourceUrl = url;
   if (start) state.eventStart = start;
   if (end) state.eventEnd = end;
-  if (attendees.length) state.eventAttendees = attendees;
-  if (organizer) state.eventOrganizer = organizer;
-  if (location) state.eventLocation = location;
-  if (meetingUrl) state.eventMeetingUrl = meetingUrl;
-  // Keep sticky path when re-running on the same event so title can upgrade.
+  state.eventAttendees = attendees;
+  state.eventOrganizer = organizer;
+  state.eventLocation = /^add a room/i.test(location) ? "" : location;
+  state.eventMeetingUrl = meetingUrl;
   state.sessionId = "";
 
-  const text =
-    bodyParts.join("\n") ||
-    `Calendar capture${start ? `\nStart: ${start}` : ""}${end ? `\nEnd: ${end}` : ""}`;
-  const snip = {
-    id: `evt${Date.now().toString(36)}`,
-    kind: "text",
-    text,
-    source_url: url,
-    captured_at: new Date().toISOString(),
-    saved: false,
-  };
-  // Keep any unsaved clips already in the tray (e.g. a whole-view shot / selection).
-  const kept = state.tray.filter((s) => !s.saved);
-  state.tray = [snip, ...kept.filter((s) => s.id !== snip.id)];
+  // Drop prior auto-extract text snips; keep user clips (shots / selection).
+  const kept = state.tray.filter(
+    (s) => !s.saved && s.kind === "image",
+  );
+  const selectionKept = state.tray.filter(
+    (s) =>
+      !s.saved &&
+      s.kind === "text" &&
+      s.text &&
+      !/^Meeting:|^Meeting ID:|^Passcode:|^Location:|^Outlook event:|^Start:|^End:|^Attendees:/m.test(
+        s.text,
+      ),
+  );
+  if (bodyParts.length) {
+    const snip = {
+      id: `evt${Date.now().toString(36)}`,
+      kind: "text",
+      text: bodyParts.join("\n"),
+      source_url: url,
+      captured_at: new Date().toISOString(),
+      saved: false,
+    };
+    state.tray = [snip, ...kept, ...selectionKept.filter((s) => s.id !== snip.id)];
+  } else {
+    state.tray = [...kept, ...selectionKept];
+  }
+
   title = titleFromTrayContent(title);
   if (isStubEventTitle(title)) {
-    title = titleFromTrayContent("") || (state.title || "").trim() || "Calendar event";
+    title =
+      subjectFromPageTitle(scraped?.page_title) ||
+      titleFromTrayContent("") ||
+      (state.title || "").trim() ||
+      "Calendar event";
   }
   state.title = title;
   el.title.value = title;
@@ -1870,11 +1939,16 @@ async function addToPlanner() {
   await persistTray();
   renderTargetExtra();
   render();
-  await saveTray();
-  // Server may further upgrade stub fields from snippet content.
-  if (state.title && el.title) {
-    el.title.value = state.title;
-  }
+  const bits = [
+    title && !isStubEventTitle(title) ? title : null,
+    attendees.length ? `${attendees.length} people` : null,
+    start ? start.slice(11, 16) || start : null,
+  ].filter(Boolean);
+  showNotice(
+    bits.length
+      ? `Staged ${bits.join(" · ")} — review tray, then Save`
+      : "Staged Outlook fields — review tray, then Save",
+  );
 }
 
 function showNotice(text, isError = false, isBusy = false) {

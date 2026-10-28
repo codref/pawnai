@@ -232,10 +232,18 @@ def render_event_note(
 _SNIPPET_MARK_RE = re.compile(r"<!--\s*pawn-snippet:([A-Za-z0-9_-]+)\s*-->")
 _IMAGE_EMBED_RE = re.compile(r"!\[\[([^\]]+)\]\]")
 _STUB_TITLE_RE = re.compile(
-    r"(?ix)^(?:\(\d+\)\s*)?(?:calendar|mail|outlook|microsoft\s*teams)\b"
+    r"(?ix)^(?:\(\d+\)\s*)?(?:calendar|mail|outlook|microsoft\s*teams|"
+    r"tracking|accepted|declined|busy|free|tentative|reminder|details|"
+    r"chat|join|meeting|inbox|day|week|month)\b"
     r"|calendar\s*[|–—-]\s*microsoft\s*teams"
     r"|-\s*outlook\s*$"
     r"|^\s*outlook\s*event\s*$"
+    r"|^\s*prepare for this meeting\s*$"
+    r"|^\s*microsoft teams meeting\s*$"
+)
+_BREADCRUMB_SUBJECT_RE = re.compile(
+    r"^(.+?)\s*[–—|-]\s*Meeting\s*[–—|-]\s*Calendar\b",
+    re.I,
 )
 
 
@@ -250,6 +258,16 @@ def is_stub_event_title(title: str) -> bool:
     if re.match(r"^\(\d+\)\s*calendar\b", text, re.I):
         return True
     return False
+
+
+def subject_from_page_title(raw: str) -> str:
+    """Pull subject from ``Review … - Meeting - Calendar`` chrome titles."""
+    text = (raw or "").strip()
+    match = _BREADCRUMB_SUBJECT_RE.match(text)
+    if match:
+        sub = match.group(1).strip()
+        return "" if is_stub_event_title(sub) else sub
+    return ""
 
 
 _MEETING_URL_RE = re.compile(
@@ -276,20 +294,54 @@ _JUNK_PERSON = {
     "tentative",
     "invite",
     "calendar",
+    "chat",
+    "join",
+    "copy",
+    "delete",
+    "archive",
+    "reply",
+    "forward",
+    "busy",
+    "reminder",
+    "categorize",
+    "private",
+    "prepare",
+    "copilot",
+    "viva",
+    "tracking",
+    "meeting",
+    "more",
+    "close",
+    "cancel",
+    "save",
+    "send",
+    "help",
+    "you",
+    "me",
 }
+_JUNK_PERSON_RE = re.compile(r"\[(?:image|object)[^\]]*\]", re.I)
 
 
 def _split_people(raw: str) -> list[str]:
     parts = re.split(r"[,;|/]| and ", raw or "")
     out: list[str] = []
     for p in parts:
-        name = re.sub(r"\s*\([^)]*\)\s*$", "", p).strip(" \t.-")
+        name = _JUNK_PERSON_RE.sub("", p)
+        name = re.sub(r"\s*\([^)]*\)\s*$", "", name).strip(" \t.-")
         if not name or len(name) < 2 or len(name) > 80:
             continue
         if name.lower() in _JUNK_PERSON:
             continue
         if name.lower().startswith(("http://", "https://", "mailto:")):
             continue
+        if not re.search(r"[A-Za-zÀ-ÿ]", name):
+            continue
+        # Toolbar labels are short lowercase singles; allow "Ada" / emails.
+        if " " not in name and "@" not in name:
+            if not re.match(r"^[A-ZÀ-Ÿ]", name):
+                continue
+            if len(name) < 2:
+                continue
         out.append(name)
     return out
 
@@ -336,6 +388,9 @@ def title_from_event_content(*chunks: str) -> str:
         "need help?",
     )
     for chunk in chunks:
+        crumb = subject_from_page_title(chunk or "")
+        if crumb:
+            candidates.append(crumb)
         for raw in (chunk or "").splitlines():
             line = raw.strip().lstrip("#").strip()
             if not line:
@@ -347,18 +402,32 @@ def title_from_event_content(*chunks: str) -> str:
             if lower.startswith("subject:"):
                 line = line.split(":", 1)[1].strip()
                 lower = line.lower()
+            crumb_line = subject_from_page_title(line)
+            if crumb_line:
+                candidates.append(crumb_line)
+                continue
             if any(lower.startswith(p) for p in skip_prefixes):
                 continue
             if _PERSON_ROLE_RE.match(line):
                 continue
             if is_stub_event_title(line):
                 continue
+            # Date / time rows are not subjects.
+            if re.match(r"^\d{1,2}/\d{1,2}/\d{4}", line):
+                continue
+            if re.search(r"\d{1,2}:\d{2}\s*[AP]M", line, re.I):
+                continue
+            if re.match(r"^(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun)\w*\b", line, re.I):
+                continue
             if 2 <= len(line) <= 120:
                 candidates.append(line)
     if not candidates:
         return ""
-    # Prefer shorter subject-like lines (meeting titles are rarely paragraphs).
-    candidates.sort(key=lambda s: (len(s) > 80, len(s)))
+    # Prefer longer real subjects over short chrome words ("Tracking").
+    candidates.sort(key=lambda s: (-len(s), s))
+    for cand in candidates:
+        if not is_stub_event_title(cand) and len(cand) >= 8:
+            return idea_filename_title(cand)[:80]
     return idea_filename_title(candidates[0])[:80]
 
 
@@ -819,8 +888,6 @@ def upsert_event_from_capture(
         title = existing_title
     if not title or is_stub_event_title(title):
         title = from_content or title or existing_title
-    if not title:
-        raise PlannerError("event capture needs a title", status_code=422)
 
     if not start and enriched.get("start"):
         start = normalize_local_dt(str(enriched["start"])) or str(enriched["start"])
@@ -843,6 +910,50 @@ def upsert_event_from_capture(
             topic_seen.add(key)
             merged_topics.append(str(t).strip())
     topics = merged_topics[:12]
+
+    # Screenshot / whole-view clips: vision fills gaps DOM scrape missed.
+    from pawn_server.core.event_vision import (  # noqa: PLC0415
+        decode_snippet_images,
+        extract_event_fields_from_images,
+        needs_event_vision,
+    )
+
+    image_bytes = decode_snippet_images(snippets)
+    if image_bytes and needs_event_vision(
+        title=title or existing_title,
+        start=start,
+        attendees=attendees,
+        organizer=organizer,
+    ):
+        vision = extract_event_fields_from_images(cfg, image_bytes)
+        v_title = str(vision.get("title") or "").strip()
+        v_title = subject_from_page_title(v_title) or v_title
+        if (
+            v_title
+            and not is_stub_event_title(v_title)
+            and (not title or is_stub_event_title(title))
+        ):
+            title = idea_filename_title(v_title)[:80]
+        if not start and vision.get("start"):
+            start = normalize_local_dt(str(vision["start"])) or str(vision["start"])
+        if not end and vision.get("end"):
+            end = normalize_local_dt(str(vision["end"])) or str(vision["end"])
+        if not organizer and vision.get("organizer"):
+            organizer = str(vision["organizer"]).strip()
+        if not location and vision.get("location"):
+            location = str(vision["location"]).strip()
+        if not meeting_url and vision.get("meeting_url"):
+            meeting_url = str(vision["meeting_url"]).strip()
+        attendees = merge_people(attendees, vision.get("attendees"))
+        for t in vision.get("topics") or []:
+            key = str(t).strip().lower()
+            if key and key not in topic_seen:
+                topic_seen.add(key)
+                topics.append(str(t).strip())
+        topics = topics[:12]
+
+    if not title:
+        raise PlannerError("event capture needs a title", status_code=422)
 
     source = (
         "outlook"

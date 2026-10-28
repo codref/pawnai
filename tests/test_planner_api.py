@@ -270,15 +270,14 @@ def test_title_similarity() -> None:
 
 
 def test_enrich_event_fields_from_content() -> None:
-    from pawn_server.core.planner import normalize_local_dt
+    from pawn_server.core.planner import merge_people, normalize_local_dt
 
     assert is_stub_event_title("Calendar | Microsoft Teams")
     assert is_stub_event_title("(2) Outlook")
+    assert is_stub_event_title("Tracking")
     assert normalize_local_dt("10/28/2026, 11:00 AM") == "2026-10-28T11:00"
     text = """
-Outlook event: Review Insights Connector
-Start: 2026-10-28T11:00
-End: 2026-10-28T11:30
+Review Insights Connector - Meeting - Calendar
 Mehrdad Kiani (Organizer)
 Davide Dal Farra (Required)
 Ada Lovelace (Optional)
@@ -286,14 +285,78 @@ Location: Building 3 / Room A
 Meeting: https://teams.microsoft.com/l/meetup-join/19%3ameeting_abc
 Topics: roadmap, connectors
 """.strip()
-    got = enrich_event_fields_from_content("Calendar | Microsoft Teams", text)
+    got = enrich_event_fields_from_content("Tracking", text)
     assert got["title"] == "Review Insights Connector"
     assert got["organizer"] == "Mehrdad Kiani"
     assert "Davide Dal Farra" in got["attendees"]
     assert "Ada Lovelace" in got["attendees"]
+    assert "Chat" not in got["attendees"]
     assert got["location"].startswith("Building 3")
     assert "teams.microsoft.com" in got["meeting_url"]
     assert "roadmap" in got["topics"]
+    cleaned = merge_people(["Chat [image]", "Davide Dal Farra", "Join"])
+    assert cleaned == ["Davide Dal Farra"]
+
+
+def test_event_capture_vision_fills_from_screenshot(
+    env: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import base64
+
+    png = base64.b64decode(
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="
+    )
+
+    def _fake_vision(_cfg, images):
+        assert images and images[0] == png
+        return {
+            "title": "Vision Meeting",
+            "start": "2026-10-28T14:00",
+            "end": "2026-10-28T14:30",
+            "organizer": "Ada",
+            "attendees": ["Ada", "Bob"],
+            "location": "Room 1",
+            "meeting_url": "https://teams.microsoft.com/l/meetup-join/x",
+            "topics": [],
+        }
+
+    monkeypatch.setattr(
+        "pawn_server.core.event_vision.extract_event_fields_from_images",
+        _fake_vision,
+    )
+    monkeypatch.setattr(
+        "pawn_server.core.event_vision.needs_event_vision",
+        lambda **_k: True,
+    )
+
+    with TestClient(api_server.create_app(env.cfg)) as client:
+        cap = client.post(
+            "/v1/captures",
+            headers=AUTH,
+            json={
+                "target": {
+                    "kind": "event",
+                    "title": "Calendar | Microsoft Teams",
+                    "source_url": "https://outlook.office.com/calendar/item/vision1",
+                },
+                "snippets": [
+                    {
+                        "id": "snip-vis-1",
+                        "kind": "image",
+                        "data_base64": base64.b64encode(png).decode("ascii"),
+                        "media_type": "image/png",
+                    }
+                ],
+            },
+        )
+        assert cap.status_code == 200, cap.text
+        body = cap.json()
+        assert body["title"] == "Vision Meeting"
+        meta, _ = parse_frontmatter(env.store.read(body["path"]))
+        assert meta.get("title") == "Vision Meeting"
+        assert "Bob" in (meta.get("attendees") or [])
+        assert meta.get("organizer") == "Ada"
+        assert meta.get("start", "").startswith("2026-10-28T14:00")
 
 
 def test_event_capture_enriches_stub_title_and_people(env: SimpleNamespace) -> None:
