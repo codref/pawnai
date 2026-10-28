@@ -100,6 +100,20 @@ def _meta_list(value: Any) -> list[str]:
     return [text]
 
 
+def _meta_bool(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    text = str(value or "").strip().lower()
+    return text in {"1", "true", "yes", "on"}
+
+
+def _meta_int(value: Any, default: int = 0) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
 def day_from_local(value: str) -> str:
     """Extract ``YYYY-MM-DD`` from a local start/end string."""
     raw = (value or "").strip()
@@ -170,6 +184,8 @@ def render_event_note(
     fingerprint: str = "",
     prep_job_id: str = "",
     prep_at: str = "",
+    focus: bool = False,
+    focus_before: int = 0,
     body: str = "",
     prep: str = "",
 ) -> str:
@@ -203,6 +219,11 @@ def render_event_note(
         meta["prep_job_id"] = prep_job_id.strip()
     if prep_at.strip():
         meta["prep_at"] = prep_at.strip()
+    if focus:
+        meta["focus"] = True
+        meta["focus_before"] = max(0, int(focus_before or 0)) or 15
+    elif focus_before:
+        meta["focus_before"] = max(0, int(focus_before))
 
     parts = [f"# {heading}", ""]
     body_text = (body or "").strip()
@@ -529,6 +550,8 @@ def parse_event_note(text: str, *, path: str = "") -> dict[str, Any]:
         "fingerprint": _meta_str(meta.get("fingerprint")),
         "prep_job_id": _meta_str(meta.get("prep_job_id")),
         "prep_at": _meta_str(meta.get("prep_at")),
+        "focus": _meta_bool(meta.get("focus")),
+        "focus_before": _meta_int(meta.get("focus_before"), 0),
         "path": path,
         "body": rest,
         "prep": prep,
@@ -666,6 +689,8 @@ def upsert_event(
             prev_org = _meta_str(prev_meta.get("organizer"))
             prev_loc = _meta_str(prev_meta.get("location"))
             prev_meet = _meta_str(prev_meta.get("meeting_url"))
+            prev_focus = _meta_bool(prev_meta.get("focus"))
+            prev_focus_before = _meta_int(prev_meta.get("focus_before"), 0)
         except VaultNotFound:
             prep = existing.get("prep") or ""
             prep_job_id = existing.get("prep_job_id") or ""
@@ -674,6 +699,8 @@ def upsert_event(
             prev_org = existing.get("organizer") or ""
             prev_loc = existing.get("location") or ""
             prev_meet = existing.get("meeting_url") or ""
+            prev_focus = bool(existing.get("focus"))
+            prev_focus_before = int(existing.get("focus_before") or 0)
         text = render_event_note(
             event_id=eid,
             title=heading,
@@ -690,6 +717,8 @@ def upsert_event(
             fingerprint=fp,
             prep_job_id=prep_job_id,
             prep_at=prep_at,
+            focus=prev_focus,
+            focus_before=prev_focus_before,
             body=body if body.strip() else existing.get("body") or "",
             prep=prep,
         )

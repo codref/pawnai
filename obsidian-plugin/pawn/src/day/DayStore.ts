@@ -143,6 +143,8 @@ export class DayStore {
           location: String(fm.location || ""),
           meeting_url: String(fm.meeting_url || ""),
           session_id: String(fm.session_id || ""),
+          focus: Boolean(fm.focus),
+          focus_before: Number(fm.focus_before) || 0,
           path: file.path,
           prep: parsed.prep,
           body: parsed.body,

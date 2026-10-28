@@ -1,5 +1,12 @@
-import { Modal, Notice, setIcon } from "obsidian";
-import type { InboxItem, PlannerBlock, PlannerDay, PlannerEvent, PlannerSuggestion, SessionSummary } from "../api";
+import { Modal, Notice, TFile, setIcon } from "obsidian";
+import type {
+  InboxItem,
+  PlannerBlock,
+  PlannerDay,
+  PlannerEvent,
+  PlannerSuggestion,
+  SessionSummary,
+} from "../api";
 import { focusInboxOnSession } from "../inbox/InboxView";
 import { dayLabel } from "../inbox/items";
 import type PawnPlugin from "../main";
@@ -8,6 +15,12 @@ import { ExtractModal } from "../sessions/ExtractModal";
 import { iconButton } from "../sessions/TrainModal";
 import { AddEventModal } from "./AddEventModal";
 import type { DayStore } from "./DayStore";
+
+const SLOT_MINUTES = 30;
+const SLOTS_PER_DAY = (24 * 60) / SLOT_MINUTES;
+const SLOT_PX = 28;
+const PX_PER_MIN = SLOT_PX / SLOT_MINUTES;
+const DEFAULT_FOCUS_BEFORE = 15;
 
 class ConfirmModal extends Modal {
   constructor(
@@ -43,7 +56,6 @@ function fmtTime(local: string | undefined): string {
   return m.format("HH:mm");
 }
 
-/** Schedule line for an event card (time range, all-day, or unknown). */
 function fmtSchedule(event: PlannerEvent | null | undefined): string {
   if (!event) return "";
   const start = (event.start || "").trim();
@@ -62,6 +74,33 @@ function fmtSchedule(event: PlannerEvent | null | undefined): string {
   return "All day";
 }
 
+/** Minutes from local midnight; null when untimed / all-day. */
+function minutesFromMidnight(local: string | undefined): number | null {
+  const raw = (local || "").trim();
+  if (!raw || raw.length <= 10) return null;
+  const m = window.moment(raw, ["YYYY-MM-DDTHH:mm", "YYYY-MM-DD HH:mm"], true);
+  if (!m.isValid()) return null;
+  return m.hours() * 60 + m.minutes();
+}
+
+function isTimedActivity(event: PlannerEvent | null | undefined): boolean {
+  return minutesFromMidnight(event?.start) != null;
+}
+
+function pad2(n: number): string {
+  return String(n).padStart(2, "0");
+}
+
+function slotLabel(slotIndex: number): string {
+  const mins = slotIndex * SLOT_MINUTES;
+  return `${pad2(Math.floor(mins / 60))}:${pad2(mins % 60)}`;
+}
+
+function slotStartIso(date: string, slotIndex: number): string {
+  const mins = slotIndex * SLOT_MINUTES;
+  return `${date}T${pad2(Math.floor(mins / 60))}:${pad2(mins % 60)}`;
+}
+
 async function openPath(plugin: PawnPlugin, path: string | null | undefined): Promise<void> {
   if (!path) {
     new Notice("No note path.", 3000);
@@ -72,10 +111,10 @@ async function openPath(plugin: PawnPlugin, path: string | null | undefined): Pr
     new Notice(`Missing note: ${path}`, 4000);
     return;
   }
-  await plugin.app.workspace.getLeaf(false).openFile(file as import("obsidian").TFile);
+  await plugin.app.workspace.getLeaf(false).openFile(file as TFile);
 }
 
-/** Day (planner) tab — timeline of events + sessions + meeting-first items. */
+/** Day (planner) tab — hourly activity grid + sessions strip. */
 export function renderDayView(
   parent: HTMLElement,
   plugin: PawnPlugin,
@@ -112,10 +151,10 @@ export function renderDayView(
     if (dateInput.value) store.setDate(dateInput.value);
   };
 
-  const addBtn = toolbar.createEl("button", { cls: "pawn-chip", text: "Add event" });
+  const addBtn = toolbar.createEl("button", { cls: "pawn-chip", text: "Add activity" });
   addBtn.onclick = () => {
     if (store.isOffline()) {
-      new Notice("Add event requires the Pawn server.", 4000);
+      new Notice("Add activity requires the Pawn server.", 4000);
       return;
     }
     new AddEventModal(plugin, store.getDate(), refresh).open();
@@ -155,7 +194,7 @@ export function renderDayView(
     parent.createDiv({ cls: "pawn-hint", text: "Refreshing…" });
   }
 
-  renderTimeline(parent, plugin, day, store, opts, refresh);
+  renderSchedule(parent, plugin, day, store, opts, refresh);
 }
 
 function suggestionFor(
@@ -166,7 +205,7 @@ function suggestionFor(
   return day.suggestions.find((s) => s.event_id === eventId);
 }
 
-function renderTimeline(
+function renderSchedule(
   parent: HTMLElement,
   plugin: PawnPlugin,
   day: PlannerDay,
@@ -174,27 +213,206 @@ function renderTimeline(
   opts: { onOpenChat: (conversation: string) => void },
   refresh: () => void,
 ): void {
-  const list = parent.createDiv({ cls: "pawn-jobs-list" });
-  if (!day.blocks.length) {
-    list.createDiv({
-      cls: "pawn-empty",
-      text: "Nothing on this day. Add an event, or record a session.",
-    });
+  const timed: PlannerBlock[] = [];
+  const untimed: PlannerBlock[] = [];
+  for (const block of day.blocks) {
+    if (block.kind === "event" && isTimedActivity(block.event)) {
+      timed.push(block);
+    } else {
+      untimed.push(block);
+    }
   }
 
-  for (const block of day.blocks) {
-    renderBlock(list, plugin, day, block, store, opts, refresh);
+  if (untimed.length) {
+    const strip = parent.createDiv({ cls: "pawn-day-untimed" });
+    strip.createDiv({ cls: "pawn-day-untimed-label", text: "Sessions & untimed" });
+    for (const block of untimed) {
+      renderUntimedCard(strip, plugin, day, block, store, opts, refresh);
+    }
   }
 
   if (day.other_items.length) {
-    list.createDiv({ cls: "pawn-inbox-day", text: "Other TODOs" });
+    const other = parent.createDiv({ cls: "pawn-day-untimed" });
+    other.createDiv({ cls: "pawn-day-untimed-label", text: "Other TODOs" });
     for (const item of day.other_items) {
-      renderItemRow(list, item);
+      renderItemRow(other, item);
     }
+  }
+
+  const scroll = parent.createDiv({ cls: "pawn-day-grid-scroll" });
+  const grid = scroll.createDiv({ cls: "pawn-day-grid" });
+  grid.style.height = `${SLOTS_PER_DAY * SLOT_PX}px`;
+
+  for (let i = 0; i < SLOTS_PER_DAY; i++) {
+    const slot = grid.createDiv({
+      cls: `pawn-day-slot${i % 2 === 0 ? " is-hour" : ""}`,
+      attr: { "data-slot": String(i) },
+    });
+    slot.style.top = `${i * SLOT_PX}px`;
+    slot.style.height = `${SLOT_PX}px`;
+    if (i % 2 === 0) {
+      slot.createSpan({ cls: "pawn-day-slot-label", text: slotLabel(i) });
+    }
+    slot.onclick = () => {
+      if (store.isOffline()) {
+        new Notice("Add activity requires the Pawn server.", 4000);
+        return;
+      }
+      const start = slotStartIso(day.date, i);
+      const endIso =
+        i + 1 >= SLOTS_PER_DAY
+          ? `${day.date}T23:59`
+          : slotStartIso(day.date, i + 1);
+      new AddEventModal(plugin, { date: day.date, start, end: endIso }, refresh).open();
+    };
+  }
+
+  const layer = grid.createDiv({ cls: "pawn-day-blocks" });
+  for (const block of timed) {
+    renderTimedActivity(layer, plugin, day, block, store, refresh);
+  }
+
+  const todayKey = window.moment().format("YYYY-MM-DD");
+  if (day.date === todayKey) {
+    const nowMins = window.moment().hours() * 60 + window.moment().minutes();
+    const nowLine = grid.createDiv({ cls: "pawn-day-now" });
+    nowLine.style.top = `${nowMins * PX_PER_MIN}px`;
+    window.setTimeout(() => {
+      scroll.scrollTop = Math.max(0, nowMins * PX_PER_MIN - scroll.clientHeight / 3);
+    }, 0);
+  } else if (timed.length) {
+    const first = Math.min(
+      ...timed.map((b) => minutesFromMidnight(b.event?.start) ?? 9 * 60),
+    );
+    window.setTimeout(() => {
+      scroll.scrollTop = Math.max(0, first * PX_PER_MIN - SLOT_PX * 2);
+    }, 0);
+  } else if (!untimed.length && !day.other_items.length) {
+    parent.createDiv({
+      cls: "pawn-hint pawn-day-empty-hint",
+      text: "Nothing timed yet. Click a slot or Add activity.",
+    });
   }
 }
 
-function renderBlock(
+function renderTimedActivity(
+  parent: HTMLElement,
+  plugin: PawnPlugin,
+  day: PlannerDay,
+  block: PlannerBlock,
+  store: DayStore,
+  refresh: () => void,
+): void {
+  const event = block.event!;
+  const startMin = minutesFromMidnight(event.start) ?? 0;
+  let endMin = minutesFromMidnight(event.end);
+  if (endMin == null || endMin <= startMin) endMin = startMin + SLOT_MINUTES;
+  const duration = Math.max(SLOT_MINUTES, endMin - startMin);
+  const focusOn = Boolean(event.focus);
+  const focusBefore = Math.max(
+    0,
+    Number(event.focus_before) || (focusOn ? DEFAULT_FOCUS_BEFORE : 0),
+  );
+
+  if (focusOn && focusBefore > 0) {
+    const bandStart = Math.max(0, startMin - focusBefore);
+    const band = parent.createDiv({ cls: "pawn-day-focus-band" });
+    band.style.top = `${bandStart * PX_PER_MIN}px`;
+    band.style.height = `${(startMin - bandStart) * PX_PER_MIN}px`;
+    band.createSpan({ cls: "pawn-day-focus-band-label", text: "focus" });
+    band.title = `${focusBefore}m prep before`;
+  }
+
+  const card = parent.createDiv({
+    cls: `pawn-day-activity${focusOn ? " is-focus" : ""}`,
+  });
+  card.style.top = `${startMin * PX_PER_MIN}px`;
+  card.style.height = `${Math.max(SLOT_PX - 2, duration * PX_PER_MIN - 2)}px`;
+
+  const head = card.createDiv({ cls: "pawn-day-activity-head" });
+  const titleBtn = head.createEl("button", {
+    cls: "pawn-day-activity-title",
+    text: event.title || "Untitled",
+  });
+  titleBtn.title = "Open activity note";
+  titleBtn.onclick = (ev) => {
+    ev.stopPropagation();
+    void openPath(plugin, event.path);
+  };
+
+  if (event.source) {
+    head.createSpan({ cls: "pawn-session-badge", text: event.source });
+  }
+  if (focusOn) {
+    head.createSpan({ cls: "pawn-session-badge", text: "focus" });
+  }
+  if (event.has_prep || (event.prep || "").trim()) {
+    head.createSpan({ cls: "pawn-session-badge", text: "prep" });
+  }
+  if ((event.image_count || 0) > 0) {
+    head.createSpan({ cls: "pawn-session-badge", text: "shot" });
+  }
+
+  const metaBits = [
+    fmtSchedule(event),
+    event.organizer ? `org ${event.organizer}` : "",
+    event.attendees?.length ? event.attendees.slice(0, 3).join(", ") : "",
+  ].filter(Boolean);
+  if (metaBits.length && duration >= 45) {
+    card.createDiv({ cls: "pawn-day-activity-meta", text: metaBits.join(" · ") });
+  }
+
+  const sug = suggestionFor(day, event.id);
+  if (sug && !event.session_id && duration >= 60) {
+    const row = card.createDiv({ cls: "pawn-day-suggest" });
+    row.createSpan({ text: `Link “${sug.session_title || sug.session_id}”?` });
+    const linkBtn = row.createEl("button", { cls: "pawn-chip", text: "Link" });
+    linkBtn.onclick = (ev) => {
+      ev.stopPropagation();
+      void confirmLink(plugin, sug, refresh);
+    };
+  }
+
+  const actions = card.createDiv({ cls: "pawn-msg-actions pawn-day-activity-actions" });
+  const star = iconButton(
+    actions,
+    focusOn ? "star" : "star-off",
+    focusOn ? "Clear focus" : "Focus (prep band)",
+    () => {
+      void toggleFocus(plugin, event, refresh);
+    },
+  );
+  if (focusOn) star.classList.add("is-active");
+
+  iconButton(actions, "sparkles", "Prep (LLM)", () => {
+    if (store.isOffline()) {
+      new Notice("Prep requires the Pawn server.", 4000);
+      return;
+    }
+    void runPrep(plugin, event.id, refresh);
+  });
+  if (event.session_id) {
+    iconButton(actions, "unlink", "Unlink session", () => {
+      if (store.isOffline()) {
+        new Notice("Unlink requires the Pawn server.", 4000);
+        return;
+      }
+      void unlinkSession(plugin, event.id, refresh);
+    });
+  }
+  iconButton(actions, "trash-2", "Delete activity", () => {
+    if (store.isOffline()) {
+      new Notice("Delete requires the Pawn server.", 4000);
+      return;
+    }
+    confirmDelete(plugin, event, refresh);
+  });
+
+  // Don't open Add modal when clicking the card.
+  card.onclick = (ev) => ev.stopPropagation();
+}
+
+function renderUntimedCard(
   parent: HTMLElement,
   plugin: PawnPlugin,
   day: PlannerDay,
@@ -206,110 +424,62 @@ function renderBlock(
   const event = block.event ?? null;
   const session = block.session ?? null;
   const title =
-    event?.title ||
-    session?.title ||
-    session?.session_id ||
-    "Untitled";
+    event?.title || session?.title || session?.session_id || "Untitled";
 
   const card = parent.createDiv({
     cls: `pawn-job-card pawn-day-block is-${block.kind}`,
   });
   const head = card.createDiv({ cls: "pawn-job-head" });
-  head.createSpan({ cls: "pawn-job-title", text: title });
+  if (event?.path) {
+    const titleBtn = head.createEl("button", {
+      cls: "pawn-day-activity-title",
+      text: title,
+    });
+    titleBtn.onclick = () => void openPath(plugin, event.path);
+  } else {
+    head.createSpan({ cls: "pawn-job-title", text: title });
+  }
   head.createSpan({
     cls: "pawn-session-badge",
     text: block.kind === "event" ? event?.source || "event" : "session",
   });
-  if (event?.has_prep || (event?.prep || "").trim()) {
-    head.createSpan({ cls: "pawn-session-badge", text: "prep" });
-  }
-  if (event?.session_id) {
-    head.createSpan({ cls: "pawn-session-badge", text: "linked" });
-  }
-  if ((event?.image_count || 0) > 0) {
-    head.createSpan({ cls: "pawn-session-badge", text: "shot" });
-  } else if ((event?.clip_count || 0) > 0) {
-    head.createSpan({
-      cls: "pawn-session-badge",
-      text: event!.clip_count === 1 ? "1 clip" : `${event!.clip_count} clips`,
-    });
-  }
 
   const meta = card.createDiv({ cls: "pawn-job-meta" });
   const bits = [
     block.kind === "event" ? fmtSchedule(event) : fmtTime(session?.created_at || undefined),
-    session?.session_id && session.session_id !== title ? session.session_id : "",
-    event?.location ? String(event.location).slice(0, 48) : "",
     event?.organizer ? `org ${event.organizer}` : "",
     event?.attendees?.length ? event.attendees.slice(0, 4).join(", ") : "",
   ].filter(Boolean);
   meta.setText(bits.join(" · ") || (block.kind === "event" ? "No schedule yet" : ""));
 
-  const decor = [...(event?.topics ?? [])].slice(0, 6);
-  if (decor.length) {
-    const tags = card.createDiv({ cls: "pawn-session-tags" });
-    for (const tag of decor) {
-      tags.createSpan({ cls: "pawn-session-tag", text: tag });
-    }
-  }
-
-  if (event?.prep) {
-    card.createDiv({
-      cls: "pawn-session-summary pawn-day-prep",
-      text: event.prep.replace(/\s+/g, " ").trim().slice(0, 280),
-    });
-  } else if (session?.summary) {
-    card.createDiv({
-      cls: "pawn-session-summary",
-      text: session.summary.replace(/\s+/g, " ").trim().slice(0, 160),
-    });
-  } else if (event?.body) {
-    // Strip snippet chrome + fields already shown on the card.
-    const title = (event.title || "").trim();
-    const preview = event.body
-      .replace(/<!--\s*\/?pawn-snippet:[^>]+-->/g, "")
-      .replace(/^###\s*Snippet[^\n]*$/gm, "")
-      .replace(/^Source:\s*\S+$/gm, "")
-      .replace(/^#+\s+.+$/gm, "")
-      .replace(/^Outlook event:\s*.+$/gim, "")
-      .replace(/^(Start|End|Attendees|Organizer|Location|Meeting|Meeting ID|Passcode|Topics):\s*.+$/gim, "")
-      .replace(/!\[\[[^\]]+\]\]/g, "")
-      .replace(/\s+/g, " ")
-      .trim();
-    const deduped =
-      title && preview.toLowerCase().startsWith(title.toLowerCase())
-        ? preview.slice(title.length).trim()
-        : preview;
-    if (deduped) {
-      card.createDiv({
-        cls: "pawn-session-summary",
-        text: deduped.slice(0, 160),
-      });
-    }
-  }
-
-  const items = block.items ?? [];
-  if (items.length) {
-    const box = card.createDiv({ cls: "pawn-day-items" });
-    for (const item of items.slice(0, 8)) {
-      renderItemRow(box, item);
-    }
-  }
-
-  const sug = suggestionFor(day, event?.id);
-  if (sug && !event?.session_id) {
-    const row = card.createDiv({ cls: "pawn-day-suggest" });
-    row.createSpan({
-      text: `Link to session “${sug.session_title || sug.session_id}”?`,
-    });
-    const linkBtn = row.createEl("button", { cls: "pawn-chip", text: "Link" });
-    linkBtn.onclick = () => void confirmLink(plugin, sug, refresh);
-  }
-
   const actions = card.createDiv({ cls: "pawn-msg-actions" });
   if (event?.path) {
-    iconButton(actions, "calendar", "Open event note", () => {
+    iconButton(actions, "calendar", "Open activity note", () => {
       void openPath(plugin, event.path);
+    });
+  }
+  if (event?.id) {
+    const focusOn = Boolean(event.focus);
+    const star = iconButton(
+      actions,
+      focusOn ? "star" : "star-off",
+      focusOn ? "Clear focus" : "Focus",
+      () => void toggleFocus(plugin, event, refresh),
+    );
+    if (focusOn) star.classList.add("is-active");
+    iconButton(actions, "sparkles", "Prep (LLM)", () => {
+      if (store.isOffline()) {
+        new Notice("Prep requires the Pawn server.", 4000);
+        return;
+      }
+      void runPrep(plugin, event.id, refresh);
+    });
+    iconButton(actions, "trash-2", "Delete activity", () => {
+      if (store.isOffline()) {
+        new Notice("Delete requires the Pawn server.", 4000);
+        return;
+      }
+      confirmDelete(plugin, event, refresh);
     });
   }
   if (session) {
@@ -335,30 +505,15 @@ function renderBlock(
       ).open();
     });
   }
-  if (event?.id) {
-    iconButton(actions, "sparkles", "Prep (LLM)", () => {
-      if (store.isOffline()) {
-        new Notice("Prep requires the Pawn server.", 4000);
-        return;
-      }
-      void runPrep(plugin, event.id, refresh);
+
+  const sug = suggestionFor(day, event?.id);
+  if (sug && event && !event.session_id) {
+    const row = card.createDiv({ cls: "pawn-day-suggest" });
+    row.createSpan({
+      text: `Link to session “${sug.session_title || sug.session_id}”?`,
     });
-    if (event.session_id) {
-      iconButton(actions, "unlink", "Unlink session", () => {
-        if (store.isOffline()) {
-          new Notice("Unlink requires the Pawn server.", 4000);
-          return;
-        }
-        void unlinkSession(plugin, event.id, refresh);
-      });
-    }
-    iconButton(actions, "trash-2", "Delete event", () => {
-      if (store.isOffline()) {
-        new Notice("Delete requires the Pawn server.", 4000);
-        return;
-      }
-      confirmDelete(plugin, event, refresh);
-    });
+    const linkBtn = row.createEl("button", { cls: "pawn-chip", text: "Link" });
+    linkBtn.onclick = () => void confirmLink(plugin, sug, refresh);
   }
 }
 
@@ -367,6 +522,38 @@ function renderItemRow(parent: HTMLElement, item: InboxItem): void {
   const kind = item.kind || "item";
   const text = (item.text || "").replace(/\s+/g, " ").trim().slice(0, 120);
   row.setText(`${kind} — ${text}`);
+}
+
+async function toggleFocus(
+  plugin: PawnPlugin,
+  event: PlannerEvent,
+  refresh: () => void,
+): Promise<void> {
+  const path = event.path;
+  if (!path) {
+    new Notice("No note path for this activity.", 3000);
+    return;
+  }
+  const file = plugin.app.vault.getAbstractFileByPath(path);
+  if (!(file instanceof TFile)) {
+    new Notice(`Missing note: ${path}`, 4000);
+    return;
+  }
+  const next = !event.focus;
+  try {
+    await plugin.app.fileManager.processFrontMatter(file, (fm) => {
+      if (next) {
+        fm.focus = true;
+        if (!fm.focus_before) fm.focus_before = DEFAULT_FOCUS_BEFORE;
+      } else {
+        delete fm.focus;
+      }
+    });
+    new Notice(next ? "Focus on" : "Focus cleared");
+    refresh();
+  } catch (err) {
+    new Notice(`Focus failed: ${err instanceof Error ? err.message : err}`);
+  }
 }
 
 async function confirmLink(
@@ -405,14 +592,14 @@ function confirmDelete(
   const label = event.title || event.id;
   new ConfirmModal(
     plugin.app,
-    "Delete event?",
+    "Delete activity?",
     `Delete “${label}” from the planner. The vault note is removed; linked sessions stay.`,
     "Delete",
     () => {
       void (async () => {
         try {
           await plugin.client.deletePlannerEvent(event.id);
-          new Notice("Event deleted.");
+          new Notice("Activity deleted.");
           refresh();
         } catch (err) {
           new Notice(`Delete failed: ${err instanceof Error ? err.message : err}`);
@@ -431,7 +618,6 @@ async function runPrep(
     const job = await plugin.client.prepPlannerEvent(eventId);
     new Notice(`Prep job ${job.id.slice(0, 8)}…`);
     void plugin.openChat({ tab: "jobs", focusJob: job.id });
-    // Refresh after a short delay so ## Prep may land.
     window.setTimeout(refresh, 4000);
   } catch (err) {
     new Notice(`Prep failed: ${err instanceof Error ? err.message : err}`);

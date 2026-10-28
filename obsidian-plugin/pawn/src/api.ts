@@ -237,6 +237,10 @@ export interface PlannerEvent {
   fingerprint?: string;
   prep_job_id?: string;
   prep_at?: string;
+  /** Star-like day-planning flag; shows prep blast band on the grid. */
+  focus?: boolean;
+  /** Minutes of prep band before start when focus is on (default 15). */
+  focus_before?: number;
   path?: string;
   body?: string;
   prep?: string;

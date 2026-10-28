@@ -1490,10 +1490,17 @@ button.pawn-chip-pin:hover {
 
 /* ── Day planner ─────────────────────────────────────────────────────────── */
 
+.pawn-jobs:has(> .pawn-day-grid-scroll) {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
 .pawn-day-toolbar {
   flex-wrap: wrap;
   gap: var(--size-4-2);
   align-items: center;
+  flex-shrink: 0;
 }
 
 .pawn-day-nav {
@@ -1539,4 +1546,180 @@ button.pawn-chip-pin:hover {
   gap: var(--size-4-2);
   margin-top: var(--size-4-2);
   font-size: var(--font-ui-smaller);
+}
+
+.pawn-day-untimed {
+  margin: 0 0 var(--size-4-2);
+  padding-bottom: var(--size-4-2);
+  border-bottom: 1px solid var(--background-modifier-border);
+}
+
+.pawn-day-untimed-label,
+.pawn-day-empty-hint {
+  font-size: var(--font-ui-smaller);
+  opacity: 0.7;
+  margin-bottom: var(--size-4-1);
+}
+
+.pawn-day-grid-scroll {
+  flex: 1;
+  min-height: 12rem;
+  overflow-y: auto;
+  overflow-x: hidden;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--radius-s);
+  background: var(--background-primary);
+}
+
+.pawn-day-grid {
+  position: relative;
+  margin-left: 2.75rem;
+}
+
+.pawn-day-slot {
+  position: absolute;
+  left: 0;
+  right: 0;
+  box-sizing: border-box;
+  border-top: 1px solid var(--background-modifier-border);
+  cursor: pointer;
+}
+
+.pawn-day-slot.is-hour {
+  border-top-color: var(--background-modifier-border-hover);
+}
+
+.pawn-day-slot:hover {
+  background: var(--background-modifier-hover);
+}
+
+.pawn-day-slot-label {
+  position: absolute;
+  left: -2.75rem;
+  top: -0.55em;
+  width: 2.5rem;
+  text-align: right;
+  font-size: var(--font-ui-smaller);
+  font-variant-numeric: tabular-nums;
+  opacity: 0.65;
+  pointer-events: none;
+  user-select: none;
+}
+
+.pawn-day-blocks {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 2;
+}
+
+.pawn-day-focus-band {
+  position: absolute;
+  left: 2px;
+  right: 2px;
+  border-radius: var(--radius-s);
+  background: color-mix(in srgb, var(--color-yellow) 18%, transparent);
+  border: 1px dashed color-mix(in srgb, var(--color-yellow) 45%, transparent);
+  pointer-events: none;
+  z-index: 1;
+  overflow: hidden;
+}
+
+.pawn-day-focus-band-label {
+  font-size: 0.65rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  opacity: 0.75;
+  padding: 0.1rem 0.35rem;
+}
+
+.pawn-day-activity {
+  position: absolute;
+  left: 2px;
+  right: 2px;
+  box-sizing: border-box;
+  padding: 0.2rem 0.35rem 0.15rem;
+  border-radius: var(--radius-s);
+  border: 1px solid var(--background-modifier-border);
+  background: var(--background-secondary);
+  overflow: hidden;
+  pointer-events: auto;
+  z-index: 3;
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+}
+
+.pawn-day-activity.is-focus {
+  border-color: color-mix(in srgb, var(--color-yellow) 55%, var(--background-modifier-border));
+  box-shadow: inset 2px 0 0 var(--color-yellow);
+}
+
+.pawn-day-activity-head {
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+  flex-wrap: wrap;
+  min-height: 1.1em;
+}
+
+.pawn-day-activity-title {
+  appearance: none;
+  border: none;
+  background: transparent;
+  color: var(--text-accent);
+  font: inherit;
+  font-weight: 600;
+  padding: 0;
+  margin: 0;
+  cursor: pointer;
+  text-align: left;
+  text-decoration: underline;
+  text-underline-offset: 0.12em;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pawn-day-activity-title:hover {
+  color: var(--text-accent-hover, var(--text-accent));
+}
+
+.pawn-day-activity-meta {
+  font-size: var(--font-ui-smaller);
+  opacity: 0.8;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pawn-day-activity-actions {
+  margin-top: auto;
+  opacity: 0.85;
+}
+
+.pawn-day-activity-actions .clickable-icon.is-active {
+  color: var(--color-yellow);
+}
+
+.pawn-day-now {
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 0;
+  border-top: 2px solid var(--color-red, #e74c3c);
+  z-index: 4;
+  pointer-events: none;
+}
+
+.pawn-day-now::before {
+  content: "";
+  position: absolute;
+  left: -0.35rem;
+  top: -0.35rem;
+  width: 0.55rem;
+  height: 0.55rem;
+  border-radius: 50%;
+  background: var(--color-red, #e74c3c);
 }

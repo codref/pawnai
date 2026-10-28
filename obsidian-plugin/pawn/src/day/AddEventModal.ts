@@ -1,30 +1,52 @@
 import { Modal, Notice, Setting } from "obsidian";
 import type PawnPlugin from "../main";
 
-/** Manual planner event create (personal life / no Outlook). */
+export type AddActivityDefaults = {
+  date: string;
+  start?: string;
+  end?: string;
+};
+
+/** Manual planner activity create (personal life / no Outlook). */
 export class AddEventModal extends Modal {
   private title = "";
   private start = "";
   private end = "";
   private body = "";
   private saving = false;
+  private defaultDate: string;
 
   constructor(
     private plugin: PawnPlugin,
-    private defaultDate: string,
+    defaults: string | AddActivityDefaults,
     private onDone: () => void,
   ) {
     super(plugin.app);
-    this.start = defaultDate ? `${defaultDate}T09:00` : "";
+    if (typeof defaults === "string") {
+      this.defaultDate = defaults;
+      this.start = defaults ? `${defaults}T09:00` : "";
+      this.end = defaults ? `${defaults}T09:30` : "";
+    } else {
+      this.defaultDate = defaults.date;
+      this.start = defaults.start || (defaults.date ? `${defaults.date}T09:00` : "");
+      this.end =
+        defaults.end ||
+        (this.start
+          ? window
+              .moment(this.start, ["YYYY-MM-DDTHH:mm", "YYYY-MM-DD HH:mm"], true)
+              .add(30, "minutes")
+              .format("YYYY-MM-DDTHH:mm")
+          : "");
+    }
   }
 
   onOpen(): void {
-    this.titleEl.setText("Add planner event");
+    this.titleEl.setText("Add activity");
     const { contentEl } = this;
     contentEl.empty();
 
     new Setting(contentEl).setName("Title").addText((t) => {
-      t.setPlaceholder("Product weekly").onChange((v) => {
+      t.setPlaceholder("Coffee / deep work / call").onChange((v) => {
         this.title = v;
       });
       t.inputEl.focus();
@@ -38,7 +60,7 @@ export class AddEventModal extends Modal {
         });
       });
     new Setting(contentEl).setName("End (optional)").addText((t) => {
-      t.setPlaceholder("2026-10-28T10:30").onChange((v) => {
+      t.setValue(this.end).setPlaceholder("2026-10-28T10:30").onChange((v) => {
         this.end = v;
       });
     });
@@ -72,13 +94,13 @@ export class AddEventModal extends Modal {
         source: "manual",
         body: this.body.trim() || undefined,
       });
-      new Notice("Event added.");
+      new Notice("Activity added.");
       this.close();
       this.onDone();
     } catch (err) {
       this.saving = false;
       if (btn) btn.disabled = false;
-      new Notice(`Could not save event: ${err instanceof Error ? err.message : err}`);
+      new Notice(`Could not save activity: ${err instanceof Error ? err.message : err}`);
     }
   }
 }

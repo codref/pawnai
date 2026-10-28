@@ -28,6 +28,8 @@ session_id: null          # linked diarization session
 fingerprint: …            # upsert key (URL or title+start)
 prep_job_id: null
 prep_at: null
+focus: false                 # Day-tab star; planning flag
+focus_before: 15             # prep blast minutes before start when focus
 ---
 # Product weekly
 
@@ -68,13 +70,20 @@ Capture target `kind: event` on `POST /v1/captures` also upserts an event
 
 ## Day tab (Obsidian)
 
-Pawn pane → **Day**: prev / today / next, date picker, **Add event**, timeline
-blocks (event and/or session), nested open items, link suggestions, **Prep**,
-**Unlink**, **Delete** (confirm). **Sessions** stays for train / extract /
-reprocess.
+Pawn pane → **Day**: prev / today / next, date picker, **Add activity**.
+
+- **Hourly grid**: scrollable column with a row every 30 minutes. Timed
+  activities are placed by `start`/`end`. Click an empty slot to create an
+  activity with that start (+30m end). A red “now” line appears on today.
+- **Sessions & untimed** sit in a strip above the grid (no clock time).
+- **Title** on an activity opens the vault note.
+- **Focus** (star): writes `focus: true` and `focus_before: 15` on the note;
+  the grid draws a light prep band before the block. Toggle again to clear.
+- **Prep** / **Unlink** / **Delete** stay on the card. **Sessions** tab is
+  still used for train / extract / reprocess.
 
 Offline: vault scan of `Pawn/Events/` + `Pawn/Transcripts/` by date. Prep and
-link need the server.
+link need the server; Focus works offline via frontmatter.
 
 ## Chat / slash
 
