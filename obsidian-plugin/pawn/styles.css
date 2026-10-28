@@ -1513,9 +1513,17 @@ button.pawn-chip-pin:hover {
   font: inherit;
 }
 
+.pawn-day-block .pawn-job-meta:empty {
+  display: none;
+}
+
 .pawn-day-block .pawn-day-prep {
   white-space: pre-wrap;
   opacity: 0.9;
+}
+
+.pawn-day-block .pawn-session-tags {
+  margin-top: 0.35rem;
 }
 
 .pawn-day-items,

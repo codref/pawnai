@@ -111,9 +111,26 @@ def day_from_local(value: str) -> str:
     return ""
 
 
+_US_DT_RE = re.compile(
+    r"^(\d{1,2})/(\d{1,2})/(\d{4}),?\s+(\d{1,2}):(\d{2})\s*([AP]M)\s*$",
+    re.I,
+)
+
+
 def normalize_local_dt(value: str) -> str:
     """Normalize to ``YYYY-MM-DD`` or ``YYYY-MM-DDTHH:MM`` (no TZ)."""
-    raw = (value or "").strip().replace(" ", "T")
+    raw = (value or "").strip()
+    us = _US_DT_RE.match(raw)
+    if us:
+        month, day, year = int(us.group(1)), int(us.group(2)), int(us.group(3))
+        hour, minute = int(us.group(4)), int(us.group(5))
+        ap = us.group(6).upper()
+        if ap == "PM" and hour < 12:
+            hour += 12
+        if ap == "AM" and hour == 12:
+            hour = 0
+        return f"{year:04d}-{month:02d}-{day:02d}T{hour:02d}:{minute:02d}"
+    raw = raw.replace(" ", "T")
     match = _LOCAL_DT_RE.match(raw)
     if not match:
         return raw
@@ -146,6 +163,9 @@ def render_event_note(
     source_url: str = "",
     attendees: list[str] | None = None,
     topics: list[str] | None = None,
+    organizer: str = "",
+    location: str = "",
+    meeting_url: str = "",
     session_id: str = "",
     fingerprint: str = "",
     prep_job_id: str = "",
@@ -171,6 +191,12 @@ def render_event_note(
         meta["attendees"] = [a for a in attendees if a]
     if topics:
         meta["topics"] = [t for t in topics if t]
+    if organizer.strip():
+        meta["organizer"] = organizer.strip()
+    if location.strip():
+        meta["location"] = location.strip()
+    if meeting_url.strip():
+        meta["meeting_url"] = meeting_url.strip()
     if session_id.strip():
         meta["session_id"] = session_id.strip()
     if prep_job_id.strip():
@@ -203,6 +229,206 @@ def render_event_note(
     return dump_frontmatter(meta, "\n".join(parts))
 
 
+_SNIPPET_MARK_RE = re.compile(r"<!--\s*pawn-snippet:([A-Za-z0-9_-]+)\s*-->")
+_IMAGE_EMBED_RE = re.compile(r"!\[\[([^\]]+)\]\]")
+_STUB_TITLE_RE = re.compile(
+    r"(?ix)^(?:\(\d+\)\s*)?(?:calendar|mail|outlook|microsoft\s*teams)\b"
+    r"|calendar\s*[|–—-]\s*microsoft\s*teams"
+    r"|-\s*outlook\s*$"
+    r"|^\s*outlook\s*event\s*$"
+)
+
+
+def is_stub_event_title(title: str) -> bool:
+    """True for browser-tab / shell titles that are not a meeting subject."""
+    text = (title or "").strip()
+    if not text:
+        return True
+    if _STUB_TITLE_RE.search(text):
+        return True
+    # Bare "Calendar | Microsoft Teams" / unread-count prefixes.
+    if re.match(r"^\(\d+\)\s*calendar\b", text, re.I):
+        return True
+    return False
+
+
+_MEETING_URL_RE = re.compile(
+    r"https?://(?:teams\.microsoft\.com|teams\.live\.com|meet\.google\.com|"
+    r"[\w.-]*zoom\.us)/\S+",
+    re.I,
+)
+_DATE_RANGE_RE = re.compile(
+    r"(\d{1,2}/\d{1,2}/\d{4}),?\s+(\d{1,2}:\d{2}\s*[AP]M)\s*[–—-]\s*"
+    r"(\d{1,2}:\d{2}\s*[AP]M)",
+    re.I,
+)
+_PERSON_ROLE_RE = re.compile(
+    r"(?m)^(.{2,80}?)\s*\((Organizer|Required|Optional|Accepted|Tentative)\)\s*$",
+    re.I,
+)
+_JUNK_PERSON = {
+    "required",
+    "optional",
+    "organizer",
+    "attendees",
+    "participants",
+    "accepted",
+    "tentative",
+    "invite",
+    "calendar",
+}
+
+
+def _split_people(raw: str) -> list[str]:
+    parts = re.split(r"[,;|/]| and ", raw or "")
+    out: list[str] = []
+    for p in parts:
+        name = re.sub(r"\s*\([^)]*\)\s*$", "", p).strip(" \t.-")
+        if not name or len(name) < 2 or len(name) > 80:
+            continue
+        if name.lower() in _JUNK_PERSON:
+            continue
+        if name.lower().startswith(("http://", "https://", "mailto:")):
+            continue
+        out.append(name)
+    return out
+
+
+def merge_people(*lists: list[str] | None) -> list[str]:
+    """Dedupe people names case-insensitively, preserving first spelling."""
+    seen: set[str] = set()
+    out: list[str] = []
+    for lst in lists:
+        for raw in lst or []:
+            for name in _split_people(str(raw)):
+                key = name.lower()
+                if key in seen:
+                    continue
+                seen.add(key)
+                out.append(name)
+    return out[:40]
+
+
+def title_from_event_content(*chunks: str) -> str:
+    """Pick a meeting subject from captured text; empty when nothing usable."""
+    candidates: list[str] = []
+    skip_prefixes = (
+        "source:",
+        "attendees:",
+        "participants:",
+        "organizer:",
+        "location:",
+        "where:",
+        "meeting:",
+        "join:",
+        "start:",
+        "end:",
+        "when:",
+        "topics:",
+        "tags:",
+        "http://",
+        "https://",
+        "### snippet",
+        "microsoft teams meeting",
+        "meeting id:",
+        "passcode:",
+        "join the meeting",
+        "need help?",
+    )
+    for chunk in chunks:
+        for raw in (chunk or "").splitlines():
+            line = raw.strip().lstrip("#").strip()
+            if not line:
+                continue
+            lower = line.lower()
+            if lower.startswith("outlook event:"):
+                line = line.split(":", 1)[1].strip()
+                lower = line.lower()
+            if lower.startswith("subject:"):
+                line = line.split(":", 1)[1].strip()
+                lower = line.lower()
+            if any(lower.startswith(p) for p in skip_prefixes):
+                continue
+            if _PERSON_ROLE_RE.match(line):
+                continue
+            if is_stub_event_title(line):
+                continue
+            if 2 <= len(line) <= 120:
+                candidates.append(line)
+    if not candidates:
+        return ""
+    # Prefer shorter subject-like lines (meeting titles are rarely paragraphs).
+    candidates.sort(key=lambda s: (len(s) > 80, len(s)))
+    return idea_filename_title(candidates[0])[:80]
+
+
+def enrich_event_fields_from_content(*chunks: str) -> dict[str, Any]:
+    """Pull title/attendees/times/location/meeting URL from invite-like text."""
+    blob = "\n".join(c for c in chunks if c)
+    out: dict[str, Any] = {
+        "title": title_from_event_content(*chunks),
+        "attendees": [],
+        "topics": [],
+        "organizer": "",
+        "location": "",
+        "meeting_url": "",
+        "start": "",
+        "end": "",
+    }
+    if not blob.strip():
+        return out
+
+    people: list[str] = []
+    for m in _PERSON_ROLE_RE.finditer(blob):
+        name = m.group(1).strip()
+        role = m.group(2).lower()
+        if role == "organizer" and not out["organizer"]:
+            out["organizer"] = name
+        people.append(name)
+
+    for label in ("attendees", "participants", "required attendees", "invitees"):
+        m = re.search(rf"(?im)^{re.escape(label)}\s*:\s*(.+)$", blob)
+        if m:
+            people.extend(_split_people(m.group(1)))
+
+    org = re.search(r"(?im)^(?:organizer|from|hosted by)\s*:\s*(.+)$", blob)
+    if org and not out["organizer"]:
+        out["organizer"] = _split_people(org.group(1))[0] if _split_people(org.group(1)) else org.group(1).strip()
+        people.append(out["organizer"])
+
+    out["attendees"] = merge_people(people)
+
+    loc = re.search(r"(?im)^(?:location|where|room)\s*:\s*(.+)$", blob)
+    if loc:
+        out["location"] = loc.group(1).strip()[:160]
+
+    meet = _MEETING_URL_RE.search(blob)
+    if meet:
+        out["meeting_url"] = meet.group(0).rstrip(").,;")
+
+    for label, key in (("start", "start"), ("end", "end"), ("when", "start")):
+        m = re.search(rf"(?im)^{label}\s*:\s*(.+)$", blob)
+        if m and not out[key]:
+            out[key] = m.group(1).strip()[:40]
+
+    rng = _DATE_RANGE_RE.search(blob)
+    if rng:
+        if not out["start"]:
+            out["start"] = f"{rng.group(1)}, {rng.group(2)}"
+        if not out["end"]:
+            out["end"] = f"{rng.group(1)}, {rng.group(3)}"
+
+    for label in ("topics", "tags", "about"):
+        m = re.search(rf"(?im)^{label}\s*:\s*(.+)$", blob)
+        if m:
+            out["topics"] = [
+                t.strip() for t in re.split(r"[,;|]", m.group(1)) if t.strip()
+            ][:12]
+            break
+
+    return out
+
+
 def parse_event_note(text: str, *, path: str = "") -> dict[str, Any]:
     """Parse a ``pawn: event`` note. Raises ValueError when it is not one."""
     meta, body = parse_frontmatter(text or "")
@@ -216,6 +442,8 @@ def parse_event_note(text: str, *, path: str = "") -> dict[str, Any]:
     else:
         rest = body.strip()
     title = _meta_str(meta.get("title")) or idea_filename_title(rest.splitlines()[0] if rest else "event")
+    snippet_ids = _SNIPPET_MARK_RE.findall(rest)
+    image_embeds = _IMAGE_EMBED_RE.findall(rest)
     return {
         "id": _meta_str(meta.get("id")),
         "title": title,
@@ -225,6 +453,9 @@ def parse_event_note(text: str, *, path: str = "") -> dict[str, Any]:
         "source_url": _meta_str(meta.get("source_url")),
         "attendees": _meta_list(meta.get("attendees")),
         "topics": _meta_list(meta.get("topics")),
+        "organizer": _meta_str(meta.get("organizer")),
+        "location": _meta_str(meta.get("location")),
+        "meeting_url": _meta_str(meta.get("meeting_url")),
         "session_id": _meta_str(meta.get("session_id")),
         "fingerprint": _meta_str(meta.get("fingerprint")),
         "prep_job_id": _meta_str(meta.get("prep_job_id")),
@@ -233,6 +464,9 @@ def parse_event_note(text: str, *, path: str = "") -> dict[str, Any]:
         "body": rest,
         "prep": prep,
         "day": day_from_local(_meta_str(meta.get("start"))) or "",
+        "clip_count": len(snippet_ids),
+        "image_count": len(image_embeds),
+        "has_prep": bool(prep.strip() or _meta_str(meta.get("prep_at"))),
     }
 
 
@@ -324,6 +558,9 @@ def upsert_event(
     source_url: str = "",
     attendees: list[str] | None = None,
     topics: list[str] | None = None,
+    organizer: str = "",
+    location: str = "",
+    meeting_url: str = "",
     session_id: str = "",
     body: str = "",
     event_id: str = "",
@@ -357,11 +594,17 @@ def upsert_event(
             prep_job_id = _meta_str(prev_meta.get("prep_job_id"))
             prep_at = _meta_str(prev_meta.get("prep_at"))
             linked = session_id.strip() or _meta_str(prev_meta.get("session_id"))
+            prev_org = _meta_str(prev_meta.get("organizer"))
+            prev_loc = _meta_str(prev_meta.get("location"))
+            prev_meet = _meta_str(prev_meta.get("meeting_url"))
         except VaultNotFound:
             prep = existing.get("prep") or ""
             prep_job_id = existing.get("prep_job_id") or ""
             prep_at = existing.get("prep_at") or ""
             linked = session_id.strip() or existing.get("session_id") or ""
+            prev_org = existing.get("organizer") or ""
+            prev_loc = existing.get("location") or ""
+            prev_meet = existing.get("meeting_url") or ""
         text = render_event_note(
             event_id=eid,
             title=heading,
@@ -371,6 +614,9 @@ def upsert_event(
             source_url=source_url or existing.get("source_url") or "",
             attendees=attendees if attendees is not None else existing.get("attendees"),
             topics=topics if topics is not None else existing.get("topics"),
+            organizer=organizer.strip() or prev_org,
+            location=location.strip() or prev_loc,
+            meeting_url=meeting_url.strip() or prev_meet,
             session_id=linked,
             fingerprint=fp,
             prep_job_id=prep_job_id,
@@ -398,6 +644,9 @@ def upsert_event(
         source_url=source_url,
         attendees=attendees,
         topics=topics,
+        organizer=organizer,
+        location=location,
+        meeting_url=meeting_url,
         session_id=session_id,
         fingerprint=fp,
         body=body,
@@ -515,38 +764,91 @@ def upsert_event_from_capture(
     source_url = str(target.get("source_url") or "").strip()
     attendees = _meta_list(target.get("attendees"))
     topics = _meta_list(target.get("topics"))
+    organizer = str(target.get("organizer") or "").strip()
+    location = str(target.get("location") or "").strip()
+    meeting_url = str(target.get("meeting_url") or "").strip()
     path_hint = normalize_vault_key(str(target.get("path") or "").strip())
     event_id_hint = str(target.get("id") or target.get("event_id") or "").strip()
+    text_chunks: list[str] = []
 
     for raw in snippets:
         if not source_url:
             source_url = str(raw.get("source_url") or "").strip()
-        if not title and str(raw.get("kind") or "text") == "text":
-            line = str(raw.get("text") or "").strip().splitlines()
-            if line:
-                title = line[0][:80]
+        if str(raw.get("kind") or "text").strip().lower() == "text":
+            chunk = str(raw.get("text") or "").strip()
+            if chunk:
+                text_chunks.append(chunk)
 
+    existing_title = ""
+    existing_attendees: list[str] = []
+    existing_topics: list[str] = []
     if path_hint:
         # Sticky path from the extension — append to that note, keep its identity.
         try:
             existing = parse_event_note(store.read(path_hint), path=path_hint)
             event_id_hint = event_id_hint or str(existing.get("id") or "")
-            if not title:
-                title = str(existing.get("title") or "") or "event"
+            existing_title = str(existing.get("title") or "")
+            existing_attendees = list(existing.get("attendees") or [])
+            existing_topics = list(existing.get("topics") or [])
             if not start:
                 start = str(existing.get("start") or "")
             if not end:
                 end = str(existing.get("end") or "")
             if not source_url:
                 source_url = str(existing.get("source_url") or "")
-            if attendees is None or not attendees:
-                attendees = list(existing.get("attendees") or [])
+            if not organizer:
+                organizer = str(existing.get("organizer") or "")
+            if not location:
+                location = str(existing.get("location") or "")
+            if not meeting_url:
+                meeting_url = str(existing.get("meeting_url") or "")
+            # Body text can also yield a subject on later clips.
+            if existing.get("body"):
+                text_chunks.append(str(existing.get("body") or ""))
         except Exception:  # noqa: BLE001
             pass
+
+    enriched = enrich_event_fields_from_content(title, *text_chunks)
+    # Content wins over browser-tab stubs ("Calendar | Microsoft Teams", …).
+    from_content = str(enriched.get("title") or "")
+    if from_content:
+        title = from_content
+    elif is_stub_event_title(title) and existing_title and not is_stub_event_title(existing_title):
+        title = existing_title
+    elif is_stub_event_title(title) and existing_title:
+        title = existing_title
+    if not title or is_stub_event_title(title):
+        title = from_content or title or existing_title
     if not title:
         raise PlannerError("event capture needs a title", status_code=422)
 
-    source = "outlook" if "outlook" in source_url.lower() else "capture"
+    if not start and enriched.get("start"):
+        start = normalize_local_dt(str(enriched["start"])) or str(enriched["start"])
+    if not end and enriched.get("end"):
+        end = normalize_local_dt(str(enriched["end"])) or str(enriched["end"])
+    if not organizer and enriched.get("organizer"):
+        organizer = str(enriched["organizer"])
+    if not location and enriched.get("location"):
+        location = str(enriched["location"])
+    if not meeting_url and enriched.get("meeting_url"):
+        meeting_url = str(enriched["meeting_url"])
+    attendees = merge_people(attendees, existing_attendees, enriched.get("attendees"))
+    topic_seen: set[str] = set()
+    merged_topics: list[str] = []
+    for lst in (topics, existing_topics, list(enriched.get("topics") or [])):
+        for t in lst or []:
+            key = str(t).strip().lower()
+            if not key or key in topic_seen:
+                continue
+            topic_seen.add(key)
+            merged_topics.append(str(t).strip())
+    topics = merged_topics[:12]
+
+    source = (
+        "outlook"
+        if any(h in source_url.lower() for h in ("outlook.", "teams.microsoft", "teams.cloud"))
+        else "capture"
+    )
     # Metadata only — snippet body is appended below so images are not dropped
     # and re-saves do not wipe prior clips.
     event = upsert_event(
@@ -558,6 +860,9 @@ def upsert_event_from_capture(
         source_url=source_url,
         attendees=attendees,
         topics=topics,
+        organizer=organizer,
+        location=location,
+        meeting_url=meeting_url,
         body="",
         event_id=event_id_hint,
         store=store,

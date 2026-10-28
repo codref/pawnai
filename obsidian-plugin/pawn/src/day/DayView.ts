@@ -43,6 +43,25 @@ function fmtTime(local: string | undefined): string {
   return m.format("HH:mm");
 }
 
+/** Schedule line for an event card (time range, all-day, or unknown). */
+function fmtSchedule(event: PlannerEvent | null | undefined): string {
+  if (!event) return "";
+  const start = (event.start || "").trim();
+  const end = (event.end || "").trim();
+  if (!start) return "Time unknown";
+  const startM = window.moment(start, ["YYYY-MM-DDTHH:mm", "YYYY-MM-DD HH:mm", "YYYY-MM-DD"], true);
+  if (!startM.isValid()) return start;
+  if (start.length <= 10 && !end) return "All day";
+  const startClock = start.length > 10 ? startM.format("HH:mm") : "";
+  if (!end) return startClock || "All day";
+  const endM = window.moment(end, ["YYYY-MM-DDTHH:mm", "YYYY-MM-DD HH:mm", "YYYY-MM-DD"], true);
+  if (!endM.isValid()) return startClock || start;
+  const endClock = end.length > 10 ? endM.format("HH:mm") : "";
+  if (startClock && endClock) return `${startClock} – ${endClock}`;
+  if (startClock) return startClock;
+  return "All day";
+}
+
 async function openPath(plugin: PawnPlugin, path: string | null | undefined): Promise<void> {
   if (!path) {
     new Notice("No note path.", 3000);
@@ -191,12 +210,6 @@ function renderBlock(
     session?.title ||
     session?.session_id ||
     "Untitled";
-  const timeBits = [
-    fmtTime(event?.start),
-    event?.end ? `– ${fmtTime(event.end)}` : "",
-  ]
-    .filter(Boolean)
-    .join(" ");
 
   const card = parent.createDiv({
     cls: `pawn-job-card pawn-day-block is-${block.kind}`,
@@ -207,14 +220,38 @@ function renderBlock(
     cls: "pawn-session-badge",
     text: block.kind === "event" ? event?.source || "event" : "session",
   });
+  if (event?.has_prep || (event?.prep || "").trim()) {
+    head.createSpan({ cls: "pawn-session-badge", text: "prep" });
+  }
+  if (event?.session_id) {
+    head.createSpan({ cls: "pawn-session-badge", text: "linked" });
+  }
+  if ((event?.image_count || 0) > 0) {
+    head.createSpan({ cls: "pawn-session-badge", text: "shot" });
+  } else if ((event?.clip_count || 0) > 0) {
+    head.createSpan({
+      cls: "pawn-session-badge",
+      text: event!.clip_count === 1 ? "1 clip" : `${event!.clip_count} clips`,
+    });
+  }
 
   const meta = card.createDiv({ cls: "pawn-job-meta" });
   const bits = [
-    timeBits,
+    block.kind === "event" ? fmtSchedule(event) : fmtTime(session?.created_at || undefined),
     session?.session_id && session.session_id !== title ? session.session_id : "",
+    event?.location ? String(event.location).slice(0, 48) : "",
+    event?.organizer ? `org ${event.organizer}` : "",
     event?.attendees?.length ? event.attendees.slice(0, 4).join(", ") : "",
   ].filter(Boolean);
-  meta.setText(bits.join(" · "));
+  meta.setText(bits.join(" · ") || (block.kind === "event" ? "No schedule yet" : ""));
+
+  const decor = [...(event?.topics ?? [])].slice(0, 6);
+  if (decor.length) {
+    const tags = card.createDiv({ cls: "pawn-session-tags" });
+    for (const tag of decor) {
+      tags.createSpan({ cls: "pawn-session-tag", text: tag });
+    }
+  }
 
   if (event?.prep) {
     card.createDiv({
@@ -226,6 +263,19 @@ function renderBlock(
       cls: "pawn-session-summary",
       text: session.summary.replace(/\s+/g, " ").trim().slice(0, 160),
     });
+  } else if (event?.body) {
+    // Strip snippet chrome; show a short plain preview when there is no prep.
+    const preview = event.body
+      .replace(/<!--\s*\/?pawn-snippet:[^>]+-->/g, "")
+      .replace(/^###\s*Snippet[^\n]*$/gm, "")
+      .replace(/^Source:\s*\S+$/gm, "")
+      .replace(/!\[\[[^\]]+\]\]/g, "[image]")
+      .replace(/\s+/g, " ")
+      .trim()
+      .slice(0, 160);
+    if (preview) {
+      card.createDiv({ cls: "pawn-session-summary", text: preview });
+    }
   }
 
   const items = block.items ?? [];

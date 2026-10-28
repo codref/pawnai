@@ -382,6 +382,9 @@ class CaptureTarget(BaseModel):
     end: Optional[str] = None
     attendees: List[str] = Field(default_factory=list)
     topics: List[str] = Field(default_factory=list)
+    organizer: Optional[str] = None
+    location: Optional[str] = None
+    meeting_url: Optional[str] = None
 
 
 class CaptureSnippet(BaseModel):
@@ -431,6 +434,9 @@ class PlannerEventRequest(BaseModel):
     source_url: Optional[str] = None
     attendees: List[str] = Field(default_factory=list)
     topics: List[str] = Field(default_factory=list)
+    organizer: Optional[str] = None
+    location: Optional[str] = None
+    meeting_url: Optional[str] = None
     session_id: Optional[str] = None
     body: Optional[str] = None
     id: Optional[str] = None
@@ -1638,6 +1644,9 @@ async def planner_events_create(
             source_url=body.source_url or "",
             attendees=list(body.attendees or []),
             topics=list(body.topics or []),
+            organizer=body.organizer or "",
+            location=body.location or "",
+            meeting_url=body.meeting_url or "",
             session_id=body.session_id or "",
             body=body.body or "",
             event_id=body.id or "",

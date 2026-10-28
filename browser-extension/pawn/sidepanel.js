@@ -93,6 +93,10 @@ const state = {
   hint: "",
   eventStart: "",
   eventEnd: "",
+  eventAttendees: [],
+  eventOrganizer: "",
+  eventLocation: "",
+  eventMeetingUrl: "",
   vaultName: "",
   clipMode: "region",
   clipBusy: false,
@@ -628,6 +632,10 @@ async function loadSettings() {
   state.hint = t.hint || "";
   state.eventStart = t.eventStart || "";
   state.eventEnd = t.eventEnd || "";
+  state.eventAttendees = Array.isArray(t.eventAttendees) ? t.eventAttendees : [];
+  state.eventOrganizer = t.eventOrganizer || "";
+  state.eventLocation = t.eventLocation || "";
+  state.eventMeetingUrl = t.eventMeetingUrl || "";
   el.targetKind.value = state.targetKind;
   el.title.value = state.title;
   await loadPickerData();
@@ -646,6 +654,10 @@ async function persistTarget() {
       hint: state.hint,
       eventStart: state.eventStart,
       eventEnd: state.eventEnd,
+      eventAttendees: state.eventAttendees,
+      eventOrganizer: state.eventOrganizer,
+      eventLocation: state.eventLocation,
+      eventMeetingUrl: state.eventMeetingUrl,
     },
   });
 }
@@ -1572,6 +1584,10 @@ function buildTarget() {
       source_url: state.sourceUrl,
       start: state.eventStart || undefined,
       end: state.eventEnd || undefined,
+      attendees: state.eventAttendees?.length ? state.eventAttendees : undefined,
+      organizer: state.eventOrganizer || undefined,
+      location: state.eventLocation || undefined,
+      meeting_url: state.eventMeetingUrl || undefined,
       // Sticky path after first Save so later clips (screenshots) append.
       path: state.stickyPath || undefined,
     };
@@ -1702,6 +1718,10 @@ async function startNewPage() {
   state.title = "";
   state.eventStart = "";
   state.eventEnd = "";
+  state.eventAttendees = [];
+  state.eventOrganizer = "";
+  state.eventLocation = "";
+  state.eventMeetingUrl = "";
   el.targetKind.value = "new";
   el.title.value = "";
   state.tray = [];
@@ -1746,10 +1766,32 @@ function isStubEventTitle(t) {
   const s = String(t || "").trim();
   return (
     !s ||
-    /^(calendar|mail|outlook)\b/i.test(s) ||
+    /^(?:\(\d+\)\s*)?(calendar|mail|outlook|microsoft\s*teams)\b/i.test(s) ||
+    /calendar\s*[|–—-]\s*microsoft\s*teams/i.test(s) ||
     /^calendar\s*-/i.test(s) ||
     /-\s*outlook\s*$/i.test(s)
   );
+}
+
+/** Prefer a real meeting subject from tray text over tab-title stubs. */
+function titleFromTrayContent(fallback) {
+  const skip =
+    /^(source:|attendees:|participants:|organizer:|location:|where:|meeting:|join:|start:|end:|when:|topics:|tags:|https?:|### snippet|microsoft teams meeting)/i;
+  const candidates = [];
+  for (const s of state.tray) {
+    if (s.kind !== "text" || !s.text) continue;
+    for (const raw of String(s.text).split(/\n+/)) {
+      let line = raw.trim().replace(/^#+\s*/, "");
+      if (/^outlook event:/i.test(line)) line = line.split(":").slice(1).join(":").trim();
+      if (/^subject:/i.test(line)) line = line.split(":").slice(1).join(":").trim();
+      if (!line || skip.test(line) || isStubEventTitle(line)) continue;
+      if (/\((Organizer|Required|Optional|Accepted|Tentative)\)\s*$/i.test(line)) continue;
+      if (line.length >= 2 && line.length <= 120) candidates.push(line);
+    }
+  }
+  if (!candidates.length) return fallback;
+  candidates.sort((a, b) => a.length - b.length);
+  return candidates[0];
 }
 
 /**
@@ -1771,33 +1813,42 @@ async function addToPlanner() {
     const page = (scraped?.page_title || "").trim();
     title = !isStubEventTitle(page) ? page : title;
   }
-  if (isStubEventTitle(title)) {
-    title = (state.title || "").trim() || "Outlook event";
-  }
   const start = normalizeScrapedTime(scraped?.start);
   const end = normalizeScrapedTime(scraped?.end);
+  const attendees = Array.isArray(scraped?.attendees)
+    ? scraped.attendees.map((a) => String(a || "").trim()).filter(Boolean)
+    : [];
+  const organizer = String(scraped?.organizer || "").trim();
+  const location = String(scraped?.location || "").trim();
+  const meetingUrl = String(scraped?.meeting_url || "").trim();
   const bodyParts = [];
+  if (title && !isStubEventTitle(title)) bodyParts.push(`Outlook event: ${title}`);
+  if (start) bodyParts.push(`Start: ${start}`);
+  if (end) bodyParts.push(`End: ${end}`);
+  if (organizer) bodyParts.push(`Organizer: ${organizer}`);
+  if (attendees.length) bodyParts.push("Attendees: " + attendees.join(", "));
+  if (location) bodyParts.push(`Location: ${location}`);
+  if (meetingUrl) bodyParts.push(`Meeting: ${meetingUrl}`);
   if (scraped?.selection) bodyParts.push(scraped.selection);
-  if (Array.isArray(scraped?.attendees) && scraped.attendees.length) {
-    bodyParts.push("Attendees: " + scraped.attendees.join(", "));
-  }
-  if (!scraped?.ok && scraped?.error && !/Open an Outlook/i.test(scraped.error)) {
+  if (!scraped?.ok && scraped?.error && !/calendar event first/i.test(scraped.error || "")) {
     showNotice(scraped.error, true);
   }
 
   state.targetKind = "event";
   el.targetKind.value = "event";
-  state.title = title;
-  el.title.value = title;
   state.sourceUrl = url;
   if (start) state.eventStart = start;
   if (end) state.eventEnd = end;
-  state.stickyPath = "";
+  if (attendees.length) state.eventAttendees = attendees;
+  if (organizer) state.eventOrganizer = organizer;
+  if (location) state.eventLocation = location;
+  if (meetingUrl) state.eventMeetingUrl = meetingUrl;
+  // Keep sticky path when re-running on the same event so title can upgrade.
   state.sessionId = "";
 
   const text =
-    bodyParts.join("\n\n") ||
-    `Outlook event: ${title}${start ? `\nStart: ${start}` : ""}${end ? `\nEnd: ${end}` : ""}`;
+    bodyParts.join("\n") ||
+    `Calendar capture${start ? `\nStart: ${start}` : ""}${end ? `\nEnd: ${end}` : ""}`;
   const snip = {
     id: `evt${Date.now().toString(36)}`,
     kind: "text",
@@ -1806,14 +1857,24 @@ async function addToPlanner() {
     captured_at: new Date().toISOString(),
     saved: false,
   };
-  // Keep any unsaved clips already in the tray (e.g. a whole-view shot).
+  // Keep any unsaved clips already in the tray (e.g. a whole-view shot / selection).
   const kept = state.tray.filter((s) => !s.saved);
   state.tray = [snip, ...kept.filter((s) => s.id !== snip.id)];
+  title = titleFromTrayContent(title);
+  if (isStubEventTitle(title)) {
+    title = titleFromTrayContent("") || (state.title || "").trim() || "Calendar event";
+  }
+  state.title = title;
+  el.title.value = title;
   await persistTarget();
   await persistTray();
   renderTargetExtra();
   render();
   await saveTray();
+  // Server may further upgrade stub fields from snippet content.
+  if (state.title && el.title) {
+    el.title.value = state.title;
+  }
 }
 
 function showNotice(text, isError = false, isBusy = false) {

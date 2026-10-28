@@ -37,12 +37,18 @@ def build_prep_prompt(cfg: Any, *, path: str, event: dict[str, Any]) -> str:
         f"Start: {event.get('start') or ''}",
         f"End: {event.get('end') or ''}",
     ]
+    if event.get("organizer"):
+        lines.append(f"Organizer: {event['organizer']}")
     attendees = event.get("attendees") or []
     if attendees:
         lines.append("Attendees: " + ", ".join(str(a) for a in attendees))
     topics = event.get("topics") or []
     if topics:
         lines.append("Topics: " + ", ".join(str(t) for t in topics))
+    if event.get("location"):
+        lines.append(f"Location: {event['location']}")
+    if event.get("meeting_url"):
+        lines.append(f"Meeting URL: {event['meeting_url']}")
     if event.get("session_id"):
         lines.append(f"Linked session_id: {event['session_id']}")
     if event.get("source_url"):

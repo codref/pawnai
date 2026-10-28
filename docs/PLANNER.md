@@ -19,7 +19,10 @@ start: 2026-10-28T10:00   # local wall time (coworker.timezone)
 end: 2026-10-28T10:30
 source: outlook           # outlook | manual | capture
 source_url: https://outlook.office.com/…
-attendees: []
+attendees: [Ada, Bob]
+organizer: Ada
+location: Conf Room B
+meeting_url: https://teams.microsoft.com/…
 topics: []
 session_id: null          # linked diarization session
 fingerprint: …            # upsert key (URL or title+start)
@@ -31,6 +34,10 @@ prep_at: null
 ## Prep
 _(written by meeting_prep)_
 ```
+
+Capture / Outlook clip also enriches frontmatter from invite text when the
+browser tab title is a stub (`Calendar | Microsoft Teams`, …): subject,
+`(Organizer|Required|Optional)` people, times, location, and Teams/Zoom links.
 
 Config:
 
@@ -74,8 +81,10 @@ link need the server.
 
 1. Open the meeting in Outlook Web.
 2. Side panel → **Add to planner** (or target **Planner event…** and Save).
-3. Extension scrapes title / times / attendees when it can; otherwise uses the
-   tab title and any selection. You can edit start/end before Save.
+3. Extension scrapes title / times / attendees / organizer / location /
+   meeting link when it can; otherwise uses the tab title and any selection.
+   You can edit start/end before Save. The server re-parses clip text so a
+   later whole-view clip upgrades a stub title and people list.
 4. Later clips (selection / whole-view screenshot) on the same **Planner event**
    target append into that note under `Events/assets/` (snippet markers), not a
    new stub.

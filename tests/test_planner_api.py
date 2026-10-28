@@ -18,7 +18,9 @@ from pawn_core.vault import VaultStore, parse_frontmatter
 from pawn_server.core import api_server
 from pawn_server.core.planner import (
     build_day,
+    enrich_event_fields_from_content,
     event_fingerprint,
+    is_stub_event_title,
     parse_event_slash_arg,
     replace_prep_section,
     title_similarity,
@@ -265,6 +267,75 @@ def test_planner_day_and_capture_event(env: SimpleNamespace) -> None:
 def test_title_similarity() -> None:
     assert title_similarity("Product weekly sync", "Product weekly") > 0.3
     assert title_similarity("alpha", "omega") < 0.2
+
+
+def test_enrich_event_fields_from_content() -> None:
+    from pawn_server.core.planner import normalize_local_dt
+
+    assert is_stub_event_title("Calendar | Microsoft Teams")
+    assert is_stub_event_title("(2) Outlook")
+    assert normalize_local_dt("10/28/2026, 11:00 AM") == "2026-10-28T11:00"
+    text = """
+Outlook event: Review Insights Connector
+Start: 2026-10-28T11:00
+End: 2026-10-28T11:30
+Mehrdad Kiani (Organizer)
+Davide Dal Farra (Required)
+Ada Lovelace (Optional)
+Location: Building 3 / Room A
+Meeting: https://teams.microsoft.com/l/meetup-join/19%3ameeting_abc
+Topics: roadmap, connectors
+""".strip()
+    got = enrich_event_fields_from_content("Calendar | Microsoft Teams", text)
+    assert got["title"] == "Review Insights Connector"
+    assert got["organizer"] == "Mehrdad Kiani"
+    assert "Davide Dal Farra" in got["attendees"]
+    assert "Ada Lovelace" in got["attendees"]
+    assert got["location"].startswith("Building 3")
+    assert "teams.microsoft.com" in got["meeting_url"]
+    assert "roadmap" in got["topics"]
+
+
+def test_event_capture_enriches_stub_title_and_people(env: SimpleNamespace) -> None:
+    with TestClient(api_server.create_app(env.cfg)) as client:
+        cap = client.post(
+            "/v1/captures",
+            headers=AUTH,
+            json={
+                "target": {
+                    "kind": "event",
+                    "title": "Calendar | Microsoft Teams",
+                    "start": "2026-10-28T11:00",
+                    "source_url": "https://teams.microsoft.com/calendar/0",
+                },
+                "snippets": [
+                    {
+                        "id": "snip-enrich-1",
+                        "kind": "text",
+                        "text": (
+                            "Review Insights Connector\n"
+                            "Mehrdad Kiani (Organizer)\n"
+                            "Davide Dal Farra (Required)\n"
+                            "10/28/2026, 11:00 AM – 11:30 AM\n"
+                            "Location: Conf Room B\n"
+                            "https://teams.microsoft.com/l/meetup-join/xyz\n"
+                        ),
+                    }
+                ],
+            },
+        )
+        assert cap.status_code == 200, cap.text
+        body = cap.json()
+        assert body["title"] == "Review Insights Connector"
+        note = env.store.read(body["path"])
+        meta, _ = parse_frontmatter(note)
+        assert meta.get("title") == "Review Insights Connector"
+        attendees = meta.get("attendees") or []
+        assert "Mehrdad Kiani" in attendees
+        assert "Davide Dal Farra" in attendees
+        assert meta.get("organizer") == "Mehrdad Kiani"
+        assert "Conf Room B" in str(meta.get("location") or "")
+        assert "teams.microsoft.com" in str(meta.get("meeting_url") or "")
 
 
 def test_prep_enqueue(env: SimpleNamespace) -> None:

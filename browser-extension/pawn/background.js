@@ -296,13 +296,13 @@ async function pushPending(payload) {
   await chrome.storage.local.set({ pendingNotice: payload });
 }
 
-const OUTLOOK_HOST_RE =
-  /(^|\.)outlook\.(office|office365|live)\.com$|(^|\.)outlook\.cloud\.microsoft$/i;
+const CALENDAR_HOST_RE =
+  /(^|\.)outlook\.(office|office365|live)\.com$|(^|\.)outlook\.cloud\.microsoft$|(^|\.)teams\.(microsoft|live)\.com$|(^|\.)teams\.cloud\.microsoft$/i;
 
-function isOutlookUrl(url) {
+function isCalendarUrl(url) {
   try {
     const host = new URL(url || "").hostname;
-    return OUTLOOK_HOST_RE.test(host);
+    return CALENDAR_HOST_RE.test(host);
   } catch (_) {
     return false;
   }
@@ -316,9 +316,11 @@ async function scrapeOutlookEvent(tab) {
     func: () => {
       const norm = (s) => String(s || "").replace(/\s+/g, " ").trim();
       const isStubTitle = (t) =>
-        /^(calendar|mail|outlook)\b/i.test(t) ||
+        /^(?:\(\d+\)\s*)?(calendar|mail|outlook|microsoft\s*teams)\b/i.test(t) ||
+        /calendar\s*[|–—-]\s*microsoft\s*teams/i.test(t) ||
         /-\s*outlook\s*$/i.test(t) ||
         /^calendar\s*-/i.test(t);
+      const junkPerson = /^(required|optional|organizer|attendees|participants|accepted|tentative|invite)$/i;
 
       const candidates = [];
       const push = (t) => {
@@ -327,11 +329,15 @@ async function scrapeOutlookEvent(tab) {
       };
       for (const sel of [
         'input[aria-label*="Add a title" i]',
+        'input[aria-label*="Event title" i]',
         'input[aria-label*="title" i]',
         'textarea[aria-label*="title" i]',
         '[aria-label="Event"] [role="heading"]',
         '[data-app-section="CalendarItemComposition"] h1',
         '[data-app-section="CalendarItemComposition"] [role="heading"]',
+        '[data-tid="meeting-title"]',
+        '[data-tid="event-title"]',
+        '[data-tid="calendar-event-title"]',
         '[role="heading"][aria-level="1"]',
         '[role="heading"][aria-level="2"]',
         "h1",
@@ -341,17 +347,23 @@ async function scrapeOutlookEvent(tab) {
           push(n.value || n.getAttribute("aria-label") || n.textContent);
         });
       }
-      // Invite subject often sits above "Microsoft Teams meeting".
-      const bodyText = norm(document.body?.innerText || "").slice(0, 8000);
+      // Prefer raw innerText (keeps newlines for person-role lines).
+      const bodyRaw = String(document.body?.innerText || "").slice(0, 16000);
+      const bodyText = norm(bodyRaw);
       const teamsIdx = bodyText.search(/Microsoft Teams meeting/i);
       if (teamsIdx > 0) {
-        const before = bodyText.slice(Math.max(0, teamsIdx - 180), teamsIdx);
+        const before = bodyText.slice(Math.max(0, teamsIdx - 220), teamsIdx);
         const lines = before
           .split(/\n| {2,}/)
           .map(norm)
           .filter(Boolean);
         if (lines.length) push(lines[lines.length - 1]);
       }
+      document
+        .querySelectorAll('[role="dialog"] [role="heading"], [role="dialog"] h1, [role="dialog"] h2')
+        .forEach((n) => push(n.textContent));
+      const subjectLine = bodyRaw.match(/(?:^|\n)\s*Subject\s*:\s*([^\n]+)/i);
+      if (subjectLine) push(subjectLine[1]);
 
       let title = "";
       for (const c of candidates) {
@@ -367,10 +379,9 @@ async function scrapeOutlookEvent(tab) {
       }
       title = title.replace(/\s+[–—|-]\s+Mail.*$/i, "").trim();
 
-      // Prefer the visible range: "10/28/2026, 11:00 AM – 11:30 AM"
       let start = "";
       let end = "";
-      const range = bodyText.match(
+      const range = bodyRaw.match(
         /(\d{1,2}\/\d{1,2}\/\d{4}),?\s+(\d{1,2}:\d{2}\s*[AP]M)\s*[–—-]\s*(\d{1,2}:\d{2}\s*[AP]M)/i,
       );
       if (range) {
@@ -394,22 +405,75 @@ async function scrapeOutlookEvent(tab) {
         end = timeBits[1] || "";
       }
 
-      const attendees = Array.from(
-        document.querySelectorAll(
-          '[aria-label*="Attendee" i], [aria-label*="Participant" i], [data-testid*="attendee" i]',
-        ),
-      )
-        .map((n) => norm(n.textContent))
-        .filter((s) => s && s.length < 80)
-        .slice(0, 12);
+      const people = [];
+      let organizer = "";
+      const pushPerson = (raw, role) => {
+        const name = norm(String(raw || "").replace(/\s*\([^)]*\)\s*$/, ""));
+        if (!name || name.length > 80 || junkPerson.test(name)) return;
+        if (/^https?:/i.test(name)) return;
+        if (role === "organizer" && !organizer) organizer = name;
+        if (!people.some((p) => p.toLowerCase() === name.toLowerCase())) {
+          people.push(name);
+        }
+      };
+      for (const m of bodyRaw.matchAll(
+        /^(.{2,80}?)\s*\((Organizer|Required|Optional|Accepted|Tentative)\)\s*$/gim,
+      )) {
+        pushPerson(m[1], m[2].toLowerCase());
+      }
+      const attLine = bodyRaw.match(
+        /(?:^|\n)\s*(?:Attendees|Participants|Required attendees|Invitees)\s*:\s*([^\n]+)/i,
+      );
+      if (attLine) {
+        attLine[1].split(/[,;|/]/).forEach((p) => pushPerson(p));
+      }
+      const orgLine = bodyRaw.match(
+        /(?:^|\n)\s*(?:Organizer|From|Hosted by)\s*:\s*([^\n]+)/i,
+      );
+      if (orgLine) pushPerson(orgLine[1], "organizer");
+      document
+        .querySelectorAll(
+          '[aria-label*="Attendee" i], [aria-label*="Participant" i], [data-testid*="attendee" i], [data-tid*="attendee" i], [aria-label*="Invitee" i]',
+        )
+        .forEach((n) => pushPerson(n.textContent || n.getAttribute("aria-label")));
+
+      let location = "";
+      const locLine = bodyRaw.match(
+        /(?:^|\n)\s*(?:Location|Where|Room)\s*:\s*([^\n]+)/i,
+      );
+      if (locLine) location = norm(locLine[1]).slice(0, 160);
+      else {
+        const locNode = document.querySelector(
+          'input[aria-label*="Location" i], [data-tid*="location" i], [aria-label*="Location" i]',
+        );
+        if (locNode) {
+          location = norm(locNode.value || locNode.textContent).slice(0, 160);
+        }
+      }
+
+      let meeting_url = "";
+      const meet = bodyRaw.match(
+        /https?:\/\/(?:teams\.microsoft\.com|teams\.live\.com|meet\.google\.com|[\w.-]*zoom\.us)\/\S+/i,
+      );
+      if (meet) meeting_url = meet[0].replace(/[).,;]+$/, "");
+      else {
+        const a = document.querySelector(
+          'a[href*="teams.microsoft.com"], a[href*="teams.live.com"], a[href*="meet.google.com"], a[href*="zoom.us"]',
+        );
+        if (a?.href) meeting_url = a.href;
+      }
+
       const selection = norm(window.getSelection?.()?.toString() || "");
       return {
         title,
         start,
         end,
-        attendees,
+        attendees: people.slice(0, 40),
+        organizer,
+        location,
+        meeting_url,
         selection,
-        url: location.href,
+        url: window.location.href,
         page_title: document.title || "",
       };
     },
@@ -426,10 +490,10 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
         sendResponse({ ok: false, error: "No active tab" });
         return;
       }
-      if (!isOutlookUrl(tab.url || "")) {
+      if (!isCalendarUrl(tab.url || "")) {
         sendResponse({
           ok: false,
-          error: "Open an Outlook calendar event first",
+          error: "Open an Outlook or Teams calendar event first",
           url: tab.url || "",
           title: tab.title || "",
         });

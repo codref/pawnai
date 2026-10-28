@@ -230,6 +230,9 @@ export interface PlannerEvent {
   source_url?: string;
   attendees?: string[];
   topics?: string[];
+  organizer?: string;
+  location?: string;
+  meeting_url?: string;
   session_id?: string;
   fingerprint?: string;
   prep_job_id?: string;
@@ -238,6 +241,9 @@ export interface PlannerEvent {
   body?: string;
   prep?: string;
   day?: string;
+  clip_count?: number;
+  image_count?: number;
+  has_prep?: boolean;
 }
 
 export interface PlannerSuggestion {
