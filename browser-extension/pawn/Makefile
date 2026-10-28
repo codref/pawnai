@@ -53,6 +53,9 @@ check-dist:
 	@test -f icons/icon-48.png || { echo "missing icons/icon-48.png — run make icons"; exit 1; }
 	@test -f icons/icon-128.png || { echo "missing icons/icon-128.png — run make icons"; exit 1; }
 	@test -f content/region.js || { echo "missing content/region.js"; exit 1; }
+	@test -f content/overlays.js || { echo "missing content/overlays.js"; exit 1; }
+	@test -f content/overlay.css || { echo "missing content/overlay.css"; exit 1; }
+	@test -f content/adapters/teams.js || { echo "missing content/adapters/teams.js"; exit 1; }
 	@python3 -c "import json; json.load(open('manifest.json')); json.load(open('manifest.firefox.json')); print('manifests ok')"
 
 build: bump-version check-dist

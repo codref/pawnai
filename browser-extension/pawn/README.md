@@ -129,7 +129,8 @@ Bearer auth against pawn-server:
 | GET | `/v1/meta` | Vault name for Obsidian links |
 | GET | `/v1/sessions` | Session picker |
 | GET | `/v1/captures` | Recent capture notes |
-| POST | `/v1/captures` | Append ordered snippets |
+| GET | `/v1/captures/anchors` | Overlay reverse lookup by `page_key` |
+| POST | `/v1/captures` | Append ordered snippets (optional `anchor`) |
 | DELETE | `/v1/captures/snippets/{id}?path=` | Remove one block |
 | GET | `/v1/pawn/models` | Chat model catalog |
 | POST | `/v1/pawn/chat` | Streaming chat (SSE) |

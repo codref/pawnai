@@ -16,6 +16,24 @@
   "optional_host_permissions": [
     "<all_urls>"
   ],
+  "content_scripts": [
+    {
+      "matches": [
+        "*://teams.microsoft.com/*",
+        "*://*.teams.microsoft.com/*",
+        "*://teams.live.com/*",
+        "*://teams.cloud.microsoft/*"
+      ],
+      "js": [
+        "content/adapters/teams.js",
+        "content/overlays.js"
+      ],
+      "css": [
+        "content/overlay.css"
+      ],
+      "run_at": "document_idle"
+    }
+  ],
   "background": {
     "scripts": [
       "background.js"

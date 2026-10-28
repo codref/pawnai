@@ -186,19 +186,63 @@ async function runSnip(mode) {
   }
 }
 
+const TEAMS_HOST_RE =
+  /(^|\.)teams\.(microsoft|live)\.com$|(^|\.)teams\.cloud\.microsoft$/i;
+
+function isTeamsUrl(url) {
+  try {
+    return TEAMS_HOST_RE.test(new URL(url || "").hostname);
+  } catch (_) {
+    return false;
+  }
+}
+
+async function teamsTabMessage(tab, message) {
+  if (!tab?.id || !isTeamsUrl(tab.url || "")) return null;
+  try {
+    return await chrome.tabs.sendMessage(tab.id, message);
+  } catch (_) {
+    // Content script may not be ready yet — inject once and retry.
+    try {
+      await chrome.scripting.executeScript({
+        target: { tabId: tab.id },
+        files: ["content/adapters/teams.js"],
+      });
+      return await chrome.tabs.sendMessage(tab.id, message);
+    } catch (err) {
+      return { ok: false, error: String(err?.message || err) };
+    }
+  }
+}
+
 async function captureSelection(tab) {
   await ensureTabAccess(tab);
-  const [{ result }] = await chrome.scripting.executeScript({
-    target: { tabId: tab.id },
-    func: () => {
-      const text = String(window.getSelection?.()?.toString() || "").trim();
-      return {
-        text,
-        url: location.href,
-        title: document.title || "",
+  let result = null;
+  if (isTeamsUrl(tab.url || "")) {
+    const teams = await teamsTabMessage(tab, { type: "pawn-teams-capture-selection" });
+    if (teams?.ok && teams.text) {
+      result = {
+        text: teams.text,
+        url: teams.url || tab.url || "",
+        title: teams.title || tab.title || "",
+        anchor: teams.anchor,
       };
-    },
-  });
+    }
+  }
+  if (!result) {
+    const [{ result: plain }] = await chrome.scripting.executeScript({
+      target: { tabId: tab.id },
+      func: () => {
+        const text = String(window.getSelection?.()?.toString() || "").trim();
+        return {
+          text,
+          url: location.href,
+          title: document.title || "",
+        };
+      },
+    });
+    result = plain;
+  }
   if (!result?.text) {
     await pushPending({ error: "No text selected" });
     return;
@@ -208,6 +252,7 @@ async function captureSelection(tab) {
     text: result.text,
     source_url: result.url || tab.url || "",
     page_title: result.title || tab.title || "",
+    anchor: result.anchor || undefined,
   });
 }
 
@@ -230,12 +275,30 @@ async function captureRegion(tab) {
     if (!response?.ok) {
       throw new Error(response?.error || "Region capture cancelled");
     }
+    let anchor;
+    let sourceUrl = tab.url || "";
+    if (
+      isTeamsUrl(tab.url || "") &&
+      Number.isFinite(response.centerX) &&
+      Number.isFinite(response.centerY)
+    ) {
+      const hit = await teamsTabMessage(tab, {
+        type: "pawn-teams-capture-point",
+        clientX: response.centerX,
+        clientY: response.centerY,
+      });
+      if (hit?.ok && hit.anchor) {
+        anchor = hit.anchor;
+        if (hit.url) sourceUrl = hit.url;
+      }
+    }
     await enqueueSnippet({
       kind: "image",
       data_base64: response.data_base64,
       media_type: "image/png",
-      source_url: tab.url || "",
+      source_url: sourceUrl,
       page_title: tab.title || "",
+      anchor,
     });
   } finally {
     clipBusy = false;
@@ -283,6 +346,9 @@ async function enqueueSnippet(partial) {
     captured_at: new Date().toISOString(),
     saved: false,
   };
+  if (partial.anchor && typeof partial.anchor === "object") {
+    snippet.anchor = partial.anchor;
+  }
   const { pendingSnippets = [] } = await chrome.storage.local.get("pendingSnippets");
   pendingSnippets.push(snippet);
   await chrome.storage.local.set({
@@ -557,35 +623,223 @@ async function scrapeOutlookEvent(tab) {
   return result || null;
 }
 
-chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
-  if (msg?.type !== "pawn-scrape-outlook") return;
-  void (async () => {
-    try {
-      const tab = await activeContentTab();
-      if (!tab) {
-        sendResponse({ ok: false, error: "No active tab" });
-        return;
+async function loadSettings() {
+  const { settings = {} } = await chrome.storage.local.get("settings");
+  return {
+    serverUrl: String(settings.serverUrl || "http://127.0.0.1:8000").replace(/\/+$/, ""),
+    apiToken: String(settings.apiToken || "").trim(),
+  };
+}
+
+async function apiFetch(method, path, body) {
+  const { serverUrl, apiToken } = await loadSettings();
+  if (!serverUrl) throw new Error("Configure server URL in Pawn Capture settings");
+  const headers = { Accept: "application/json" };
+  if (apiToken) headers.Authorization = `Bearer ${apiToken}`;
+  if (body !== undefined) headers["Content-Type"] = "application/json";
+  const resp = await fetch(`${serverUrl}${path}`, {
+    method,
+    headers,
+    body: body === undefined ? undefined : JSON.stringify(body),
+  });
+  if (!resp.ok) {
+    const text = await resp.text().catch(() => "");
+    throw new Error(text || `HTTP ${resp.status}`);
+  }
+  const ct = resp.headers.get("content-type") || "";
+  if (ct.includes("application/json")) return resp.json();
+  return {};
+}
+
+async function getVaultName() {
+  const cached = await chrome.storage.local.get(["vaultName", "metaFetchedAt"]);
+  const age = Date.now() - Number(cached.metaFetchedAt || 0);
+  if (cached.vaultName && age < 10 * 60 * 1000) {
+    return String(cached.vaultName || "").trim();
+  }
+  try {
+    const meta = await apiFetch("GET", "/v1/meta");
+    const vaultName = String(meta?.obsidian_vault_name || "").trim();
+    await chrome.storage.local.set({ vaultName, metaFetchedAt: Date.now() });
+    return vaultName;
+  } catch (_) {
+    return String(cached.vaultName || "").trim();
+  }
+}
+
+function obsidianOpenUrl(vaultName, path) {
+  const vault = encodeURIComponent(String(vaultName || "").trim());
+  const normalized = String(path || "")
+    .replace(/^\/+/, "")
+    .replace(/\\/g, "/")
+    .replace(/\/+/g, "/");
+  const file = encodeURIComponent(normalized);
+  if (!vault || !file) return "";
+  return `obsidian://open?vault=${vault}&file=${file}`;
+}
+
+async function cacheAnchorsForPage(pageKey, rows) {
+  const key = String(pageKey || "").trim();
+  if (!key) return;
+  const { pawnAnchorsByPage = {} } = await chrome.storage.local.get("pawnAnchorsByPage");
+  pawnAnchorsByPage[key] = {
+    fetchedAt: Date.now(),
+    data: Array.isArray(rows) ? rows : [],
+  };
+  await chrome.storage.local.set({ pawnAnchorsByPage });
+}
+
+async function fetchAnchors(pageKey, site) {
+  const pk = String(pageKey || "").trim();
+  if (!pk) return { ok: false, error: "page_key required", data: [] };
+  const params = new URLSearchParams({ page_key: pk });
+  if (site) params.set("site", site);
+  const result = await apiFetch("GET", `/v1/captures/anchors?${params.toString()}`);
+  const data = Array.isArray(result?.data) ? result.data : [];
+  await cacheAnchorsForPage(pk, data);
+  return { ok: true, data };
+}
+
+async function notifyTeamsTabs(payload) {
+  const tabs = await chrome.tabs.query({
+    url: [
+      "*://teams.microsoft.com/*",
+      "*://*.teams.microsoft.com/*",
+      "*://teams.live.com/*",
+      "*://teams.cloud.microsoft/*",
+    ],
+  });
+  await Promise.all(
+    tabs.map(async (tab) => {
+      if (tab.id == null) return;
+      try {
+        await chrome.tabs.sendMessage(tab.id, payload);
+      } catch (_) {
+        /* tab without content script */
       }
-      if (!isCalendarUrl(tab.url || "")) {
+    }),
+  );
+}
+
+/** Side panel calls after Save so badges appear without waiting for next poll. */
+async function mergeSavedAnchors(anchors) {
+  const rows = Array.isArray(anchors) ? anchors : [];
+  if (!rows.length) return;
+  const { pawnAnchorsByPage = {} } = await chrome.storage.local.get("pawnAnchorsByPage");
+  const byPage = new Map();
+  for (const row of rows) {
+    const pk = String(row.page_key || "").trim();
+    if (!pk) continue;
+    if (!byPage.has(pk)) byPage.set(pk, []);
+    byPage.get(pk).push(row);
+  }
+  for (const [pk, incoming] of byPage) {
+    const prev = Array.isArray(pawnAnchorsByPage[pk]?.data)
+      ? pawnAnchorsByPage[pk].data
+      : [];
+    const index = new Map();
+    const merged = [];
+    for (const row of [...prev, ...incoming]) {
+      const sid = String(row.snippet_id || "").trim();
+      const key = sid || `${row.message_id || ""}:${row.path || ""}`;
+      if (index.has(key)) {
+        merged[index.get(key)] = { ...merged[index.get(key)], ...row };
+      } else {
+        index.set(key, merged.length);
+        merged.push(row);
+      }
+    }
+    pawnAnchorsByPage[pk] = { fetchedAt: Date.now(), data: merged };
+  }
+  await chrome.storage.local.set({ pawnAnchorsByPage });
+  await notifyTeamsTabs({ type: "pawn-overlays-refresh" });
+}
+
+chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
+  if (msg?.type === "pawn-scrape-outlook") {
+    void (async () => {
+      try {
+        const tab = await activeContentTab();
+        if (!tab) {
+          sendResponse({ ok: false, error: "No active tab" });
+          return;
+        }
+        if (!isCalendarUrl(tab.url || "")) {
+          sendResponse({
+            ok: false,
+            error: "Open an Outlook or Teams calendar event first",
+            url: tab.url || "",
+            title: tab.title || "",
+          });
+          return;
+        }
+        const scraped = await scrapeOutlookEvent(tab);
+        sendResponse({
+          ok: true,
+          outlook: true,
+          ...(scraped || {}),
+          url: scraped?.url || tab.url || "",
+          page_title: scraped?.page_title || tab.title || "",
+        });
+      } catch (err) {
+        sendResponse({ ok: false, error: String(err?.message || err) });
+      }
+    })();
+    return true;
+  }
+
+  if (msg?.type === "pawn-anchors-get") {
+    void (async () => {
+      const pk = String(msg.page_key || "").trim();
+      const { pawnAnchorsByPage = {} } = await chrome.storage.local.get("pawnAnchorsByPage");
+      const cached = pawnAnchorsByPage[pk]?.data;
+      try {
+        const result = await fetchAnchors(pk, msg.site || "teams");
+        sendResponse({ ...result, cached });
+      } catch (err) {
         sendResponse({
           ok: false,
-          error: "Open an Outlook or Teams calendar event first",
-          url: tab.url || "",
-          title: tab.title || "",
+          error: String(err?.message || err),
+          cached: Array.isArray(cached) ? cached : [],
+          data: Array.isArray(cached) ? cached : [],
         });
-        return;
       }
-      const scraped = await scrapeOutlookEvent(tab);
-      sendResponse({
-        ok: true,
-        outlook: true,
-        ...(scraped || {}),
-        url: scraped?.url || tab.url || "",
-        page_title: scraped?.page_title || tab.title || "",
-      });
-    } catch (err) {
-      sendResponse({ ok: false, error: String(err?.message || err) });
-    }
-  })();
-  return true;
+    })();
+    return true;
+  }
+
+  if (msg?.type === "pawn-anchors-refresh") {
+    void (async () => {
+      try {
+        await mergeSavedAnchors(msg.anchors || []);
+        sendResponse({ ok: true });
+      } catch (err) {
+        sendResponse({ ok: false, error: String(err?.message || err) });
+      }
+    })();
+    return true;
+  }
+
+  if (msg?.type === "pawn-overlay-open") {
+    void (async () => {
+      try {
+        const vault = await getVaultName();
+        if (!vault) {
+          sendResponse({
+            ok: false,
+            error: "Set vault.obsidian_vault_name on the server for obsidian:// links",
+          });
+          return;
+        }
+        const url = obsidianOpenUrl(vault, msg.path || "");
+        await chrome.tabs.create({ url, active: true });
+        sendResponse({ ok: true, url });
+      } catch (err) {
+        sendResponse({ ok: false, error: String(err?.message || err) });
+      }
+    })();
+    return true;
+  }
+
+  return false;
 });

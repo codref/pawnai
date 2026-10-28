@@ -1676,15 +1676,19 @@ async function saveTray() {
   try {
     const payload = {
       target: buildTarget(),
-      snippets: unsaved.map((s) => ({
-        id: s.id,
-        kind: s.kind,
-        text: s.text || "",
-        data_base64: s.data_base64 || undefined,
-        media_type: s.media_type || undefined,
-        source_url: s.source_url || state.sourceUrl,
-        captured_at: s.captured_at,
-      })),
+      snippets: unsaved.map((s) => {
+        const row = {
+          id: s.id,
+          kind: s.kind,
+          text: s.text || "",
+          data_base64: s.data_base64 || undefined,
+          media_type: s.media_type || undefined,
+          source_url: s.source_url || state.sourceUrl,
+          captured_at: s.captured_at,
+        };
+        if (s.anchor && typeof s.anchor === "object") row.anchor = s.anchor;
+        return row;
+      }),
     };
     const result = await api("POST", "/v1/captures", payload);
     if (state.targetKind !== "research") {
@@ -1697,6 +1701,16 @@ async function saveTray() {
     }
     await persistTarget();
     await persistTray();
+    if (Array.isArray(result.anchors) && result.anchors.length) {
+      try {
+        await chrome.runtime.sendMessage({
+          type: "pawn-anchors-refresh",
+          anchors: result.anchors,
+        });
+      } catch (_) {
+        /* background may be asleep — painter will refetch later */
+      }
+    }
     if (result.mode === "research") {
       const n = written.size;
       const jobs = (result.jobs || []).length;

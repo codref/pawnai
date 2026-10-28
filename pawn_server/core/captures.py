@@ -48,6 +48,147 @@ _CAPTURES_SECTION_RE = re.compile(
 TARGET_KINDS = frozenset({"new", "capture", "note", "session", "research", "event"})
 SNIPPET_KINDS = frozenset({"text", "image"})
 CAPTURE_STATUSES = frozenset({"inbox", "proposed", "filed", "ignored"})
+# Overlay registration only for capture-family notes (not session/note/event).
+OVERLAY_TARGET_KINDS = frozenset({"new", "capture", "research"})
+_ANCHOR_SCAN_LIMIT = 200
+
+
+def normalize_anchor(raw: Any, *, snippet_id: str) -> dict[str, Any] | None:
+    """Normalize a client anchor dict; None when missing or invalid."""
+    if not isinstance(raw, dict):
+        return None
+    site = str(raw.get("site") or "").strip()
+    if not site:
+        return None
+    sid = (snippet_id or "").strip()
+    if not sid or not _SNIPPET_ID_RE.match(sid):
+        return None
+    page_key = str(raw.get("page_key") or "").strip()
+    message_id = str(raw.get("message_id") or "").strip()
+    deep_link = str(raw.get("deep_link") or "").strip()
+    fallback_raw = raw.get("fallback")
+    fallback: dict[str, str] = {}
+    if isinstance(fallback_raw, dict):
+        for key in ("author", "text_quote", "approx_time"):
+            val = str(fallback_raw.get(key) or "").strip()
+            if val:
+                fallback[key] = val
+    out: dict[str, Any] = {"snippet_id": sid, "site": site}
+    if page_key:
+        out["page_key"] = page_key
+    if message_id:
+        out["message_id"] = message_id
+    if deep_link:
+        out["deep_link"] = deep_link
+    if fallback:
+        out["fallback"] = fallback
+    # Need at least a page/message id or a soft-match fallback.
+    if not page_key and not message_id and not fallback:
+        return None
+    return out
+
+
+def _anchor_dedupe_key(anchor: dict[str, Any]) -> str:
+    sid = str(anchor.get("snippet_id") or "").strip()
+    if sid:
+        return f"snip:{sid}"
+    mid = str(anchor.get("message_id") or "").strip()
+    pk = str(anchor.get("page_key") or "").strip()
+    if mid and pk:
+        return f"msg:{pk}:{mid}"
+    if mid:
+        return f"msg:{mid}"
+    return f"row:{id(anchor)}"
+
+
+def merge_anchors_list(
+    existing: list[Any] | None,
+    incoming: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Merge anchor rows; prefer newer fields; dedupe by snippet_id then message_id."""
+    merged: list[dict[str, Any]] = []
+    index: dict[str, int] = {}
+    for row in list(existing or []) + list(incoming or []):
+        if not isinstance(row, dict):
+            continue
+        sid = str(row.get("snippet_id") or "").strip()
+        norm = normalize_anchor(row, snippet_id=sid) if sid else None
+        if norm is None and sid and str(row.get("site") or "").strip():
+            # Already-normalized vault rows may lack fallback/ids combined.
+            site = str(row.get("site") or "").strip()
+            if not site:
+                continue
+            norm = {"snippet_id": sid, "site": site}
+            for key in ("page_key", "message_id", "deep_link"):
+                val = str(row.get(key) or "").strip()
+                if val:
+                    norm[key] = val
+            fb = row.get("fallback")
+            if isinstance(fb, dict) and fb:
+                norm["fallback"] = {
+                    k: str(v).strip()
+                    for k, v in fb.items()
+                    if str(v).strip() and k in {"author", "text_quote", "approx_time"}
+                }
+        if not norm:
+            continue
+        key = _anchor_dedupe_key(norm)
+        if key in index:
+            prev = merged[index[key]]
+            combined = {**prev, **norm}
+            if isinstance(prev.get("fallback"), dict) or isinstance(norm.get("fallback"), dict):
+                combined["fallback"] = {
+                    **(prev.get("fallback") if isinstance(prev.get("fallback"), dict) else {}),
+                    **(norm.get("fallback") if isinstance(norm.get("fallback"), dict) else {}),
+                }
+            merged[index[key]] = combined
+        else:
+            index[key] = len(merged)
+            merged.append(norm)
+    return merged
+
+
+def apply_anchors_to_markdown(
+    text: str,
+    anchors: list[dict[str, Any]],
+    *,
+    prefer_deep_link_source: bool = True,
+) -> str:
+    """Write/merge ``anchors`` into note frontmatter; optionally set source_url."""
+    if not anchors:
+        return text
+    meta, body = parse_frontmatter(text or "")
+    meta["anchors"] = merge_anchors_list(meta.get("anchors"), anchors)
+    if prefer_deep_link_source:
+        existing_src = str(meta.get("source_url") or "").strip()
+        if not existing_src:
+            for row in meta["anchors"]:
+                deep = str(row.get("deep_link") or "").strip()
+                if deep:
+                    meta["source_url"] = deep
+                    break
+    return dump_frontmatter(meta, body)
+
+
+def snippet_source_url(raw: dict[str, Any], fallback: str = "") -> str:
+    """Prefer snippet source_url, then anchor deep_link, then target fallback."""
+    direct = str(raw.get("source_url") or "").strip()
+    if direct:
+        return direct
+    anchor = raw.get("anchor")
+    if isinstance(anchor, dict):
+        deep = str(anchor.get("deep_link") or "").strip()
+        if deep:
+            return deep
+    return (fallback or "").strip()
+
+
+def _title_from_capture_text(text: str, key: str) -> str:
+    title = _title_from_path(key)
+    for line in (text or "").splitlines():
+        if line.startswith("# "):
+            return line[2:].strip() or title
+    return title
 
 
 class CaptureError(Exception):
@@ -267,23 +408,101 @@ def list_captures(cfg: Any, *, limit: int = 40, store: Any = None) -> list[dict[
     out: list[dict[str, Any]] = []
     for key in keys[: max(1, min(int(limit), 200))]:
         title = _title_from_path(key)
+        session_id = None
+        source_url = ""
+        anchors: list[dict[str, Any]] = []
         try:
             text = store.read(key)
             meta, _ = parse_frontmatter(text)
             if isinstance(meta.get("session_id"), str) and meta["session_id"].strip():
                 session_id = meta["session_id"].strip()
-            else:
-                session_id = None
-            heading = None
-            for line in text.splitlines():
-                if line.startswith("# "):
-                    heading = line[2:].strip()
-                    break
-            if heading:
-                title = heading
+            source_url = str(meta.get("source_url") or "").strip()
+            raw_anchors = meta.get("anchors")
+            if isinstance(raw_anchors, list):
+                anchors = merge_anchors_list(None, [a for a in raw_anchors if isinstance(a, dict)])
+            title = _title_from_capture_text(text, key)
         except Exception:
-            session_id = None
-        out.append({"path": key, "title": title, "session_id": session_id})
+            pass
+        row: dict[str, Any] = {"path": key, "title": title, "session_id": session_id}
+        if source_url:
+            row["source_url"] = source_url
+        if anchors:
+            row["anchors"] = anchors
+        out.append(row)
+    return out
+
+
+def _iter_capture_note_keys(cfg: Any, store: Any) -> list[str]:
+    """Captures folder + research inbox (assets excluded), newest-first."""
+    keys: list[str] = []
+    seen: set[str] = set()
+    folders = [captures_dir(cfg)]
+    inbox = capcfg.inbox_dir(cfg)
+    if inbox and inbox not in folders:
+        folders.append(inbox)
+    for folder in folders:
+        try:
+            listed = store.list(folder)
+        except Exception as exc:
+            logger.debug("list capture keys under %s failed: %s", folder, exc)
+            continue
+        for key in listed:
+            norm = normalize_vault_key(key)
+            if "/assets/" in norm.replace("\\", "/"):
+                continue
+            if not norm.lower().endswith(".md"):
+                continue
+            if norm in seen:
+                continue
+            seen.add(norm)
+            keys.append(norm)
+    keys.sort(reverse=True)
+    return keys
+
+
+def list_anchors(
+    cfg: Any,
+    *,
+    page_key: str,
+    site: str = "",
+    limit: int = _ANCHOR_SCAN_LIMIT,
+    store: Any = None,
+) -> list[dict[str, Any]]:
+    """Reverse-lookup overlay anchors by Teams (or other) page_key."""
+    pk = (page_key or "").strip()
+    if not pk:
+        raise CaptureError("page_key is required", status_code=422)
+    site_filter = (site or "").strip().lower()
+    if store is None:
+        store = vault_store_from_config(cfg)
+    scan_cap = max(1, min(int(limit), _ANCHOR_SCAN_LIMIT))
+    out: list[dict[str, Any]] = []
+    for key in _iter_capture_note_keys(cfg, store)[:scan_cap]:
+        try:
+            text = store.read(key)
+            meta, _ = parse_frontmatter(text)
+        except Exception:
+            continue
+        raw_anchors = meta.get("anchors")
+        if not isinstance(raw_anchors, list) or not raw_anchors:
+            continue
+        title = _title_from_capture_text(text, key)
+        for row in merge_anchors_list(None, [a for a in raw_anchors if isinstance(a, dict)]):
+            if str(row.get("page_key") or "").strip() != pk:
+                continue
+            if site_filter and str(row.get("site") or "").strip().lower() != site_filter:
+                continue
+            item = {
+                "path": key,
+                "title": title,
+                "snippet_id": row.get("snippet_id"),
+                "site": row.get("site"),
+                "page_key": row.get("page_key"),
+            }
+            for field in ("message_id", "deep_link", "fallback"):
+                if row.get(field):
+                    item[field] = row[field]
+            out.append(item)
     return out
 
 
@@ -314,8 +533,7 @@ def _resolve_target(
     kind = (kind or "").strip().lower()
     if kind not in TARGET_KINDS:
         raise CaptureError(
-            f"unknown target kind {kind!r} "
-            "(use new, capture, note, session, research, event)",
+            f"unknown target kind {kind!r} " "(use new, capture, note, session, research, event)",
             status_code=422,
         )
     if kind == "research":
@@ -464,6 +682,7 @@ def _render_research_atom(
     captured_at: str = "",
     image_key: str = "",
     text: str = "",
+    anchors: list[dict[str, Any]] | None = None,
 ) -> str:
     heading = idea_filename_title(title or "capture")
     meta: dict[str, Any] = {
@@ -485,17 +704,26 @@ def _render_research_atom(
         meta["source_url"] = source_url.strip()
     if captured_at.strip():
         meta["captured_at"] = captured_at.strip()
+    if anchors:
+        meta["anchors"] = merge_anchors_list(None, anchors)
+        if not str(meta.get("source_url") or "").strip():
+            for row in meta["anchors"]:
+                deep = str(row.get("deep_link") or "").strip()
+                if deep:
+                    meta["source_url"] = deep
+                    break
     block = render_snippet_block(
         snippet_id=snippet_id,
         kind=kind,
         text=text,
         image_key=image_key,
-        source_url=source_url,
+        source_url=source_url or str(meta.get("source_url") or ""),
         captured_at=captured_at,
     )
     lines = [f"# {heading}", ""]
-    if source_url.strip():
-        lines.extend([f"Source: {source_url.strip()}", ""])
+    src_line = source_url.strip() or str(meta.get("source_url") or "").strip()
+    if src_line:
+        lines.extend([f"Source: {src_line}", ""])
     if hint.strip():
         lines.extend([f"Hint: {hint.strip()}", ""])
     lines.append("## Snippets")
@@ -581,6 +809,7 @@ def save_research_snippets(
     paths: list[str] = []
     enrich_paths: list[str] = []
     image_keys: list[str] = []
+    written_anchors: list[dict[str, Any]] = []
 
     for raw in snippets:
         snippet_id = str(raw.get("id") or "").strip()
@@ -617,16 +846,20 @@ def save_research_snippets(
             store.write_bytes(image_key, data, content_type=_content_type(suffix))
             image_keys.append(image_key)
 
+        anchor = normalize_anchor(raw.get("anchor"), snippet_id=snippet_id)
+        atom_anchors = [anchor] if anchor else []
+        src = snippet_source_url(raw, source_url)
         body = _render_research_atom(
             title=title,
             snippet_id=snippet_id,
             kind=skind,
-            source_url=str(raw.get("source_url") or source_url),
+            source_url=src,
             collection=collection,
             hint=hint,
             captured_at=str(raw.get("captured_at") or ""),
             image_key=image_key,
             text=str(raw.get("text") or ""),
+            anchors=atom_anchors,
         )
         try:
             store.write(key, body)
@@ -635,12 +868,14 @@ def save_research_snippets(
         written.append(snippet_id)
         paths.append(key)
         enrich_paths.append(key)
+        if atom_anchors:
+            written_anchors.extend({**a, "path": key} for a in atom_anchors)
 
     publish_paths = list(dict.fromkeys([*paths, *image_keys]))
     if publish_paths:
         publish_vault_event(publish_paths, source="capture")
 
-    return {
+    result: dict[str, Any] = {
         "path": paths[0] if paths else "",
         "paths": paths,
         "enrich_paths": enrich_paths,
@@ -650,6 +885,9 @@ def save_research_snippets(
         "images": image_keys,
         "enrich": bool(enrich_paths) and capcfg.auto_enrich_enabled(cfg),
     }
+    if written_anchors:
+        result["anchors"] = written_anchors
+    return result
 
 
 def _replace_captures_section(markdown: str, captures_body: str) -> str:
@@ -853,9 +1091,7 @@ def save_snippets(
         )
 
         try:
-            return upsert_event_from_capture(
-                cfg, target=target, snippets=snippets, store=store
-            )
+            return upsert_event_from_capture(cfg, target=target, snippets=snippets, store=store)
         except PlannerError as exc:
             raise CaptureError(str(exc), status_code=exc.status_code) from exc
 
@@ -883,6 +1119,8 @@ def save_snippets(
     skipped: list[str] = []
     blocks: list[str] = []
     image_keys: list[str] = []
+    pending_anchors: list[dict[str, Any]] = []
+    register_overlays = kind in OVERLAY_TARGET_KINDS and mode != "annotations"
 
     for raw in snippets:
         snippet_id = str(raw.get("id") or "").strip()
@@ -911,19 +1149,28 @@ def save_snippets(
             store.write_bytes(image_key, data, content_type=_content_type(suffix))
             image_keys.append(image_key)
 
+        src = snippet_source_url(raw, source_url)
         block = render_snippet_block(
             snippet_id=snippet_id,
             kind=skind,
             text=str(raw.get("text") or ""),
             image_key=image_key,
-            source_url=str(raw.get("source_url") or source_url),
+            source_url=src,
             captured_at=str(raw.get("captured_at") or ""),
         )
         blocks.append(block)
         written.append(snippet_id)
+        if register_overlays:
+            anchor = normalize_anchor(raw.get("anchor"), snippet_id=snippet_id)
+            if anchor:
+                pending_anchors.append(anchor)
 
+    updated = existing
     if blocks:
         updated = _append_blocks(existing, blocks, mode=mode)
+    if pending_anchors:
+        updated = apply_anchors_to_markdown(updated, pending_anchors)
+    if blocks or pending_anchors:
         try:
             store.write(key, updated)
         except VaultWriteDenied as exc:
@@ -934,13 +1181,16 @@ def save_snippets(
         # Should not happen (images only written with blocks), but publish if so
         publish_vault_event(image_keys, source="capture")
 
-    return {
+    result: dict[str, Any] = {
         "path": key,
         "mode": mode,
         "written": written,
         "skipped": skipped,
         "images": image_keys,
     }
+    if pending_anchors:
+        result["anchors"] = [{**a, "path": key} for a in pending_anchors]
+    return result
 
 
 def delete_snippet(

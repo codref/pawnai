@@ -399,6 +399,8 @@ class CaptureSnippet(BaseModel):
     media_type: Optional[str] = None
     source_url: Optional[str] = None
     captured_at: Optional[str] = None
+    # Page overlay anchor (e.g. Teams message). Requires site when present.
+    anchor: Optional[dict] = None
 
 
 class CaptureSaveRequest(BaseModel):
@@ -1554,6 +1556,29 @@ async def captures_list(
     }
 
 
+@app.get("/v1/captures/anchors", dependencies=[Depends(_require_token)])
+async def captures_anchors(
+    page_key: str = Query(..., min_length=1),
+    site: str = Query(default=""),
+    limit: int = Query(default=200, ge=1, le=200),
+    cfg: Any = Depends(_get_cfg),
+) -> dict:
+    """Reverse-lookup capture overlays for a conversation/page key."""
+    from pawn_server.core import captures  # noqa: PLC0415
+
+    try:
+        data = await asyncio.to_thread(
+            captures.list_anchors,
+            cfg,
+            page_key=page_key,
+            site=site,
+            limit=limit,
+        )
+    except captures.CaptureError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+    return {"object": "list", "data": data}
+
+
 @app.get("/v1/captures/collections", dependencies=[Depends(_require_token)])
 async def captures_collections(cfg: Any = Depends(_get_cfg)) -> dict:
     """Existing collection folders under ``capture.enriched_dir`` (discovered)."""
@@ -1620,16 +1645,12 @@ async def planner_events_list(
     """List planner events in an inclusive local-date range."""
     from pawn_server.core import planner  # noqa: PLC0415
 
-    rows = await asyncio.to_thread(
-        planner.list_events, cfg, date_from=date_from, date_to=date_to
-    )
+    rows = await asyncio.to_thread(planner.list_events, cfg, date_from=date_from, date_to=date_to)
     return {"object": "list", "data": rows}
 
 
 @app.post("/v1/planner/events", dependencies=[Depends(_require_token)])
-async def planner_events_create(
-    body: PlannerEventRequest, cfg: Any = Depends(_get_cfg)
-) -> dict:
+async def planner_events_create(body: PlannerEventRequest, cfg: Any = Depends(_get_cfg)) -> dict:
     """Create or upsert a ``pawn: event`` note."""
     from pawn_server.core import planner  # noqa: PLC0415
 

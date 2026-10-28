@@ -15,7 +15,7 @@ Packages:
 - `pawn_agent/`: CLI, sallm harness, scheduler, domain tool impls + CliTool CLIs, agent DB models.
 - `pawn_server/`: HTTP API, queue listener, Matrix bot, vault watcher, scheduler CLI/server runner.
 - `obsidian-plugin/pawn/`: Obsidian desktop/mobile plugin (Copilot-style chat pane, prompt commands, background jobs, uploads). MIT, written from scratch; do not copy obsidian-copilot (AGPL) code into it.
-- `browser-extension/pawn/`: MV3 side panel with Capture (ordered text/image snippets → vault / session Annotations / Research) and Chat (`POST /v1/pawn/chat` SSE, attach clips, action chips). See `docs/BROWSER_CAPTURE.md`.
+- `browser-extension/pawn/`: MV3 side panel with Capture (ordered text/image snippets → vault / session Annotations / Research) and Chat (`POST /v1/pawn/chat` SSE, attach clips, action chips). Teams content script re-paints message-level Obsidian overlay badges from capture `anchors`. See `docs/BROWSER_CAPTURE.md`.
 - `thunderbird-extension/pawn/`: MV3 MailExtension (TB 128+) companion-window tray that captures messages/selections/image attachments into the same `/v1/captures` API. See `docs/THUNDERBIRD_CAPTURE.md`.
 
 ## Setup / Commands

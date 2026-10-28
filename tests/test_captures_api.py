@@ -16,7 +16,7 @@ from pawn_agent.utils.config import ApiSection, CaptureConfig
 from pawn_agent.utils.db import AgentRun, VaultTask
 from pawn_core.config import VaultConfig
 from pawn_core.database import Base, VaultNote
-from pawn_core.vault import VaultStore
+from pawn_core.vault import VaultStore, parse_frontmatter
 from pawn_core.vault_db import upsert_vault_note
 from pawn_server.core import api_server
 from pawn_server.core.captures import (
@@ -510,3 +510,152 @@ def test_capture_config_path_helpers() -> None:
         == "Pawn/Research/movies/blade-runner.md"
     )
     assert capcfg.slugify("Blade Runner") == "blade-runner"
+
+
+_TEAMS_ANCHOR = {
+    "site": "teams",
+    "page_key": "19:abc@thread.v2",
+    "message_id": "1563480968434",
+    "deep_link": (
+        "https://teams.microsoft.com/l/message/19:abc@thread.v2/"
+        "1563480968434?context=%7B%22contextType%22%3A%22chat%22%7D"
+    ),
+    "fallback": {
+        "author": "Robert Bryant",
+        "text_quote": "No reply yet- Galls is very busy",
+        "approx_time": "6:36 PM",
+    },
+}
+
+
+def test_save_anchor_frontmatter_and_lookup(env: SimpleNamespace) -> None:
+    with TestClient(api_server.create_app(env.cfg)) as client:
+        resp = client.post(
+            "/v1/captures",
+            headers=AUTH,
+            json={
+                "target": {"kind": "new", "title": "Galls chat"},
+                "snippets": [
+                    {
+                        "id": "anch-1",
+                        "kind": "text",
+                        "text": "No reply yet- Galls is very busy",
+                        "anchor": _TEAMS_ANCHOR,
+                    }
+                ],
+            },
+        )
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        path = body["path"]
+        assert body["written"] == ["anch-1"]
+        assert len(body["anchors"]) == 1
+        assert body["anchors"][0]["message_id"] == "1563480968434"
+        assert body["anchors"][0]["path"] == path
+
+        note = env.store.read(path)
+        meta, _ = parse_frontmatter(note)
+        assert meta.get("anchors")
+        assert meta["anchors"][0]["snippet_id"] == "anch-1"
+        assert meta["source_url"] == _TEAMS_ANCHOR["deep_link"]
+        assert _TEAMS_ANCHOR["deep_link"] in note
+
+        listed = client.get("/v1/captures", headers=AUTH)
+        assert listed.status_code == 200
+        row = next(r for r in listed.json()["data"] if r["path"] == path)
+        assert row["source_url"] == _TEAMS_ANCHOR["deep_link"]
+        assert row["anchors"][0]["page_key"] == "19:abc@thread.v2"
+
+        found = client.get(
+            "/v1/captures/anchors",
+            headers=AUTH,
+            params={"page_key": "19:abc@thread.v2", "site": "teams"},
+        )
+        assert found.status_code == 200, found.text
+        data = found.json()["data"]
+        assert len(data) == 1
+        assert data[0]["snippet_id"] == "anch-1"
+        assert data[0]["path"] == path
+        assert data[0]["fallback"]["author"] == "Robert Bryant"
+
+        miss = client.get(
+            "/v1/captures/anchors",
+            headers=AUTH,
+            params={"page_key": "19:other@thread.v2"},
+        )
+        assert miss.status_code == 200
+        assert miss.json()["data"] == []
+
+        # Idempotent re-save does not duplicate anchors
+        again = client.post(
+            "/v1/captures",
+            headers=AUTH,
+            json={
+                "target": {"kind": "capture", "path": path},
+                "snippets": [
+                    {
+                        "id": "anch-1",
+                        "kind": "text",
+                        "text": "dup",
+                        "anchor": _TEAMS_ANCHOR,
+                    }
+                ],
+            },
+        )
+        assert again.status_code == 200
+        assert again.json()["skipped"] == ["anch-1"]
+        assert "anchors" not in again.json() or again.json().get("anchors") in (None, [])
+        meta2, _ = parse_frontmatter(env.store.read(path))
+        assert len(meta2["anchors"]) == 1
+
+
+def test_research_atom_stores_single_anchor(env: SimpleNamespace) -> None:
+    with TestClient(api_server.create_app(env.cfg)) as client:
+        resp = client.post(
+            "/v1/captures",
+            headers=AUTH,
+            json={
+                "target": {"kind": "research", "title": "Teams research"},
+                "snippets": [
+                    {
+                        "id": "res-anch",
+                        "kind": "text",
+                        "text": "quote",
+                        "anchor": _TEAMS_ANCHOR,
+                    }
+                ],
+            },
+        )
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert body["mode"] == "research"
+        path = body["paths"][0]
+        meta, _ = parse_frontmatter(env.store.read(path))
+        assert meta["anchors"][0]["message_id"] == "1563480968434"
+        found = client.get(
+            "/v1/captures/anchors",
+            headers=AUTH,
+            params={"page_key": "19:abc@thread.v2"},
+        )
+        assert any(r["path"] == path for r in found.json()["data"])
+
+
+def test_snippet_without_anchor_unchanged(env: SimpleNamespace) -> None:
+    with TestClient(api_server.create_app(env.cfg)) as client:
+        resp = client.post(
+            "/v1/captures",
+            headers=AUTH,
+            json={
+                "target": {
+                    "kind": "new",
+                    "title": "plain",
+                    "source_url": "https://example.com/x",
+                },
+                "snippets": [{"id": "plain-1", "kind": "text", "text": "hi"}],
+            },
+        )
+        assert resp.status_code == 200
+        assert "anchors" not in resp.json()
+        meta, _ = parse_frontmatter(env.store.read(resp.json()["path"]))
+        assert "anchors" not in meta
+        assert meta["source_url"] == "https://example.com/x"

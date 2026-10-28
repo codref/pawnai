@@ -127,6 +127,15 @@ mapped in `vault_notes`.
 ### `GET /v1/captures?limit=`
 
 Recent markdown notes under `{agent_root}/Captures/` (assets excluded).
+Each row includes `path`, `title`, optional `session_id`, and when present
+`source_url` plus `anchors` (page overlay metadata).
+
+### `GET /v1/captures/anchors?page_key=&site=`
+
+Reverse lookup for in-page overlays. Scans recent Captures (+ research inbox)
+frontmatter for matching `anchors[].page_key` (optional `site` filter, e.g.
+`teams`). Returns `{ object, data: [{ path, title, snippet_id, site, page_key,
+message_id, deep_link, fallback }] }`.
 
 ### `GET /v1/captures/collections`
 
@@ -164,7 +173,18 @@ Catalog used by the Chat model picker (`vision` flag gates screenshot turns).
       "kind": "text",
       "text": "…",
       "source_url": "https://…",
-      "captured_at": "2026-10-07T10:00:00Z"
+      "captured_at": "2026-10-07T10:00:00Z",
+      "anchor": {
+        "site": "teams",
+        "page_key": "19:…@thread.v2",
+        "message_id": "1563480968434",
+        "deep_link": "https://teams.microsoft.com/l/message/…",
+        "fallback": {
+          "author": "Robert Bryant",
+          "text_quote": "No reply yet…",
+          "approx_time": "6:36 PM"
+        }
+      }
     },
     {
       "id": "c0ffee00c0ffee00",
@@ -179,10 +199,41 @@ Catalog used by the Chat model picker (`vision` flag gates screenshot turns).
 
 `kind` on the target: `new` | `capture` | `note` | `session` | `research`.
 Response includes `path`, `mode` (`append`, `annotations`, or `research`),
-`written`, `skipped`, and `images`. Research also returns `paths`,
+`written`, `skipped`, and `images`. When overlays were registered (`new` /
+`capture` / `research` only), also `anchors`. Research also returns `paths`,
 `enrich_paths`, `enrich`, and optionally `jobs`.
 
+Optional per-snippet `anchor` is merged into the capture note’s frontmatter
+`anchors:` list (deduped by `snippet_id`). Prefer `deep_link` as `source_url`
+when the client omits one.
+
 Image payloads are capped at 4MB (same as chat vision).
+
+## Page overlays (Teams)
+
+The extension injects a content script on Teams hosts that re-paints a small
+**Pawn** badge on chat bubbles that were captured into the vault. Persistence
+is the vault frontmatter + `GET /v1/captures/anchors` — not the live DOM
+(Teams virtualizes messages away).
+
+Flow:
+
+1. Select text in a Teams bubble (or region-clip whose center hits a bubble).
+2. Save to a **New page**, **Recent capture**, or **Research** target.
+3. Leave the chat and come back — the badge should reappear on that message.
+4. Click **Pawn** → `obsidian://open` (requires `vault.obsidian_vault_name`).
+
+Matching prefers `message_id`; soft-match uses author + text quote when ids are
+missing (dashed badge). Session / other-note targets still save snippets but
+do not register overlays in v1.
+
+### Manual checklist
+
+- Capture a message → Save → badge appears (or after a short refresh).
+- Switch to another chat and back → badge returns.
+- Scroll the message out of view and back (virtualization) → badge re-paints.
+- Click badge → Obsidian opens the capture note.
+- Re-save the same snippet id → still a single `anchors` row.
 
 ### `POST /v1/captures/file`
 

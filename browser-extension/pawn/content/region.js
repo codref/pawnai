@@ -127,7 +127,12 @@
         }
         try {
           const data_base64 = await crop(dataUrl, x, y, w, h);
-          resolve({ ok: true, data_base64 });
+          resolve({
+            ok: true,
+            data_base64,
+            centerX: x + w / 2,
+            centerY: y + h / 2,
+          });
         } catch (err) {
           resolve({ ok: false, error: String(err?.message || err) });
         }
