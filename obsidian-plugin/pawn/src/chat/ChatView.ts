@@ -12,6 +12,7 @@ import { resolveActiveMarkdownFile } from "../active";
 import { ChatImage, ModelChoice, NoteContext, ServerUnreachable } from "../api";
 import { PromptCommand, renderPrompt } from "../commands/PromptCommands";
 import { preserveInboxScroll, renderInbox } from "../inbox/InboxView";
+import { renderDayView } from "../day/DayView";
 import { renderSessionsList } from "../sessions/SessionsView";
 import { captureIdea, noticeError } from "../inbox/ideas";
 import { renderJobCard, renderJobsList } from "../jobs/JobsView";
@@ -42,7 +43,7 @@ import {
 
 export const PAWN_CHAT_VIEW = "pawn-chat";
 
-type TabId = "chat" | "jobs" | "inbox" | "sessions";
+type TabId = "chat" | "day" | "jobs" | "inbox" | "sessions";
 
 interface Pending {
   abort: AbortController;
@@ -83,6 +84,7 @@ export class PawnChatView extends ItemView {
   private unsubscribeCaptures: (() => void) | null = null;
   private unsubscribeItems: (() => void) | null = null;
   private unsubscribeSessions: (() => void) | null = null;
+  private unsubscribeDay: (() => void) | null = null;
   private fileInput: HTMLInputElement | null = null;
   private rereadButton: HTMLButtonElement | null = null;
   private keyboardFrame = 0;
@@ -145,6 +147,7 @@ export class PawnChatView extends ItemView {
     this.unsubscribeCaptures = this.plugin.captures?.onChange(() => this.onInboxChanged());
     this.unsubscribeItems = this.plugin.items?.onChange(() => this.onInboxChanged());
     this.unsubscribeSessions = this.plugin.sessions?.onChange(() => this.onSessionsChanged());
+    this.unsubscribeDay = this.plugin.day?.onChange(() => this.onDayChanged());
     this.registerEvent(
       this.app.workspace.on("active-leaf-change", () => this.onActiveNoteChanged()),
     );
@@ -372,6 +375,7 @@ export class PawnChatView extends ItemView {
     this.unsubscribeCaptures?.();
     this.unsubscribeItems?.();
     this.unsubscribeSessions?.();
+    this.unsubscribeDay?.();
     this.unsubscribeJobs?.();
     this.closeModelPop();
     this.closeConvPop();
@@ -614,6 +618,11 @@ export class PawnChatView extends ItemView {
     this.renderTabs();
   }
 
+  private onDayChanged(): void {
+    if (this.tab === "day") this.renderBody();
+    this.renderTabs();
+  }
+
   /** Soft-bind chat to a transcript note and pin it in the context bar. */
   openNoteConversation(notePathOrConv: string): void {
     const conv = notePathOrConv.startsWith("note:")
@@ -772,10 +781,14 @@ export class PawnChatView extends ItemView {
         if (id === "sessions" && prev !== "sessions") {
           void this.plugin.sessions?.refresh();
         }
+        if (id === "day" && prev !== "day") {
+          void this.plugin.day?.refresh();
+        }
         this.render();
       };
     };
     mk("chat", "Chat");
+    mk("day", "Day");
     const badge = [active ? `${active} running` : "", review ? `${review} review` : ""]
       .filter(Boolean)
       .join(", ");
@@ -799,6 +812,12 @@ export class PawnChatView extends ItemView {
     body.empty();
     if (this.tab === "inbox") {
       renderInbox(body.createDiv({ cls: "pawn-jobs" }), this.plugin);
+      return;
+    }
+    if (this.tab === "day") {
+      renderDayView(body.createDiv({ cls: "pawn-jobs" }), this.plugin, this.plugin.day, {
+        onOpenChat: (conv) => this.openNoteConversation(conv),
+      });
       return;
     }
     if (this.tab === "sessions") {
@@ -1082,6 +1101,12 @@ export class PawnChatView extends ItemView {
         label: "/idea",
         hint: "Save one line under Ideas/",
         run: () => this.prefillSlash("/idea "),
+      },
+      {
+        slug: "event",
+        label: "/event",
+        hint: "Add planner event",
+        run: () => this.prefillSlash("/event "),
       },
       {
         slug: "goal",

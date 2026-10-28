@@ -221,6 +221,63 @@ export interface ListSessionsParams {
   speaker?: string;
 }
 
+export interface PlannerEvent {
+  id: string;
+  title: string;
+  start?: string;
+  end?: string;
+  source?: string;
+  source_url?: string;
+  attendees?: string[];
+  topics?: string[];
+  session_id?: string;
+  fingerprint?: string;
+  prep_job_id?: string;
+  prep_at?: string;
+  path?: string;
+  body?: string;
+  prep?: string;
+  day?: string;
+}
+
+export interface PlannerSuggestion {
+  event_id: string;
+  event_path?: string;
+  session_id: string;
+  session_title?: string;
+  score?: number;
+}
+
+export interface PlannerBlock {
+  kind: "event" | "session";
+  sort_key?: string;
+  event?: PlannerEvent | null;
+  session?: SessionSummary | null;
+  items?: InboxItem[];
+}
+
+export interface PlannerDay {
+  date: string;
+  events: PlannerEvent[];
+  sessions: SessionSummary[];
+  blocks: PlannerBlock[];
+  other_items: InboxItem[];
+  suggestions: PlannerSuggestion[];
+}
+
+export interface PlannerEventCreate {
+  title: string;
+  start?: string;
+  end?: string;
+  source?: string;
+  source_url?: string;
+  attendees?: string[];
+  topics?: string[];
+  session_id?: string;
+  body?: string;
+  id?: string;
+}
+
 export class ServerUnreachable extends Error {}
 
 export class HttpError extends Error {
@@ -360,6 +417,56 @@ export class PawnClient {
         needs_speakers: Number(body.facets?.needs_speakers ?? 0),
       },
     };
+  }
+
+  async getPlannerDay(date: string): Promise<PlannerDay> {
+    const qs = date ? `?date=${encodeURIComponent(date)}` : "";
+    const resp = await this.request("GET", `/v1/planner/day${qs}`);
+    const body = resp.json as Partial<PlannerDay>;
+    return {
+      date: body.date || date,
+      events: body.events ?? [],
+      sessions: body.sessions ?? [],
+      blocks: body.blocks ?? [],
+      other_items: body.other_items ?? [],
+      suggestions: body.suggestions ?? [],
+    };
+  }
+
+  async createPlannerEvent(body: PlannerEventCreate): Promise<PlannerEvent> {
+    const resp = await this.request("POST", "/v1/planner/events", body);
+    return resp.json as PlannerEvent;
+  }
+
+  async linkPlannerEvent(
+    eventId: string,
+    sessionId: string | null,
+  ): Promise<PlannerEvent> {
+    const resp = await this.request(
+      "POST",
+      `/v1/planner/events/${encodeURIComponent(eventId)}/link`,
+      { session_id: sessionId },
+    );
+    return resp.json as PlannerEvent;
+  }
+
+  async deletePlannerEvent(
+    eventId: string,
+  ): Promise<{ id: string; path: string; deleted: boolean; title?: string }> {
+    const resp = await this.request(
+      "DELETE",
+      `/v1/planner/events/${encodeURIComponent(eventId)}`,
+    );
+    return resp.json as { id: string; path: string; deleted: boolean; title?: string };
+  }
+
+  async prepPlannerEvent(eventId: string): Promise<Job> {
+    const resp = await this.request(
+      "POST",
+      `/v1/planner/events/${encodeURIComponent(eventId)}/prep`,
+      {},
+    );
+    return resp.json as Job;
   }
 
   async getSession(sessionId: string): Promise<SessionDetail> {

@@ -73,6 +73,7 @@ Free-standing plugin chats use `chat:{uuid}`.
 | `.obsidian/` | You | Never touched by Pawn |
 
 How to turn the coworker loop on, write `Goals.md`, and file ideas from the Inbox is in [COWORKER.md](COWORKER.md).
+The Day planner tab (events, sessions, prep) is in [PLANNER.md](PLANNER.md).
 
 ## Enable
 

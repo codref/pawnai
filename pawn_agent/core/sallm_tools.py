@@ -225,6 +225,16 @@ def build_pawn_clitools() -> dict[str, CliTool]:
                 "Never rewrite capture frontmatter with note_write."
             ),
         ),
+        "event_prep_update": CliTool(
+            name="event_prep_update",
+            argv=_cli_argv("event_prep_update.py"),
+            summary=(
+                "Replace ## Prep on a planner event note (pawn: event). "
+                "Required: --event-id or --path, plus --content-file @prep "
+                "(preferred) or short --content. Optional: --job-id. "
+                "Do not use note_write for prep."
+            ),
+        ),
         "task_update": CliTool(
             name="task_update",
             argv=_cli_argv("task_update.py"),

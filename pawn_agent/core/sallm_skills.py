@@ -386,6 +386,35 @@ RESEARCH_CAPTURE = Skill(
     ),
 )
 
+MEETING_PREP = Skill(
+    name="meeting_prep",
+    description=(
+        "Background meeting prep: search sessions, people, items, and vault "
+        "notes for an upcoming planner event; write a sparse ## Prep section."
+    ),
+    prompt=(
+        "Active skill: meeting_prep.\n"
+        "You are preparing the user for one planner event (pawn: event).\n"
+        "Use tools to find real context — sessions_list, session_transcript, "
+        "people_show, note_search, knowledge_search, note_read. "
+        "Do not invent facts that tools did not return.\n"
+        "Write only via event_prep_update --event-id … --content-file @prep "
+        "(a ```file prep block). Prefer [[wikilinks]] to transcripts, people, "
+        "items, and notes. Keep ## Prep sparse (a handful of bullets). "
+        "Skip filler and meeting-residue action items that are not useful.\n"
+        "Never note_write the event note. Never dump tool errors into the vault."
+    ),
+    tools=(
+        "note_read",
+        "note_search",
+        "knowledge_search",
+        "sessions_list",
+        "session_transcript",
+        "people_show",
+        "event_prep_update",
+    ),
+)
+
 VAULT_TASKS = Skill(
     name="vault_tasks",
     description=(
@@ -436,6 +465,7 @@ def build_pawn_skills() -> SkillRegistry:
             TASKNOTES,
             COWORKER,
             RESEARCH_CAPTURE,
+            MEETING_PREP,
             VAULT_TASKS,
         ]
     )

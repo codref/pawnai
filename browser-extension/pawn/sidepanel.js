@@ -91,6 +91,8 @@ const state = {
   sourceUrl: "",
   collection: "",
   hint: "",
+  eventStart: "",
+  eventEnd: "",
   vaultName: "",
   clipMode: "region",
   clipBusy: false,
@@ -127,6 +129,7 @@ const MAX_CHAT_CONVERSATIONS = 40;
 
 const TARGET_KIND_OPTIONS = [
   { value: "new", label: "New page" },
+  { value: "event", label: "Planner event…" },
   { value: "research", label: "Research…" },
   { value: "capture", label: "Recent capture…" },
   { value: "session", label: "Session…" },
@@ -154,6 +157,7 @@ const el = {
   clipControl: document.getElementById("clip-control"),
   btnSettings: document.getElementById("btn-settings"),
   btnSave: document.getElementById("btn-save"),
+  btnAddPlanner: document.getElementById("btn-add-planner"),
   destination: document.getElementById("destination"),
   notice: document.getElementById("notice"),
   tray: document.getElementById("tray"),
@@ -497,7 +501,11 @@ function bind() {
   el.tabChat?.addEventListener("click", () => setActiveTab("chat"));
   el.targetKind.addEventListener("change", async () => {
     state.targetKind = el.targetKind.value;
-    if (state.targetKind === "new" || state.targetKind === "research") {
+    if (
+      state.targetKind === "new" ||
+      state.targetKind === "research" ||
+      state.targetKind === "event"
+    ) {
       state.stickyPath = "";
       state.sessionId = "";
     }
@@ -506,7 +514,11 @@ function bind() {
     renderTargetExtra();
     render();
     renderChatContext();
-    if (state.targetKind !== "new" && state.targetKind !== "research") {
+    if (
+      state.targetKind !== "new" &&
+      state.targetKind !== "research" &&
+      state.targetKind !== "event"
+    ) {
       void openTargetPicker();
     }
   });
@@ -534,6 +546,7 @@ function bind() {
     openClipMenu("capture");
   });
   el.btnSave.addEventListener("click", () => void saveTray());
+  el.btnAddPlanner?.addEventListener("click", () => void addToPlanner());
 
   el.btnChatSelection?.addEventListener("click", () => {
     state.captureDest = "chat";
@@ -613,6 +626,8 @@ async function loadSettings() {
   state.sourceUrl = t.sourceUrl || "";
   state.collection = t.collection || "";
   state.hint = t.hint || "";
+  state.eventStart = t.eventStart || "";
+  state.eventEnd = t.eventEnd || "";
   el.targetKind.value = state.targetKind;
   el.title.value = state.title;
   await loadPickerData();
@@ -629,6 +644,8 @@ async function persistTarget() {
       sourceUrl: state.sourceUrl,
       collection: state.collection,
       hint: state.hint,
+      eventStart: state.eventStart,
+      eventEnd: state.eventEnd,
     },
   });
 }
@@ -647,6 +664,9 @@ function trayKey() {
   if (state.targetKind === "research") {
     const coll = (state.collection || "").trim() || "_";
     return `tray:research:${coll}`;
+  }
+  if (state.targetKind === "event") {
+    return `tray:event:${(state.eventStart || "").slice(0, 10) || "_"}`;
   }
   if (state.targetKind === "session" && state.sessionId) {
     return `tray:session:${state.sessionId}`;
@@ -965,6 +985,41 @@ async function loadPickerData() {
 function renderTargetExtra() {
   el.targetExtra.innerHTML = "";
   if (state.targetKind === "new") return;
+
+  if (state.targetKind === "event") {
+    const startField = document.createElement("label");
+    startField.className = "pawn-field";
+    startField.append(
+      Object.assign(document.createElement("span"), { textContent: "Start (local)" }),
+    );
+    const startInput = document.createElement("input");
+    startInput.type = "text";
+    startInput.placeholder = "2026-10-28T10:00";
+    startInput.value = state.eventStart;
+    startInput.addEventListener("input", () => {
+      state.eventStart = startInput.value.trim();
+      void persistTarget();
+    });
+    startField.append(startInput);
+
+    const endField = document.createElement("label");
+    endField.className = "pawn-field";
+    endField.append(
+      Object.assign(document.createElement("span"), { textContent: "End (optional)" }),
+    );
+    const endInput = document.createElement("input");
+    endInput.type = "text";
+    endInput.placeholder = "2026-10-28T10:30";
+    endInput.value = state.eventEnd;
+    endInput.addEventListener("input", () => {
+      state.eventEnd = endInput.value.trim();
+      void persistTarget();
+    });
+    endField.append(endInput);
+
+    el.targetExtra.append(startField, endField);
+    return;
+  }
 
   if (state.targetKind === "research") {
     const collField = document.createElement("label");
@@ -1374,6 +1429,10 @@ function renderDestination() {
       ? "One inbox note per snippet; enrich files into this collection"
       : "Pawn proposes a collection on enrich";
     muted = true;
+  } else if (state.targetKind === "event") {
+    titleText = state.title || "Planner event";
+    pathText = [state.eventStart, state.eventEnd].filter(Boolean).join(" → ") || "Set start time";
+    muted = true;
   } else if (state.stickyPath) {
     titleText = destinationTitleForPath(state.stickyPath);
     pathText = state.stickyPath;
@@ -1506,6 +1565,15 @@ async function removeSnippet(index) {
 }
 
 function buildTarget() {
+  if (state.targetKind === "event") {
+    return {
+      kind: "event",
+      title: state.title || "event",
+      source_url: state.sourceUrl,
+      start: state.eventStart || undefined,
+      end: state.eventEnd || undefined,
+    };
+  }
   if (state.targetKind === "research") {
     return {
       kind: "research",
@@ -1601,6 +1669,8 @@ async function saveTray() {
           ? `Saved ${n} → Inbox (enriching ${jobs}…)`
           : `Saved ${n} → ${where}`,
       );
+    } else if (result.mode === "event") {
+      showNotice(`Planner event → ${result.path}`);
     } else {
       const mode = result.mode === "annotations" ? "annotations" : "note";
       showNotice(`Saved ${written.size} → ${result.path} (${mode})`);
@@ -1628,6 +1698,8 @@ async function startNewPage() {
   state.stickyPath = "";
   state.sessionId = "";
   state.title = "";
+  state.eventStart = "";
+  state.eventEnd = "";
   el.targetKind.value = "new";
   el.title.value = "";
   state.tray = [];
@@ -1636,6 +1708,80 @@ async function startNewPage() {
   renderTargetExtra();
   render();
   showNotice("New page — next Save creates a fresh capture note");
+}
+
+/** Normalize scraped Outlook times toward YYYY-MM-DDTHH:mm when possible. */
+function normalizeScrapedTime(raw) {
+  const s = String(raw || "").trim();
+  if (!s) return "";
+  const iso = s.match(/(\d{4}-\d{2}-\d{2})[T ](\d{2}:\d{2})/);
+  if (iso) return `${iso[1]}T${iso[2]}`;
+  const day = s.match(/(\d{4}-\d{2}-\d{2})/);
+  if (day) return day[1];
+  const m = Date.parse(s);
+  if (!Number.isNaN(m)) {
+    const d = new Date(m);
+    const pad = (n) => String(n).padStart(2, "0");
+    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  }
+  return s.slice(0, 32);
+}
+
+/**
+ * One-gesture Outlook → planner: scrape event detail (or tab title), set
+ * Planner event target, enqueue a text snippet, save.
+ */
+async function addToPlanner() {
+  showNotice("Reading Outlook event…", false, true);
+  let scraped;
+  try {
+    scraped = await chrome.runtime.sendMessage({ type: "pawn-scrape-outlook" });
+  } catch (err) {
+    showNotice(String(err?.message || err), true);
+    return;
+  }
+  const url = scraped?.url || state.sourceUrl || "";
+  const title =
+    (scraped?.title || scraped?.page_title || state.title || "Outlook event").trim() ||
+    "Outlook event";
+  const start = normalizeScrapedTime(scraped?.start);
+  const end = normalizeScrapedTime(scraped?.end);
+  const bodyParts = [];
+  if (scraped?.selection) bodyParts.push(scraped.selection);
+  if (Array.isArray(scraped?.attendees) && scraped.attendees.length) {
+    bodyParts.push("Attendees: " + scraped.attendees.join(", "));
+  }
+  if (!scraped?.ok && scraped?.error && !/Open an Outlook/i.test(scraped.error)) {
+    showNotice(scraped.error, true);
+  }
+
+  state.targetKind = "event";
+  el.targetKind.value = "event";
+  state.title = title;
+  el.title.value = title;
+  state.sourceUrl = url;
+  state.eventStart = start;
+  state.eventEnd = end;
+  state.stickyPath = "";
+  state.sessionId = "";
+
+  const text =
+    bodyParts.join("\n\n") ||
+    `Outlook event: ${title}${start ? `\nStart: ${start}` : ""}`;
+  const snip = {
+    id: `evt${Date.now().toString(36)}`,
+    kind: "text",
+    text,
+    source_url: url,
+    captured_at: new Date().toISOString(),
+    saved: false,
+  };
+  state.tray = [snip];
+  await persistTarget();
+  await persistTray();
+  renderTargetExtra();
+  render();
+  await saveTray();
 }
 
 function showNotice(text, isError = false, isBusy = false) {

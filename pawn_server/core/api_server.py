@@ -370,13 +370,18 @@ class CaptureTarget(BaseModel):
 
     model_config = ConfigDict(extra="ignore")
 
-    kind: str = "new"  # new | capture | note | session | research
+    kind: str = "new"  # new | capture | note | session | research | event
     path: Optional[str] = None
     session_id: Optional[str] = None
     title: Optional[str] = None
     source_url: Optional[str] = None
     collection: Optional[str] = None
     hint: Optional[str] = None
+    # Planner event fields (kind=event)
+    start: Optional[str] = None
+    end: Optional[str] = None
+    attendees: List[str] = Field(default_factory=list)
+    topics: List[str] = Field(default_factory=list)
 
 
 class CaptureSnippet(BaseModel):
@@ -412,6 +417,31 @@ class CaptureFileRequest(BaseModel):
     entity: Optional[str] = None
     tags: List[str] = Field(default_factory=list)
     ignore: bool = False
+
+
+class PlannerEventRequest(BaseModel):
+    """POST /v1/planner/events — create or upsert a day-planner event."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    title: str
+    start: Optional[str] = None
+    end: Optional[str] = None
+    source: str = "manual"
+    source_url: Optional[str] = None
+    attendees: List[str] = Field(default_factory=list)
+    topics: List[str] = Field(default_factory=list)
+    session_id: Optional[str] = None
+    body: Optional[str] = None
+    id: Optional[str] = None
+
+
+class PlannerLinkRequest(BaseModel):
+    """POST /v1/planner/events/{id}/link — set or clear session_id."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    session_id: Optional[str] = None
 
 
 class CreateSpeakerRequest(BaseModel):
@@ -1559,6 +1589,134 @@ async def captures_save(body: CaptureSaveRequest, cfg: Any = Depends(_get_cfg)) 
                 logger.warning("capture enrich enqueue failed for %s: %s", path, exc)
         result = {**result, "jobs": job_ids}
     return result
+
+
+@app.get("/v1/planner/day", dependencies=[Depends(_require_token)])
+async def planner_day(
+    date: str = Query(default=""),
+    cfg: Any = Depends(_get_cfg),
+) -> dict:
+    """Merged day timeline: events, sessions, items, link suggestions."""
+    from pawn_server.core import planner  # noqa: PLC0415
+
+    try:
+        return await asyncio.to_thread(planner.build_day, cfg, date or "")
+    except planner.PlannerError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+
+
+@app.get("/v1/planner/events", dependencies=[Depends(_require_token)])
+async def planner_events_list(
+    date_from: str = Query(default="", alias="from"),
+    date_to: str = Query(default="", alias="to"),
+    cfg: Any = Depends(_get_cfg),
+) -> dict:
+    """List planner events in an inclusive local-date range."""
+    from pawn_server.core import planner  # noqa: PLC0415
+
+    rows = await asyncio.to_thread(
+        planner.list_events, cfg, date_from=date_from, date_to=date_to
+    )
+    return {"object": "list", "data": rows}
+
+
+@app.post("/v1/planner/events", dependencies=[Depends(_require_token)])
+async def planner_events_create(
+    body: PlannerEventRequest, cfg: Any = Depends(_get_cfg)
+) -> dict:
+    """Create or upsert a ``pawn: event`` note."""
+    from pawn_server.core import planner  # noqa: PLC0415
+
+    try:
+        return await asyncio.to_thread(
+            planner.upsert_event,
+            cfg,
+            title=body.title,
+            start=body.start or "",
+            end=body.end or "",
+            source=body.source or "manual",
+            source_url=body.source_url or "",
+            attendees=list(body.attendees or []),
+            topics=list(body.topics or []),
+            session_id=body.session_id or "",
+            body=body.body or "",
+            event_id=body.id or "",
+        )
+    except planner.PlannerError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+
+
+@app.post(
+    "/v1/planner/events/{event_id}/link",
+    dependencies=[Depends(_require_token)],
+)
+async def planner_events_link(
+    event_id: str,
+    body: PlannerLinkRequest,
+    cfg: Any = Depends(_get_cfg),
+) -> dict:
+    """Link or unlink a diarization session on an event."""
+    from pawn_server.core import planner  # noqa: PLC0415
+
+    try:
+        return await asyncio.to_thread(
+            planner.link_event,
+            cfg,
+            event_id,
+            session_id=body.session_id,
+        )
+    except planner.PlannerError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+
+
+@app.delete(
+    "/v1/planner/events/{event_id}",
+    dependencies=[Depends(_require_token)],
+)
+async def planner_events_delete(
+    event_id: str,
+    cfg: Any = Depends(_get_cfg),
+) -> dict:
+    """Delete one planner event note from the vault."""
+    from pawn_server.core import planner  # noqa: PLC0415
+
+    try:
+        return await asyncio.to_thread(planner.delete_event, cfg, event_id)
+    except planner.PlannerError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+
+
+@app.post(
+    "/v1/planner/events/{event_id}/prep",
+    dependencies=[Depends(_require_token)],
+    status_code=202,
+)
+async def planner_events_prep(
+    event_id: str,
+    cfg: Any = Depends(_get_cfg),
+) -> dict:
+    """Enqueue an LLM meeting_prep job for one event (202)."""
+    from pawn_server.core import planner  # noqa: PLC0415
+    from pawn_server.core.jobs import create_meeting_prep_job, serialize_job  # noqa: PLC0415
+
+    try:
+        ev = await asyncio.to_thread(planner.find_event_by_id, cfg, event_id)
+    except planner.PlannerError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+    try:
+        row = await create_meeting_prep_job(
+            cfg,
+            registry=get_sallm_registry(),
+            event_id=str(ev.get("id") or event_id),
+            path=str(ev.get("path") or ""),
+        )
+    except Exception as exc:
+        from pawn_server.core.jobs import JobError  # noqa: PLC0415
+
+        if isinstance(exc, JobError):
+            raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+        raise
+    return serialize_job(row)
 
 
 @app.post("/v1/captures/file", dependencies=[Depends(_require_token)])

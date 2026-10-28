@@ -421,6 +421,12 @@ class CaptureConfig(BaseModel):
     instructions: str = ""
 
 
+class PlannerConfig(BaseModel):
+    """``planner:`` — day view event atoms (Outlook clip / manual)."""
+
+    events_dir: str = "{agent_root}/Events"
+
+
 class CoworkerConfig(BaseModel):
     """``coworker:`` — goal-driven inbox, briefings, and bounded autonomy."""
 
@@ -494,6 +500,7 @@ class AgentConfig(PawnConfig):
     coworker: CoworkerConfig = Field(default_factory=CoworkerConfig)
     tasknotes: TaskNotesConfig = Field(default_factory=TaskNotesConfig)
     capture: CaptureConfig = Field(default_factory=CaptureConfig)
+    planner: PlannerConfig = Field(default_factory=PlannerConfig)
 
     # ── Flat property aliases (old flat-field names used throughout pawn_agent) ─
 

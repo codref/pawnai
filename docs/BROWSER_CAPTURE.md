@@ -58,10 +58,18 @@ Layout mirrors the Obsidian plugin chat pane (no Background toggle):
 | Target | What happens |
 |--------|----------------|
 | New page (default) | Creates `Pawn/Captures/{YYYY-MM-DD} {title}.md` with `pawn: capture`. Later saves append to the same path. |
+| Planner event… | Upserts a `pawn: event` note under `Pawn/Events/` (`kind: event`; title/start/end + snippet body). See [PLANNER.md](PLANNER.md). |
 | Research… | One inbox note per snippet under `capture.inbox_dir` (default `Pawn/Captures/Inbox/`). Optional collection + hint. When `capture.auto_enrich` is true, enqueues a `capture_enrich` job per new note. |
 | Recent capture | Append to an existing note under `Pawn/Captures/`. |
 | Session | If `vault_notes` maps the session to a transcript, snippets are spliced into that note’s `## Annotations` section (preserved on transcript push). Otherwise a capture note is created with `session_id` in frontmatter. |
 | Other note | Append to a vault path. Allowed under `Pawn/`; outside that root the note needs `pawn: editable`. |
+
+### Outlook → planner
+
+On Outlook Web (`outlook.office.com` / `live.com` / …), use **Add to planner**
+in the Capture toolbar. The extension scrapes the open event detail when it
+can (title, times, attendees), falls back to tab title + selection, then
+saves as `kind: event`. No Graph API and no continuous calendar sync.
 
 Images are stored at `Pawn/Captures/assets/{snippet-id}.png` (or jpg/gif/webp)
 and embedded with Obsidian wikilinks. Each block is wrapped in

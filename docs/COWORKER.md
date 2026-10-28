@@ -117,6 +117,9 @@ Attention rules:
 
 ## What you see after a meeting
 
+Linked planner events and LLM meeting prep live in [PLANNER.md](PLANNER.md)
+(Day tab); they do not replace this item extract path.
+
 When a `transcribe-diarize` job finishes and chaining resolves to `session_completed` (finalize or one-shot, not an intermediate chunk), the server:
 
 1. Extracts decisions, commitments, open questions, blocks, and contradictions.

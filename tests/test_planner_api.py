@@ -1,0 +1,247 @@
+"""Day planner API (/v1/planner/*) and event capture kind."""
+
+from __future__ import annotations
+
+from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
+
+import pytest
+import sqlalchemy as sa
+from fastapi.testclient import TestClient
+
+from pawn_agent.utils.config import ApiSection, CaptureConfig, PlannerConfig
+from pawn_agent.utils.db import AgentRun, VaultTask
+from pawn_core.config import VaultConfig
+from pawn_core.database import Base, VaultNote
+from pawn_core.vault import VaultStore, parse_frontmatter
+from pawn_server.core import api_server
+from pawn_server.core.planner import (
+    build_day,
+    event_fingerprint,
+    parse_event_slash_arg,
+    replace_prep_section,
+    title_similarity,
+    upsert_event,
+)
+from tests.test_vault_store import FakeS3Client
+
+AUTH = {"Authorization": "Bearer tok"}
+
+
+@pytest.fixture
+def env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace:
+    dsn = f"sqlite:///{tmp_path / 'planner.db'}"
+    engine = sa.create_engine(dsn)
+    Base.metadata.create_all(
+        engine,
+        tables=[AgentRun.__table__, VaultTask.__table__, VaultNote.__table__],
+    )
+    engine.dispose()
+
+    api = ApiSection(token="tok", stream_keepalive_seconds=0.05)
+    cfg = SimpleNamespace(
+        api=api,
+        api_token="tok",
+        api_model_idle_timeout_minutes=10.0,
+        db_dsn=dsn,
+        vault=VaultConfig(agent_root="Pawn"),
+        coworker=SimpleNamespace(timezone="UTC", goals_path="Goals.md", enabled=False),
+        vault_watcher=SimpleNamespace(matrix_target="matrix"),
+        capture=CaptureConfig(auto_enrich=False),
+        planner=PlannerConfig(events_dir="{agent_root}/Events"),
+        agent=SimpleNamespace(default=""),
+    )
+    store = VaultStore(bucket="b", agent_root="Pawn", client=FakeS3Client())
+
+    monkeypatch.setattr("pawn_server.core.planner.vault_store_from_config", lambda _c: store)
+    monkeypatch.setattr("pawn_core.vault_config.vault_store_from_config", lambda _c: store)
+    monkeypatch.setattr("pawn_server.core.captures.vault_store_from_config", lambda _c: store)
+
+    return SimpleNamespace(cfg=cfg, store=store, dsn=dsn)
+
+
+def test_upsert_fingerprint_and_slash_parse(env: SimpleNamespace) -> None:
+    first = upsert_event(
+        env.cfg,
+        title="Product weekly",
+        start="2026-10-28T10:00",
+        end="2026-10-28T10:30",
+        source="manual",
+        store=env.store,
+    )
+    assert first["path"].startswith("Pawn/Events/2026-10-28-")
+    assert first["id"].startswith("evt_")
+    note = env.store.read(first["path"])
+    assert "pawn: event" in note or "pawn:event" in note.replace(" ", "")
+
+    second = upsert_event(
+        env.cfg,
+        title="Product weekly",
+        start="2026-10-28T10:00",
+        source="manual",
+        body="Updated body",
+        store=env.store,
+    )
+    assert second["path"] == first["path"]
+    assert second["id"] == first["id"]
+    assert "Updated body" in env.store.read(second["path"])
+
+    url_fp = event_fingerprint(source_url="https://outlook.office.com/x", title="A", start="")
+    other = event_fingerprint(source_url="https://outlook.office.com/y", title="A", start="")
+    assert url_fp != other
+
+    title, start = parse_event_slash_arg("Coffee with Ada 2026-10-29T09:00")
+    assert title == "Coffee with Ada"
+    assert start == "2026-10-29T09:00"
+
+
+def test_delete_event(env: SimpleNamespace) -> None:
+    ev = upsert_event(
+        env.cfg,
+        title="Throwaway",
+        start="2026-10-28T14:00",
+        store=env.store,
+    )
+    path = ev["path"]
+    assert env.store.exists(path)
+    with TestClient(api_server.create_app(env.cfg)) as client:
+        resp = client.delete(f"/v1/planner/events/{ev['id']}", headers=AUTH)
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["deleted"] is True
+        again = client.delete(f"/v1/planner/events/{ev['id']}", headers=AUTH)
+        assert again.status_code == 404
+    assert not env.store.exists(path)
+
+
+def test_replace_prep_and_link(env: SimpleNamespace) -> None:
+    ev = upsert_event(
+        env.cfg,
+        title="Sync",
+        start="2026-10-28",
+        store=env.store,
+    )
+    text = env.store.read(ev["path"])
+    updated = replace_prep_section(text, "- [[Pawn/Transcripts/x]] prior decision", prep_job_id="j1")
+    env.store.write(ev["path"], updated)
+    meta, body = parse_frontmatter(updated)
+    assert meta.get("prep_job_id") == "j1"
+    assert "## Prep" in body
+    assert "prior decision" in body
+
+    with TestClient(api_server.create_app(env.cfg)) as client:
+        link = client.post(
+            f"/v1/planner/events/{ev['id']}/link",
+            headers=AUTH,
+            json={"session_id": "sess-1"},
+        )
+        assert link.status_code == 200, link.text
+        assert link.json()["session_id"] == "sess-1"
+
+        unlink = client.post(
+            f"/v1/planner/events/{ev['id']}/link",
+            headers=AUTH,
+            json={"session_id": None},
+        )
+        assert unlink.status_code == 200
+        assert not unlink.json().get("session_id")
+
+
+def test_planner_day_and_capture_event(env: SimpleNamespace) -> None:
+    upsert_event(
+        env.cfg,
+        title="Standup",
+        start="2026-10-28T09:00",
+        store=env.store,
+    )
+    fake_sessions = [
+        {
+            "session_id": "standup-audio",
+            "title": "Standup recording",
+            "created_at": "2026-10-28T09:05:00+00:00",
+            "updated_at": "2026-10-28T09:05:00+00:00",
+            "transcript_path": None,
+            "day": "2026-10-28",
+        }
+    ]
+    with patch(
+        "pawn_server.core.planner._sessions_for_day",
+        return_value=fake_sessions,
+    ):
+        day = build_day(env.cfg, "2026-10-28", store=env.store)
+    assert day["date"] == "2026-10-28"
+    assert len(day["events"]) == 1
+    assert any(b["kind"] == "event" for b in day["blocks"])
+    assert day["suggestions"]  # title overlap standup
+
+    with patch(
+        "pawn_server.core.planner._sessions_for_day",
+        return_value=fake_sessions,
+    ):
+        with TestClient(api_server.create_app(env.cfg)) as client:
+            resp = client.get("/v1/planner/day?date=2026-10-28", headers=AUTH)
+            assert resp.status_code == 200, resp.text
+            assert resp.json()["date"] == "2026-10-28"
+
+    with TestClient(api_server.create_app(env.cfg)) as client:
+        create = client.post(
+            "/v1/planner/events",
+            headers=AUTH,
+            json={
+                "title": "Outlook sync",
+                "start": "2026-10-29T11:00",
+                "end": "2026-10-29T11:30",
+                "source": "outlook",
+                "source_url": "https://outlook.office.com/calendar/item/abc",
+                "attendees": ["Ada"],
+            },
+        )
+        assert create.status_code == 200, create.text
+        assert create.json()["source"] == "outlook"
+
+        cap = client.post(
+            "/v1/captures",
+            headers=AUTH,
+            json={
+                "target": {
+                    "kind": "event",
+                    "title": "Captured meet",
+                    "start": "2026-10-30T15:00",
+                    "source_url": "https://outlook.live.com/calendar/0/item/1",
+                },
+                "snippets": [
+                    {
+                        "id": "snip-evt-1",
+                        "kind": "text",
+                        "text": "Agenda: roadmap",
+                    }
+                ],
+            },
+        )
+        assert cap.status_code == 200, cap.text
+        body = cap.json()
+        assert body["mode"] == "event"
+        assert body["path"].startswith("Pawn/Events/")
+        note = env.store.read(body["path"])
+        assert "Agenda: roadmap" in note
+
+
+def test_title_similarity() -> None:
+    assert title_similarity("Product weekly sync", "Product weekly") > 0.3
+    assert title_similarity("alpha", "omega") < 0.2
+
+
+def test_prep_enqueue(env: SimpleNamespace) -> None:
+    ev = upsert_event(env.cfg, title="Prep me", start="2026-10-28T12:00", store=env.store)
+
+    async def _noop_prep(*_a, **_k):
+        return "ok"
+
+    with patch("pawn_server.core.meeting_prep.run_meeting_prep", side_effect=_noop_prep):
+        with TestClient(api_server.create_app(env.cfg)) as client:
+            resp = client.post(
+                f"/v1/planner/events/{ev['id']}/prep",
+                headers=AUTH,
+            )
+            assert resp.status_code == 202, resp.text
+            assert resp.json()["kind"] == "meeting_prep"

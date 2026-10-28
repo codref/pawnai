@@ -295,3 +295,99 @@ async function enqueueSnippet(partial) {
 async function pushPending(payload) {
   await chrome.storage.local.set({ pendingNotice: payload });
 }
+
+const OUTLOOK_HOST_RE =
+  /(^|\.)outlook\.(office|office365|live)\.com$|(^|\.)outlook\.cloud\.microsoft$/i;
+
+function isOutlookUrl(url) {
+  try {
+    const host = new URL(url || "").hostname;
+    return OUTLOOK_HOST_RE.test(host);
+  } catch (_) {
+    return false;
+  }
+}
+
+/** Best-effort event fields from an open Outlook calendar detail page. */
+async function scrapeOutlookEvent(tab) {
+  await ensureTabAccess(tab);
+  const [{ result }] = await chrome.scripting.executeScript({
+    target: { tabId: tab.id },
+    func: () => {
+      const textOf = (sel) => {
+        const node = document.querySelector(sel);
+        return String(node?.textContent || "").replace(/\s+/g, " ").trim();
+      };
+      const title =
+        textOf('[aria-label="Event"] [role="heading"]') ||
+        textOf('[data-app-section="CalendarItemComposition"] h1') ||
+        textOf("h1") ||
+        document.title ||
+        "";
+      // Outlook often exposes start/end in time elements or read-only inputs.
+      const timeBits = Array.from(
+        document.querySelectorAll("time, input[aria-label*='Start'], input[aria-label*='End']"),
+      )
+        .map((n) => {
+          if (n.tagName === "TIME") return n.getAttribute("datetime") || n.textContent || "";
+          return n.value || n.getAttribute("aria-label") || n.textContent || "";
+        })
+        .map((s) => String(s).replace(/\s+/g, " ").trim())
+        .filter(Boolean);
+      let start = timeBits[0] || "";
+      let end = timeBits[1] || "";
+      const attendees = Array.from(
+        document.querySelectorAll(
+          '[aria-label*="Attendee"], [aria-label*="Participant"], [data-testid*="attendee"]',
+        ),
+      )
+        .map((n) => String(n.textContent || "").replace(/\s+/g, " ").trim())
+        .filter((s) => s && s.length < 80)
+        .slice(0, 12);
+      const selection = String(window.getSelection?.()?.toString() || "").trim();
+      return {
+        title: title.replace(/\s+[–—|-]\s+Mail.*$/i, "").trim(),
+        start,
+        end,
+        attendees,
+        selection,
+        url: location.href,
+        page_title: document.title || "",
+      };
+    },
+  });
+  return result || null;
+}
+
+chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
+  if (msg?.type !== "pawn-scrape-outlook") return;
+  void (async () => {
+    try {
+      const tab = await activeContentTab();
+      if (!tab) {
+        sendResponse({ ok: false, error: "No active tab" });
+        return;
+      }
+      if (!isOutlookUrl(tab.url || "")) {
+        sendResponse({
+          ok: false,
+          error: "Open an Outlook calendar event first",
+          url: tab.url || "",
+          title: tab.title || "",
+        });
+        return;
+      }
+      const scraped = await scrapeOutlookEvent(tab);
+      sendResponse({
+        ok: true,
+        outlook: true,
+        ...(scraped || {}),
+        url: scraped?.url || tab.url || "",
+        page_title: scraped?.page_title || tab.title || "",
+      });
+    } catch (err) {
+      sendResponse({ ok: false, error: String(err?.message || err) });
+    }
+  })();
+  return true;
+});

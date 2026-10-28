@@ -45,7 +45,7 @@ _CAPTURES_SECTION_RE = re.compile(
     r"(?is)^##\s*Captures\s*\n+(.*?)(?=^##\s|\Z)",
     re.MULTILINE,
 )
-TARGET_KINDS = frozenset({"new", "capture", "note", "session", "research"})
+TARGET_KINDS = frozenset({"new", "capture", "note", "session", "research", "event"})
 SNIPPET_KINDS = frozenset({"text", "image"})
 CAPTURE_STATUSES = frozenset({"inbox", "proposed", "filed", "ignored"})
 
@@ -314,11 +314,14 @@ def _resolve_target(
     kind = (kind or "").strip().lower()
     if kind not in TARGET_KINDS:
         raise CaptureError(
-            f"unknown target kind {kind!r} (use new, capture, note, session, research)",
+            f"unknown target kind {kind!r} "
+            "(use new, capture, note, session, research, event)",
             status_code=422,
         )
     if kind == "research":
         raise CaptureError("research targets use save_research_snippets", status_code=500)
+    if kind == "event":
+        raise CaptureError("event targets use upsert_event_from_capture", status_code=500)
     if kind == "new":
         key = normalize_vault_key(path) if path.strip() else ""
         if key and not key.lower().endswith(".md"):
@@ -843,6 +846,18 @@ def save_snippets(
     kind = str(target.get("kind") or "new").strip().lower()
     if kind == "research":
         return save_research_snippets(cfg, target=target, snippets=snippets, store=store)
+    if kind == "event":
+        from pawn_server.core.planner import (  # noqa: PLC0415
+            PlannerError,
+            upsert_event_from_capture,
+        )
+
+        try:
+            return upsert_event_from_capture(
+                cfg, target=target, snippets=snippets, store=store
+            )
+        except PlannerError as exc:
+            raise CaptureError(str(exc), status_code=exc.status_code) from exc
 
     path = str(target.get("path") or "")
     session_id = str(target.get("session_id") or "")

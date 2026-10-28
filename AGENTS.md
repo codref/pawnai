@@ -116,7 +116,9 @@ background vision model; `session_screenshots --summarize` can do that later.
 Mapping table: `vault_notes`.
 
 Skills (modes): `converse`, `sessions`, `notes`, `scheduling`, `ops`,
-`vault_tasks`, `tasknotes`, `coworker`, `research_capture` — see `sallm_skills.py`.
+`vault_tasks`, `tasknotes`, `coworker`, `research_capture`, `meeting_prep` —
+see `sallm_skills.py`. Day planner (events + Outlook clip + LLM prep):
+`docs/PLANNER.md`.
 
 `tasknotes` writes TaskNotes-compatible notes under `{agent_root}/TaskNotes/`
 (tasks, project stubs, `.base` boards, and a checklist proposal). The user

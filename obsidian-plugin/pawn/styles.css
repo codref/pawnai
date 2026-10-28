@@ -1487,3 +1487,48 @@ button.pawn-chip-pin:hover {
 .pawn-session-pills .pawn-chip.is-anon {
   cursor: default;
 }
+
+/* ── Day planner ─────────────────────────────────────────────────────────── */
+
+.pawn-day-toolbar {
+  flex-wrap: wrap;
+  gap: var(--size-4-2);
+  align-items: center;
+}
+
+.pawn-day-nav {
+  display: flex;
+  align-items: center;
+  gap: var(--size-4-1);
+}
+
+.pawn-day-date {
+  font-weight: 600;
+  flex: 1;
+  min-width: 8em;
+}
+
+.pawn-day-date-input {
+  max-width: 9.5rem;
+  font: inherit;
+}
+
+.pawn-day-block .pawn-day-prep {
+  white-space: pre-wrap;
+  opacity: 0.9;
+}
+
+.pawn-day-items,
+.pawn-day-item {
+  font-size: var(--font-ui-smaller);
+  opacity: 0.85;
+  margin-top: 0.25rem;
+}
+
+.pawn-day-suggest {
+  display: flex;
+  align-items: center;
+  gap: var(--size-4-2);
+  margin-top: var(--size-4-2);
+  font-size: var(--font-ui-smaller);
+}
