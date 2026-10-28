@@ -3,9 +3,9 @@
 (function () {
   if (window.__pawnTeams) return;
 
-  const CHAT_ID_RE = /(19:[^/?#\s]+@(?:thread\.v2|thread\.tacv2|unq\.gbl\.spaces))/i;
-  const MESSAGE_LINK_RE =
-    /\/l\/message\/(19:[^/]+)\/(\d+)(?:\?|$)/i;
+  const CHAT_ID_RE =
+    /(19:[A-Za-z0-9._\-:@]+@(?:thread\.v2|thread\.tacv2|unq\.gbl\.spaces|thread\.skype))/i;
+  const MESSAGE_LINK_RE = /\/l\/message\/([^/?#]+)\/(\d+)(?:\?|$)/i;
   const MESSAGE_ID_ATTRS = [
     "data-mid",
     "data-message-id",
@@ -17,11 +17,20 @@
     return String(s || "").replace(/\s+/g, " ").trim();
   }
 
+  function decodeMaybe(s) {
+    try {
+      return decodeURIComponent(String(s || ""));
+    } catch (_) {
+      return String(s || "");
+    }
+  }
+
   function isTeamsHost(hostname) {
     const h = String(hostname || "").toLowerCase();
     return (
       /(^|\.)teams\.(microsoft|live)\.com$/.test(h) ||
-      /(^|\.)teams\.cloud\.microsoft$/.test(h)
+      /(^|\.)teams\.cloud\.microsoft$/.test(h) ||
+      /(^|\.)teams\.microsoft\.us$/.test(h)
     );
   }
 
@@ -34,61 +43,68 @@
   }
 
   function pageKeyFromHref(href) {
-    const s = String(href || "");
+    const s = decodeMaybe(href || "");
     const link = s.match(MESSAGE_LINK_RE);
-    if (link) return decodeURIComponent(link[1]);
+    if (link) return decodeMaybe(link[1]);
     const chat = s.match(CHAT_ID_RE);
     if (chat) return chat[1];
     try {
       const u = new URL(s, location.origin);
-      for (const key of ["chatId", "conversationId", "threadId"]) {
+      for (const key of ["chatId", "conversationId", "threadId", "threadId2"]) {
         const v = u.searchParams.get(key);
-        if (v && CHAT_ID_RE.test(v)) return v.match(CHAT_ID_RE)[1];
+        if (!v) continue;
+        const m = decodeMaybe(v).match(CHAT_ID_RE);
+        if (m) return m[1];
       }
-      const pathChat = u.pathname.match(CHAT_ID_RE);
+      const pathChat = decodeMaybe(u.pathname + u.hash).match(CHAT_ID_RE);
       if (pathChat) return pathChat[1];
-      if (u.hash) {
-        const hashChat = decodeURIComponent(u.hash).match(CHAT_ID_RE);
-        if (hashChat) return hashChat[1];
-      }
     } catch (_) {
       /* ignore */
     }
     return "";
   }
 
-  function currentPageKey() {
-    return (
-      pageKeyFromHref(location.href) ||
-      findChatIdInDom() ||
-      ""
-    );
-  }
-
   function findChatIdInDom() {
-    const anchors = document.querySelectorAll('a[href*="/l/message/"], a[href*="/l/chat/"]');
+    const anchors = document.querySelectorAll(
+      'a[href*="/l/message/"], a[href*="/l/chat/"], a[href*="thread.v2"]',
+    );
     for (const a of anchors) {
       const pk = pageKeyFromHref(a.href || "");
       if (pk) return pk;
     }
-    const withAttr = document.querySelector(
-      "[data-conversation-id], [data-chat-id], [data-thread-id]",
-    );
-    if (withAttr) {
-      for (const name of ["data-conversation-id", "data-chat-id", "data-thread-id"]) {
-        const v = withAttr.getAttribute(name) || "";
+    for (const el of document.querySelectorAll(
+      "[data-conversation-id], [data-chat-id], [data-thread-id], [data-tid]",
+    )) {
+      for (const name of [
+        "data-conversation-id",
+        "data-chat-id",
+        "data-thread-id",
+        "data-tid",
+      ]) {
+        const v = el.getAttribute(name) || "";
         const m = v.match(CHAT_ID_RE);
         if (m) return m[1];
       }
     }
-    return "";
+    // New Teams often keeps the id only in the message list markup.
+    const pane =
+      document.querySelector(
+        "[data-tid*='message-pane'], [data-tid*='chat-pane-list'], [data-tid*='chat-pane']",
+      ) || document.body;
+    const blob = String(pane?.innerHTML || "").slice(0, 400000);
+    const m = blob.match(CHAT_ID_RE);
+    return m ? m[1] : "";
+  }
+
+  function currentPageKey() {
+    return pageKeyFromHref(location.href) || findChatIdInDom() || "";
   }
 
   function looksLikeMessageRoot(el) {
     if (!el || el.nodeType !== 1) return false;
     const tid = (el.getAttribute("data-tid") || "").toLowerCase();
     if (
-      /message|chat-pane-message|message-wrapper|message-body|message-list-item/.test(
+      /message|chat-pane-message|message-wrapper|message-body|message-list-item|chat-item/.test(
         tid,
       )
     ) {
@@ -96,8 +112,12 @@
     }
     if (el.getAttribute("data-mid") || el.getAttribute("data-message-id")) return true;
     const role = (el.getAttribute("role") || "").toLowerCase();
-    if (role === "listitem" || role === "article") {
-      if (el.querySelector?.("[data-tid*='message'], [data-mid], time, [datetime]")) {
+    if (role === "listitem" || role === "article" || role === "row") {
+      if (
+        el.querySelector?.(
+          "[data-tid*='message'], [data-mid], time, [datetime], [data-tid*='avatar']",
+        )
+      ) {
         return true;
       }
     }
@@ -112,15 +132,18 @@
       if (looksLikeMessageRoot(cur)) best = cur;
     }
     if (best) return best;
-    // Soft: climb to a block that has an author-ish header + body text.
     for (let cur = el; cur && cur !== document.body; cur = cur.parentElement) {
       const text = norm(cur.innerText || "").slice(0, 500);
       if (text.length < 8) continue;
-      if (cur.querySelector?.("img[alt], [data-tid*='avatar'], time, [datetime]")) {
+      if (
+        cur.querySelector?.(
+          "img[alt], [data-tid*='avatar'], time, [datetime], [data-tid*='message']",
+        )
+      ) {
         return cur;
       }
     }
-    return el || null;
+    return null;
   }
 
   function readMessageId(root) {
@@ -143,10 +166,9 @@
     }
     const link = root.querySelector?.('a[href*="/l/message/"]');
     if (link?.href) {
-      const m = link.href.match(MESSAGE_LINK_RE);
+      const m = decodeMaybe(link.href).match(MESSAGE_LINK_RE);
       if (m) return m[2];
     }
-    // data-tid / aria sometimes embeds createdTime
     const blob = `${root.getAttribute?.("data-tid") || ""} ${root.id || ""}`;
     const mid = blob.match(/\b(1\d{12,})\b/);
     return mid ? mid[1] : "";
@@ -159,10 +181,8 @@
       "[data-tid*='author']",
       "[data-tid*='display-name']",
       "[data-tid*='sender']",
+      "[data-tid*='participant']",
       "strong",
-      "h1",
-      "h2",
-      "h3",
     ];
     for (const sel of selectors) {
       const node = root.querySelector?.(sel);
@@ -171,7 +191,7 @@
         t &&
         t.length < 80 &&
         !/^(am|pm|\d+:\d+)/i.test(t) &&
-        !/^(you|me|edited|like|reply)$/i.test(t)
+        !/^(you|me|edited|like|reply|react)$/i.test(t)
       ) {
         return t;
       }
@@ -181,7 +201,9 @@
 
   function readApproxTime(root) {
     if (!root) return "";
-    const time = root.querySelector?.("time, [datetime], [data-tid*='timestamp'], [data-tid*='time']");
+    const time = root.querySelector?.(
+      "time, [datetime], [data-tid*='timestamp'], [data-tid*='time']",
+    );
     if (time) {
       const label = norm(time.getAttribute("aria-label") || time.textContent || "");
       if (label) return label.slice(0, 40);
@@ -208,7 +230,9 @@
   }
 
   function readMessageIds(root) {
-    const page_key = currentPageKey() || pageKeyFromHref(root?.querySelector?.("a[href*='/l/message/']")?.href || "");
+    const page_key =
+      currentPageKey() ||
+      pageKeyFromHref(root?.querySelector?.("a[href*='/l/message/']")?.href || "");
     const message_id = readMessageId(root);
     const author = readAuthor(root);
     const approx_time = readApproxTime(root);
@@ -236,14 +260,17 @@
         "[data-tid*='chat-pane-message']",
         "[data-tid*='message-wrapper']",
         "[data-tid*='message-body']",
+        "[data-tid*='chat-message']",
+        "[data-tid*='message']",
         "[data-mid]",
         "[data-message-id]",
         "[role='listitem']",
         "[role='article']",
+        "[role='row']",
       ].join(","),
     );
     for (const node of candidates) {
-      const root = findMessageRoot(node);
+      const root = findMessageRoot(node) || (looksLikeMessageRoot(node) ? node : null);
       if (!root) continue;
       const rect = root.getBoundingClientRect?.();
       if (!rect || rect.height < 8 || rect.width < 8) continue;
@@ -251,6 +278,33 @@
       roots.add(root);
     }
     return [...roots];
+  }
+
+  function messageRootAtPoint(clientX, clientY) {
+    const x = Number(clientX);
+    const y = Number(clientY);
+    const stack =
+      typeof document.elementsFromPoint === "function"
+        ? document.elementsFromPoint(x, y)
+        : [document.elementFromPoint(x, y)].filter(Boolean);
+    for (const el of stack) {
+      if (el?.id === "pawn-region-root" || el?.closest?.("#pawn-region-root")) continue;
+      const root = findMessageRoot(el);
+      if (root) return root;
+    }
+    // Fallback: any visible message whose box contains the point.
+    let best = null;
+    let bestArea = Infinity;
+    for (const root of listVisibleMessages()) {
+      const r = root.getBoundingClientRect();
+      if (x < r.left || x > r.right || y < r.top || y > r.bottom) continue;
+      const area = r.width * r.height;
+      if (area < bestArea) {
+        bestArea = area;
+        best = root;
+      }
+    }
+    return best;
   }
 
   function captureFromSelection() {
@@ -267,6 +321,21 @@
       anchor.fallback = { ...anchor.fallback, text_quote: text.slice(0, 160) };
     } else if (anchor && text && !anchor.fallback) {
       anchor.fallback = { text_quote: text.slice(0, 160) };
+    } else if (!anchor && text) {
+      // Soft page-level fallback so Save still registers something paintable.
+      const page_key = currentPageKey();
+      return {
+        ok: true,
+        text,
+        url: location.href,
+        title: document.title || "",
+        anchor: {
+          site: "teams",
+          page_key: page_key || undefined,
+          fallback: { text_quote: text.slice(0, 160) },
+        },
+        page_key,
+      };
     }
     return {
       ok: true,
@@ -284,15 +353,26 @@
     if (!Number.isFinite(x) || !Number.isFinite(y)) {
       return { ok: false, error: "Invalid point" };
     }
-    const el = document.elementFromPoint(x, y);
-    const root = findMessageRoot(el);
-    if (!root) return { ok: true, anchor: undefined, page_key: currentPageKey() };
+    const root = messageRootAtPoint(x, y);
+    const page_key = currentPageKey();
+    if (!root) {
+      return {
+        ok: true,
+        anchor: page_key
+          ? { site: "teams", page_key, fallback: { text_quote: "region capture" } }
+          : undefined,
+        page_key,
+        url: location.href,
+        matched: false,
+      };
+    }
     const anchor = readMessageIds(root);
     return {
       ok: true,
       anchor: anchor || undefined,
-      page_key: currentPageKey(),
+      page_key,
       url: (anchor && anchor.deep_link) || location.href,
+      matched: Boolean(anchor),
     };
   }
 
@@ -306,15 +386,26 @@
     const fb = anchor.fallback || {};
     const quote = norm(fb.text_quote || "");
     const author = norm(fb.author || "");
+    const when = norm(fb.approx_time || "");
     if (!quote && !author) return false;
+    if (quote === "region capture") return false;
     const body = readBodyText(root);
     const who = readAuthor(root);
-    if (quote && body.includes(quote.slice(0, Math.min(48, quote.length)))) {
-      if (!author || !who || who.toLowerCase() === author.toLowerCase()) return true;
+    const time = readApproxTime(root);
+    if (quote && quote.length >= 8) {
+      const needle = quote.slice(0, Math.min(48, quote.length));
+      if (body.includes(needle)) {
+        if (!author || !who || who.toLowerCase() === author.toLowerCase()) return true;
+      }
     }
-    if (author && who && who.toLowerCase() === author.toLowerCase() && quote) {
-      const head = quote.slice(0, 24);
-      if (head && body.includes(head)) return true;
+    if (author && who && who.toLowerCase() === author.toLowerCase()) {
+      if (quote) {
+        const head = quote.slice(0, 24);
+        if (head && body.includes(head)) return true;
+      }
+      if (when && time && time.toLowerCase().includes(when.toLowerCase().slice(0, 5))) {
+        return true;
+      }
     }
     return false;
   }
@@ -327,6 +418,7 @@
     findMessageRoot,
     readMessageIds,
     listVisibleMessages,
+    messageRootAtPoint,
     captureFromSelection,
     captureFromPoint,
     matchMessage,

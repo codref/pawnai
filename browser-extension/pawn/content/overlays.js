@@ -5,6 +5,7 @@
   window.__pawnOverlaysReady = true;
 
   const ATTR = "data-pawn-overlay";
+  const CHAT_BADGE_ID = "pawn-overlay-chat-badge";
   let anchors = [];
   let pageKey = "";
   let paintTimer = 0;
@@ -25,18 +26,19 @@
   async function refreshAnchors() {
     const t = teams();
     if (!t?.isTeamsPage?.()) return;
-    pageKey = t.currentPageKey() || pageKey;
+    pageKey = t.currentPageKey() || pageKey || "";
     try {
       const resp = await chrome.runtime.sendMessage({
         type: "pawn-anchors-get",
         page_key: pageKey,
         site: "teams",
       });
-      if (resp?.ok && Array.isArray(resp.data)) {
-        anchors = resp.data;
-      } else if (resp?.cached && Array.isArray(resp.cached)) {
-        anchors = resp.cached;
-      }
+      const rows = Array.isArray(resp?.data)
+        ? resp.data
+        : Array.isArray(resp?.cached)
+          ? resp.cached
+          : [];
+      anchors = rows;
     } catch (_) {
       /* background unavailable */
     }
@@ -45,12 +47,7 @@
   function ensureHost(root) {
     if (!root) return;
     if (!root.classList.contains("pawn-overlay-host")) {
-      const style = window.getComputedStyle(root);
-      if (style.position === "static") {
-        root.classList.add("pawn-overlay-host");
-      } else {
-        root.classList.add("pawn-overlay-host");
-      }
+      root.classList.add("pawn-overlay-host");
     }
   }
 
@@ -71,9 +68,11 @@
 
   function paintOne(root, row) {
     const sid = String(row.snippet_id || "").trim();
-    if (!sid || !root) return;
-    const existing = root.querySelector?.(`[${ATTR}="${CSS.escape(sid)}"]`);
-    if (existing) return;
+    if (!sid || !root) return false;
+    const existing = root.querySelector?.(
+      `[${ATTR}="${typeof CSS !== "undefined" && CSS.escape ? CSS.escape(sid) : sid}"]`,
+    );
+    if (existing) return true;
     ensureHost(root);
     const mount = findMount(root);
     ensureHost(mount);
@@ -98,13 +97,58 @@
       true,
     );
     mount.appendChild(a);
+    return true;
+  }
+
+  function paintChatBadge(unmatched) {
+    let el = document.getElementById(CHAT_BADGE_ID);
+    if (!unmatched.length) {
+      el?.remove();
+      return;
+    }
+    const first = unmatched[0];
+    if (!el) {
+      el = document.createElement("a");
+      el.id = CHAT_BADGE_ID;
+      el.className = "pawn-overlay-badge pawn-overlay-chat";
+      el.href = "#";
+      el.addEventListener(
+        "click",
+        (ev) => {
+          ev.preventDefault();
+          ev.stopPropagation();
+          const path = el.getAttribute("data-path") || "";
+          void chrome.runtime.sendMessage({
+            type: "pawn-overlay-open",
+            path,
+            title: el.getAttribute("data-title") || "",
+          });
+        },
+        true,
+      );
+      const host =
+        document.querySelector(
+          "[data-tid*='message-pane'], [data-tid*='chat-pane'], main",
+        ) || document.body;
+      if (getComputedStyle(host).position === "static") {
+        host.classList.add("pawn-overlay-host");
+      }
+      host.appendChild(el);
+    }
+    el.setAttribute("data-path", first.path || "");
+    el.setAttribute("data-title", first.title || "");
+    el.title = first.title
+      ? `Open in Obsidian: ${first.title}`
+      : "Open capture in Obsidian";
+    el.textContent =
+      unmatched.length === 1 ? "Pawn" : `Pawn · ${unmatched.length}`;
   }
 
   async function paint() {
     const t = teams();
     if (!t?.isTeamsPage?.()) return;
     const nextKey = t.currentPageKey() || "";
-    if (nextKey && nextKey !== pageKey) {
+    if (nextKey !== pageKey) {
       pageKey = nextKey;
       await refreshAnchors();
     }
@@ -115,21 +159,28 @@
     );
     if (!anchors.length) {
       removeStale(validIds);
+      paintChatBadge([]);
       return;
     }
     const roots = t.listVisibleMessages();
+    const unmatched = [];
     for (const row of anchors) {
       const sid = String(row.snippet_id || "").trim();
       if (!sid) continue;
+      // Prefer same page_key when both sides know it.
+      const rowPk = String(row.page_key || "").trim();
+      if (pageKey && rowPk && rowPk !== pageKey) continue;
+      let hit = false;
       for (const root of roots) {
         if (t.matchMessage(root, row)) {
-          paintOne(root, row);
+          hit = paintOne(root, row);
           break;
         }
       }
+      if (!hit) unmatched.push(row);
     }
-    // Drop badges whose vault anchor disappeared (virtualized hosts remove themselves).
     removeStale(validIds);
+    paintChatBadge(unmatched);
   }
 
   function hookSpa() {
@@ -152,22 +203,26 @@
   function observe() {
     if (observer) return;
     const target =
-      document.querySelector("[data-tid*='message-pane'], [data-tid*='chat-pane'], main") ||
-      document.body;
+      document.querySelector(
+        "[data-tid*='message-pane'], [data-tid*='chat-pane'], main",
+      ) || document.body;
     observer = new MutationObserver(() => schedulePaint(100));
     observer.observe(target, { childList: true, subtree: true });
-    window.addEventListener(
-      "scroll",
-      () => schedulePaint(150),
-      true,
-    );
+    window.addEventListener("scroll", () => schedulePaint(150), true);
   }
 
   chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     if (msg?.type === "pawn-overlays-refresh") {
       void (async () => {
-        if (Array.isArray(msg.anchors)) {
-          anchors = msg.anchors;
+        if (Array.isArray(msg.anchors) && msg.anchors.length) {
+          const byId = new Map(
+            anchors.map((a) => [String(a.snippet_id || ""), a]),
+          );
+          for (const row of msg.anchors) {
+            const sid = String(row.snippet_id || "");
+            if (sid) byId.set(sid, { ...byId.get(sid), ...row });
+          }
+          anchors = [...byId.values()];
         } else {
           await refreshAnchors();
         }
@@ -187,7 +242,6 @@
     hookSpa();
     observe();
     schedulePaint(200);
-    // Teams hydrates slowly — a couple of follow-up paints.
     setTimeout(() => schedulePaint(0), 1000);
     setTimeout(() => {
       void refreshAnchors().then(() => schedulePaint(0));

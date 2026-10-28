@@ -463,16 +463,20 @@ def _iter_capture_note_keys(cfg: Any, store: Any) -> list[str]:
 def list_anchors(
     cfg: Any,
     *,
-    page_key: str,
+    page_key: str = "",
     site: str = "",
     limit: int = _ANCHOR_SCAN_LIMIT,
     store: Any = None,
 ) -> list[dict[str, Any]]:
-    """Reverse-lookup overlay anchors by Teams (or other) page_key."""
+    """Reverse-lookup overlay anchors by page_key and/or site.
+
+    ``page_key`` filters to one conversation when set. When omitted, ``site``
+    is required and recent anchors for that site are returned (soft-match).
+    """
     pk = (page_key or "").strip()
-    if not pk:
-        raise CaptureError("page_key is required", status_code=422)
     site_filter = (site or "").strip().lower()
+    if not pk and not site_filter:
+        raise CaptureError("page_key or site is required", status_code=422)
     if store is None:
         store = vault_store_from_config(cfg)
     scan_cap = max(1, min(int(limit), _ANCHOR_SCAN_LIMIT))
@@ -488,9 +492,12 @@ def list_anchors(
             continue
         title = _title_from_capture_text(text, key)
         for row in merge_anchors_list(None, [a for a in raw_anchors if isinstance(a, dict)]):
-            if str(row.get("page_key") or "").strip() != pk:
+            row_site = str(row.get("site") or "").strip().lower()
+            row_pk = str(row.get("page_key") or "").strip()
+            if site_filter and row_site != site_filter:
                 continue
-            if site_filter and str(row.get("site") or "").strip().lower() != site_filter:
+            # Exact page_key match, or keep empty page_key rows for soft-match.
+            if pk and row_pk and row_pk != pk:
                 continue
             item = {
                 "path": key,

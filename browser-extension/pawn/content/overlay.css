@@ -39,3 +39,10 @@
 .pawn-overlay-host {
   position: relative !important;
 }
+
+.pawn-overlay-chat {
+  position: fixed !important;
+  top: 72px;
+  right: 24px;
+  z-index: 2147483640;
+}

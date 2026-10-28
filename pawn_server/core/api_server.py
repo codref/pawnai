@@ -1558,12 +1558,12 @@ async def captures_list(
 
 @app.get("/v1/captures/anchors", dependencies=[Depends(_require_token)])
 async def captures_anchors(
-    page_key: str = Query(..., min_length=1),
+    page_key: str = Query(default=""),
     site: str = Query(default=""),
     limit: int = Query(default=200, ge=1, le=200),
     cfg: Any = Depends(_get_cfg),
 ) -> dict:
-    """Reverse-lookup capture overlays for a conversation/page key."""
+    """Reverse-lookup capture overlays (by page_key and/or site)."""
     from pawn_server.core import captures  # noqa: PLC0415
 
     try:

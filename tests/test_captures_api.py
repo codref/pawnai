@@ -586,6 +586,14 @@ def test_save_anchor_frontmatter_and_lookup(env: SimpleNamespace) -> None:
         assert miss.status_code == 200
         assert miss.json()["data"] == []
 
+        by_site = client.get(
+            "/v1/captures/anchors",
+            headers=AUTH,
+            params={"site": "teams"},
+        )
+        assert by_site.status_code == 200
+        assert any(r["snippet_id"] == "anch-1" for r in by_site.json()["data"])
+
         # Idempotent re-save does not duplicate anchors
         again = client.post(
             "/v1/captures",

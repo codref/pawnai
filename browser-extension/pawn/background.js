@@ -197,17 +197,29 @@ function isTeamsUrl(url) {
   }
 }
 
+async function ensureTeamsScripts(tab) {
+  if (!tab?.id || !isTeamsUrl(tab.url || "")) return;
+  await chrome.scripting.executeScript({
+    target: { tabId: tab.id },
+    files: ["content/adapters/teams.js", "content/overlays.js"],
+  });
+  try {
+    await chrome.scripting.insertCSS({
+      target: { tabId: tab.id },
+      files: ["content/overlay.css"],
+    });
+  } catch (_) {
+    /* already injected via content_scripts */
+  }
+}
+
 async function teamsTabMessage(tab, message) {
   if (!tab?.id || !isTeamsUrl(tab.url || "")) return null;
   try {
     return await chrome.tabs.sendMessage(tab.id, message);
   } catch (_) {
-    // Content script may not be ready yet — inject once and retry.
     try {
-      await chrome.scripting.executeScript({
-        target: { tabId: tab.id },
-        files: ["content/adapters/teams.js"],
-      });
+      await ensureTeamsScripts(tab);
       return await chrome.tabs.sendMessage(tab.id, message);
     } catch (err) {
       return { ok: false, error: String(err?.message || err) };
@@ -282,6 +294,9 @@ async function captureRegion(tab) {
       Number.isFinite(response.centerX) &&
       Number.isFinite(response.centerY)
     ) {
+      // Let the region overlay finish unmounting before hit-testing the DOM.
+      await new Promise((r) => setTimeout(r, 50));
+      await ensureTeamsScripts(tab);
       const hit = await teamsTabMessage(tab, {
         type: "pawn-teams-capture-point",
         clientX: response.centerX,
@@ -290,6 +305,12 @@ async function captureRegion(tab) {
       if (hit?.ok && hit.anchor) {
         anchor = hit.anchor;
         if (hit.url) sourceUrl = hit.url;
+      }
+      if (hit && hit.matched === false) {
+        await pushPending({
+          info:
+            "Region clipped — Teams bubble not identified. After Save, look for a Pawn chip (top-right). Selection capture binds the badge to one message more reliably.",
+        });
       }
     }
     await enqueueSnippet({
@@ -691,12 +712,16 @@ async function cacheAnchorsForPage(pageKey, rows) {
 
 async function fetchAnchors(pageKey, site) {
   const pk = String(pageKey || "").trim();
-  if (!pk) return { ok: false, error: "page_key required", data: [] };
-  const params = new URLSearchParams({ page_key: pk });
-  if (site) params.set("site", site);
+  const siteName = String(site || "").trim();
+  if (!pk && !siteName) {
+    return { ok: false, error: "page_key or site required", data: [] };
+  }
+  const params = new URLSearchParams();
+  if (pk) params.set("page_key", pk);
+  if (siteName) params.set("site", siteName);
   const result = await apiFetch("GET", `/v1/captures/anchors?${params.toString()}`);
   const data = Array.isArray(result?.data) ? result.data : [];
-  await cacheAnchorsForPage(pk, data);
+  await cacheAnchorsForPage(pk || `__site:${siteName || "teams"}`, data);
   return { ok: true, data };
 }
 
@@ -728,8 +753,7 @@ async function mergeSavedAnchors(anchors) {
   const { pawnAnchorsByPage = {} } = await chrome.storage.local.get("pawnAnchorsByPage");
   const byPage = new Map();
   for (const row of rows) {
-    const pk = String(row.page_key || "").trim();
-    if (!pk) continue;
+    const pk = String(row.page_key || "").trim() || "__site:teams";
     if (!byPage.has(pk)) byPage.set(pk, []);
     byPage.get(pk).push(row);
   }
@@ -751,8 +775,25 @@ async function mergeSavedAnchors(anchors) {
     }
     pawnAnchorsByPage[pk] = { fetchedAt: Date.now(), data: merged };
   }
+  // Also keep a site-wide bucket for when the chat id is not in the URL.
+  const siteKey = "__site:teams";
+  const prevSite = Array.isArray(pawnAnchorsByPage[siteKey]?.data)
+    ? pawnAnchorsByPage[siteKey].data
+    : [];
+  const siteIndex = new Map(prevSite.map((r, i) => [String(r.snippet_id || ""), i]));
+  const siteMerged = [...prevSite];
+  for (const row of rows) {
+    const sid = String(row.snippet_id || "");
+    if (!sid) continue;
+    if (siteIndex.has(sid)) siteMerged[siteIndex.get(sid)] = { ...siteMerged[siteIndex.get(sid)], ...row };
+    else {
+      siteIndex.set(sid, siteMerged.length);
+      siteMerged.push(row);
+    }
+  }
+  pawnAnchorsByPage[siteKey] = { fetchedAt: Date.now(), data: siteMerged };
   await chrome.storage.local.set({ pawnAnchorsByPage });
-  await notifyTeamsTabs({ type: "pawn-overlays-refresh" });
+  await notifyTeamsTabs({ type: "pawn-overlays-refresh", anchors: rows });
 }
 
 chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
@@ -791,11 +832,24 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   if (msg?.type === "pawn-anchors-get") {
     void (async () => {
       const pk = String(msg.page_key || "").trim();
+      const site = String(msg.site || "teams").trim() || "teams";
       const { pawnAnchorsByPage = {} } = await chrome.storage.local.get("pawnAnchorsByPage");
-      const cached = pawnAnchorsByPage[pk]?.data;
+      const cached =
+        pawnAnchorsByPage[pk]?.data ||
+        pawnAnchorsByPage[`__site:${site}`]?.data ||
+        [];
       try {
-        const result = await fetchAnchors(pk, msg.site || "teams");
-        sendResponse({ ...result, cached });
+        const result = await fetchAnchors(pk, site);
+        // Prefer conversation matches; fall back to site-wide cache/API rows.
+        let data = result.data || [];
+        if (pk && !data.length && Array.isArray(cached) && cached.length) {
+          data = cached;
+        }
+        if (!pk) {
+          const siteCached = pawnAnchorsByPage[`__site:${site}`]?.data;
+          if (!data.length && Array.isArray(siteCached)) data = siteCached;
+        }
+        sendResponse({ ok: true, data, cached });
       } catch (err) {
         sendResponse({
           ok: false,

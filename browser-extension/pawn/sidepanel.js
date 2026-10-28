@@ -716,6 +716,9 @@ async function drainPending() {
   if (data.pendingNotice?.error) {
     showNotice(data.pendingNotice.error, true);
     await chrome.storage.local.remove("pendingNotice");
+  } else if (data.pendingNotice?.info) {
+    showNotice(data.pendingNotice.info, false);
+    await chrome.storage.local.remove("pendingNotice");
   }
   const pending = data.pendingSnippets || [];
   if (!pending.length) {

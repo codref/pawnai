@@ -218,14 +218,19 @@ is the vault frontmatter + `GET /v1/captures/anchors` — not the live DOM
 
 Flow:
 
-1. Select text in a Teams bubble (or region-clip whose center hits a bubble).
+1. Prefer **Selection** on the bubble text (most reliable). Region clip works
+   when the crop center hits a message; otherwise you get a chat-level **Pawn**
+   chip (top-right) after Save, not a per-bubble badge.
 2. Save to a **New page**, **Recent capture**, or **Research** target.
-3. Leave the chat and come back — the badge should reappear on that message.
+3. Leave the chat and come back — the badge / chip should reappear.
 4. Click **Pawn** → `obsidian://open` (requires `vault.obsidian_vault_name`).
 
 Matching prefers `message_id`; soft-match uses author + text quote when ids are
-missing (dashed badge). Session / other-note targets still save snippets but
-do not register overlays in v1.
+missing (dashed badge). When the chat id is missing from the Teams URL, the
+extension falls back to site-wide anchor lookup. Session / other-note targets
+still save snippets but do not register overlays in v1.
+
+Reload the unpacked extension after updating so content scripts pick up changes.
 
 ### Manual checklist
 
