@@ -24,6 +24,83 @@ const PX_PER_MIN = SLOT_PX / SLOT_MINUTES;
 const DEFAULT_FOCUS_BEFORE = 15;
 /** Sessions have a start clock but no end — one-slot chip on the grid. */
 const SESSION_CHIP_MINUTES = SLOT_MINUTES;
+/** Gap between side-by-side overlapping cards (px). */
+const OVERLAP_GAP_PX = 3;
+
+type GridSpan = {
+  start: number;
+  end: number;
+  kind: "session" | "event";
+  block: PlannerBlock;
+};
+
+type GridPlacement = GridSpan & {
+  col: number;
+  cols: number;
+};
+
+/** Greedy columns + per-cluster width (Outlook-style side-by-side). */
+function layoutOverlaps(spans: GridSpan[]): GridPlacement[] {
+  if (!spans.length) return [];
+  const sorted = [...spans].sort(
+    (a, b) => a.start - b.start || b.end - a.end || a.kind.localeCompare(b.kind),
+  );
+  const colEnds: number[] = [];
+  const withCol: { span: GridSpan; col: number }[] = [];
+  for (const span of sorted) {
+    let col = colEnds.findIndex((end) => end <= span.start);
+    if (col < 0) {
+      col = colEnds.length;
+      colEnds.push(span.end);
+    } else {
+      colEnds[col] = span.end;
+    }
+    withCol.push({ span, col });
+  }
+
+  // Connected components by time overlap → shared column count.
+  const n = withCol.length;
+  const parent = Array.from({ length: n }, (_, i) => i);
+  const find = (i: number): number => {
+    if (parent[i] !== i) parent[i] = find(parent[i]);
+    return parent[i];
+  };
+  const unite = (a: number, b: number) => {
+    const ra = find(a);
+    const rb = find(b);
+    if (ra !== rb) parent[ra] = rb;
+  };
+  for (let i = 0; i < n; i++) {
+    for (let j = i + 1; j < n; j++) {
+      const a = withCol[i].span;
+      const b = withCol[j].span;
+      if (a.start < b.end && b.start < a.end) unite(i, j);
+    }
+  }
+  const clusterMax = new Map<number, number>();
+  for (let i = 0; i < n; i++) {
+    const root = find(i);
+    clusterMax.set(root, Math.max(clusterMax.get(root) ?? 0, withCol[i].col + 1));
+  }
+  return withCol.map(({ span, col }, i) => ({
+    ...span,
+    col,
+    cols: Math.max(1, clusterMax.get(find(i)) ?? col + 1),
+  }));
+}
+
+function applyOverlapLayout(card: HTMLElement, place: GridPlacement): void {
+  const cols = Math.max(1, place.cols);
+  const col = Math.min(place.col, cols - 1);
+  const widthPct = 100 / cols;
+  card.style.left = `calc(${col * widthPct}% + ${OVERLAP_GAP_PX}px)`;
+  card.style.width = `calc(${widthPct}% - ${OVERLAP_GAP_PX * 2}px)`;
+  card.style.right = "auto";
+  if (cols > 1) {
+    card.classList.add("is-overlap");
+    card.style.zIndex = String(3 + col);
+  }
+}
 
 class ConfirmModal extends Modal {
   constructor(
@@ -309,11 +386,29 @@ function renderSchedule(
   }
 
   const layer = grid.createDiv({ cls: "pawn-day-blocks" });
+  const spans: GridSpan[] = [];
   for (const block of timedSessions) {
-    renderTimedSession(layer, plugin, block, store, opts, refresh);
+    const start = minutesFromMidnight(sessionClock(block.session)) ?? 0;
+    spans.push({
+      start,
+      end: start + SESSION_CHIP_MINUTES,
+      kind: "session",
+      block,
+    });
   }
   for (const block of timedActivities) {
-    renderTimedActivity(layer, plugin, day, block, store, refresh);
+    const start = minutesFromMidnight(block.event?.start) ?? 0;
+    let end = minutesFromMidnight(block.event?.end);
+    if (end == null || end <= start) end = start + SLOT_MINUTES;
+    spans.push({ start, end, kind: "event", block });
+  }
+  const placed = layoutOverlaps(spans);
+  for (const place of placed) {
+    if (place.kind === "session") {
+      renderTimedSession(layer, plugin, place.block, store, opts, refresh, place);
+    } else {
+      renderTimedActivity(layer, plugin, day, place.block, store, refresh, place);
+    }
   }
 
   const todayKey = window.moment().format("YYYY-MM-DD");
@@ -349,15 +444,17 @@ function renderTimedSession(
   store: DayStore,
   opts: { onOpenChat: (conversation: string) => void },
   refresh: () => void,
+  place: GridPlacement,
 ): void {
   const session = block.session!;
-  const startMin = minutesFromMidnight(sessionClock(session)) ?? 0;
-  const duration = SESSION_CHIP_MINUTES;
+  const startMin = place.start;
+  const duration = Math.max(SESSION_CHIP_MINUTES, place.end - place.start);
   const title = session.title || session.session_id || "Session";
 
   const card = parent.createDiv({ cls: "pawn-day-activity is-session" });
   card.style.top = `${startMin * PX_PER_MIN}px`;
   card.style.height = `${Math.max(SLOT_PX - 2, duration * PX_PER_MIN - 2)}px`;
+  applyOverlapLayout(card, place);
 
   const titleEl = card.createSpan({
     cls: "pawn-day-activity-title",
@@ -415,11 +512,11 @@ function renderTimedActivity(
   block: PlannerBlock,
   store: DayStore,
   refresh: () => void,
+  place: GridPlacement,
 ): void {
   const event = block.event!;
-  const startMin = minutesFromMidnight(event.start) ?? 0;
-  let endMin = minutesFromMidnight(event.end);
-  if (endMin == null || endMin <= startMin) endMin = startMin + SLOT_MINUTES;
+  const startMin = place.start;
+  const endMin = place.end;
   const duration = Math.max(SLOT_MINUTES, endMin - startMin);
   const focusOn = Boolean(event.focus);
   const focusBefore = Math.max(
@@ -441,6 +538,7 @@ function renderTimedActivity(
   });
   card.style.top = `${startMin * PX_PER_MIN}px`;
   card.style.height = `${Math.max(SLOT_PX - 2, duration * PX_PER_MIN - 2)}px`;
+  applyOverlapLayout(card, place);
 
   // Row 1 — title (span, not button — Obsidian button theme blows up the card)
   const titleEl = card.createSpan({

@@ -1649,6 +1649,12 @@ button.pawn-chip-pin:hover {
   flex-direction: column;
   align-items: flex-start;
   gap: 0.2rem;
+  transition:
+    left 0.12s ease,
+    width 0.12s ease,
+    min-height 0.12s ease,
+    box-shadow 0.12s ease,
+    z-index 0s;
 }
 
 .pawn-day-activity.is-focus {
@@ -1659,6 +1665,18 @@ button.pawn-chip-pin:hover {
 .pawn-day-activity.is-session {
   background: color-mix(in srgb, var(--interactive-accent) 10%, var(--background-secondary));
   border-style: dashed;
+}
+
+/* Side-by-side overlaps: hover expands across the row for readability. */
+.pawn-day-activity.is-overlap:hover,
+.pawn-day-activity.is-overlap:focus-within {
+  left: 2px !important;
+  width: calc(100% - 4px) !important;
+  min-height: 96px;
+  z-index: 30 !important;
+  overflow: visible;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.18);
+  background: var(--background-primary);
 }
 
 /* Plain text link — never Obsidian's button chrome. */
