@@ -2,74 +2,71 @@
 
 .pawn-overlay-badge {
   position: absolute;
-  top: 2px;
-  right: 6px;
+  top: 8px;
+  right: 10px;
   z-index: 2147483000;
   box-sizing: border-box;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 22px;
-  height: 22px;
+  width: 24px;
+  height: 24px;
   padding: 0;
-  border: 1px solid rgba(74, 158, 142, 0.7);
+  border: 1.5px solid #4a9e8e;
   border-radius: 50%;
-  background: #1a3d36;
-  color: #d7f3ec;
-  text-decoration: none;
+  background: #14352f;
+  color: #e8f7f3;
+  text-decoration: none !important;
   cursor: pointer;
   pointer-events: auto;
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.28);
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.35);
   user-select: none;
-  opacity: 0.95;
+  opacity: 0.96;
+  line-height: 1;
 }
 
-.pawn-overlay-badge svg {
-  width: 12px;
-  height: 12px;
-  display: block;
-  fill: currentColor;
+.pawn-overlay-glyph {
+  font-size: 14px;
+  line-height: 1;
   pointer-events: none;
+  /* Chess pawn — clearer than a tiny SVG silhouette. */
+  font-family: "Segoe UI Symbol", "Apple Color Emoji", "Noto Sans Symbols2",
+    "DejaVu Sans", sans-serif;
 }
 
 .pawn-overlay-badge:hover,
 .pawn-overlay-badge:focus-visible {
   opacity: 1;
-  outline: 1px solid #4a9e8e;
+  outline: 2px solid #6bc4b4;
   outline-offset: 2px;
+  background: #1f4f46;
   color: #fff;
-  background: #24574d;
 }
 
 .pawn-overlay-badge[data-pawn-soft="1"] {
   border-style: dashed;
-  opacity: 0.8;
+  opacity: 0.85;
 }
 
 .pawn-overlay-host {
   position: relative !important;
 }
 
-/* Floating chat chip — circle + optional count; draggable. */
+/* Floating chat chip — docked to chat pane unless user dragged it. */
 .pawn-overlay-chat {
   position: fixed !important;
-  top: auto;
-  right: 28px;
-  bottom: 120px;
-  left: auto;
   z-index: 2147483640;
-  width: 36px;
-  height: 36px;
-  border: 1px solid #4a9e8e;
-  background: #1a3d36;
-  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.4);
+  width: 40px;
+  height: 40px;
+  border: 2px solid #4a9e8e;
+  background: #14352f;
+  box-shadow: 0 3px 14px rgba(0, 0, 0, 0.45);
   cursor: grab;
   touch-action: none;
 }
 
-.pawn-overlay-chat svg {
-  width: 18px;
-  height: 18px;
+.pawn-overlay-chat .pawn-overlay-glyph {
+  font-size: 20px;
 }
 
 .pawn-overlay-chat:active,
@@ -80,15 +77,15 @@
 
 .pawn-overlay-count {
   position: absolute;
-  top: -4px;
-  right: -4px;
-  min-width: 16px;
-  height: 16px;
+  top: -5px;
+  right: -5px;
+  min-width: 18px;
+  height: 18px;
   padding: 0 4px;
   border-radius: 999px;
   background: #c45c26;
   color: #fff;
-  font: 700 10px/16px system-ui, -apple-system, "Segoe UI", sans-serif;
+  font: 700 10px/18px system-ui, -apple-system, "Segoe UI", sans-serif;
   text-align: center;
   pointer-events: none;
   box-shadow: 0 1px 2px rgba(0, 0, 0, 0.35);
@@ -97,35 +94,70 @@
 .pawn-overlay-tip {
   position: fixed;
   z-index: 2147483641;
-  max-width: 280px;
-  padding: 8px 10px;
-  border: 1px solid rgba(74, 158, 142, 0.55);
-  border-radius: 8px;
-  background: rgba(14, 22, 20, 0.96);
+  width: min(320px, calc(100vw - 16px));
+  max-height: min(360px, calc(100vh - 24px));
+  overflow: auto;
+  padding: 10px 10px 8px;
+  border: 1px solid rgba(74, 158, 142, 0.6);
+  border-radius: 10px;
+  background: rgba(14, 22, 20, 0.98);
   color: #e8f7f3;
-  font: 12px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif;
-  box-shadow: 0 4px 18px rgba(0, 0, 0, 0.45);
-  pointer-events: none;
+  font: 12px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif;
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.55);
+  pointer-events: auto;
 }
 
 .pawn-overlay-tip strong {
   display: block;
-  margin-bottom: 4px;
+  margin: 0 2px 8px;
   font-weight: 650;
   color: #fff;
 }
 
-.pawn-overlay-tip ul {
-  margin: 0;
-  padding: 0 0 0 1.1em;
+.pawn-overlay-tip-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
 }
 
-.pawn-overlay-tip li {
-  margin: 0 0 2px;
+.pawn-overlay-tip-item {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  width: 100%;
+  margin: 0;
+  padding: 8px 10px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.04);
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+  font: inherit;
+}
+
+.pawn-overlay-tip-item:hover,
+.pawn-overlay-tip-item:focus-visible {
+  border-color: rgba(74, 158, 142, 0.65);
+  background: rgba(74, 158, 142, 0.18);
+  outline: none;
+}
+
+.pawn-overlay-tip-date {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  color: #9fd9cc;
+}
+
+.pawn-overlay-tip-title {
+  color: #f3fffb;
+  word-break: break-word;
 }
 
 .pawn-overlay-tip .pawn-overlay-tip-hint {
-  margin-top: 6px;
-  opacity: 0.75;
+  margin: 8px 2px 2px;
+  opacity: 0.72;
   font-size: 11px;
 }

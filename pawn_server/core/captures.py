@@ -66,6 +66,7 @@ def normalize_anchor(raw: Any, *, snippet_id: str) -> dict[str, Any] | None:
     page_key = str(raw.get("page_key") or "").strip()
     message_id = str(raw.get("message_id") or "").strip()
     deep_link = str(raw.get("deep_link") or "").strip()
+    captured_at = str(raw.get("captured_at") or "").strip()
     fallback_raw = raw.get("fallback")
     fallback: dict[str, str] = {}
     if isinstance(fallback_raw, dict):
@@ -80,12 +81,25 @@ def normalize_anchor(raw: Any, *, snippet_id: str) -> dict[str, Any] | None:
         out["message_id"] = message_id
     if deep_link:
         out["deep_link"] = deep_link
+    if captured_at:
+        out["captured_at"] = captured_at
     if fallback:
         out["fallback"] = fallback
     # Need at least a page/message id or a soft-match fallback.
     if not page_key and not message_id and not fallback:
         return None
     return out
+
+
+def anchor_from_snippet(raw: dict[str, Any], *, snippet_id: str = "") -> dict[str, Any] | None:
+    """Build a normalized overlay anchor from a capture snippet payload."""
+    sid = (snippet_id or str(raw.get("id") or "")).strip()
+    anchor_raw = raw.get("anchor")
+    payload: dict[str, Any] = dict(anchor_raw) if isinstance(anchor_raw, dict) else {}
+    when = str(raw.get("captured_at") or payload.get("captured_at") or "").strip()
+    if when and not str(payload.get("captured_at") or "").strip():
+        payload["captured_at"] = when
+    return normalize_anchor(payload, snippet_id=sid)
 
 
 def _anchor_dedupe_key(anchor: dict[str, Any]) -> str:
@@ -119,7 +133,7 @@ def merge_anchors_list(
             if not site:
                 continue
             norm = {"snippet_id": sid, "site": site}
-            for key in ("page_key", "message_id", "deep_link"):
+            for key in ("page_key", "message_id", "deep_link", "captured_at"):
                 val = str(row.get(key) or "").strip()
                 if val:
                     norm[key] = val
@@ -491,6 +505,7 @@ def list_anchors(
         if not isinstance(raw_anchors, list) or not raw_anchors:
             continue
         title = _title_from_capture_text(text, key)
+        note_when = str(meta.get("captured_at") or meta.get("created") or "").strip()
         for row in merge_anchors_list(None, [a for a in raw_anchors if isinstance(a, dict)]):
             row_site = str(row.get("site") or "").strip().lower()
             row_pk = str(row.get("page_key") or "").strip()
@@ -506,9 +521,11 @@ def list_anchors(
                 "site": row.get("site"),
                 "page_key": row.get("page_key"),
             }
-            for field in ("message_id", "deep_link", "fallback"):
+            for field in ("message_id", "deep_link", "fallback", "captured_at"):
                 if row.get(field):
                     item[field] = row[field]
+            if not item.get("captured_at") and note_when:
+                item["captured_at"] = note_when
             out.append(item)
     return out
 
@@ -853,7 +870,7 @@ def save_research_snippets(
             store.write_bytes(image_key, data, content_type=_content_type(suffix))
             image_keys.append(image_key)
 
-        anchor = normalize_anchor(raw.get("anchor"), snippet_id=snippet_id)
+        anchor = anchor_from_snippet(raw, snippet_id=snippet_id)
         atom_anchors = [anchor] if anchor else []
         src = snippet_source_url(raw, source_url)
         body = _render_research_atom(
@@ -1168,7 +1185,7 @@ def save_snippets(
         blocks.append(block)
         written.append(snippet_id)
         if register_overlays:
-            anchor = normalize_anchor(raw.get("anchor"), snippet_id=snippet_id)
+            anchor = anchor_from_snippet(raw, snippet_id=snippet_id)
             if anchor:
                 pending_anchors.append(anchor)
 

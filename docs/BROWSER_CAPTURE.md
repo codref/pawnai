@@ -232,8 +232,9 @@ still save snippets but do not register overlays in v1.
 
 The floating chip is a **circle with a pawn icon**. A small number on it is the
 count of captures for this chat that are not currently pinned to a visible
-message bubble. Hover shows titles; click opens the first note in Obsidian;
-drag moves the chip (position is remembered).
+message bubble. Hover opens a menu of captures (newest first) with **capture
+date + title**; click a row to open that note in Obsidian. Drag moves the chip
+(position is remembered).
 
 Reload the unpacked extension after updating so content scripts pick up changes.
 

@@ -540,6 +540,7 @@ def test_save_anchor_frontmatter_and_lookup(env: SimpleNamespace) -> None:
                         "id": "anch-1",
                         "kind": "text",
                         "text": "No reply yet- Galls is very busy",
+                        "captured_at": "2026-10-28T18:36:00Z",
                         "anchor": _TEAMS_ANCHOR,
                     }
                 ],
@@ -552,11 +553,13 @@ def test_save_anchor_frontmatter_and_lookup(env: SimpleNamespace) -> None:
         assert len(body["anchors"]) == 1
         assert body["anchors"][0]["message_id"] == "1563480968434"
         assert body["anchors"][0]["path"] == path
+        assert body["anchors"][0]["captured_at"] == "2026-10-28T18:36:00Z"
 
         note = env.store.read(path)
         meta, _ = parse_frontmatter(note)
         assert meta.get("anchors")
         assert meta["anchors"][0]["snippet_id"] == "anch-1"
+        assert meta["anchors"][0]["captured_at"] == "2026-10-28T18:36:00Z"
         assert meta["source_url"] == _TEAMS_ANCHOR["deep_link"]
         assert _TEAMS_ANCHOR["deep_link"] in note
 
@@ -576,6 +579,7 @@ def test_save_anchor_frontmatter_and_lookup(env: SimpleNamespace) -> None:
         assert len(data) == 1
         assert data[0]["snippet_id"] == "anch-1"
         assert data[0]["path"] == path
+        assert data[0]["captured_at"] == "2026-10-28T18:36:00Z"
         assert data[0]["fallback"]["author"] == "Robert Bryant"
 
         miss = client.get(
