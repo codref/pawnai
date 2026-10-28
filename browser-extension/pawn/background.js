@@ -314,39 +314,97 @@ async function scrapeOutlookEvent(tab) {
   const [{ result }] = await chrome.scripting.executeScript({
     target: { tabId: tab.id },
     func: () => {
-      const textOf = (sel) => {
-        const node = document.querySelector(sel);
-        return String(node?.textContent || "").replace(/\s+/g, " ").trim();
+      const norm = (s) => String(s || "").replace(/\s+/g, " ").trim();
+      const isStubTitle = (t) =>
+        /^(calendar|mail|outlook)\b/i.test(t) ||
+        /-\s*outlook\s*$/i.test(t) ||
+        /^calendar\s*-/i.test(t);
+
+      const candidates = [];
+      const push = (t) => {
+        const v = norm(t);
+        if (v && v.length >= 2 && v.length < 200) candidates.push(v);
       };
-      const title =
-        textOf('[aria-label="Event"] [role="heading"]') ||
-        textOf('[data-app-section="CalendarItemComposition"] h1') ||
-        textOf("h1") ||
-        document.title ||
-        "";
-      // Outlook often exposes start/end in time elements or read-only inputs.
-      const timeBits = Array.from(
-        document.querySelectorAll("time, input[aria-label*='Start'], input[aria-label*='End']"),
-      )
-        .map((n) => {
-          if (n.tagName === "TIME") return n.getAttribute("datetime") || n.textContent || "";
-          return n.value || n.getAttribute("aria-label") || n.textContent || "";
-        })
-        .map((s) => String(s).replace(/\s+/g, " ").trim())
-        .filter(Boolean);
-      let start = timeBits[0] || "";
-      let end = timeBits[1] || "";
+      for (const sel of [
+        'input[aria-label*="Add a title" i]',
+        'input[aria-label*="title" i]',
+        'textarea[aria-label*="title" i]',
+        '[aria-label="Event"] [role="heading"]',
+        '[data-app-section="CalendarItemComposition"] h1',
+        '[data-app-section="CalendarItemComposition"] [role="heading"]',
+        '[role="heading"][aria-level="1"]',
+        '[role="heading"][aria-level="2"]',
+        "h1",
+        "h2",
+      ]) {
+        document.querySelectorAll(sel).forEach((n) => {
+          push(n.value || n.getAttribute("aria-label") || n.textContent);
+        });
+      }
+      // Invite subject often sits above "Microsoft Teams meeting".
+      const bodyText = norm(document.body?.innerText || "").slice(0, 8000);
+      const teamsIdx = bodyText.search(/Microsoft Teams meeting/i);
+      if (teamsIdx > 0) {
+        const before = bodyText.slice(Math.max(0, teamsIdx - 180), teamsIdx);
+        const lines = before
+          .split(/\n| {2,}/)
+          .map(norm)
+          .filter(Boolean);
+        if (lines.length) push(lines[lines.length - 1]);
+      }
+
+      let title = "";
+      for (const c of candidates) {
+        if (!isStubTitle(c)) {
+          title = c;
+          break;
+        }
+      }
+      if (!title) title = candidates.find((c) => !isStubTitle(c)) || "";
+      if (!title || isStubTitle(title)) {
+        const page = norm(document.title || "");
+        title = isStubTitle(page) ? title || page : page;
+      }
+      title = title.replace(/\s+[–—|-]\s+Mail.*$/i, "").trim();
+
+      // Prefer the visible range: "10/28/2026, 11:00 AM – 11:30 AM"
+      let start = "";
+      let end = "";
+      const range = bodyText.match(
+        /(\d{1,2}\/\d{1,2}\/\d{4}),?\s+(\d{1,2}:\d{2}\s*[AP]M)\s*[–—-]\s*(\d{1,2}:\d{2}\s*[AP]M)/i,
+      );
+      if (range) {
+        start = `${range[1]}, ${range[2]}`;
+        end = `${range[1]}, ${range[3]}`;
+      } else {
+        const timeBits = Array.from(
+          document.querySelectorAll(
+            "time, input[aria-label*='Start' i], input[aria-label*='End' i]",
+          ),
+        )
+          .map((n) => {
+            if (n.tagName === "TIME") {
+              return n.getAttribute("datetime") || n.textContent || "";
+            }
+            return n.value || n.getAttribute("aria-label") || n.textContent || "";
+          })
+          .map(norm)
+          .filter(Boolean);
+        start = timeBits[0] || "";
+        end = timeBits[1] || "";
+      }
+
       const attendees = Array.from(
         document.querySelectorAll(
-          '[aria-label*="Attendee"], [aria-label*="Participant"], [data-testid*="attendee"]',
+          '[aria-label*="Attendee" i], [aria-label*="Participant" i], [data-testid*="attendee" i]',
         ),
       )
-        .map((n) => String(n.textContent || "").replace(/\s+/g, " ").trim())
+        .map((n) => norm(n.textContent))
         .filter((s) => s && s.length < 80)
         .slice(0, 12);
-      const selection = String(window.getSelection?.()?.toString() || "").trim();
+      const selection = norm(window.getSelection?.()?.toString() || "");
       return {
-        title: title.replace(/\s+[–—|-]\s+Mail.*$/i, "").trim(),
+        title,
         start,
         end,
         attendees,

@@ -410,6 +410,90 @@ def upsert_event(
     return parse_event_note(text, path=path)
 
 
+def event_assets_dir(cfg: Any) -> str:
+    return f"{events_dir(cfg)}/assets"
+
+
+def _append_snippets_to_event(
+    cfg: Any,
+    *,
+    path: str,
+    snippets: list[dict[str, Any]],
+    store: Any,
+) -> tuple[list[str], list[str]]:
+    """Append text/image snippet blocks (idempotent via pawn-snippet markers)."""
+    from pawn_server.core.captures import (  # noqa: PLC0415
+        CaptureError,
+        _SNIPPET_ID_RE,
+        _content_type,
+        _decode_image,
+        _image_suffix,
+        note_has_snippet,
+        render_snippet_block,
+    )
+
+    try:
+        existing = store.read(path)
+    except VaultNotFound as exc:
+        raise PlannerError(f"event note not found: {path}", status_code=404) from exc
+
+    written: list[str] = []
+    skipped: list[str] = []
+    blocks: list[str] = []
+    image_keys: list[str] = []
+
+    for raw in snippets:
+        snippet_id = str(raw.get("id") or "").strip()
+        if not snippet_id or not _SNIPPET_ID_RE.match(snippet_id):
+            raise PlannerError(f"invalid snippet id {snippet_id!r}", status_code=422)
+        if note_has_snippet(existing, snippet_id) or note_has_snippet(
+            "\n".join(blocks), snippet_id
+        ):
+            skipped.append(snippet_id)
+            continue
+        skind = str(raw.get("kind") or "text").strip().lower()
+        if skind not in {"text", "image"}:
+            raise PlannerError(f"unknown snippet kind {skind!r}", status_code=422)
+        image_key = ""
+        if skind == "image":
+            try:
+                data = _decode_image(str(raw.get("data_base64") or ""))
+            except CaptureError as exc:
+                raise PlannerError(str(exc), status_code=exc.status_code) from exc
+            suffix = _image_suffix(str(raw.get("media_type") or ""))
+            image_key = f"{event_assets_dir(cfg)}/{snippet_id}{suffix}"
+            store.write_bytes(image_key, data, content_type=_content_type(suffix))
+            image_keys.append(image_key)
+        block = render_snippet_block(
+            snippet_id=snippet_id,
+            kind=skind,
+            text=str(raw.get("text") or ""),
+            image_key=image_key,
+            source_url=str(raw.get("source_url") or ""),
+            captured_at=str(raw.get("captured_at") or ""),
+        )
+        blocks.append(block)
+        written.append(snippet_id)
+
+    if not blocks:
+        return written, skipped
+
+    meta, body = parse_frontmatter(existing)
+    prep = extract_prep(existing)
+    rest = _PREP_SECTION_RE.sub("", body).rstrip()
+    # Drop a leading H1 that duplicates the title — keep real content.
+    new_body = rest + ("\n\n" if rest else "") + "".join(blocks)
+    if prep.strip():
+        new_body = new_body.rstrip() + f"\n\n## Prep\n\n{prep.strip()}\n"
+    updated = dump_frontmatter(meta, new_body)
+    try:
+        store.write(path, updated)
+    except VaultWriteDenied as exc:
+        raise PlannerError(str(exc), status_code=403) from exc
+    publish_vault_event([path, *image_keys], source="planner")
+    return written, skipped
+
+
 def upsert_event_from_capture(
     cfg: Any,
     *,
@@ -417,27 +501,54 @@ def upsert_event_from_capture(
     snippets: list[dict[str, Any]],
     store: Any = None,
 ) -> dict[str, Any]:
-    """Capture target ``kind: event`` → planner upsert."""
+    """Capture target ``kind: event`` → upsert metadata, then append snippets.
+
+    Text and image snippets are stored under the event note (images in
+    ``Events/assets/``). Re-saves are idempotent via snippet markers — a later
+    whole-view clip updates the same event instead of leaving a stub.
+    """
+    if store is None:
+        store = vault_store_from_config(cfg)
     title = str(target.get("title") or "").strip()
     start = str(target.get("start") or "").strip()
     end = str(target.get("end") or "").strip()
     source_url = str(target.get("source_url") or "").strip()
     attendees = _meta_list(target.get("attendees"))
     topics = _meta_list(target.get("topics"))
-    body_parts: list[str] = []
+    path_hint = normalize_vault_key(str(target.get("path") or "").strip())
+    event_id_hint = str(target.get("id") or target.get("event_id") or "").strip()
+
     for raw in snippets:
-        if str(raw.get("kind") or "text").strip().lower() != "text":
-            continue
-        text = str(raw.get("text") or "").strip()
-        if text:
-            body_parts.append(text)
         if not source_url:
             source_url = str(raw.get("source_url") or "").strip()
-    if not title and body_parts:
-        title = body_parts[0].splitlines()[0][:80]
+        if not title and str(raw.get("kind") or "text") == "text":
+            line = str(raw.get("text") or "").strip().splitlines()
+            if line:
+                title = line[0][:80]
+
+    if path_hint:
+        # Sticky path from the extension — append to that note, keep its identity.
+        try:
+            existing = parse_event_note(store.read(path_hint), path=path_hint)
+            event_id_hint = event_id_hint or str(existing.get("id") or "")
+            if not title:
+                title = str(existing.get("title") or "") or "event"
+            if not start:
+                start = str(existing.get("start") or "")
+            if not end:
+                end = str(existing.get("end") or "")
+            if not source_url:
+                source_url = str(existing.get("source_url") or "")
+            if attendees is None or not attendees:
+                attendees = list(existing.get("attendees") or [])
+        except Exception:  # noqa: BLE001
+            pass
     if not title:
         raise PlannerError("event capture needs a title", status_code=422)
+
     source = "outlook" if "outlook" in source_url.lower() else "capture"
+    # Metadata only — snippet body is appended below so images are not dropped
+    # and re-saves do not wipe prior clips.
     event = upsert_event(
         cfg,
         title=title,
@@ -447,15 +558,21 @@ def upsert_event_from_capture(
         source_url=source_url,
         attendees=attendees,
         topics=topics,
-        body="\n\n".join(body_parts),
+        body="",
+        event_id=event_id_hint,
         store=store,
+    )
+    # If the client sent a sticky path that differs (rare), prefer fingerprint hit.
+    path = str(event.get("path") or path_hint)
+    written, skipped = _append_snippets_to_event(
+        cfg, path=path, snippets=snippets, store=store
     )
     return {
         "mode": "event",
-        "path": event["path"],
+        "path": path,
         "event_id": event["id"],
-        "written": [str(s.get("id") or "") for s in snippets if s.get("id")],
-        "skipped": [],
+        "written": written,
+        "skipped": skipped,
         "title": event["title"],
     }
 

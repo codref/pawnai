@@ -1572,6 +1572,8 @@ function buildTarget() {
       source_url: state.sourceUrl,
       start: state.eventStart || undefined,
       end: state.eventEnd || undefined,
+      // Sticky path after first Save so later clips (screenshots) append.
+      path: state.stickyPath || undefined,
     };
   }
   if (state.targetKind === "research") {
@@ -1716,8 +1718,21 @@ function normalizeScrapedTime(raw) {
   if (!s) return "";
   const iso = s.match(/(\d{4}-\d{2}-\d{2})[T ](\d{2}:\d{2})/);
   if (iso) return `${iso[1]}T${iso[2]}`;
+  // Outlook reading pane: "10/28/2026, 11:00 AM"
+  const us = s.match(
+    /(\d{1,2})\/(\d{1,2})\/(\d{4}),?\s+(\d{1,2}):(\d{2})\s*([AP]M)/i,
+  );
+  if (us) {
+    const pad = (n) => String(n).padStart(2, "0");
+    let hour = parseInt(us[4], 10);
+    const min = pad(us[5]);
+    const ap = us[6].toUpperCase();
+    if (ap === "PM" && hour < 12) hour += 12;
+    if (ap === "AM" && hour === 12) hour = 0;
+    return `${us[3]}-${pad(us[1])}-${pad(us[2])}T${pad(hour)}:${min}`;
+  }
   const day = s.match(/(\d{4}-\d{2}-\d{2})/);
-  if (day) return day[1];
+  if (day && !/\d{1,2}:\d{2}/.test(s)) return day[1];
   const m = Date.parse(s);
   if (!Number.isNaN(m)) {
     const d = new Date(m);
@@ -1725,6 +1740,16 @@ function normalizeScrapedTime(raw) {
     return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
   }
   return s.slice(0, 32);
+}
+
+function isStubEventTitle(t) {
+  const s = String(t || "").trim();
+  return (
+    !s ||
+    /^(calendar|mail|outlook)\b/i.test(s) ||
+    /^calendar\s*-/i.test(s) ||
+    /-\s*outlook\s*$/i.test(s)
+  );
 }
 
 /**
@@ -1741,9 +1766,14 @@ async function addToPlanner() {
     return;
   }
   const url = scraped?.url || state.sourceUrl || "";
-  const title =
-    (scraped?.title || scraped?.page_title || state.title || "Outlook event").trim() ||
-    "Outlook event";
+  let title = (scraped?.title || "").trim();
+  if (isStubEventTitle(title)) {
+    const page = (scraped?.page_title || "").trim();
+    title = !isStubEventTitle(page) ? page : title;
+  }
+  if (isStubEventTitle(title)) {
+    title = (state.title || "").trim() || "Outlook event";
+  }
   const start = normalizeScrapedTime(scraped?.start);
   const end = normalizeScrapedTime(scraped?.end);
   const bodyParts = [];
@@ -1760,14 +1790,14 @@ async function addToPlanner() {
   state.title = title;
   el.title.value = title;
   state.sourceUrl = url;
-  state.eventStart = start;
-  state.eventEnd = end;
+  if (start) state.eventStart = start;
+  if (end) state.eventEnd = end;
   state.stickyPath = "";
   state.sessionId = "";
 
   const text =
     bodyParts.join("\n\n") ||
-    `Outlook event: ${title}${start ? `\nStart: ${start}` : ""}`;
+    `Outlook event: ${title}${start ? `\nStart: ${start}` : ""}${end ? `\nEnd: ${end}` : ""}`;
   const snip = {
     id: `evt${Date.now().toString(36)}`,
     kind: "text",
@@ -1776,7 +1806,9 @@ async function addToPlanner() {
     captured_at: new Date().toISOString(),
     saved: false,
   };
-  state.tray = [snip];
+  // Keep any unsaved clips already in the tray (e.g. a whole-view shot).
+  const kept = state.tray.filter((s) => !s.saved);
+  state.tray = [snip, ...kept.filter((s) => s.id !== snip.id)];
   await persistTarget();
   await persistTray();
   renderTargetExtra();

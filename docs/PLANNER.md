@@ -76,6 +76,9 @@ link need the server.
 2. Side panel → **Add to planner** (or target **Planner event…** and Save).
 3. Extension scrapes title / times / attendees when it can; otherwise uses the
    tab title and any selection. You can edit start/end before Save.
+4. Later clips (selection / whole-view screenshot) on the same **Planner event**
+   target append into that note under `Events/assets/` (snippet markers), not a
+   new stub.
 
 Hosts: `outlook.office.com`, `outlook.office365.com`, `outlook.live.com`,
 `outlook.cloud.microsoft`.

@@ -224,6 +224,42 @@ def test_planner_day_and_capture_event(env: SimpleNamespace) -> None:
         assert body["path"].startswith("Pawn/Events/")
         note = env.store.read(body["path"])
         assert "Agenda: roadmap" in note
+        assert "<!-- pawn-snippet:snip-evt-1 -->" in note
+
+        # Second save with sticky path + image must append, not leave a stub.
+        import base64
+
+        png = base64.b64decode(
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="
+        )
+        cap2 = client.post(
+            "/v1/captures",
+            headers=AUTH,
+            json={
+                "target": {
+                    "kind": "event",
+                    "title": "Captured meet",
+                    "start": "2026-10-30T15:00",
+                    "source_url": "https://outlook.live.com/calendar/0/item/1",
+                    "path": body["path"],
+                },
+                "snippets": [
+                    {
+                        "id": "snip-evt-img",
+                        "kind": "image",
+                        "data_base64": base64.b64encode(png).decode("ascii"),
+                        "media_type": "image/png",
+                    }
+                ],
+            },
+        )
+        assert cap2.status_code == 200, cap2.text
+        assert cap2.json()["path"] == body["path"]
+        assert "snip-evt-img" in cap2.json()["written"]
+        note2 = env.store.read(body["path"])
+        assert "Agenda: roadmap" in note2
+        assert "<!-- pawn-snippet:snip-evt-img -->" in note2
+        assert "![[" in note2 and "Events/assets/snip-evt-img" in note2
 
 
 def test_title_similarity() -> None:
