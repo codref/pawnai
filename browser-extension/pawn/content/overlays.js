@@ -8,8 +8,63 @@
   const CHAT_BADGE_ID = "pawn-overlay-chat-badge";
   const TIP_ID = "pawn-overlay-tip";
   const POS_KEY = "pawnOverlayChatPos";
-  /** Unicode chess pawn — reads clearly at 24–40px (SVG silhouette looked like a check). */
-  const PAWN_GLYPH = '<span class="pawn-overlay-glyph" aria-hidden="true">♟</span>';
+  /** Compact pawn icon — SVG so Teams font CSS cannot turn it into a giant glyph. */
+  const PAWN_SVG =
+    '<svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true" focusable="false">' +
+    '<path fill="currentColor" d="M12 2a3 3 0 0 0-1.5 5.6L9.6 10H8a1 1 0 1 0 0 2h8a1 1 0 1 0 0-2h-1.6l-.9-2.4A3 3 0 0 0 12 2zm-4.5 12h9a1.5 1.5 0 0 1 1.5 1.5V16c0 2.2-2.5 4-6 4s-6-1.8-6-4v-.5A1.5 1.5 0 0 1 7.5 14z"/>' +
+    "</svg>";
+  const CHAT_SHADOW_CSS = `
+:host {
+  all: initial;
+  position: fixed !important;
+  z-index: 2147483640 !important;
+  width: 40px !important;
+  height: 40px !important;
+  display: block !important;
+  pointer-events: auto !important;
+}
+button.chip {
+  all: unset;
+  box-sizing: border-box;
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+  border: 2px solid #4a9e8e;
+  border-radius: 50%;
+  background: #14352f;
+  color: #e8f7f3;
+  cursor: grab;
+  box-shadow: 0 3px 14px rgba(0,0,0,.45);
+  touch-action: none;
+  user-select: none;
+}
+button.chip:hover, button.chip:focus-visible {
+  background: #1f4f46;
+  outline: 2px solid #6bc4b4;
+  outline-offset: 2px;
+}
+button.chip.is-dragging { cursor: grabbing; }
+button.chip svg { width: 20px; height: 20px; display: block; fill: currentColor; pointer-events: none; }
+span.count {
+  position: absolute;
+  top: -5px;
+  right: -5px;
+  box-sizing: border-box;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 4px;
+  border-radius: 999px;
+  background: #c45c26;
+  color: #fff;
+  font: 700 10px/18px system-ui, -apple-system, "Segoe UI", sans-serif;
+  text-align: center;
+  pointer-events: none;
+  box-shadow: 0 1px 2px rgba(0,0,0,.35);
+}
+`;
   let anchors = [];
   let pageKey = "";
   let paintTimer = 0;
@@ -81,7 +136,15 @@
   function removeStale(validIds) {
     document.querySelectorAll(`[${ATTR}]`).forEach((el) => {
       const id = el.getAttribute(ATTR);
-      if (!validIds.has(id) || !el.isConnected) el.remove();
+      const host = el.parentElement;
+      const hostTid = (host?.getAttribute?.("data-tid") || "").toLowerCase();
+      const badHost =
+        /message-pane|chat-pane(?!-message)|layout|titlebar|composer/.test(hostTid) ||
+        (() => {
+          const r = host?.getBoundingClientRect?.();
+          return r && r.height > Math.min(420, window.innerHeight * 0.55);
+        })();
+      if (!validIds.has(id) || !el.isConnected || badHost) el.remove();
     });
   }
 
@@ -260,9 +323,24 @@
     tip.style.top = `${top}px`;
   }
 
+  function isSafeBadgeHost(root) {
+    if (!root?.isConnected) return false;
+    // Refuse pane-level hosts (was mounting on message-pane-layout).
+    const tid = (root.getAttribute?.("data-tid") || "").toLowerCase();
+    if (/message-pane|chat-pane(?!-message)|layout|titlebar|composer/.test(tid)) {
+      return false;
+    }
+    const r = root.getBoundingClientRect?.();
+    if (!r) return false;
+    if (r.height > Math.min(420, window.innerHeight * 0.55)) return false;
+    if (r.width > window.innerWidth * 0.92) return false;
+    return true;
+  }
+
   function paintOne(root, row) {
     const sid = String(row.snippet_id || "").trim();
     if (!sid || !root || !root.isConnected) return false;
+    if (!isSafeBadgeHost(root)) return false;
     const sel =
       typeof CSS !== "undefined" && CSS.escape ? CSS.escape(sid) : sid;
     const existing = root.querySelector?.(`[${ATTR}="${sel}"]`);
@@ -270,7 +348,7 @@
     existing?.remove();
     ensureHost(root);
     const mount = findMount(root);
-    if (!mount?.isConnected) return false;
+    if (!mount?.isConnected || !isSafeBadgeHost(mount)) return false;
     ensureHost(mount);
     const a = document.createElement("a");
     a.className = "pawn-overlay-badge";
@@ -280,7 +358,15 @@
       "aria-label",
       row.title ? `Open in Obsidian: ${row.title}` : "Open in Obsidian",
     );
-    a.innerHTML = PAWN_GLYPH;
+    a.innerHTML = PAWN_SVG;
+    Object.assign(a.style, {
+      position: "absolute",
+      top: "8px",
+      right: "10px",
+      width: "24px",
+      height: "24px",
+      zIndex: "2147483000",
+    });
     if (!row.message_id) a.setAttribute("data-pawn-soft", "1");
     a.addEventListener(
       "mouseenter",
@@ -341,25 +427,56 @@
     }
   }
 
-  function applyChatPos(el, pos) {
-    if (!el) return;
-    const size = el.getBoundingClientRect().width || 40;
+  function applyChatPos(host, pos) {
+    if (!host) return;
+    const size = 40;
     const dock =
       pos && !isBadDock(pos, size) ? pos : defaultChatDock(size);
-    el.style.left = `${dock.left}px`;
-    el.style.top = `${dock.top}px`;
-    el.style.right = "auto";
-    el.style.bottom = "auto";
+    host.style.setProperty("left", `${dock.left}px`, "important");
+    host.style.setProperty("top", `${dock.top}px`, "important");
+    host.style.setProperty("right", "auto", "important");
+    host.style.setProperty("bottom", "auto", "important");
+    host.style.setProperty("position", "fixed", "important");
+    host.style.setProperty("width", "40px", "important");
+    host.style.setProperty("height", "40px", "important");
+    host.style.setProperty("z-index", "2147483640", "important");
   }
 
-  function redockIfNeeded(el) {
-    if (!el || userDocked || dragState) return;
-    applyChatPos(el, null);
+  function redockIfNeeded(host) {
+    if (!host || userDocked || dragState) return;
+    applyChatPos(host, null);
   }
 
-  function wireChatDrag(el) {
-    if (el.__pawnDragWired) return;
-    el.__pawnDragWired = true;
+  function chatButton(host) {
+    return host?.shadowRoot?.querySelector("button.chip") || null;
+  }
+
+  function ensureChatHost() {
+    let host = document.getElementById(CHAT_BADGE_ID);
+    if (host?.isConnected && host.shadowRoot?.querySelector("button.chip")) {
+      return host;
+    }
+    host?.remove();
+    host = document.createElement("div");
+    host.id = CHAT_BADGE_ID;
+    host.setAttribute("data-pawn-chat-chip", "1");
+    const shadow = host.attachShadow({ mode: "open" });
+    const style = document.createElement("style");
+    style.textContent = CHAT_SHADOW_CSS;
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "chip";
+    btn.innerHTML = PAWN_SVG;
+    shadow.append(style, btn);
+    wireChatDrag(host, btn);
+    stableBadgeHost().appendChild(host);
+    void loadChatPos().then((pos) => applyChatPos(host, pos));
+    return host;
+  }
+
+  function wireChatDrag(host, btn) {
+    if (btn.__pawnDragWired) return;
+    btn.__pawnDragWired = true;
     let moved = false;
 
     const onMove = (ev) => {
@@ -367,15 +484,12 @@
       const dx = ev.clientX - dragState.startX;
       const dy = ev.clientY - dragState.startY;
       if (Math.abs(dx) > 3 || Math.abs(dy) > 3) moved = true;
-      const size = el.getBoundingClientRect().width || 36;
+      const size = 40;
       let left = dragState.originLeft + dx;
       let top = dragState.originTop + dy;
       left = Math.max(4, Math.min(left, window.innerWidth - size - 4));
       top = Math.max(4, Math.min(top, window.innerHeight - size - 4));
-      el.style.left = `${left}px`;
-      el.style.top = `${top}px`;
-      el.style.right = "auto";
-      el.style.bottom = "auto";
+      applyChatPos(host, { left, top, userDragged: true });
       dragState.left = left;
       dragState.top = top;
       hideTip();
@@ -384,127 +498,123 @@
     const onUp = () => {
       window.removeEventListener("pointermove", onMove, true);
       window.removeEventListener("pointerup", onUp, true);
-      el.classList.remove("is-dragging");
+      btn.classList.remove("is-dragging");
       if (dragState && moved) {
         void saveChatPos(dragState.left, dragState.top);
       }
-      el.__pawnDidDrag = moved;
+      btn.__pawnDidDrag = moved;
       dragState = null;
       moved = false;
     };
 
-    el.addEventListener(
-      "pointerdown",
-      (ev) => {
-        if (ev.button != null && ev.button !== 0) return;
-        const r = el.getBoundingClientRect();
-        dragState = {
-          startX: ev.clientX,
-          startY: ev.clientY,
-          originLeft: r.left,
-          originTop: r.top,
-          left: r.left,
-          top: r.top,
-        };
-        moved = false;
-        el.__pawnDidDrag = false;
-        el.classList.add("is-dragging");
-        hideTip();
-        try {
-          el.setPointerCapture?.(ev.pointerId);
-        } catch (_) {
-          /* ignore */
-        }
-        window.addEventListener("pointermove", onMove, true);
-        window.addEventListener("pointerup", onUp, true);
-        ev.preventDefault();
-        ev.stopPropagation();
-      },
-      true,
-    );
+    btn.addEventListener("pointerdown", (ev) => {
+      if (ev.button != null && ev.button !== 0) return;
+      const r = host.getBoundingClientRect();
+      dragState = {
+        startX: ev.clientX,
+        startY: ev.clientY,
+        originLeft: r.left,
+        originTop: r.top,
+        left: r.left,
+        top: r.top,
+      };
+      moved = false;
+      btn.__pawnDidDrag = false;
+      btn.classList.add("is-dragging");
+      hideTip();
+      try {
+        btn.setPointerCapture?.(ev.pointerId);
+      } catch (_) {
+        /* ignore */
+      }
+      window.addEventListener("pointermove", onMove, true);
+      window.addEventListener("pointerup", onUp, true);
+      ev.preventDefault();
+      ev.stopPropagation();
+    });
 
-    el.addEventListener(
-      "click",
-      (ev) => {
-        ev.preventDefault();
-        ev.stopPropagation();
-        if (el.__pawnDidDrag) {
-          el.__pawnDidDrag = false;
-          return;
-        }
-        hideTip();
-        openVault(el.getAttribute("data-path") || "", el.getAttribute("data-title") || "");
-      },
-      true,
-    );
+    btn.addEventListener("click", (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      if (btn.__pawnDidDrag) {
+        btn.__pawnDidDrag = false;
+        return;
+      }
+      const rows = readHostRows(host);
+      hideTip();
+      if (rows.length > 1) {
+        showTip(host, rows);
+        return;
+      }
+      openVault(
+        host.getAttribute("data-path") || "",
+        host.getAttribute("data-title") || "",
+      );
+    });
 
-    el.addEventListener(
-      "mouseenter",
-      () => {
-        if (dragState) return;
-        const raw = el.getAttribute("data-rows") || "[]";
-        let rows = [];
-        try {
-          rows = JSON.parse(raw);
-        } catch (_) {
-          rows = [];
-        }
-        if (tipTimer) clearTimeout(tipTimer);
-        tipTimer = setTimeout(() => {
-          tipTimer = 0;
-          showTip(el, rows);
-        }, 220);
-      },
-      true,
-    );
-    el.addEventListener("mouseleave", () => scheduleHideTip(220), true);
+    btn.addEventListener("mouseenter", () => {
+      if (dragState) return;
+      const rows = readHostRows(host);
+      if (tipTimer) clearTimeout(tipTimer);
+      tipTimer = setTimeout(() => {
+        tipTimer = 0;
+        showTip(host, rows);
+      }, 220);
+    });
+    btn.addEventListener("mouseleave", () => scheduleHideTip(220));
+  }
+
+  function readHostRows(host) {
+    try {
+      const rows = JSON.parse(host.getAttribute("data-rows") || "[]");
+      return Array.isArray(rows) ? rows : [];
+    } catch (_) {
+      return [];
+    }
   }
 
   function paintChatBadge(rows) {
     const t = teams();
     const allow =
       window === window.top || (t?.listVisibleMessages?.() || []).length > 0;
-    let el = document.getElementById(CHAT_BADGE_ID);
+    let host = document.getElementById(CHAT_BADGE_ID);
     if (!allow || !rows.length) {
       hideTip();
-      el?.remove();
+      host?.remove();
       return;
     }
     const first = rows[0];
-    const created = !el || !el.isConnected;
-    if (created) {
-      el?.remove();
-      el = document.createElement("a");
-      el.id = CHAT_BADGE_ID;
-      el.className = "pawn-overlay-badge pawn-overlay-chat";
-      el.href = "#";
-      el.innerHTML = PAWN_GLYPH;
-      wireChatDrag(el);
-      stableBadgeHost().appendChild(el);
-      void loadChatPos().then((pos) => applyChatPos(el, pos));
-    } else {
-      redockIfNeeded(el);
-    }
-    el.setAttribute("data-path", first.path || "");
-    el.setAttribute("data-title", first.title || "");
-    el.setAttribute("data-rows", JSON.stringify(rows));
-    el.setAttribute(
-      "aria-label",
-      rows.length === 1
-        ? `Pawn: open ${first.title || "capture"}`
-        : `Pawn: ${rows.length} captures in this chat`,
-    );
-    // Count badge = how many captures this chip represents (not matched to a bubble).
-    let count = el.querySelector(".pawn-overlay-count");
-    if (rows.length > 1) {
-      if (!count) {
-        count = document.createElement("span");
-        count.className = "pawn-overlay-count";
-        el.appendChild(count);
+    host = ensureChatHost();
+    redockIfNeeded(host);
+    host.setAttribute("data-path", first.path || "");
+    host.setAttribute("data-title", first.title || "");
+    // Keep payload lean — tip only needs path/title/captured_at.
+    const lean = rows.map((r) => ({
+      path: r.path || "",
+      title: r.title || "",
+      captured_at: r.captured_at || "",
+      snippet_id: r.snippet_id || "",
+    }));
+    host.setAttribute("data-rows", JSON.stringify(lean));
+    const btn = chatButton(host);
+    if (btn) {
+      btn.setAttribute(
+        "aria-label",
+        rows.length === 1
+          ? `Pawn: open ${first.title || "capture"}`
+          : `Pawn: ${rows.length} captures in this chat`,
+      );
+      let count = btn.querySelector("span.count");
+      if (rows.length > 1) {
+        if (!count) {
+          count = document.createElement("span");
+          count.className = "count";
+          btn.appendChild(count);
+        }
+        count.textContent = rows.length > 99 ? "99+" : String(rows.length);
+      } else {
+        count?.remove();
       }
-      count.textContent = rows.length > 99 ? "99+" : String(rows.length);
-    } else {
-      count?.remove();
     }
   }
 
@@ -646,7 +756,9 @@
       chip: chip
         ? {
             rect: chip.getBoundingClientRect(),
-            count: chip.querySelector(".pawn-overlay-count")?.textContent || null,
+            shadow: Boolean(chip.shadowRoot),
+            count:
+              chip.shadowRoot?.querySelector("span.count")?.textContent || null,
             rows: chip.getAttribute("data-rows"),
           }
         : null,

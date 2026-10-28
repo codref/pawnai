@@ -116,22 +116,54 @@
     return pageKeyFromHref(location.href) || findChatIdInDom() || "";
   }
 
-  function looksLikeMessageRoot(el) {
-    if (!el || el.nodeType !== 1) return false;
+  function isPaneChrome(el) {
+    if (!el || el.nodeType !== 1) return true;
     const tid = (el.getAttribute("data-tid") || "").toLowerCase();
+    // "message-pane-layout" must NOT count as a chat bubble (regex /message/ matched it).
     if (
-      /message|chat-pane-message|message-wrapper|message-body|message-list-item|chat-item/.test(
+      /message-pane|chat-pane(?!-message)|titlebar|app-bar|sidebar|composer|ck-editor|toolbar|layout/.test(
         tid,
       )
     ) {
       return true;
     }
+    const role = (el.getAttribute("role") || "").toLowerCase();
+    if (role === "main" || role === "navigation" || role === "banner") return true;
+    return false;
+  }
+
+  function isPlausibleBubble(el) {
+    if (!el || isPaneChrome(el)) return false;
+    const r = el.getBoundingClientRect?.();
+    if (!r || r.height < 28 || r.width < 80) return false;
+    // Whole chat pane / virtualizer rows that fill the viewport are not bubbles.
+    if (r.height > Math.min(420, window.innerHeight * 0.55)) return false;
+    if (r.width > window.innerWidth * 0.92) return false;
+    return true;
+  }
+
+  function looksLikeMessageRoot(el) {
+    if (!el || el.nodeType !== 1 || isPaneChrome(el) || !isPlausibleBubble(el)) {
+      return false;
+    }
+    const tid = (el.getAttribute("data-tid") || "").toLowerCase();
+    if (
+      /chat-pane-message|message-wrapper|message-body|message-list-item|chat-message|chat-item|message-content/.test(
+        tid,
+      )
+    ) {
+      return true;
+    }
+    // Avoid bare /message/ — it matches message-pane-layout.
+    if (/(^|[^a-z])message([^a-z]|$)/.test(tid) && !/pane|layout|list$/.test(tid)) {
+      return true;
+    }
     if (el.getAttribute("data-mid") || el.getAttribute("data-message-id")) return true;
     const role = (el.getAttribute("role") || "").toLowerCase();
-    if (role === "listitem" || role === "article" || role === "row") {
+    if (role === "listitem" || role === "article") {
       if (
         el.querySelector?.(
-          "[data-tid*='message'], [data-mid], time, [datetime], [data-tid*='avatar']",
+          "[data-tid*='message-body'], [data-tid*='message-content'], [data-mid], time, [datetime], [data-tid*='avatar']",
         )
       ) {
         return true;
@@ -147,19 +179,7 @@
     for (let cur = el; cur && cur !== document.body; cur = cur.parentElement) {
       if (looksLikeMessageRoot(cur)) best = cur;
     }
-    if (best) return best;
-    for (let cur = el; cur && cur !== document.body; cur = cur.parentElement) {
-      const text = norm(cur.innerText || "").slice(0, 500);
-      if (text.length < 8) continue;
-      if (
-        cur.querySelector?.(
-          "img[alt], [data-tid*='avatar'], time, [datetime], [data-tid*='message']",
-        )
-      ) {
-        return cur;
-      }
-    }
-    return null;
+    return best;
   }
 
   function readMessageId(root) {
@@ -271,24 +291,25 @@
 
   function listVisibleMessages() {
     const roots = new Set();
+    // Keep selectors specific — avoid [data-tid*='message'] (matches message-pane-layout).
     const selector = [
       "[data-tid*='chat-pane-message']",
       "[data-tid*='message-wrapper']",
       "[data-tid*='message-body']",
+      "[data-tid*='message-content']",
       "[data-tid*='chat-message']",
-      "[data-tid*='message']",
       "[data-mid]",
       "[data-message-id]",
       "[role='listitem']",
       "[role='article']",
-      "[role='row']",
     ].join(",");
     const candidates = deepQueryAll(document, selector);
     for (const node of candidates) {
+      if (isPaneChrome(node)) continue;
       const root = findMessageRoot(node) || (looksLikeMessageRoot(node) ? node : null);
-      if (!root) continue;
+      if (!root || !isPlausibleBubble(root)) continue;
       const rect = root.getBoundingClientRect?.();
-      if (!rect || rect.height < 8 || rect.width < 8) continue;
+      if (!rect) continue;
       if (rect.bottom < 0 || rect.top > window.innerHeight) continue;
       roots.add(root);
     }
