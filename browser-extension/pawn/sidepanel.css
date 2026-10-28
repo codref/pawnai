@@ -282,6 +282,13 @@ body {
   gap: var(--size-4-2);
 }
 
+.pawn-ext-version {
+  margin: 0.5rem 0 0;
+  font-size: 0.75rem;
+  opacity: 0.65;
+  font-variant-numeric: tabular-nums;
+}
+
 .pawn-settings {
   display: flex;
   flex-direction: column;

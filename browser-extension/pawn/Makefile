@@ -17,11 +17,12 @@ DIST_ZIP_FF     := pawn-capture-firefox.zip
 DIST_FILES      := background.js sidepanel.html sidepanel.css sidepanel.js
 DIST_DIRS       := content icons
 
-.PHONY: help build icons check-dist package package-chrome package-firefox dist clean
+.PHONY: help build bump-version icons check-dist package package-chrome package-firefox dist clean
 
 help:
 	@echo "Targets:"
-	@echo "  build            Verify extension files and icons"
+	@echo "  build            Bump patch version, verify files + icons"
+	@echo "  bump-version     Patch-bump manifest.json + manifest.firefox.json"
 	@echo "  icons            Regenerate icons/icon-{16,48,128}.png"
 	@echo "  package-chrome   Zip Chrome/Edge build → $(DIST_ZIP)"
 	@echo "  package-firefox  Zip Firefox build → $(DIST_ZIP_FF)"
@@ -31,9 +32,13 @@ help:
 	@echo "Chrome: unzip $(DIST_ZIP), Load unpacked → $(EXT_ID)/"
 	@echo "Firefox: unzip $(DIST_ZIP_FF), about:debugging → $(EXT_ID)/manifest.json"
 	@echo "Docs: ../../docs/BROWSER_CAPTURE.md"
+	@echo "After build/reload, Settings shows Extension vX.Y.Z from the loaded manifest."
 
 icons:
 	python3 scripts/gen_icons.py
+
+bump-version:
+	node scripts/bump-version.mjs
 
 check-dist:
 	@test -f manifest.json || { echo "missing manifest.json"; exit 1; }
@@ -50,7 +55,7 @@ check-dist:
 	@test -f content/region.js || { echo "missing content/region.js"; exit 1; }
 	@python3 -c "import json; json.load(open('manifest.json')); json.load(open('manifest.firefox.json')); print('manifests ok')"
 
-build: check-dist
+build: bump-version check-dist
 	@echo "Pawn Capture extension ready (no compile step)."
 
 _stage = \

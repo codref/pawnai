@@ -18,12 +18,17 @@ make browser-extension-dist     # Chrome + Firefox zips under browser-extension/
 Or from this directory:
 
 ```bash
-make build
+make build                      # patch-bumps version + verify files
 make dist                       # pawn-capture.zip + pawn-capture-firefox.zip
 make package-chrome             # Chrome/Edge only
 make package-firefox            # Firefox only
 make icons                      # regenerate PNG icons
 ```
+
+`make build` bumps the patch in both manifests (skipped when `CI=true`).
+After **Reload** on `chrome://extensions` / `edge://extensions`, Settings shows
+`Extension vX.Y.Z` from `chrome.runtime.getManifest()` — that is the build
+actually loaded, not a cached label.
 
 Chrome and Firefox need different manifests: Chrome uses
 `background.service_worker`; Firefox temporary installs still require

@@ -160,6 +160,7 @@ const el = {
   btnClipMenu: document.getElementById("btn-clip-menu"),
   clipControl: document.getElementById("clip-control"),
   btnSettings: document.getElementById("btn-settings"),
+  extVersion: document.getElementById("ext-version"),
   btnSave: document.getElementById("btn-save"),
   btnAddPlanner: document.getElementById("btn-add-planner"),
   destination: document.getElementById("destination"),
@@ -191,6 +192,7 @@ init();
 
 async function init() {
   mountChromeIcons();
+  showExtVersion();
   el.targetKind = mountTargetKindSelect(document.getElementById("target-kind"));
   chatConvPicker = mountConversationPicker(el.chatConvHost);
   chatModelSelect = mountModelSelect(el.chatModelHost);
@@ -213,6 +215,23 @@ async function init() {
       void drainPending();
     }
   });
+}
+
+/** Manifest version of the build actually loaded by Chrome/Edge/Firefox. */
+function showExtVersion() {
+  let ver = "";
+  try {
+    ver = chrome.runtime.getManifest()?.version || "";
+  } catch (_) {
+    ver = "";
+  }
+  if (el.extVersion) {
+    el.extVersion.textContent = ver ? `Extension v${ver}` : "";
+  }
+  if (el.btnSettings && ver) {
+    el.btnSettings.title = `Settings · v${ver}`;
+  }
+  document.title = ver ? `Pawn Capture v${ver}` : "Pawn Capture";
 }
 
 /**
