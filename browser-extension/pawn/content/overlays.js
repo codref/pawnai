@@ -10,6 +10,7 @@
   let pageKey = "";
   let paintTimer = 0;
   let observer = null;
+  let keepAlive = 0;
 
   function teams() {
     return window.__pawnTeams || null;
@@ -20,13 +21,14 @@
     paintTimer = setTimeout(() => {
       paintTimer = 0;
       void paint();
-    }, delayMs == null ? 80 : delayMs);
+    }, delayMs == null ? 120 : delayMs);
   }
 
   async function refreshAnchors() {
     const t = teams();
     if (!t?.isTeamsPage?.()) return;
-    pageKey = t.currentPageKey() || pageKey || "";
+    const nextKey = t.currentPageKey() || "";
+    if (nextKey) pageKey = nextKey;
     try {
       const resp = await chrome.runtime.sendMessage({
         type: "pawn-anchors-get",
@@ -38,9 +40,14 @@
         : Array.isArray(resp?.cached)
           ? resp.cached
           : [];
-      anchors = rows;
+      // Never wipe a good cache on a transient empty response (Teams SPA churn).
+      if (rows.length) {
+        anchors = rows;
+      } else if (!anchors.length && Array.isArray(resp?.cached) && resp.cached.length) {
+        anchors = resp.cached;
+      }
     } catch (_) {
-      /* background unavailable */
+      /* background unavailable — keep prior anchors */
     }
   }
 
@@ -51,10 +58,23 @@
     }
   }
 
+  function liveBadgeIds() {
+    const ids = new Set();
+    document.querySelectorAll(`[${ATTR}]`).forEach((el) => {
+      if (!el.isConnected) {
+        el.remove();
+        return;
+      }
+      const id = el.getAttribute(ATTR);
+      if (id) ids.add(id);
+    });
+    return ids;
+  }
+
   function removeStale(validIds) {
     document.querySelectorAll(`[${ATTR}]`).forEach((el) => {
       const id = el.getAttribute(ATTR);
-      if (!validIds.has(id)) el.remove();
+      if (!validIds.has(id) || !el.isConnected) el.remove();
     });
   }
 
@@ -68,13 +88,15 @@
 
   function paintOne(root, row) {
     const sid = String(row.snippet_id || "").trim();
-    if (!sid || !root) return false;
-    const existing = root.querySelector?.(
-      `[${ATTR}="${typeof CSS !== "undefined" && CSS.escape ? CSS.escape(sid) : sid}"]`,
-    );
-    if (existing) return true;
+    if (!sid || !root || !root.isConnected) return false;
+    const sel =
+      typeof CSS !== "undefined" && CSS.escape ? CSS.escape(sid) : sid;
+    const existing = root.querySelector?.(`[${ATTR}="${sel}"]`);
+    if (existing?.isConnected) return true;
+    existing?.remove();
     ensureHost(root);
     const mount = findMount(root);
+    if (!mount?.isConnected) return false;
     ensureHost(mount);
     const a = document.createElement("a");
     a.className = "pawn-overlay-badge";
@@ -97,22 +119,26 @@
       true,
     );
     mount.appendChild(a);
-    return true;
+    return a.isConnected;
   }
 
-  function paintChatBadge(unmatched) {
-    // Only top frame (or a frame that actually hosts messages) — avoid N badges
-    // when content_scripts run with all_frames on cloud.microsoft.
+  function stableBadgeHost() {
+    // documentElement survives Teams SPA remounts; main/chat-pane do not.
+    return document.documentElement;
+  }
+
+  function paintChatBadge(rows) {
     const t = teams();
     const allow =
       window === window.top || (t?.listVisibleMessages?.() || []).length > 0;
     let el = document.getElementById(CHAT_BADGE_ID);
-    if (!allow || !unmatched.length) {
+    if (!allow || !rows.length) {
       el?.remove();
       return;
     }
-    const first = unmatched[0];
-    if (!el) {
+    const first = rows[0];
+    if (!el || !el.isConnected) {
+      el?.remove();
       el = document.createElement("a");
       el.id = CHAT_BADGE_ID;
       el.className = "pawn-overlay-badge pawn-overlay-chat";
@@ -131,61 +157,72 @@
         },
         true,
       );
-      const host =
-        document.querySelector(
-          "[data-tid*='message-pane'], [data-tid*='chat-pane'], main",
-        ) || document.body;
-      if (getComputedStyle(host).position === "static") {
-        host.classList.add("pawn-overlay-host");
-      }
-      host.appendChild(el);
+      stableBadgeHost().appendChild(el);
     }
     el.setAttribute("data-path", first.path || "");
     el.setAttribute("data-title", first.title || "");
     el.title = first.title
       ? `Open in Obsidian: ${first.title}`
       : "Open capture in Obsidian";
-    el.textContent =
-      unmatched.length === 1 ? "Pawn" : `Pawn · ${unmatched.length}`;
+    el.textContent = rows.length === 1 ? "Pawn" : `Pawn · ${rows.length}`;
+  }
+
+  function relevantAnchors() {
+    const out = [];
+    for (const row of anchors) {
+      const sid = String(row.snippet_id || "").trim();
+      if (!sid) continue;
+      const rowPk = String(row.page_key || "").trim();
+      // If both sides know a page_key and they disagree, skip — but keep
+      // empty-page_key rows (soft) and keep all when our pageKey is still unknown.
+      if (pageKey && rowPk && rowPk !== pageKey) continue;
+      out.push(row);
+    }
+    return out;
   }
 
   async function paint() {
     const t = teams();
     if (!t?.isTeamsPage?.()) return;
     const nextKey = t.currentPageKey() || "";
-    if (nextKey !== pageKey) {
+    if (nextKey && nextKey !== pageKey) {
       pageKey = nextKey;
       await refreshAnchors();
     }
+    const relevant = relevantAnchors();
     const validIds = new Set(
-      anchors
-        .map((row) => String(row.snippet_id || "").trim())
-        .filter(Boolean),
+      relevant.map((row) => String(row.snippet_id || "").trim()).filter(Boolean),
     );
-    if (!anchors.length) {
+    if (!relevant.length) {
       removeStale(validIds);
       paintChatBadge([]);
       return;
     }
     const roots = t.listVisibleMessages();
-    const unmatched = [];
-    for (const row of anchors) {
+    const live = liveBadgeIds();
+    for (const row of relevant) {
       const sid = String(row.snippet_id || "").trim();
       if (!sid) continue;
-      // Prefer same page_key when both sides know it.
-      const rowPk = String(row.page_key || "").trim();
-      if (pageKey && rowPk && rowPk !== pageKey) continue;
-      let hit = false;
+      if (live.has(sid)) continue;
       for (const root of roots) {
         if (t.matchMessage(root, row)) {
-          hit = paintOne(root, row);
+          if (paintOne(root, row)) live.add(sid);
           break;
         }
       }
-      if (!hit) unmatched.push(row);
     }
     removeStale(validIds);
-    paintChatBadge(unmatched);
+    // Chat chip for anything not currently sitting on a connected message node.
+    // Survives Teams remounting the chat pane (badge lives on <html>).
+    const stillLive = liveBadgeIds();
+    const needsChip = relevant.filter(
+      (row) => !stillLive.has(String(row.snippet_id || "").trim()),
+    );
+    // Floating chip for captures not currently on a live message node.
+    // If nothing matched at all, still show the chip for all relevant rows.
+    paintChatBadge(
+      needsChip.length ? needsChip : stillLive.size ? [] : relevant,
+    );
   }
 
   function hookSpa() {
@@ -194,26 +231,35 @@
       if (typeof orig !== "function") return;
       history[name] = function (...args) {
         const ret = orig.apply(this, args);
-        schedulePaint(120);
-        void refreshAnchors().then(() => schedulePaint(40));
+        schedulePaint(150);
+        void refreshAnchors().then(() => schedulePaint(60));
         return ret;
       };
     };
     wrap("pushState");
     wrap("replaceState");
-    window.addEventListener("popstate", () => schedulePaint(120));
-    window.addEventListener("hashchange", () => schedulePaint(120));
+    window.addEventListener("popstate", () => schedulePaint(150));
+    window.addEventListener("hashchange", () => schedulePaint(150));
   }
 
   function observe() {
-    if (observer) return;
-    const target =
-      document.querySelector(
-        "[data-tid*='message-pane'], [data-tid*='chat-pane'], main",
-      ) || document.body;
-    observer = new MutationObserver(() => schedulePaint(100));
-    observer.observe(target, { childList: true, subtree: true });
-    window.addEventListener("scroll", () => schedulePaint(150), true);
+    if (observer) {
+      try {
+        observer.disconnect();
+      } catch (_) {
+        /* ignore */
+      }
+    }
+    // Observe a stable root — Teams replaces <main> / chat-pane on hydrate.
+    observer = new MutationObserver(() => schedulePaint(200));
+    observer.observe(document.documentElement, {
+      childList: true,
+      subtree: true,
+    });
+    window.addEventListener("scroll", () => schedulePaint(200), true);
+    if (keepAlive) clearInterval(keepAlive);
+    // Backup tick: catches remounts that detach our observer target mid-flight.
+    keepAlive = setInterval(() => schedulePaint(0), 2500);
   }
 
   chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
@@ -252,10 +298,11 @@
     hookSpa();
     observe();
     schedulePaint(200);
-    setTimeout(() => schedulePaint(0), 1000);
+    setTimeout(() => schedulePaint(0), 800);
     setTimeout(() => {
       void refreshAnchors().then(() => schedulePaint(0));
-    }, 3000);
+    }, 2000);
+    setTimeout(() => schedulePaint(0), 5000);
   }
 
   if (document.readyState === "loading") {
