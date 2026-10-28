@@ -1677,9 +1677,35 @@ async function saveTray() {
   btn.textContent = "Saving…";
   showNotice(`Saving ${unsaved.length} snippet(s)…`, false, true);
   try {
+    // If tray items lack Teams anchors (common for older region clips), probe
+    // the active tab so Save still registers a chat-level overlay.
+    let teamsProbe = null;
+    try {
+      teamsProbe = await chrome.runtime.sendMessage({ type: "pawn-teams-probe" });
+    } catch (_) {
+      teamsProbe = null;
+    }
     const payload = {
       target: buildTarget(),
       snippets: unsaved.map((s) => {
+        let anchor = s.anchor && typeof s.anchor === "object" ? s.anchor : null;
+        if (
+          !anchor &&
+          teamsProbe?.teams &&
+          ["new", "capture", "research"].includes(state.targetKind)
+        ) {
+          const quote = String(s.text || "")
+            .replace(/\s+/g, " ")
+            .trim()
+            .slice(0, 160);
+          anchor = {
+            site: "teams",
+            page_key: teamsProbe.page_key || undefined,
+            fallback: {
+              text_quote: quote || "capture",
+            },
+          };
+        }
         const row = {
           id: s.id,
           kind: s.kind,
@@ -1689,7 +1715,7 @@ async function saveTray() {
           source_url: s.source_url || state.sourceUrl,
           captured_at: s.captured_at,
         };
-        if (s.anchor && typeof s.anchor === "object") row.anchor = s.anchor;
+        if (anchor) row.anchor = anchor;
         return row;
       }),
     };
@@ -1704,15 +1730,13 @@ async function saveTray() {
     }
     await persistTarget();
     await persistTray();
-    if (Array.isArray(result.anchors) && result.anchors.length) {
-      try {
-        await chrome.runtime.sendMessage({
-          type: "pawn-anchors-refresh",
-          anchors: result.anchors,
-        });
-      } catch (_) {
-        /* background may be asleep — painter will refetch later */
-      }
+    try {
+      await chrome.runtime.sendMessage({
+        type: "pawn-anchors-refresh",
+        anchors: Array.isArray(result.anchors) ? result.anchors : [],
+      });
+    } catch (_) {
+      /* background may be asleep — painter will refetch later */
     }
     if (result.mode === "research") {
       const n = written.size;

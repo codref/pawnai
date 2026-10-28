@@ -101,8 +101,13 @@
   }
 
   function paintChatBadge(unmatched) {
+    // Only top frame (or a frame that actually hosts messages) — avoid N badges
+    // when content_scripts run with all_frames on cloud.microsoft.
+    const t = teams();
+    const allow =
+      window === window.top || (t?.listVisibleMessages?.() || []).length > 0;
     let el = document.getElementById(CHAT_BADGE_ID);
-    if (!unmatched.length) {
+    if (!allow || !unmatched.length) {
       el?.remove();
       return;
     }
@@ -237,6 +242,11 @@
   async function boot() {
     const t = teams();
     if (!t?.isTeamsPage?.()) return;
+    try {
+      document.documentElement.setAttribute("data-pawn-overlays", "1");
+    } catch (_) {
+      /* ignore */
+    }
     pageKey = t.currentPageKey() || "";
     await refreshAnchors();
     hookSpa();

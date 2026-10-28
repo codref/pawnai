@@ -27,11 +27,27 @@
 
   function isTeamsHost(hostname) {
     const h = String(hostname || "").toLowerCase();
-    return (
-      /(^|\.)teams\.(microsoft|live)\.com$/.test(h) ||
-      /(^|\.)teams\.cloud\.microsoft$/.test(h) ||
-      /(^|\.)teams\.microsoft\.us$/.test(h)
-    );
+    if (!h) return false;
+    if (/(^|\.)teams\.(microsoft|live)\.com$/.test(h)) return true;
+    if (/(^|\.)teams\.microsoft\.us$/.test(h)) return true;
+    if (h === "teams.cloud.microsoft" || h.endsWith(".teams.cloud.microsoft")) return true;
+    if (h.endsWith(".cloud.microsoft") && /(^|\.)teams\./.test(h)) return true;
+    return false;
+  }
+
+  /** querySelectorAll that also walks open shadow roots (Teams Fluent UI). */
+  function deepQueryAll(root, selector, out = []) {
+    if (!root) return out;
+    try {
+      root.querySelectorAll?.(selector)?.forEach((el) => out.push(el));
+    } catch (_) {
+      /* invalid selector in this root */
+    }
+    const walk = root.querySelectorAll ? root.querySelectorAll("*") : [];
+    for (const el of walk) {
+      if (el.shadowRoot) deepQueryAll(el.shadowRoot, selector, out);
+    }
+    return out;
   }
 
   function isTeamsPage() {
@@ -255,20 +271,19 @@
 
   function listVisibleMessages() {
     const roots = new Set();
-    const candidates = document.querySelectorAll(
-      [
-        "[data-tid*='chat-pane-message']",
-        "[data-tid*='message-wrapper']",
-        "[data-tid*='message-body']",
-        "[data-tid*='chat-message']",
-        "[data-tid*='message']",
-        "[data-mid]",
-        "[data-message-id]",
-        "[role='listitem']",
-        "[role='article']",
-        "[role='row']",
-      ].join(","),
-    );
+    const selector = [
+      "[data-tid*='chat-pane-message']",
+      "[data-tid*='message-wrapper']",
+      "[data-tid*='message-body']",
+      "[data-tid*='chat-message']",
+      "[data-tid*='message']",
+      "[data-mid]",
+      "[data-message-id]",
+      "[role='listitem']",
+      "[role='article']",
+      "[role='row']",
+    ].join(",");
+    const candidates = deepQueryAll(document, selector);
     for (const node of candidates) {
       const root = findMessageRoot(node) || (looksLikeMessageRoot(node) ? node : null);
       if (!root) continue;
@@ -292,18 +307,24 @@
       const root = findMessageRoot(el);
       if (root) return root;
     }
-    // Fallback: any visible message whose box contains the point.
+    // Containment, then nearest-by-center (region crops often miss the bubble edge).
     let best = null;
-    let bestArea = Infinity;
+    let bestScore = Infinity;
     for (const root of listVisibleMessages()) {
       const r = root.getBoundingClientRect();
-      if (x < r.left || x > r.right || y < r.top || y > r.bottom) continue;
-      const area = r.width * r.height;
-      if (area < bestArea) {
-        bestArea = area;
+      const cx = (r.left + r.right) / 2;
+      const cy = (r.top + r.bottom) / 2;
+      const contained =
+        x >= r.left && x <= r.right && y >= r.top && y <= r.bottom;
+      const dist = Math.hypot(x - cx, y - cy);
+      const score = contained ? dist * 0.25 : dist;
+      if (score < bestScore) {
+        bestScore = score;
         best = root;
       }
     }
+    // Reject nearest matches that are clearly far from the click (other pane).
+    if (best && bestScore > 240) return null;
     return best;
   }
 
@@ -376,6 +397,14 @@
     };
   }
 
+  function foldText(s) {
+    return norm(s)
+      .toLowerCase()
+      .replace(/[^\p{L}\p{N}\s]/gu, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+  }
+
   function matchMessage(root, anchor) {
     if (!root || !anchor) return false;
     const mid = String(anchor.message_id || "").trim();
@@ -388,24 +417,25 @@
     const author = norm(fb.author || "");
     const when = norm(fb.approx_time || "");
     if (!quote && !author) return false;
-    if (quote === "region capture") return false;
-    const body = readBodyText(root);
-    const who = readAuthor(root);
-    const time = readApproxTime(root);
-    if (quote && quote.length >= 8) {
-      const needle = quote.slice(0, Math.min(48, quote.length));
+    if (quote === "region capture" || quote === "capture") return false;
+    const body = foldText(readBodyText(root));
+    const who = foldText(readAuthor(root));
+    const time = foldText(readApproxTime(root));
+    const q = foldText(quote);
+    const a = foldText(author);
+    if (q && q.length >= 8) {
+      const needle = q.slice(0, Math.min(48, q.length));
       if (body.includes(needle)) {
-        if (!author || !who || who.toLowerCase() === author.toLowerCase()) return true;
+        if (!a || !who || who === a) return true;
       }
     }
-    if (author && who && who.toLowerCase() === author.toLowerCase()) {
-      if (quote) {
-        const head = quote.slice(0, 24);
+    if (a && who && who === a) {
+      if (q) {
+        const head = q.slice(0, 24);
         if (head && body.includes(head)) return true;
       }
-      if (when && time && time.toLowerCase().includes(when.toLowerCase().slice(0, 5))) {
-        return true;
-      }
+      const w = foldText(when);
+      if (w && time && time.includes(w.slice(0, 5))) return true;
     }
     return false;
   }

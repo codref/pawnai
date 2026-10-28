@@ -22,7 +22,10 @@
         "*://teams.microsoft.com/*",
         "*://*.teams.microsoft.com/*",
         "*://teams.live.com/*",
-        "*://teams.cloud.microsoft/*"
+        "*://*.teams.live.com/*",
+        "*://teams.cloud.microsoft/*",
+        "*://*.teams.cloud.microsoft/*",
+        "*://*.cloud.microsoft/*"
       ],
       "js": [
         "content/adapters/teams.js",
@@ -31,7 +34,8 @@
       "css": [
         "content/overlay.css"
       ],
-      "run_at": "document_idle"
+      "run_at": "document_idle",
+      "all_frames": true
     }
   ],
   "background": {

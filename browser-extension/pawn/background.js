@@ -186,12 +186,20 @@ async function runSnip(mode) {
   }
 }
 
-const TEAMS_HOST_RE =
-  /(^|\.)teams\.(microsoft|live)\.com$|(^|\.)teams\.cloud\.microsoft$/i;
+function isTeamsHost(hostname) {
+  const h = String(hostname || "").toLowerCase();
+  if (!h) return false;
+  if (/(^|\.)teams\.(microsoft|live)\.com$/.test(h)) return true;
+  if (/(^|\.)teams\.microsoft\.us$/.test(h)) return true;
+  // New Teams web: teams.cloud.microsoft (.microsoft TLD)
+  if (h === "teams.cloud.microsoft" || h.endsWith(".teams.cloud.microsoft")) return true;
+  if (h.endsWith(".cloud.microsoft") && /(^|\.)teams\./.test(h)) return true;
+  return false;
+}
 
 function isTeamsUrl(url) {
   try {
-    return TEAMS_HOST_RE.test(new URL(url || "").hostname);
+    return isTeamsHost(new URL(url || "").hostname);
   } catch (_) {
     return false;
   }
@@ -725,22 +733,21 @@ async function fetchAnchors(pageKey, site) {
   return { ok: true, data };
 }
 
+async function listTeamsTabs() {
+  // Don't rely on tabs.query url patterns for the .microsoft TLD — filter manually.
+  const tabs = await chrome.tabs.query({});
+  return tabs.filter((tab) => tab.id != null && isTeamsUrl(tab.url || ""));
+}
+
 async function notifyTeamsTabs(payload) {
-  const tabs = await chrome.tabs.query({
-    url: [
-      "*://teams.microsoft.com/*",
-      "*://*.teams.microsoft.com/*",
-      "*://teams.live.com/*",
-      "*://teams.cloud.microsoft/*",
-    ],
-  });
+  const tabs = await listTeamsTabs();
   await Promise.all(
     tabs.map(async (tab) => {
-      if (tab.id == null) return;
       try {
+        await ensureTeamsScripts(tab);
         await chrome.tabs.sendMessage(tab.id, payload);
       } catch (_) {
-        /* tab without content script */
+        /* frame may not accept messages yet */
       }
     }),
   );
@@ -866,7 +873,35 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     void (async () => {
       try {
         await mergeSavedAnchors(msg.anchors || []);
+        // Always re-inject + paint, even when the save returned no anchors
+        // (site-wide refetch still helps prior captures).
+        if (!(msg.anchors || []).length) {
+          await notifyTeamsTabs({ type: "pawn-overlays-refresh" });
+        }
         sendResponse({ ok: true });
+      } catch (err) {
+        sendResponse({ ok: false, error: String(err?.message || err) });
+      }
+    })();
+    return true;
+  }
+
+  if (msg?.type === "pawn-teams-probe") {
+    void (async () => {
+      try {
+        const tab = await activeContentTab();
+        if (!tab || !isTeamsUrl(tab.url || "")) {
+          sendResponse({ ok: false, teams: false });
+          return;
+        }
+        await ensureTeamsScripts(tab);
+        const info = await teamsTabMessage(tab, { type: "pawn-teams-page-key" });
+        sendResponse({
+          ok: true,
+          teams: true,
+          page_key: info?.page_key || "",
+          href: info?.href || tab.url || "",
+        });
       } catch (err) {
         sendResponse({ ok: false, error: String(err?.message || err) });
       }
