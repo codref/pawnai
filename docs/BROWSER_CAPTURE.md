@@ -226,9 +226,14 @@ Flow:
 4. Click **Pawn** → `obsidian://open` (requires `vault.obsidian_vault_name`).
 
 Matching prefers `message_id`; soft-match uses author + text quote when ids are
-missing (dashed badge). When the chat id is missing from the Teams URL, the
+missing (dashed ring). When the chat id is missing from the Teams URL, the
 extension falls back to site-wide anchor lookup. Session / other-note targets
 still save snippets but do not register overlays in v1.
+
+The floating chip is a **circle with a pawn icon**. A small number on it is the
+count of captures for this chat that are not currently pinned to a visible
+message bubble. Hover shows titles; click opens the first note in Obsidian;
+drag moves the chip (position is remembered).
 
 Reload the unpacked extension after updating so content scripts pick up changes.
 
