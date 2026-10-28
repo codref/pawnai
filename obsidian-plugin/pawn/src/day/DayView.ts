@@ -18,9 +18,12 @@ import type { DayStore } from "./DayStore";
 
 const SLOT_MINUTES = 30;
 const SLOTS_PER_DAY = (24 * 60) / SLOT_MINUTES;
-const SLOT_PX = 28;
+/** Tall enough for title + badges + actions in one 30m slot. */
+const SLOT_PX = 72;
 const PX_PER_MIN = SLOT_PX / SLOT_MINUTES;
 const DEFAULT_FOCUS_BEFORE = 15;
+/** Sessions have a start clock but no end — one-slot chip on the grid. */
+const SESSION_CHIP_MINUTES = SLOT_MINUTES;
 
 class ConfirmModal extends Modal {
   constructor(
@@ -74,17 +77,41 @@ function fmtSchedule(event: PlannerEvent | null | undefined): string {
   return "All day";
 }
 
-/** Minutes from local midnight; null when untimed / all-day. */
+/** Minutes from local midnight; null when date-only / unparseable. */
 function minutesFromMidnight(local: string | undefined): number | null {
   const raw = (local || "").trim();
   if (!raw || raw.length <= 10) return null;
-  const m = window.moment(raw, ["YYYY-MM-DDTHH:mm", "YYYY-MM-DD HH:mm"], true);
-  if (!m.isValid()) return null;
+  const m = window.moment(
+    raw,
+    [
+      "YYYY-MM-DDTHH:mm:ss.SSSSSS",
+      "YYYY-MM-DDTHH:mm:ss.SSS",
+      "YYYY-MM-DDTHH:mm:ss",
+      "YYYY-MM-DDTHH:mm",
+      "YYYY-MM-DD HH:mm:ss",
+      "YYYY-MM-DD HH:mm",
+      window.moment.ISO_8601,
+    ],
+    true,
+  );
+  if (!m.isValid()) {
+    const loose = window.moment(raw);
+    if (!loose.isValid() || raw.length <= 10) return null;
+    return loose.hours() * 60 + loose.minutes();
+  }
   return m.hours() * 60 + m.minutes();
 }
 
 function isTimedActivity(event: PlannerEvent | null | undefined): boolean {
   return minutesFromMidnight(event?.start) != null;
+}
+
+function sessionClock(session: SessionSummary | null | undefined): string {
+  return (session?.created_at || "").trim();
+}
+
+function isTimedSession(session: SessionSummary | null | undefined): boolean {
+  return minutesFromMidnight(sessionClock(session)) != null;
 }
 
 function pad2(n: number): string {
@@ -213,19 +240,33 @@ function renderSchedule(
   opts: { onOpenChat: (conversation: string) => void },
   refresh: () => void,
 ): void {
-  const timed: PlannerBlock[] = [];
+  const timedActivities: PlannerBlock[] = [];
+  const timedSessions: PlannerBlock[] = [];
   const untimed: PlannerBlock[] = [];
   for (const block of day.blocks) {
     if (block.kind === "event" && isTimedActivity(block.event)) {
-      timed.push(block);
-    } else {
-      untimed.push(block);
+      timedActivities.push(block);
+      continue;
     }
+    // Session (or event-linked session without its own timed event): place by created_at.
+    if (block.kind === "session" && isTimedSession(block.session)) {
+      timedSessions.push(block);
+      continue;
+    }
+    // Linked session on a timed event already shows via the activity — skip duplicate.
+    if (block.kind === "event" && block.session && isTimedActivity(block.event)) {
+      continue;
+    }
+    if (block.kind === "event" && block.session && isTimedSession(block.session) && !isTimedActivity(block.event)) {
+      timedSessions.push(block);
+      continue;
+    }
+    untimed.push(block);
   }
 
   if (untimed.length) {
     const strip = parent.createDiv({ cls: "pawn-day-untimed" });
-    strip.createDiv({ cls: "pawn-day-untimed-label", text: "Sessions & untimed" });
+    strip.createDiv({ cls: "pawn-day-untimed-label", text: "All-day & untimed" });
     for (const block of untimed) {
       renderUntimedCard(strip, plugin, day, block, store, opts, refresh);
     }
@@ -268,11 +309,19 @@ function renderSchedule(
   }
 
   const layer = grid.createDiv({ cls: "pawn-day-blocks" });
-  for (const block of timed) {
+  for (const block of timedSessions) {
+    renderTimedSession(layer, plugin, block, store, opts, refresh);
+  }
+  for (const block of timedActivities) {
     renderTimedActivity(layer, plugin, day, block, store, refresh);
   }
 
   const todayKey = window.moment().format("YYYY-MM-DD");
+  const gridStarts = [
+    ...timedActivities.map((b) => minutesFromMidnight(b.event?.start)),
+    ...timedSessions.map((b) => minutesFromMidnight(sessionClock(b.session))),
+  ].filter((n): n is number => n != null);
+
   if (day.date === todayKey) {
     const nowMins = window.moment().hours() * 60 + window.moment().minutes();
     const nowLine = grid.createDiv({ cls: "pawn-day-now" });
@@ -280,10 +329,8 @@ function renderSchedule(
     window.setTimeout(() => {
       scroll.scrollTop = Math.max(0, nowMins * PX_PER_MIN - scroll.clientHeight / 3);
     }, 0);
-  } else if (timed.length) {
-    const first = Math.min(
-      ...timed.map((b) => minutesFromMidnight(b.event?.start) ?? 9 * 60),
-    );
+  } else if (gridStarts.length) {
+    const first = Math.min(...gridStarts);
     window.setTimeout(() => {
       scroll.scrollTop = Math.max(0, first * PX_PER_MIN - SLOT_PX * 2);
     }, 0);
@@ -293,6 +340,72 @@ function renderSchedule(
       text: "Nothing timed yet. Click a slot or Add activity.",
     });
   }
+}
+
+function renderTimedSession(
+  parent: HTMLElement,
+  plugin: PawnPlugin,
+  block: PlannerBlock,
+  store: DayStore,
+  opts: { onOpenChat: (conversation: string) => void },
+  refresh: () => void,
+): void {
+  const session = block.session!;
+  const startMin = minutesFromMidnight(sessionClock(session)) ?? 0;
+  const duration = SESSION_CHIP_MINUTES;
+  const title = session.title || session.session_id || "Session";
+
+  const card = parent.createDiv({ cls: "pawn-day-activity is-session" });
+  card.style.top = `${startMin * PX_PER_MIN}px`;
+  card.style.height = `${Math.max(SLOT_PX - 2, duration * PX_PER_MIN - 2)}px`;
+
+  const titleEl = card.createSpan({
+    cls: "pawn-day-activity-title",
+    text: title,
+  });
+  const clock = fmtTime(sessionClock(session));
+  titleEl.setAttr("role", "button");
+  titleEl.tabIndex = 0;
+  titleEl.title = clock ? `${title} · ${clock} · no duration` : "Open transcript";
+  const openTranscript = (ev: Event) => {
+    ev.stopPropagation();
+    void openPath(plugin, session.transcript_path);
+  };
+  titleEl.onclick = openTranscript;
+  titleEl.onkeydown = (ev) => {
+    if (ev.key === "Enter" || ev.key === " ") {
+      ev.preventDefault();
+      openTranscript(ev);
+    }
+  };
+
+  const badges = card.createDiv({ cls: "pawn-day-activity-badges" });
+  badges.createSpan({ cls: "pawn-session-badge", text: "session" });
+  badges.createSpan({ cls: "pawn-session-badge", text: "untimed" });
+
+  const actions = card.createDiv({ cls: "pawn-msg-actions pawn-day-activity-actions" });
+  iconButton(actions, "file-text", "Open transcript", () => {
+    void openPath(plugin, session.transcript_path);
+  });
+  iconButton(actions, "messages-square", "Chat about this session", () => {
+    void openSessionChat(plugin, session, opts.onOpenChat);
+  });
+  iconButton(actions, "inbox", "Show items", () => {
+    focusInboxOnSession(plugin, session.session_id);
+  });
+  iconButton(actions, "list-checks", "Extract", () => {
+    if (store.isOffline()) {
+      new Notice("Extract requires the Pawn server.", 4000);
+      return;
+    }
+    new ExtractModal(
+      plugin,
+      session.session_id,
+      session.transcript_path ?? null,
+      refresh,
+    ).open();
+  });
+  card.onclick = (ev) => ev.stopPropagation();
 }
 
 function renderTimedActivity(
@@ -329,37 +442,49 @@ function renderTimedActivity(
   card.style.top = `${startMin * PX_PER_MIN}px`;
   card.style.height = `${Math.max(SLOT_PX - 2, duration * PX_PER_MIN - 2)}px`;
 
-  const head = card.createDiv({ cls: "pawn-day-activity-head" });
-  const titleBtn = head.createEl("button", {
+  // Row 1 — title (span, not button — Obsidian button theme blows up the card)
+  const titleEl = card.createSpan({
     cls: "pawn-day-activity-title",
     text: event.title || "Untitled",
   });
-  titleBtn.title = "Open activity note";
-  titleBtn.onclick = (ev) => {
-    ev.stopPropagation();
-    void openPath(plugin, event.path);
-  };
-
-  if (event.source) {
-    head.createSpan({ cls: "pawn-session-badge", text: event.source });
-  }
-  if (focusOn) {
-    head.createSpan({ cls: "pawn-session-badge", text: "focus" });
-  }
-  if (event.has_prep || (event.prep || "").trim()) {
-    head.createSpan({ cls: "pawn-session-badge", text: "prep" });
-  }
-  if ((event.image_count || 0) > 0) {
-    head.createSpan({ cls: "pawn-session-badge", text: "shot" });
-  }
-
   const metaBits = [
     fmtSchedule(event),
     event.organizer ? `org ${event.organizer}` : "",
     event.attendees?.length ? event.attendees.slice(0, 3).join(", ") : "",
   ].filter(Boolean);
-  if (metaBits.length && duration >= 45) {
-    card.createDiv({ cls: "pawn-day-activity-meta", text: metaBits.join(" · ") });
+  titleEl.setAttr("role", "button");
+  titleEl.tabIndex = 0;
+  titleEl.title = metaBits.length
+    ? `${event.title || "Untitled"} · ${metaBits.join(" · ")}`
+    : "Open activity note";
+  const openNote = (ev: Event) => {
+    ev.stopPropagation();
+    void openPath(plugin, event.path);
+  };
+  titleEl.onclick = openNote;
+  titleEl.onkeydown = (ev) => {
+    if (ev.key === "Enter" || ev.key === " ") {
+      ev.preventDefault();
+      openNote(ev);
+    }
+  };
+
+  // Row 2 — labels
+  const badges = card.createDiv({ cls: "pawn-day-activity-badges" });
+  if (event.source) {
+    badges.createSpan({ cls: "pawn-session-badge", text: event.source });
+  }
+  if (focusOn) {
+    badges.createSpan({ cls: "pawn-session-badge", text: "focus" });
+  }
+  if (event.has_prep || (event.prep || "").trim()) {
+    badges.createSpan({ cls: "pawn-session-badge", text: "prep" });
+  }
+  if ((event.image_count || 0) > 0) {
+    badges.createSpan({ cls: "pawn-session-badge", text: "shot" });
+  }
+  if (!badges.childElementCount) {
+    badges.remove();
   }
 
   const sug = suggestionFor(day, event.id);
@@ -373,16 +498,13 @@ function renderTimedActivity(
     };
   }
 
+  // Row 3 — actions
   const actions = card.createDiv({ cls: "pawn-msg-actions pawn-day-activity-actions" });
-  const star = iconButton(
-    actions,
-    focusOn ? "star" : "star-off",
-    focusOn ? "Clear focus" : "Focus (prep band)",
-    () => {
-      void toggleFocus(plugin, event, refresh);
-    },
-  );
-  if (focusOn) star.classList.add("is-active");
+  const star = iconButton(actions, "star", focusOn ? "Clear focus" : "Focus (prep band)", () => {
+    void toggleFocus(plugin, event, refresh);
+  });
+  star.classList.toggle("is-active", focusOn);
+  star.classList.toggle("is-muted", !focusOn);
 
   iconButton(actions, "sparkles", "Prep (LLM)", () => {
     if (store.isOffline()) {
@@ -431,11 +553,13 @@ function renderUntimedCard(
   });
   const head = card.createDiv({ cls: "pawn-job-head" });
   if (event?.path) {
-    const titleBtn = head.createEl("button", {
+    const titleEl = head.createSpan({
       cls: "pawn-day-activity-title",
       text: title,
     });
-    titleBtn.onclick = () => void openPath(plugin, event.path);
+    titleEl.setAttr("role", "button");
+    titleEl.tabIndex = 0;
+    titleEl.onclick = () => void openPath(plugin, event.path);
   } else {
     head.createSpan({ cls: "pawn-job-title", text: title });
   }
@@ -460,13 +584,11 @@ function renderUntimedCard(
   }
   if (event?.id) {
     const focusOn = Boolean(event.focus);
-    const star = iconButton(
-      actions,
-      focusOn ? "star" : "star-off",
-      focusOn ? "Clear focus" : "Focus",
-      () => void toggleFocus(plugin, event, refresh),
+    const star = iconButton(actions, "star", focusOn ? "Clear focus" : "Focus", () =>
+      void toggleFocus(plugin, event, refresh),
     );
-    if (focusOn) star.classList.add("is-active");
+    star.classList.toggle("is-active", focusOn);
+    star.classList.toggle("is-muted", !focusOn);
     iconButton(actions, "sparkles", "Prep (LLM)", () => {
       if (store.isOffline()) {
         new Notice("Prep requires the Pawn server.", 4000);
