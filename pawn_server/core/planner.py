@@ -11,6 +11,7 @@ import logging
 import re
 from datetime import date, datetime, timezone
 from typing import Any, Optional
+from urllib.parse import urlsplit, urlunsplit
 from uuid import uuid4
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -154,17 +155,114 @@ def normalize_local_dt(value: str) -> str:
     return day
 
 
+def _normalize_identity_url(url: str) -> str:
+    """Lowercase host, drop query/fragment, trim trailing slash (keep root as '')."""
+    raw = (url or "").strip()
+    if not raw:
+        return ""
+    parts = urlsplit(raw)
+    if not parts.scheme or not parts.netloc:
+        return raw.rstrip("/")
+    path = (parts.path or "").rstrip("/")
+    return urlunsplit((parts.scheme.lower(), parts.netloc.lower(), path, "", ""))
+
+
+def event_identity_url(url: str) -> str:
+    """Return a normalized URL safe for fingerprinting, or ``\"\"`` if too generic.
+
+    Teams/Outlook SPA shells (``https://teams.cloud.microsoft/``, calendar
+    week views, …) are shared across unrelated meetings and must not key
+    upserts. Prefer join links (``/meet/…``, Zoom ``/j/…``) and Outlook
+    item deeplinks.
+    """
+    norm = _normalize_identity_url(url)
+    if not norm:
+        return ""
+    parts = urlsplit(norm if "://" in norm else f"https://{norm}")
+    host = (parts.netloc or "").lower()
+    path = parts.path or ""
+    if not host and "://" not in norm:
+        # Non-URL token — not an identity key.
+        return ""
+
+    teams_hosts = (
+        "teams.cloud.microsoft",
+        "teams.microsoft.com",
+        "teams.live.com",
+    )
+    if host in teams_hosts or host.endswith(".teams.microsoft.com"):
+        if re.search(r"/(?:meet|meetup-join|l/meetup-join)/", path, re.I):
+            return _normalize_identity_url(norm)
+        return ""
+
+    if "outlook." in host or host.endswith(".office.com") or host in (
+        "office.com",
+        "office365.com",
+    ):
+        if re.search(r"/(?:item|deeplink)/", path, re.I):
+            return _normalize_identity_url(norm)
+        return ""
+
+    if "zoom.us" in host or host.endswith("zoom.com"):
+        if re.search(r"/(?:j|meeting)/", path, re.I):
+            return _normalize_identity_url(norm)
+        return ""
+
+    # Other hosts: any non-root path is specific enough.
+    if path not in ("", "/"):
+        return _normalize_identity_url(norm)
+    return ""
+
+
 def event_fingerprint(
     *,
     source_url: str = "",
+    meeting_url: str = "",
     title: str = "",
     start: str = "",
 ) -> str:
-    url = (source_url or "").strip()
-    if url:
-        return hashlib.sha256(f"url:{url}".encode("utf-8")).hexdigest()[:24]
+    """Stable upsert key: meeting join URL, then specific page URL, else title|start.
+
+    Generic app-shell URLs are ignored so unrelated Teams clips do not collapse
+    into one event note.
+    """
+    meet = event_identity_url(meeting_url)
+    if meet:
+        return hashlib.sha256(f"meet:{meet}".encode("utf-8")).hexdigest()[:24]
+    page = event_identity_url(source_url)
+    if page:
+        return hashlib.sha256(f"url:{page}".encode("utf-8")).hexdigest()[:24]
     key = f"title:{(title or '').strip().lower()}|{normalize_local_dt(start)}"
     return hashlib.sha256(key.encode("utf-8")).hexdigest()[:24]
+
+
+def event_identities_conflict(
+    existing: dict[str, Any],
+    *,
+    source_url: str = "",
+    meeting_url: str = "",
+    title: str = "",
+    start: str = "",
+) -> bool:
+    """True when a sticky path/id points at a different meeting than this capture."""
+    old_meet = event_identity_url(str(existing.get("meeting_url") or ""))
+    new_meet = event_identity_url(meeting_url)
+    if old_meet and new_meet and old_meet != new_meet:
+        return True
+    old_src = event_identity_url(str(existing.get("source_url") or ""))
+    new_src = event_identity_url(source_url)
+    if old_src and new_src and old_src != new_src:
+        return True
+    if old_meet or new_meet or old_src or new_src:
+        # At least one side has a strong URL; only URL mismatch is a conflict.
+        return False
+    old_title = str(existing.get("title") or "").strip().lower()
+    new_title = (title or "").strip().lower()
+    old_start = normalize_local_dt(str(existing.get("start") or ""))
+    new_start = normalize_local_dt(start) if start else ""
+    if old_title and new_title and old_start and new_start:
+        return old_title != new_title or old_start != new_start
+    return False
 
 
 def render_event_note(
@@ -199,7 +297,12 @@ def render_event_note(
         "end": normalize_local_dt(end) if end else "",
         "source": (source or "manual").strip() or "manual",
         "fingerprint": fingerprint
-        or event_fingerprint(source_url=source_url, title=heading, start=start),
+        or event_fingerprint(
+            source_url=source_url,
+            meeting_url=meeting_url,
+            title=heading,
+            start=start,
+        ),
     }
     if source_url.strip():
         meta["source_url"] = source_url.strip()
@@ -637,6 +740,16 @@ def find_event_by_fingerprint(
     for ev in _load_events(cfg, store):
         if ev.get("fingerprint") == fp:
             return ev
+        # Recompute from fields so notes stamped with an older algorithm still
+        # match when meeting_url / specific source_url / title|start agree.
+        recomputed = event_fingerprint(
+            source_url=str(ev.get("source_url") or ""),
+            meeting_url=str(ev.get("meeting_url") or ""),
+            title=str(ev.get("title") or ""),
+            start=str(ev.get("start") or ""),
+        )
+        if recomputed == fp:
+            return ev
     return None
 
 
@@ -668,12 +781,25 @@ def upsert_event(
     end_n = normalize_local_dt(end) if end else ""
     if not start_n:
         start_n = _today(cfg)
-    fp = event_fingerprint(source_url=source_url, title=heading, start=start_n)
+    fp = event_fingerprint(
+        source_url=source_url,
+        meeting_url=meeting_url,
+        title=heading,
+        start=start_n,
+    )
     existing = find_event_by_fingerprint(cfg, fp, store=store)
     if existing is None and event_id.strip():
         try:
             existing = find_event_by_id(cfg, event_id, store=store)
         except PlannerError:
+            existing = None
+        if existing is not None and event_identities_conflict(
+            existing,
+            source_url=source_url,
+            meeting_url=meeting_url,
+            title=heading,
+            start=start_n,
+        ):
             existing = None
 
     if existing is not None:
@@ -701,6 +827,14 @@ def upsert_event(
             prev_meet = existing.get("meeting_url") or ""
             prev_focus = bool(existing.get("focus"))
             prev_focus_before = int(existing.get("focus_before") or 0)
+        merged_meet = meeting_url.strip() or prev_meet
+        # Recompute after merging meeting_url so a later join-link upgrades the key.
+        fp = event_fingerprint(
+            source_url=source_url or existing.get("source_url") or "",
+            meeting_url=merged_meet,
+            title=heading,
+            start=start_n,
+        )
         text = render_event_note(
             event_id=eid,
             title=heading,
@@ -712,7 +846,7 @@ def upsert_event(
             topics=topics if topics is not None else existing.get("topics"),
             organizer=organizer.strip() or prev_org,
             location=location.strip() or prev_loc,
-            meeting_url=meeting_url.strip() or prev_meet,
+            meeting_url=merged_meet,
             session_id=linked,
             fingerprint=fp,
             prep_job_id=prep_job_id,
@@ -722,15 +856,40 @@ def upsert_event(
             body=body if body.strip() else existing.get("body") or "",
             prep=prep,
         )
+        day = day_from_local(start_n) or _today(cfg)
+        filename = str(path).rsplit("/", 1)[-1]
+        old_day = (
+            filename[:10]
+            if len(filename) >= 10 and filename[4] == "-" and filename[7] == "-"
+            else ""
+        )
+        new_path = path
+        if old_day and old_day != day:
+            # Keep the filename stem stable across title edits; only move when
+            # the start day changes so Day view's prefix filter can find it.
+            short_id = eid[4:] if str(eid).startswith("evt_") and len(eid) > 4 else ""
+            if not short_id:
+                stem = filename.removesuffix(".md")
+                short_id = stem.rsplit("-", 1)[-1] if "-" in stem else uuid4().hex[:8]
+            new_path = _event_path(cfg, day=day, title=heading, short_id=short_id)
         try:
-            store.write(path, text)
+            store.write(new_path, text)
+            if new_path != path:
+                try:
+                    store.delete(path)
+                except VaultNotFound:
+                    pass
+                publish_vault_event([new_path, path], source="planner")
+            else:
+                publish_vault_event([path], source="planner")
         except VaultWriteDenied as exc:
             raise PlannerError(str(exc), status_code=403) from exc
-        publish_vault_event([path], source="planner")
-        return parse_event_note(text, path=path)
+        return parse_event_note(text, path=new_path)
 
     short_id = uuid4().hex[:8]
     eid = (event_id or "").strip() or f"evt_{short_id}"
+    if eid.startswith("evt_") and len(eid) > 4:
+        short_id = eid[4:]
     day = day_from_local(start_n) or _today(cfg)
     path = _event_path(cfg, day=day, title=heading, short_id=short_id)
     text = render_event_note(
@@ -880,43 +1039,30 @@ def upsert_event_from_capture(
     existing_title = ""
     existing_attendees: list[str] = []
     existing_topics: list[str] = []
+    sticky_existing: Optional[dict[str, Any]] = None
     if path_hint:
-        # Sticky path from the extension — append to that note, keep its identity.
+        # Sticky path from the extension — prefer appending to that note, but
+        # only after enrichment confirms it is still the same meeting.
         try:
-            existing = parse_event_note(store.read(path_hint), path=path_hint)
-            event_id_hint = event_id_hint or str(existing.get("id") or "")
-            existing_title = str(existing.get("title") or "")
-            existing_attendees = list(existing.get("attendees") or [])
-            existing_topics = list(existing.get("topics") or [])
-            if not start:
-                start = str(existing.get("start") or "")
-            if not end:
-                end = str(existing.get("end") or "")
-            if not source_url:
-                source_url = str(existing.get("source_url") or "")
-            if not organizer:
-                organizer = str(existing.get("organizer") or "")
-            if not location:
-                location = str(existing.get("location") or "")
-            if not meeting_url:
-                meeting_url = str(existing.get("meeting_url") or "")
+            sticky_existing = parse_event_note(store.read(path_hint), path=path_hint)
+            event_id_hint = event_id_hint or str(sticky_existing.get("id") or "")
+            existing_title = str(sticky_existing.get("title") or "")
+            existing_attendees = list(sticky_existing.get("attendees") or [])
+            existing_topics = list(sticky_existing.get("topics") or [])
             # Body text can also yield a subject on later clips.
-            if existing.get("body"):
-                text_chunks.append(str(existing.get("body") or ""))
+            if sticky_existing.get("body"):
+                text_chunks.append(str(sticky_existing.get("body") or ""))
         except Exception:  # noqa: BLE001
-            pass
+            sticky_existing = None
 
     enriched = enrich_event_fields_from_content(title, *text_chunks)
     # Content wins over browser-tab stubs ("Calendar | Microsoft Teams", …).
+    # Do not fall back to sticky title yet — that waits until identity checks out.
     from_content = str(enriched.get("title") or "")
     if from_content:
         title = from_content
-    elif is_stub_event_title(title) and existing_title and not is_stub_event_title(existing_title):
-        title = existing_title
-    elif is_stub_event_title(title) and existing_title:
-        title = existing_title
     if not title or is_stub_event_title(title):
-        title = from_content or title or existing_title
+        title = from_content or title
 
     if not start and enriched.get("start"):
         start = normalize_local_dt(str(enriched["start"])) or str(enriched["start"])
@@ -928,10 +1074,10 @@ def upsert_event_from_capture(
         location = str(enriched["location"])
     if not meeting_url and enriched.get("meeting_url"):
         meeting_url = str(enriched["meeting_url"])
-    attendees = merge_people(attendees, existing_attendees, enriched.get("attendees"))
+    attendees = merge_people(attendees, enriched.get("attendees"))
     topic_seen: set[str] = set()
     merged_topics: list[str] = []
-    for lst in (topics, existing_topics, list(enriched.get("topics") or [])):
+    for lst in (topics, list(enriched.get("topics") or [])):
         for t in lst or []:
             key = str(t).strip().lower()
             if not key or key in topic_seen:
@@ -975,6 +1121,47 @@ def upsert_event_from_capture(
             meeting_url = str(vision["meeting_url"]).strip()
         attendees = merge_people(attendees, vision.get("attendees"))
         for t in vision.get("topics") or []:
+            key = str(t).strip().lower()
+            if key and key not in topic_seen:
+                topic_seen.add(key)
+                topics.append(str(t).strip())
+        topics = topics[:12]
+
+    if sticky_existing is not None and event_identities_conflict(
+        sticky_existing,
+        source_url=source_url,
+        meeting_url=meeting_url,
+        title=title,
+        start=start,
+    ):
+        # Different meeting than the sticky note — create a fresh event.
+        path_hint = ""
+        event_id_hint = ""
+        sticky_existing = None
+        existing_title = ""
+        existing_attendees = []
+        existing_topics = []
+    elif sticky_existing is not None:
+        # Same meeting: fill gaps from the sticky note.
+        if not title or is_stub_event_title(title):
+            if existing_title and not is_stub_event_title(existing_title):
+                title = existing_title
+            elif existing_title:
+                title = existing_title
+        if not start:
+            start = str(sticky_existing.get("start") or "")
+        if not end:
+            end = str(sticky_existing.get("end") or "")
+        if not source_url:
+            source_url = str(sticky_existing.get("source_url") or "")
+        if not organizer:
+            organizer = str(sticky_existing.get("organizer") or "")
+        if not location:
+            location = str(sticky_existing.get("location") or "")
+        if not meeting_url:
+            meeting_url = str(sticky_existing.get("meeting_url") or "")
+        attendees = merge_people(attendees, existing_attendees)
+        for t in existing_topics:
             key = str(t).strip().lower()
             if key and key not in topic_seen:
                 topic_seen.add(key)

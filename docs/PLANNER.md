@@ -25,7 +25,7 @@ location: Conf Room B
 meeting_url: https://teams.microsoft.com/…
 topics: []
 session_id: null          # linked diarization session
-fingerprint: …            # upsert key (URL or title+start)
+fingerprint: …            # upsert key (meeting URL, item URL, or title+start)
 prep_job_id: null
 prep_at: null
 focus: false                 # Day-tab star; planning flag
@@ -52,7 +52,12 @@ planner:
   events_dir: "{agent_root}/Events"
 ```
 
-Upsert is idempotent on `fingerprint` (Outlook URL preferred).
+Upsert is idempotent on `fingerprint`. Preference order: specific
+`meeting_url` (Teams `/meet/…`, Zoom `/j/…`), then a specific
+`source_url` (Outlook `/item/…` deeplink), else `title|start`. Generic
+app shells (`https://teams.cloud.microsoft/`, calendar week views) are
+ignored so unrelated clips do not collapse into one note. Updating
+`start` to another day renames the note so Day view can find it.
 
 ## API
 

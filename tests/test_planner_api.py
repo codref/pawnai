@@ -20,6 +20,8 @@ from pawn_server.core.planner import (
     build_day,
     enrich_event_fields_from_content,
     event_fingerprint,
+    event_identities_conflict,
+    event_identity_url,
     is_stub_event_title,
     parse_event_slash_arg,
     replace_prep_section,
@@ -89,13 +91,159 @@ def test_upsert_fingerprint_and_slash_parse(env: SimpleNamespace) -> None:
     assert second["id"] == first["id"]
     assert "Updated body" in env.store.read(second["path"])
 
-    url_fp = event_fingerprint(source_url="https://outlook.office.com/x", title="A", start="")
-    other = event_fingerprint(source_url="https://outlook.office.com/y", title="A", start="")
+    url_fp = event_fingerprint(
+        source_url="https://outlook.office.com/calendar/item/abc",
+        title="A",
+        start="",
+    )
+    other = event_fingerprint(
+        source_url="https://outlook.office.com/calendar/item/xyz",
+        title="A",
+        start="",
+    )
     assert url_fp != other
 
     title, start = parse_event_slash_arg("Coffee with Ada 2026-10-29T09:00")
     assert title == "Coffee with Ada"
     assert start == "2026-10-29T09:00"
+
+
+def test_event_fingerprint_ignores_generic_shell_urls() -> None:
+    assert event_identity_url("https://teams.cloud.microsoft/") == ""
+    assert event_identity_url("https://teams.microsoft.com/v2/") == ""
+    assert event_identity_url("https://outlook.office.com/calendar/view/week") == ""
+    meet = "https://teams.microsoft.com/meet/3739055785597029?p=secret"
+    assert event_identity_url(meet).endswith("/meet/3739055785597029")
+
+    shell = event_fingerprint(
+        source_url="https://teams.cloud.microsoft/",
+        title="Review insights",
+        start="2026-10-28T09:00",
+    )
+    other = event_fingerprint(
+        source_url="https://teams.cloud.microsoft/",
+        title="Keyedin",
+        start="2026-10-29T11:30",
+    )
+    assert shell != other
+
+    same_meet = event_fingerprint(
+        source_url="https://teams.cloud.microsoft/",
+        meeting_url=meet,
+        title="Keyedin",
+        start="2026-10-29T11:30",
+    )
+    again = event_fingerprint(
+        source_url="https://teams.cloud.microsoft/",
+        meeting_url="https://teams.microsoft.com/meet/3739055785597029?p=other",
+        title="Different title",
+        start="2026-10-01T00:00",
+    )
+    assert same_meet == again
+
+    existing = {
+        "title": "Review insights",
+        "start": "2026-10-28T09:00",
+        "source_url": "https://teams.cloud.microsoft/",
+        "meeting_url": "https://teams.microsoft.com/meet/111",
+    }
+    assert event_identities_conflict(
+        existing,
+        source_url="https://teams.cloud.microsoft/",
+        meeting_url="https://teams.microsoft.com/meet/222",
+        title="Keyedin",
+        start="2026-10-29T11:30",
+    )
+    assert not event_identities_conflict(
+        existing,
+        source_url="https://teams.cloud.microsoft/",
+        meeting_url="https://teams.microsoft.com/meet/111?p=x",
+        title="Review insights",
+        start="2026-10-28T09:00",
+    )
+
+
+def test_upsert_renames_when_start_day_changes(env: SimpleNamespace) -> None:
+    first = upsert_event(
+        env.cfg,
+        title="Keyedin",
+        start="2026-10-28T11:30",
+        source="outlook",
+        source_url="https://teams.cloud.microsoft/",
+        meeting_url="https://teams.microsoft.com/meet/3739",
+        store=env.store,
+    )
+    assert "2026-10-28-" in first["path"]
+    second = upsert_event(
+        env.cfg,
+        title="Keyedin",
+        start="2026-10-29T11:30",
+        source="outlook",
+        source_url="https://teams.cloud.microsoft/",
+        meeting_url="https://teams.microsoft.com/meet/3739",
+        store=env.store,
+    )
+    assert second["id"] == first["id"]
+    assert "2026-10-29-" in second["path"]
+    assert not env.store.exists(first["path"])
+    assert env.store.exists(second["path"])
+
+
+def test_generic_teams_url_does_not_collapse_events(env: SimpleNamespace) -> None:
+    a = upsert_event(
+        env.cfg,
+        title="Review insights connector",
+        start="2026-10-28T09:00",
+        source_url="https://teams.cloud.microsoft/",
+        store=env.store,
+    )
+    b = upsert_event(
+        env.cfg,
+        title="Keyedin",
+        start="2026-10-29T11:30",
+        source_url="https://teams.cloud.microsoft/",
+        meeting_url="https://teams.microsoft.com/meet/3739055785597029",
+        store=env.store,
+    )
+    assert a["path"] != b["path"]
+    assert a["id"] != b["id"]
+    assert a["fingerprint"] != b["fingerprint"]
+
+
+def test_sticky_path_diverges_on_different_meeting_url(env: SimpleNamespace) -> None:
+    first = upsert_event(
+        env.cfg,
+        title="Review insights",
+        start="2026-10-28T09:00",
+        source_url="https://teams.cloud.microsoft/",
+        meeting_url="https://teams.microsoft.com/meet/111",
+        store=env.store,
+    )
+    with TestClient(api_server.create_app(env.cfg)) as client:
+        cap = client.post(
+            "/v1/captures",
+            headers=AUTH,
+            json={
+                "target": {
+                    "kind": "event",
+                    "title": "Keyedin",
+                    "start": "2026-10-29T11:30",
+                    "source_url": "https://teams.cloud.microsoft/",
+                    "meeting_url": "https://teams.microsoft.com/meet/222",
+                    "path": first["path"],
+                },
+                "snippets": [
+                    {"id": "snip-keyed", "kind": "text", "text": "Keyedin attendees"}
+                ],
+            },
+        )
+        assert cap.status_code == 200, cap.text
+        body = cap.json()
+        assert body["path"] != first["path"]
+        assert body["event_id"] != first["id"]
+        assert "Keyedin" in env.store.read(body["path"])
+        # Original sticky note stays intact.
+        assert "Review insights" in env.store.read(first["path"])
 
 
 def test_delete_event(env: SimpleNamespace) -> None:
