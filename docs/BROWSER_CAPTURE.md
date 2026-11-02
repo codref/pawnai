@@ -236,6 +236,13 @@ message bubble. Hover opens a menu of captures (newest first) with **capture
 date + title**; click a row to open that note in Obsidian. Drag moves the chip
 (position is remembered).
 
+Overlay rows are cached in `chrome.storage.local` (`pawnAnchorsByPage`) so SPA
+navigation stays snappy, but a **successful** `GET /v1/captures/anchors`
+(including an empty list after you delete notes) replaces that cache. On
+network failure only, the extension keeps the last good cache. To force a wipe
+and refetch: hover the chip → **Refresh from vault**, or open the side panel
+Settings → **Refresh Teams overlays**.
+
 Reload the unpacked extension after updating so content scripts pick up changes.
 
 ### Manual checklist
@@ -245,6 +252,8 @@ Reload the unpacked extension after updating so content scripts pick up changes.
 - Scroll the message out of view and back (virtualization) → badge re-paints.
 - Click badge → Obsidian opens the capture note.
 - Re-save the same snippet id → still a single `anchors` row.
+- Delete the capture note in Obsidian → chip menu **Refresh from vault** (or
+  Settings → **Refresh Teams overlays**) removes the badge.
 
 ### `POST /v1/captures/file`
 

@@ -1997,9 +1997,15 @@ async def item_action(
 ) -> dict:
     """Apply file, task, todo, delete, later, ignore, approve, or reject to one item."""
     from pawn_agent.core.coworker import db as itemdb  # noqa: PLC0415
-    from pawn_agent.core.coworker.actions import apply_action  # noqa: PLC0415
+    from pawn_agent.core.coworker.actions import apply_action, delete_items  # noqa: PLC0415
 
-    receipt = await apply_action(cfg, item_id, body.action, body.arg, registry=_sallm_registry)
+    # Bulk-delete path is threaded (DB + S3); reuse it for single delete so a
+    # slow vault round-trip cannot stall Matrix sync / long-poll SSE.
+    if body.action == "delete":
+        result = await delete_items(cfg, ids=[item_id], registry=_sallm_registry)
+        receipt = (result.get("receipts") or ["Deleted."])[0]
+    else:
+        receipt = await apply_action(cfg, item_id, body.action, body.arg, registry=_sallm_registry)
     item = await asyncio.to_thread(itemdb.get_item, cfg.db_dsn, item_id)
     if item is None:
         raise HTTPException(status_code=404, detail=receipt)

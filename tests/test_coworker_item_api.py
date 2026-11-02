@@ -202,11 +202,12 @@ def test_bulk_delete_all_open(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(itemdb, "list_item_ids", lambda dsn, **kwargs: ["id1", "id2"])
     called: list[str] = []
 
-    async def _apply(cfg, item_id, action, arg=None, **kwargs):  # noqa: ANN001,ARG001
-        called.append(f"{action}:{item_id}")
-        return f"Deleted {item_id}."
+    def _blocking(cfg, target_ids, store=None):  # noqa: ANN001,ARG001
+        for item_id in target_ids:
+            called.append(f"delete:{item_id}")
+        return [f"Deleted {item_id}." for item_id in target_ids]
 
-    monkeypatch.setattr(actions, "apply_action", _apply)
+    monkeypatch.setattr(actions, "_delete_items_blocking", _blocking)
     result = asyncio.run(actions.delete_items(cfg, all_open=True))
     assert result["deleted"] == 2
     assert called == ["delete:id1", "delete:id2"]

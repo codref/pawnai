@@ -137,6 +137,34 @@
   font-size: 12px !important;
 }
 
+.pawn-overlay-tip-actions {
+  display: flex !important;
+  margin: 8px 0 0 !important;
+  padding: 0 !important;
+}
+
+.pawn-overlay-tip-action {
+  box-sizing: border-box !important;
+  width: 100% !important;
+  margin: 0 !important;
+  padding: 6px 10px !important;
+  border: 1px dashed rgba(74, 158, 142, 0.55) !important;
+  border-radius: 8px !important;
+  background: transparent !important;
+  color: #9fd9cc !important;
+  font: 11px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif !important;
+  cursor: pointer !important;
+  text-align: center !important;
+}
+
+.pawn-overlay-tip-action:hover,
+.pawn-overlay-tip-action:focus-visible {
+  border-style: solid !important;
+  background: rgba(74, 158, 142, 0.14) !important;
+  color: #e8f7f3 !important;
+  outline: none !important;
+}
+
 .pawn-overlay-tip .pawn-overlay-tip-hint {
   margin: 8px 2px 2px !important;
   opacity: 0.72 !important;

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 from datetime import datetime, timedelta, timezone
@@ -252,10 +253,7 @@ async def apply_action(
         return f"Ignored {item['short_id']}."
 
     if action == "delete":
-        itemdb.add_suppression(cfg.db_dsn, item["fingerprint"])
-        itemdb.update_item(cfg.db_dsn, item["id"], status="dismissed")
-        _delete_note(vault, item, dsn=cfg.db_dsn)
-        return f"Deleted {item['short_id']}."
+        return _delete_item_record(cfg, item, vault)
 
     if action == "approve" and item.get("kind") == "proposal":
         from pawn_agent.core.coworker.pipeline import _run_research  # noqa: PLC0415
@@ -279,6 +277,72 @@ async def apply_action(
     return f"Unknown action {action!r}."
 
 
+def _delete_item_record(cfg: AgentConfig, item: dict[str, Any], vault: Any) -> str:
+    """Sync delete: suppress fingerprint, mark dismissed, remove vault note."""
+    itemdb.add_suppression(cfg.db_dsn, item["fingerprint"])
+    itemdb.update_item(cfg.db_dsn, item["id"], status="dismissed")
+    _delete_note(vault, item, dsn=cfg.db_dsn)
+    return f"Deleted {item['short_id']}."
+
+
+def _resolve_delete_ids(
+    cfg: AgentConfig,
+    *,
+    ids: Optional[list[str]],
+    all_open: bool,
+    statuses: Optional[list[str]],
+    kind: Optional[str],
+    q: Optional[str],
+) -> list[str]:
+    """Resolve bulk-delete targets (DB only; safe to run in a worker thread)."""
+    if all_open:
+        # None → open defaults; [] → no status filter; else explicit list.
+        if statuses is None:
+            status_arg: Optional[list[str]] = list(itemdb.OPEN_STATUSES)
+        elif len(statuses) == 0:
+            status_arg = None
+        else:
+            status_arg = statuses
+        return itemdb.list_item_ids(
+            cfg.db_dsn,
+            statuses=status_arg,
+            kind=kind,
+            q=q,
+        )
+    if not ids:
+        return []
+    # Resolve short_ids to canonical ids via get_item.
+    seen: set[str] = set()
+    target_ids: list[str] = []
+    for raw in ids:
+        item = itemdb.get_item(cfg.db_dsn, raw)
+        if item and item["id"] not in seen:
+            seen.add(item["id"])
+            target_ids.append(item["id"])
+    return target_ids
+
+
+def _delete_items_blocking(
+    cfg: AgentConfig,
+    target_ids: list[str],
+    store: Any = None,
+) -> list[str]:
+    """Delete many items synchronously (DB + S3). Must not run on the event loop."""
+    vault = None
+    try:
+        vault = _store(cfg, store)
+    except Exception as exc:
+        logger.warning("coworker bulk delete has no vault: %s", exc)
+    receipts: list[str] = []
+    for item_id in target_ids:
+        item = itemdb.get_item(cfg.db_dsn, item_id)
+        if item is None:
+            receipts.append(f"No item {item_id}.")
+            continue
+        receipts.append(_delete_item_record(cfg, item, vault))
+    return receipts
+
+
 async def delete_items(
     cfg: AgentConfig,
     *,
@@ -290,34 +354,22 @@ async def delete_items(
     registry: Any = None,
     store: Any = None,
 ) -> dict[str, Any]:
-    """Delete many items. Returns ``{deleted, receipts}``."""
+    """Delete many items. Returns ``{deleted, receipts}``.
+
+    Resolution and per-item DB/S3 work run in a worker thread so long bulk
+    deletes (plugin flushClosed batches) do not stall Matrix sync / SSE.
+    """
     del registry  # unused; kept for call-site symmetry with apply_action
-    target_ids: list[str] = []
-    if all_open:
-        # None → open defaults; [] → no status filter; else explicit list.
-        if statuses is None:
-            status_arg: Optional[list[str]] = list(itemdb.OPEN_STATUSES)
-        elif len(statuses) == 0:
-            status_arg = None
-        else:
-            status_arg = statuses
-        target_ids = itemdb.list_item_ids(
-            cfg.db_dsn,
-            statuses=status_arg,
-            kind=kind,
-            q=q,
-        )
-    elif ids:
-        # Resolve short_ids to canonical ids via get_item.
-        seen: set[str] = set()
-        for raw in ids:
-            item = itemdb.get_item(cfg.db_dsn, raw)
-            if item and item["id"] not in seen:
-                seen.add(item["id"])
-                target_ids.append(item["id"])
-    receipts: list[str] = []
-    for item_id in target_ids:
-        receipts.append(await apply_action(cfg, item_id, "delete", store=store))
+    target_ids = await asyncio.to_thread(
+        _resolve_delete_ids,
+        cfg,
+        ids=ids,
+        all_open=all_open,
+        statuses=statuses,
+        kind=kind,
+        q=q,
+    )
+    receipts = await asyncio.to_thread(_delete_items_blocking, cfg, target_ids, store)
     return {"deleted": len(target_ids), "receipts": receipts}
 
 

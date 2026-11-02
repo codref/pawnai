@@ -86,9 +86,10 @@ span.count {
     }, delayMs == null ? 120 : delayMs);
   }
 
-  async function refreshAnchors() {
+  async function refreshAnchors({ clearLocal = false } = {}) {
     const t = teams();
     if (!t?.isTeamsPage?.()) return;
+    if (clearLocal) anchors = [];
     const nextKey = t.currentPageKey() || "";
     if (nextKey) pageKey = nextKey;
     try {
@@ -97,19 +98,38 @@ span.count {
         page_key: pageKey,
         site: "teams",
       });
-      const rows = Array.isArray(resp?.data)
+      if (resp?.ok || resp?.authoritative) {
+        // Successful vault lookup wins — empty means notes are gone.
+        anchors = Array.isArray(resp?.data) ? resp.data : [];
+        return;
+      }
+      const fallback = Array.isArray(resp?.data)
         ? resp.data
         : Array.isArray(resp?.cached)
           ? resp.cached
           : [];
-      // Never wipe a good cache on a transient empty response (Teams SPA churn).
-      if (rows.length) {
-        anchors = rows;
-      } else if (!anchors.length && Array.isArray(resp?.cached) && resp.cached.length) {
-        anchors = resp.cached;
+      // Transport/API failure: keep prior in-memory rows; seed from cache only
+      // when we have nothing yet (Teams SPA churn / offline).
+      if (fallback.length && !anchors.length) {
+        anchors = fallback;
       }
     } catch (_) {
       /* background unavailable — keep prior anchors */
+    }
+  }
+
+  async function clearAndRefreshOverlays() {
+    hideTip();
+    try {
+      // Background wipes chrome.storage cache and broadcasts a clear+refetch
+      // to every Teams tab (including this one).
+      await chrome.runtime.sendMessage({ type: "pawn-anchors-clear" });
+    } catch (_) {
+      anchors = [];
+      removeStale(new Set());
+      paintChatBadge([]);
+      await refreshAnchors({ clearLocal: true });
+      await paint();
     }
   }
 
@@ -294,6 +314,27 @@ span.count {
       list.appendChild(more);
     }
     tip.appendChild(list);
+
+    const actions = document.createElement("div");
+    actions.className = "pawn-overlay-tip-actions";
+    const refreshBtn = document.createElement("button");
+    refreshBtn.type = "button";
+    refreshBtn.className = "pawn-overlay-tip-action";
+    refreshBtn.textContent = "Refresh from vault";
+    refreshBtn.title =
+      "Drop cached badges and reload captures that still exist in Obsidian";
+    refreshBtn.addEventListener(
+      "click",
+      (ev) => {
+        ev.preventDefault();
+        ev.stopPropagation();
+        hideTip();
+        void clearAndRefreshOverlays();
+      },
+      true,
+    );
+    actions.appendChild(refreshBtn);
+    tip.appendChild(actions);
 
     const hint = document.createElement("div");
     hint.className = "pawn-overlay-tip-hint";
@@ -716,6 +757,11 @@ span.count {
   chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     if (msg?.type === "pawn-overlays-refresh") {
       void (async () => {
+        if (msg.clear) {
+          anchors = [];
+          removeStale(new Set());
+          paintChatBadge([]);
+        }
         if (Array.isArray(msg.anchors) && msg.anchors.length) {
           const byId = new Map(
             anchors.map((a) => [String(a.snippet_id || ""), a]),
@@ -726,7 +772,7 @@ span.count {
           }
           anchors = [...byId.values()];
         } else {
-          await refreshAnchors();
+          await refreshAnchors({ clearLocal: Boolean(msg.clear) });
         }
         await paint();
         sendResponse({ ok: true, count: anchors.length });
@@ -771,6 +817,7 @@ span.count {
   window.__pawnOverlayDebug = {
     snapshot: debugSnapshot,
     refresh: () => refreshAnchors().then(() => paint()),
+    clear: () => clearAndRefreshOverlays(),
     resetDock: async () => {
       userDocked = false;
       try {

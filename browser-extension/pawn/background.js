@@ -718,6 +718,37 @@ async function cacheAnchorsForPage(pageKey, rows) {
   await chrome.storage.local.set({ pawnAnchorsByPage });
 }
 
+/** Drop site-wide rows for a page_key that the vault no longer returns. */
+async function pruneSiteCacheForPage(site, pageKey, pageRows) {
+  const siteName = String(site || "teams").trim() || "teams";
+  const pk = String(pageKey || "").trim();
+  if (!pk) return;
+  const siteKey = `__site:${siteName}`;
+  const { pawnAnchorsByPage = {} } = await chrome.storage.local.get("pawnAnchorsByPage");
+  const prev = Array.isArray(pawnAnchorsByPage[siteKey]?.data)
+    ? pawnAnchorsByPage[siteKey].data
+    : [];
+  if (!prev.length) return;
+  const keepIds = new Set(
+    (Array.isArray(pageRows) ? pageRows : [])
+      .map((r) => String(r.snippet_id || "").trim())
+      .filter(Boolean),
+  );
+  const next = prev.filter((row) => {
+    const rowPk = String(row.page_key || "").trim();
+    if (rowPk !== pk) return true;
+    const sid = String(row.snippet_id || "").trim();
+    return Boolean(sid && keepIds.has(sid));
+  });
+  if (next.length === prev.length) return;
+  pawnAnchorsByPage[siteKey] = { fetchedAt: Date.now(), data: next };
+  await chrome.storage.local.set({ pawnAnchorsByPage });
+}
+
+async function clearAnchorCache() {
+  await chrome.storage.local.remove("pawnAnchorsByPage");
+}
+
 async function fetchAnchors(pageKey, site) {
   const pk = String(pageKey || "").trim();
   const siteName = String(site || "").trim();
@@ -730,6 +761,9 @@ async function fetchAnchors(pageKey, site) {
   const result = await apiFetch("GET", `/v1/captures/anchors?${params.toString()}`);
   const data = Array.isArray(result?.data) ? result.data : [];
   await cacheAnchorsForPage(pk || `__site:${siteName || "teams"}`, data);
+  if (pk && siteName) {
+    await pruneSiteCacheForPage(siteName, pk, data);
+  }
   return { ok: true, data };
 }
 
@@ -847,23 +881,31 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
         [];
       try {
         const result = await fetchAnchors(pk, site);
-        // Prefer conversation matches; fall back to site-wide cache/API rows.
-        let data = result.data || [];
-        if (pk && !data.length && Array.isArray(cached) && cached.length) {
-          data = cached;
-        }
-        if (!pk) {
-          const siteCached = pawnAnchorsByPage[`__site:${site}`]?.data;
-          if (!data.length && Array.isArray(siteCached)) data = siteCached;
-        }
-        sendResponse({ ok: true, data, cached });
+        // Trust a successful vault lookup — including empty (notes deleted).
+        // Only revive from cache when the network/API call fails.
+        const data = Array.isArray(result.data) ? result.data : [];
+        sendResponse({ ok: true, data, cached, authoritative: true });
       } catch (err) {
         sendResponse({
           ok: false,
           error: String(err?.message || err),
           cached: Array.isArray(cached) ? cached : [],
           data: Array.isArray(cached) ? cached : [],
+          authoritative: false,
         });
+      }
+    })();
+    return true;
+  }
+
+  if (msg?.type === "pawn-anchors-clear") {
+    void (async () => {
+      try {
+        await clearAnchorCache();
+        await notifyTeamsTabs({ type: "pawn-overlays-refresh", clear: true });
+        sendResponse({ ok: true });
+      } catch (err) {
+        sendResponse({ ok: false, error: String(err?.message || err) });
       }
     })();
     return true;

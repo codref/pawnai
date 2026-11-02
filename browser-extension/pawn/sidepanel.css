@@ -304,6 +304,19 @@ body {
 
 .pawn-settings .pawn-toolbar {
   margin-top: var(--size-4-1);
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+button.pawn-btn-secondary {
+  background: transparent;
+  border: 1px solid var(--background-modifier-border);
+  color: var(--text-muted);
+}
+
+button.pawn-btn-secondary:hover:not(:disabled) {
+  background: var(--background-modifier-hover);
+  color: var(--text-normal);
 }
 
 .pawn-toolbar {

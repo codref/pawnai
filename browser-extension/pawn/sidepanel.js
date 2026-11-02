@@ -155,6 +155,7 @@ const el = {
   serverUrl: document.getElementById("server-url"),
   apiToken: document.getElementById("api-token"),
   btnSaveSettings: document.getElementById("btn-save-settings"),
+  btnClearOverlays: document.getElementById("btn-clear-overlays"),
   btnSelection: document.getElementById("btn-selection"),
   btnRegion: document.getElementById("btn-region"),
   btnClipMenu: document.getElementById("btn-clip-menu"),
@@ -550,6 +551,7 @@ function bind() {
     void persistTarget();
   });
   el.btnSaveSettings.addEventListener("click", () => void saveSettings());
+  el.btnClearOverlays?.addEventListener("click", () => void clearTeamsOverlays());
   el.btnSettings.addEventListener("click", () => {
     state.settingsOpen = !state.settingsOpen;
     syncSettingsUi();
@@ -627,6 +629,33 @@ async function saveSettings() {
     btn.disabled = false;
     btn.classList.remove("is-busy");
     btn.textContent = prev;
+  }
+}
+
+/** Drop sticky Teams badge cache and repaint from live vault anchors. */
+async function clearTeamsOverlays() {
+  const btn = el.btnClearOverlays;
+  const prev = btn?.textContent;
+  if (btn) {
+    btn.disabled = true;
+    btn.classList.add("is-busy");
+    btn.textContent = "Refreshing…";
+  }
+  showNotice("Refreshing Teams overlays…", false, true);
+  try {
+    const resp = await chrome.runtime.sendMessage({ type: "pawn-anchors-clear" });
+    if (resp && resp.ok === false) {
+      throw new Error(resp.error || "Failed to refresh overlays");
+    }
+    showNotice("Teams overlay cache cleared — badges reloaded from vault");
+  } catch (err) {
+    showNotice(String(err.message || err), true);
+  } finally {
+    if (btn) {
+      btn.disabled = false;
+      btn.classList.remove("is-busy");
+      btn.textContent = prev;
+    }
   }
 }
 
