@@ -328,7 +328,7 @@ COWORKER = Skill(
         "User wants to draft a change to Goals.md, or ask what is on the goals "
         "list. Prefer this over notes whenever they mention a goal, a thread, "
         "or Goals.md. An idea is captured with /idea, which does not start a "
-        "model turn."
+        "model turn. Whole-day planning / morning check-in uses day_plan."
     ),
     prompt=(
         "Active skill: coworker.\n"
@@ -341,13 +341,53 @@ COWORKER = Skill(
         "writes Goals.md. Do not claim Goals.md was updated.\n"
         "Read Goals.md with note_read before proposing, and do not duplicate a "
         "thread that is already there. knowledge_search finds related notes.\n"
-        "Stay inside the user's line. Do not develop a plan they did not ask for.\n"
+        "Stay inside the user's line. Do not develop a plan they did not ask for. "
+        "For plan my day / morning check-in, the day_plan skill applies instead.\n"
         "Do not call note_write. Do not dump tool errors into the vault."
     ),
     tools=(
         "goal_propose",
         "note_read",
         "knowledge_search",
+    ),
+)
+
+DAY_PLAN = Skill(
+    name="day_plan",
+    description=(
+        "User wants to plan the day, a morning check-in, or what to focus on "
+        "today. Prefer over coworker (Goals drafts) and meeting_prep (one event)."
+    ),
+    prompt=(
+        "Active skill: day_plan.\n"
+        "Interactive day planning. Human-in-the-middle is this chat.\n"
+        "If the user has not said what is going on today, ask 1–3 short "
+        "questions first. Do not invent commitments.\n"
+        "Before proposing a plan, call planner_day (optional --date) and "
+        "note_read Goals.md and Pawn/Today.md when useful. "
+        "knowledge_search and tasknotes_list fill gaps.\n"
+        "Write only via day_plan_update --content-file @plan (or short "
+        "--content) with optional --date. That replaces ## Plan on "
+        "Pawn/Daily/{date}.md. Never note_write the daily note. Never write "
+        "Goals.md.\n"
+        "Keep ## Plan sparse: priorities, meeting callouts, what to defer. "
+        "Propose TaskNotes with tasknotes_propose only when the user asks; "
+        "do not silently commit tasks.\n"
+        "Scheduled/unattended first turn: gather context with planner_day, "
+        "ask the check-in questions in your reply; use queue_push to notify "
+        "Matrix when the user or prompt asks for a Matrix ping. Do not write "
+        "a fake completed plan — an explicit awaiting-intake ## Plan stub is "
+        "ok if useful.\n"
+        "Do not dump tool errors into the vault."
+    ),
+    tools=(
+        "planner_day",
+        "day_plan_update",
+        "note_read",
+        "knowledge_search",
+        "tasknotes_list",
+        "tasknotes_propose",
+        "queue_push",
     ),
 )
 
@@ -464,6 +504,7 @@ def build_pawn_skills() -> SkillRegistry:
             OPS,
             TASKNOTES,
             COWORKER,
+            DAY_PLAN,
             RESEARCH_CAPTURE,
             MEETING_PREP,
             VAULT_TASKS,

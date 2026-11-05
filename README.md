@@ -204,9 +204,10 @@ Registered in `pawn_agent/core/sallm_tools.py` (domain logic in `pawn_agent/tool
 | `capture_update` / `task_update` | Research captures and vault jobs |
 | `knowledge_search` | Related / RAG search |
 | `schedule_propose` / `queue_push` / `goal_propose` | Schedules (proposals only), notifications, goal drafts |
+| `planner_day` / `day_plan_update` / `event_prep_update` | Day timeline, daily `## Plan`, event `## Prep` |
 | `tasknotes_*` | TaskNotes-compatible notes under `{agent_root}/TaskNotes/` |
 
-Skills (modes): `converse`, `sessions`, `notes`, `scheduling`, `ops`, `vault_tasks`, `tasknotes`, `coworker`, `research_capture`. Full tool authoring notes: [docs/TOOLS.md](docs/TOOLS.md), [docs/AGENT_TOOL_AUTHORING.md](docs/AGENT_TOOL_AUTHORING.md).
+Skills (modes): `converse`, `sessions`, `notes`, `scheduling`, `ops`, `vault_tasks`, `tasknotes`, `coworker`, `day_plan`, `research_capture`, `meeting_prep`. Full tool authoring notes: [docs/TOOLS.md](docs/TOOLS.md), [docs/AGENT_TOOL_AUTHORING.md](docs/AGENT_TOOL_AUTHORING.md).
 
 ---
 

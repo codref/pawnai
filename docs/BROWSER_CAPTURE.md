@@ -226,9 +226,12 @@ Flow:
 4. Click **Pawn** → `obsidian://open` (requires `vault.obsidian_vault_name`).
 
 Matching prefers `message_id`; soft-match uses author + text quote when ids are
-missing (dashed ring). When the chat id is missing from the Teams URL, the
-extension falls back to site-wide anchor lookup. Session / other-note targets
-still save snippets but do not register overlays in v1.
+missing (dashed ring). Overlays require a conversation fingerprint
+(`page_key`: chat thread id, or `meet:…` / meetup-join token). When that id
+cannot be resolved (common on bare call stage UIs), captures still save but
+**no overlay is registered** — the extension does not paint a site-wide chip.
+Session / other-note targets still save snippets but do not register overlays
+in v1.
 
 The floating chip is a **circle with a pawn icon**. A small number on it is the
 count of captures for this chat that are not currently pinned to a visible
@@ -249,6 +252,8 @@ Reload the unpacked extension after updating so content scripts pick up changes.
 
 - Capture a message → Save → badge appears (or after a short refresh).
 - Switch to another chat and back → badge returns.
+- Switch to a different call/chat → prior chat’s chip does **not** appear.
+- Capture on a call stage with no chat/meeting id → note saves, no overlay.
 - Scroll the message out of view and back (virtualization) → badge re-paints.
 - Click badge → Obsidian opens the capture note.
 - Re-save the same snippet id → still a single `anchors` row.

@@ -90,8 +90,13 @@ span.count {
     const t = teams();
     if (!t?.isTeamsPage?.()) return;
     if (clearLocal) anchors = [];
-    const nextKey = t.currentPageKey() || "";
-    if (nextKey) pageKey = nextKey;
+    // Always take the live key (including "") so call UIs without a chat id
+    // do not keep a previous conversation's pageKey / chip.
+    pageKey = t.currentPageKey() || "";
+    if (!pageKey) {
+      anchors = [];
+      return;
+    }
     try {
       const resp = await chrome.runtime.sendMessage({
         type: "pawn-anchors-get",
@@ -111,7 +116,9 @@ span.count {
       // Transport/API failure: keep prior in-memory rows; seed from cache only
       // when we have nothing yet (Teams SPA churn / offline).
       if (fallback.length && !anchors.length) {
-        anchors = fallback;
+        anchors = fallback.filter(
+          (row) => String(row.page_key || "").trim() === pageKey,
+        );
       }
     } catch (_) {
       /* background unavailable — keep prior anchors */
@@ -660,14 +667,16 @@ span.count {
   }
 
   function relevantAnchors() {
+    // Fail closed: no conversation fingerprint → no overlays (avoids the
+    // site-wide chip that used to appear on every Teams call).
+    if (!pageKey) return [];
     const out = [];
     for (const row of anchors) {
       const sid = String(row.snippet_id || "").trim();
       if (!sid) continue;
       const rowPk = String(row.page_key || "").trim();
-      // If both sides know a page_key and they disagree, skip — but keep
-      // empty-page_key rows (soft) and keep all when our pageKey is still unknown.
-      if (pageKey && rowPk && rowPk !== pageKey) continue;
+      // Exact page_key only — soft/empty keys are not paintable.
+      if (!rowPk || rowPk !== pageKey) continue;
       out.push(row);
     }
     return out;
@@ -677,7 +686,7 @@ span.count {
     const t = teams();
     if (!t?.isTeamsPage?.()) return;
     const nextKey = t.currentPageKey() || "";
-    if (nextKey && nextKey !== pageKey) {
+    if (nextKey !== pageKey) {
       pageKey = nextKey;
       await refreshAnchors();
     }
@@ -762,13 +771,19 @@ span.count {
           removeStale(new Set());
           paintChatBadge([]);
         }
-        if (Array.isArray(msg.anchors) && msg.anchors.length) {
+        const liveKey = teams()?.currentPageKey?.() || "";
+        pageKey = liveKey;
+        if (Array.isArray(msg.anchors) && msg.anchors.length && pageKey) {
           const byId = new Map(
-            anchors.map((a) => [String(a.snippet_id || ""), a]),
+            anchors
+              .filter((a) => String(a.page_key || "").trim() === pageKey)
+              .map((a) => [String(a.snippet_id || ""), a]),
           );
           for (const row of msg.anchors) {
             const sid = String(row.snippet_id || "");
-            if (sid) byId.set(sid, { ...byId.get(sid), ...row });
+            const rowPk = String(row.page_key || "").trim();
+            if (!sid || rowPk !== pageKey) continue;
+            byId.set(sid, { ...byId.get(sid), ...row });
           }
           anchors = [...byId.values()];
         } else {

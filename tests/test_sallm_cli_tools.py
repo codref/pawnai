@@ -40,6 +40,9 @@ def test_build_pawn_clitools_names() -> None:
         "note_write",
         "note_append",
         "capture_update",
+        "event_prep_update",
+        "planner_day",
+        "day_plan_update",
         "task_update",
         "schedule_propose",
         "knowledge_search",
@@ -95,6 +98,22 @@ def test_coworker_skill_hides_note_write() -> None:
     visible = registry.resolve_tools("coworker", available)
     assert "goal_propose" in visible
     assert "idea_capture" not in visible
+    assert "note_write" not in visible
+
+
+def test_day_plan_skill_allowlist() -> None:
+    registry = build_pawn_skills()
+    available = build_pawn_clitools()
+    assert "day_plan" in registry.names()
+    skill = registry.get("day_plan")
+    assert skill.tools is not None
+    assert "planner_day" in skill.tools
+    assert "day_plan_update" in skill.tools
+    assert "note_write" not in skill.tools
+    visible = registry.resolve_tools("day_plan", available)
+    assert "planner_day" in visible
+    assert "day_plan_update" in visible
+    assert "queue_push" in visible
     assert "note_write" not in visible
 
 

@@ -1718,9 +1718,14 @@ async function saveTray() {
       target: buildTarget(),
       snippets: unsaved.map((s) => {
         let anchor = s.anchor && typeof s.anchor === "object" ? s.anchor : null;
+        // Overlays need a conversation fingerprint — never invent site-wide soft rows.
+        if (anchor && !String(anchor.page_key || "").trim()) {
+          anchor = null;
+        }
         if (
           !anchor &&
           teamsProbe?.teams &&
+          String(teamsProbe.page_key || "").trim() &&
           ["new", "capture", "research"].includes(state.targetKind)
         ) {
           const quote = String(s.text || "")
@@ -1729,7 +1734,7 @@ async function saveTray() {
             .slice(0, 160);
           anchor = {
             site: "teams",
-            page_key: teamsProbe.page_key || undefined,
+            page_key: String(teamsProbe.page_key).trim(),
             fallback: {
               text_quote: quote || "capture",
             },

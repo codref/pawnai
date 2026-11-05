@@ -74,7 +74,8 @@ Migrated CliTools: `sessions_list`, `session_transcript`, `session_analyze`,
 `session_screenshots`, `session_delete`, `session_relabel`, `speakers_list`,
 `speakers_show`, `speakers_update`, `speaker_enroll`, `session_reidentify`,
 `people_show`, `people_ensure`, `people_append`, `note_read`, `note_search`,
-`note_write`, `note_append`, `capture_update`, `task_update`, `schedule_propose`,
+`note_write`, `note_append`, `capture_update`, `event_prep_update`,
+`planner_day`, `day_plan_update`, `task_update`, `schedule_propose`,
 `queue_push`, `goal_propose`.
 
 `session_analyze --save` / `note_write`: prefer `--save` for analysis Markdown
@@ -116,9 +117,9 @@ background vision model; `session_screenshots --summarize` can do that later.
 Mapping table: `vault_notes`.
 
 Skills (modes): `converse`, `sessions`, `notes`, `scheduling`, `ops`,
-`vault_tasks`, `tasknotes`, `coworker`, `research_capture`, `meeting_prep` —
-see `sallm_skills.py`. Day planner (events + Outlook clip + LLM prep):
-`docs/PLANNER.md`.
+`vault_tasks`, `tasknotes`, `coworker`, `day_plan`, `research_capture`,
+`meeting_prep` — see `sallm_skills.py`. Day planner (events + Outlook clip +
+LLM prep + interactive `day_plan`): `docs/PLANNER.md`.
 
 `tasknotes` writes TaskNotes-compatible notes under `{agent_root}/TaskNotes/`
 (tasks, project stubs, `.base` boards, and a checklist proposal). The user

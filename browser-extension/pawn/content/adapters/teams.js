@@ -6,6 +6,8 @@
   const CHAT_ID_RE =
     /(19:[A-Za-z0-9._\-:@]+@(?:thread\.v2|thread\.tacv2|unq\.gbl\.spaces|thread\.skype))/i;
   const MESSAGE_LINK_RE = /\/l\/message\/([^/?#]+)\/(\d+)(?:\?|$)/i;
+  const MEET_PATH_RE = /\/meet\/(\d{6,})(?:\?|$|\/)/i;
+  const MEETUP_JOIN_RE = /\/l\/meetup-join\/([^/?#]+)/i;
   const MESSAGE_ID_ATTRS = [
     "data-mid",
     "data-message-id",
@@ -58,19 +60,38 @@
     }
   }
 
+  function meetingKeyFromHref(href) {
+    const s = decodeMaybe(href || "");
+    const meet = s.match(MEET_PATH_RE);
+    if (meet) return `meet:${meet[1]}`;
+    const join = s.match(MEETUP_JOIN_RE);
+    if (join) {
+      const decoded = decodeMaybe(join[1]);
+      const chat = decoded.match(CHAT_ID_RE);
+      if (chat) return chat[1];
+      // Opaque meetup-join token — still stable per meeting.
+      if (decoded && decoded.length >= 8) return `meetup:${decoded.slice(0, 120)}`;
+    }
+    return "";
+  }
+
   function pageKeyFromHref(href) {
     const s = decodeMaybe(href || "");
     const link = s.match(MESSAGE_LINK_RE);
     if (link) return decodeMaybe(link[1]);
     const chat = s.match(CHAT_ID_RE);
     if (chat) return chat[1];
+    const meeting = meetingKeyFromHref(s);
+    if (meeting) return meeting;
     try {
       const u = new URL(s, location.origin);
       for (const key of ["chatId", "conversationId", "threadId", "threadId2"]) {
         const v = u.searchParams.get(key);
         if (!v) continue;
-        const m = decodeMaybe(v).match(CHAT_ID_RE);
+        const decoded = decodeMaybe(v);
+        const m = decoded.match(CHAT_ID_RE);
         if (m) return m[1];
+        if (/^\d{6,}$/.test(decoded)) return `meet:${decoded}`;
       }
       const pathChat = decodeMaybe(u.pathname + u.hash).match(CHAT_ID_RE);
       if (pathChat) return pathChat[1];
@@ -80,34 +101,38 @@
     return "";
   }
 
+  /** Active conversation surface only — never the left-rail chat list. */
+  function activeChatRoot() {
+    return (
+      document.querySelector(
+        "[data-tid*='message-pane'], [data-tid*='chat-pane-list'], [data-tid*='chat-pane'], [role='main']",
+      ) || null
+    );
+  }
+
   function findChatIdInDom() {
-    const anchors = document.querySelectorAll(
-      'a[href*="/l/message/"], a[href*="/l/chat/"], a[href*="thread.v2"]',
+    const root = activeChatRoot();
+    if (!root) return "";
+    const anchors = root.querySelectorAll(
+      'a[href*="/l/message/"], a[href*="/l/chat/"], a[href*="/l/meetup-join/"], a[href*="/meet/"], a[href*="thread.v2"]',
     );
     for (const a of anchors) {
       const pk = pageKeyFromHref(a.href || "");
       if (pk) return pk;
     }
-    for (const el of document.querySelectorAll(
-      "[data-conversation-id], [data-chat-id], [data-thread-id], [data-tid]",
+    for (const el of root.querySelectorAll(
+      "[data-conversation-id], [data-chat-id], [data-thread-id]",
     )) {
-      for (const name of [
-        "data-conversation-id",
-        "data-chat-id",
-        "data-thread-id",
-        "data-tid",
-      ]) {
+      for (const name of ["data-conversation-id", "data-chat-id", "data-thread-id"]) {
         const v = el.getAttribute(name) || "";
-        const m = v.match(CHAT_ID_RE);
+        const m = decodeMaybe(v).match(CHAT_ID_RE);
         if (m) return m[1];
+        if (/^\d{6,}$/.test(String(v).trim())) return `meet:${String(v).trim()}`;
       }
     }
     // New Teams often keeps the id only in the message list markup.
-    const pane =
-      document.querySelector(
-        "[data-tid*='message-pane'], [data-tid*='chat-pane-list'], [data-tid*='chat-pane']",
-      ) || document.body;
-    const blob = String(pane?.innerHTML || "").slice(0, 400000);
+    // Do not fall back to document.body — that picks up sidebar chats.
+    const blob = String(root.innerHTML || "").slice(0, 400000);
     const m = blob.match(CHAT_ID_RE);
     return m ? m[1] : "";
   }
@@ -261,6 +286,8 @@
 
   function buildDeepLink(pageKey, messageId) {
     if (!pageKey || !messageId) return "";
+    // Message deep-links only work with Teams chat/thread ids, not meet: fingerprints.
+    if (!CHAT_ID_RE.test(pageKey)) return "";
     const ctx = encodeURIComponent('{"contextType":"chat"}');
     return `https://teams.microsoft.com/l/message/${pageKey}/${messageId}?context=${ctx}`;
   }
@@ -268,7 +295,11 @@
   function readMessageIds(root) {
     const page_key =
       currentPageKey() ||
-      pageKeyFromHref(root?.querySelector?.("a[href*='/l/message/']")?.href || "");
+      pageKeyFromHref(root?.querySelector?.("a[href*='/l/message/']")?.href || "") ||
+      pageKeyFromHref(root?.querySelector?.("a[href*='/l/meetup-join/']")?.href || "") ||
+      pageKeyFromHref(root?.querySelector?.("a[href*='/meet/']")?.href || "");
+    // Overlays require a conversation fingerprint — never register site-wide soft rows.
+    if (!page_key) return null;
     const message_id = readMessageId(root);
     const author = readAuthor(root);
     const approx_time = readApproxTime(root);
@@ -278,15 +309,13 @@
     if (author) fallback.author = author;
     if (text_quote) fallback.text_quote = text_quote;
     if (approx_time) fallback.approx_time = approx_time;
-    const anchor = {
+    return {
       site: "teams",
-      page_key: page_key || undefined,
+      page_key,
       message_id: message_id || undefined,
       deep_link: deep_link || undefined,
       fallback: Object.keys(fallback).length ? fallback : undefined,
     };
-    if (!anchor.page_key && !anchor.message_id && !anchor.fallback) return null;
-    return anchor;
   }
 
   function listVisibleMessages() {
@@ -364,18 +393,20 @@
     } else if (anchor && text && !anchor.fallback) {
       anchor.fallback = { text_quote: text.slice(0, 160) };
     } else if (!anchor && text) {
-      // Soft page-level fallback so Save still registers something paintable.
+      // Chat-level overlay only when we know which conversation this is.
       const page_key = currentPageKey();
       return {
         ok: true,
         text,
         url: location.href,
         title: document.title || "",
-        anchor: {
-          site: "teams",
-          page_key: page_key || undefined,
-          fallback: { text_quote: text.slice(0, 160) },
-        },
+        anchor: page_key
+          ? {
+              site: "teams",
+              page_key,
+              fallback: { text_quote: text.slice(0, 160) },
+            }
+          : undefined,
         page_key,
       };
     }

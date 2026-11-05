@@ -53,8 +53,40 @@ OVERLAY_TARGET_KINDS = frozenset({"new", "capture", "research"})
 _ANCHOR_SCAN_LIMIT = 200
 
 
+_CHAT_ID_IN_LINK_RE = re.compile(
+    r"(19:[A-Za-z0-9._\-:@]+@(?:thread\.v2|thread\.tacv2|unq\.gbl\.spaces|thread\.skype))",
+    re.I,
+)
+_MEET_PATH_IN_LINK_RE = re.compile(r"/meet/(\d{6,})(?:\?|$|/)", re.I)
+
+
+def _page_key_from_deep_link(deep_link: str) -> str:
+    """Recover a conversation fingerprint from a Teams deep link when missing."""
+    s = (deep_link or "").strip()
+    if not s:
+        return ""
+    try:
+        from urllib.parse import unquote
+
+        s = unquote(s)
+    except Exception:
+        pass
+    m = _CHAT_ID_IN_LINK_RE.search(s)
+    if m:
+        return m.group(1)
+    meet = _MEET_PATH_IN_LINK_RE.search(s)
+    if meet:
+        return f"meet:{meet.group(1)}"
+    return ""
+
+
 def normalize_anchor(raw: Any, *, snippet_id: str) -> dict[str, Any] | None:
-    """Normalize a client anchor dict; None when missing or invalid."""
+    """Normalize a client anchor dict; None when missing or invalid.
+
+    Overlays require a conversation ``page_key`` so badges stay scoped to one
+    chat/meeting. Soft fallback-only rows are rejected (they used to paint a
+    Pawn chip on every Teams call).
+    """
     if not isinstance(raw, dict):
         return None
     site = str(raw.get("site") or "").strip()
@@ -66,6 +98,8 @@ def normalize_anchor(raw: Any, *, snippet_id: str) -> dict[str, Any] | None:
     page_key = str(raw.get("page_key") or "").strip()
     message_id = str(raw.get("message_id") or "").strip()
     deep_link = str(raw.get("deep_link") or "").strip()
+    if not page_key and deep_link:
+        page_key = _page_key_from_deep_link(deep_link)
     captured_at = str(raw.get("captured_at") or "").strip()
     fallback_raw = raw.get("fallback")
     fallback: dict[str, str] = {}
@@ -74,9 +108,10 @@ def normalize_anchor(raw: Any, *, snippet_id: str) -> dict[str, Any] | None:
             val = str(fallback_raw.get(key) or "").strip()
             if val:
                 fallback[key] = val
-    out: dict[str, Any] = {"snippet_id": sid, "site": site}
-    if page_key:
-        out["page_key"] = page_key
+    # Conversation fingerprint is mandatory for overlay registration.
+    if not page_key:
+        return None
+    out: dict[str, Any] = {"snippet_id": sid, "site": site, "page_key": page_key}
     if message_id:
         out["message_id"] = message_id
     if deep_link:
@@ -85,9 +120,6 @@ def normalize_anchor(raw: Any, *, snippet_id: str) -> dict[str, Any] | None:
         out["captured_at"] = captured_at
     if fallback:
         out["fallback"] = fallback
-    # Need at least a page/message id or a soft-match fallback.
-    if not page_key and not message_id and not fallback:
-        return None
     return out
 
 
@@ -484,8 +516,9 @@ def list_anchors(
 ) -> list[dict[str, Any]]:
     """Reverse-lookup overlay anchors by page_key and/or site.
 
-    ``page_key`` filters to one conversation when set. When omitted, ``site``
-    is required and recent anchors for that site are returned (soft-match).
+    ``page_key`` filters to one conversation when set (exact match only).
+    When omitted, ``site`` is required and recent keyed anchors for that site
+    are returned. Rows without a ``page_key`` are skipped.
     """
     pk = (page_key or "").strip()
     site_filter = (site or "").strip().lower()
@@ -511,8 +544,10 @@ def list_anchors(
             row_pk = str(row.get("page_key") or "").strip()
             if site_filter and row_site != site_filter:
                 continue
-            # Exact page_key match, or keep empty page_key rows for soft-match.
-            if pk and row_pk and row_pk != pk:
+            # Exact page_key only — empty/soft rows are not paintable.
+            if pk and (not row_pk or row_pk != pk):
+                continue
+            if not pk and not row_pk:
                 continue
             item = {
                 "path": key,

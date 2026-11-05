@@ -671,3 +671,65 @@ def test_snippet_without_anchor_unchanged(env: SimpleNamespace) -> None:
         meta, _ = parse_frontmatter(env.store.read(resp.json()["path"]))
         assert "anchors" not in meta
         assert meta["source_url"] == "https://example.com/x"
+
+
+def test_soft_anchor_without_page_key_rejected(env: SimpleNamespace) -> None:
+    """Fallback-only Teams anchors must not register overlays (chip-everywhere bug)."""
+    from pawn_server.core.captures import normalize_anchor
+
+    assert (
+        normalize_anchor(
+            {
+                "site": "teams",
+                "fallback": {"text_quote": "region capture"},
+            },
+            snippet_id="soft-1",
+        )
+        is None
+    )
+    recovered = normalize_anchor(
+        {
+            "site": "teams",
+            "deep_link": (
+                "https://teams.microsoft.com/l/message/19:abc@thread.v2/"
+                "1563480968434?context=%7B%22contextType%22%3A%22chat%22%7D"
+            ),
+            "fallback": {"text_quote": "hi"},
+        },
+        snippet_id="soft-2",
+    )
+    assert recovered is not None
+    assert recovered["page_key"] == "19:abc@thread.v2"
+
+    with TestClient(api_server.create_app(env.cfg)) as client:
+        resp = client.post(
+            "/v1/captures",
+            headers=AUTH,
+            json={
+                "target": {"kind": "new", "title": "soft miss"},
+                "snippets": [
+                    {
+                        "id": "soft-miss",
+                        "kind": "text",
+                        "text": "no fingerprint",
+                        "anchor": {
+                            "site": "teams",
+                            "fallback": {"text_quote": "no fingerprint"},
+                        },
+                    }
+                ],
+            },
+        )
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert body.get("anchors") in (None, [])
+        meta, _ = parse_frontmatter(env.store.read(body["path"]))
+        assert "anchors" not in meta
+
+        by_site = client.get(
+            "/v1/captures/anchors",
+            headers=AUTH,
+            params={"site": "teams"},
+        )
+        assert by_site.status_code == 200
+        assert not any(r["snippet_id"] == "soft-miss" for r in by_site.json()["data"])

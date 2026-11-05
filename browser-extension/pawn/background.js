@@ -315,9 +315,11 @@ async function captureRegion(tab) {
         if (hit.url) sourceUrl = hit.url;
       }
       if (hit && hit.matched === false) {
+        const hasKey = Boolean(String(hit.page_key || hit.anchor?.page_key || "").trim());
         await pushPending({
-          info:
-            "Region clipped — Teams bubble not identified. After Save, look for a Pawn chip (top-right). Selection capture binds the badge to one message more reliably.",
+          info: hasKey
+            ? "Region clipped — Teams bubble not identified. After Save, a chat-level Pawn chip may appear. Selection capture binds the badge to one message more reliably."
+            : "Region clipped — Teams conversation id not found (common on call stage). Snippet will save, but no overlay badge will be registered until a chat/meeting id is visible.",
         });
       }
     }
@@ -794,17 +796,22 @@ async function mergeSavedAnchors(anchors) {
   const { pawnAnchorsByPage = {} } = await chrome.storage.local.get("pawnAnchorsByPage");
   const byPage = new Map();
   for (const row of rows) {
-    const pk = String(row.page_key || "").trim() || "__site:teams";
+    const pk = String(row.page_key || "").trim();
+    if (!pk) continue;
     if (!byPage.has(pk)) byPage.set(pk, []);
     byPage.get(pk).push(row);
   }
   for (const [pk, incoming] of byPage) {
+    // Skip the legacy site-wide bucket — overlays are conversation-scoped only.
+    if (!pk || pk === "__site:teams") continue;
     const prev = Array.isArray(pawnAnchorsByPage[pk]?.data)
       ? pawnAnchorsByPage[pk].data
       : [];
     const index = new Map();
     const merged = [];
     for (const row of [...prev, ...incoming]) {
+      const rowPk = String(row.page_key || "").trim();
+      if (!rowPk || rowPk !== pk) continue;
       const sid = String(row.snippet_id || "").trim();
       const key = sid || `${row.message_id || ""}:${row.path || ""}`;
       if (index.has(key)) {
@@ -816,25 +823,13 @@ async function mergeSavedAnchors(anchors) {
     }
     pawnAnchorsByPage[pk] = { fetchedAt: Date.now(), data: merged };
   }
-  // Also keep a site-wide bucket for when the chat id is not in the URL.
-  const siteKey = "__site:teams";
-  const prevSite = Array.isArray(pawnAnchorsByPage[siteKey]?.data)
-    ? pawnAnchorsByPage[siteKey].data
-    : [];
-  const siteIndex = new Map(prevSite.map((r, i) => [String(r.snippet_id || ""), i]));
-  const siteMerged = [...prevSite];
-  for (const row of rows) {
-    const sid = String(row.snippet_id || "");
-    if (!sid) continue;
-    if (siteIndex.has(sid)) siteMerged[siteIndex.get(sid)] = { ...siteMerged[siteIndex.get(sid)], ...row };
-    else {
-      siteIndex.set(sid, siteMerged.length);
-      siteMerged.push(row);
-    }
+  // Drop any leftover site-wide soft cache from older builds.
+  if (pawnAnchorsByPage["__site:teams"]) {
+    delete pawnAnchorsByPage["__site:teams"];
   }
-  pawnAnchorsByPage[siteKey] = { fetchedAt: Date.now(), data: siteMerged };
   await chrome.storage.local.set({ pawnAnchorsByPage });
-  await notifyTeamsTabs({ type: "pawn-overlays-refresh", anchors: rows });
+  const keyed = rows.filter((row) => String(row.page_key || "").trim());
+  await notifyTeamsTabs({ type: "pawn-overlays-refresh", anchors: keyed });
 }
 
 chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
@@ -874,11 +869,15 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     void (async () => {
       const pk = String(msg.page_key || "").trim();
       const site = String(msg.site || "teams").trim() || "teams";
+      // Conversation fingerprint required — never serve the old site-wide soft bucket.
+      if (!pk) {
+        sendResponse({ ok: true, data: [], cached: [], authoritative: true });
+        return;
+      }
       const { pawnAnchorsByPage = {} } = await chrome.storage.local.get("pawnAnchorsByPage");
-      const cached =
-        pawnAnchorsByPage[pk]?.data ||
-        pawnAnchorsByPage[`__site:${site}`]?.data ||
-        [];
+      const cached = Array.isArray(pawnAnchorsByPage[pk]?.data)
+        ? pawnAnchorsByPage[pk].data
+        : [];
       try {
         const result = await fetchAnchors(pk, site);
         // Trust a successful vault lookup — including empty (notes deleted).

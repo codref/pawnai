@@ -124,8 +124,23 @@ for this join UX — not for prep content.
 `event_prep_update` into `## Prep` (wikilinks, sparse). No heuristic “related
 notes” list is shown as prep.
 
+## Day plan (interactive)
+
+Skill `day_plan` owns whole-day planning and morning check-ins in chat. It
+reads the merged timeline via CliTool `planner_day` (same data as
+`GET /v1/planner/day`), plus Goals / Today when useful, asks what is going on
+if you have not said, then writes a sparse `## Plan` on
+`Pawn/Daily/{date}.md` via `day_plan_update`. It does not edit `Goals.md` and
+does not replace one-event `meeting_prep`.
+
+Optional weekday mornings: propose a durable cron on conversation key
+`coworker:daily` (approve via `pawn-server schedules`). Example and prompt
+text live in [AGENT_SCHEDULER.md](AGENT_SCHEDULER.md). The coworker
+`briefing_cron` remains a separate one-shot Matrix summary.
+
 ## Related
 
 - [BROWSER_CAPTURE.md](BROWSER_CAPTURE.md) — capture targets including `event`
 - [COWORKER.md](COWORKER.md) — items / Goals / Today.md (attention inbox, not agenda)
+- [AGENT_SCHEDULER.md](AGENT_SCHEDULER.md) — optional morning day-plan schedule
 - [OBSIDIAN_AGENT.md](OBSIDIAN_AGENT.md) — plugin pane

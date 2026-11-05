@@ -235,6 +235,25 @@ def build_pawn_clitools() -> dict[str, CliTool]:
                 "Do not use note_write for prep."
             ),
         ),
+        "planner_day": CliTool(
+            name="planner_day",
+            argv=_cli_argv("planner_day.py"),
+            summary=(
+                "Merged day timeline: events, sessions, open items. "
+                "Optional: --date YYYY-MM-DD (default today in coworker.timezone). "
+                "Use before proposing a day plan."
+            ),
+        ),
+        "day_plan_update": CliTool(
+            name="day_plan_update",
+            argv=_cli_argv("day_plan_update.py"),
+            summary=(
+                "Replace ## Plan on Pawn/Daily/{date}.md. "
+                "Required: --content-file @plan (preferred) or short --content. "
+                "Optional: --date YYYY-MM-DD. Creates a stub note if missing. "
+                "Do not use note_write for the daily plan."
+            ),
+        ),
         "task_update": CliTool(
             name="task_update",
             argv=_cli_argv("task_update.py"),

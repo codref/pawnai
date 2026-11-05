@@ -95,3 +95,21 @@ Cron schedules require `croniter` to be installed:
   "schedule": {"schedule_kind": "cron", "cron_expression": "0 9 * * *"}
 }
 ```
+
+### Morning day-plan check-in
+
+Interactive planning uses the `day_plan` skill (see [PLANNER.md](PLANNER.md)).
+Ask chat to propose a weekday morning schedule, then approve it. Example payload:
+
+```json
+{
+  "name": "Morning day plan check-in",
+  "prompt": "Morning day-plan check-in. Load planner_day and Goals.md. Ask what is going on today (1–3 short questions). After I answer in this conversation, write ## Plan via day_plan_update. On this first unattended turn, queue_push a short Matrix notify with the check-in question; do not invent a completed plan.",
+  "session_id": "coworker:daily",
+  "timezone": "Europe/Rome",
+  "schedule": {"schedule_kind": "cron", "cron_expression": "0 8 * * 1-5"}
+}
+```
+
+Continue the dialogue on conversation key `coworker:daily` (Obsidian / CLI chat).
+This is separate from `coworker.briefing_cron`, which stays a one-shot daily summary.
