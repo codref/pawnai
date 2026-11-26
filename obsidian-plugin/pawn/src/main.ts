@@ -18,6 +18,7 @@ import { captureIdea, noticeError } from "./inbox/ideas";
 import { QuickCaptureModal } from "./inbox/QuickCapture";
 import { snippetDecorationsExtension } from "./editor/snippetDecorations";
 import { JobStore } from "./jobs/JobStore";
+import { DayStore } from "./day/DayStore";
 import { SessionsStore } from "./sessions/SessionsStore";
 import { DEFAULT_SETTINGS, PawnSettings, PawnSettingTab } from "./settings";
 import { VaultSync } from "./vaultSync";
@@ -40,6 +41,7 @@ export default class PawnPlugin extends Plugin {
   captures!: CapturesStore;
   items!: ItemsStore;
   sessions!: SessionsStore;
+  day!: DayStore;
   itemNoteBar!: ItemNoteBar;
   vaultSync!: VaultSync;
   prompts!: PromptCommandRegistry;
@@ -57,6 +59,7 @@ export default class PawnPlugin extends Plugin {
     this.captures = new CapturesStore(this);
     this.items = new ItemsStore(this);
     this.sessions = new SessionsStore(this);
+    this.day = new DayStore(this);
     this.itemNoteBar = new ItemNoteBar(this);
     this.vaultSync = new VaultSync(this, this.client);
     this.prompts = new PromptCommandRegistry(this);
@@ -185,6 +188,11 @@ export default class PawnPlugin extends Plugin {
       id: "show-inbox",
       name: "Show inbox",
       callback: () => void this.openChat({ tab: "inbox" }),
+    });
+    this.addCommand({
+      id: "show-day",
+      name: "Show Day planner",
+      callback: () => void this.openChat({ tab: "day" }),
     });
     this.addCommand({
       id: "show-sessions",

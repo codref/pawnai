@@ -225,6 +225,35 @@ def build_pawn_clitools() -> dict[str, CliTool]:
                 "Never rewrite capture frontmatter with note_write."
             ),
         ),
+        "event_prep_update": CliTool(
+            name="event_prep_update",
+            argv=_cli_argv("event_prep_update.py"),
+            summary=(
+                "Replace ## Prep on a planner event note (pawn: event). "
+                "Required: --event-id or --path, plus --content-file @prep "
+                "(preferred) or short --content. Optional: --job-id. "
+                "Do not use note_write for prep."
+            ),
+        ),
+        "planner_day": CliTool(
+            name="planner_day",
+            argv=_cli_argv("planner_day.py"),
+            summary=(
+                "Merged day timeline: events, sessions, open items. "
+                "Optional: --date YYYY-MM-DD (default today in coworker.timezone). "
+                "Use before proposing a day plan."
+            ),
+        ),
+        "day_plan_update": CliTool(
+            name="day_plan_update",
+            argv=_cli_argv("day_plan_update.py"),
+            summary=(
+                "Replace ## Plan on Pawn/Daily/{date}.md. "
+                "Required: --content-file @plan (preferred) or short --content. "
+                "Optional: --date YYYY-MM-DD. Creates a stub note if missing. "
+                "Do not use note_write for the daily plan."
+            ),
+        ),
         "task_update": CliTool(
             name="task_update",
             argv=_cli_argv("task_update.py"),
@@ -250,8 +279,31 @@ def build_pawn_clitools() -> dict[str, CliTool]:
             argv=_cli_argv("knowledge_search.py"),
             summary=(
                 "Semantic search across vault notes, transcripts, and coworker items. "
-                "Flags: --query TEXT --kind note|transcript|analysis|item --limit N. "
+                "Flags: --query TEXT --kind note|transcript|analysis|item"
+                "|phone_sms|phone_notification|phone_call --limit N. "
                 "Use when the user asks where something was discussed."
+            ),
+        ),
+        "phone_events": CliTool(
+            name="phone_events",
+            argv=_cli_argv("phone_events.py"),
+            summary=(
+                "Read what the user's phone shared with pawn (stored on the "
+                "server, works while the phone is offline): calls, received/sent "
+                "SMS, app notifications, location fixes, battery/network status. "
+                "Flags: --kind call|sms|notification|location|status "
+                "--since 24h|7d|30m|ISO-date --contact NAME_OR_NUMBER "
+                "--query TEXT --limit N --device NAME. "
+                "Use for 'who called me', 'any texts from X', 'what did I miss'. "
+                "If a kind is not shared, say so — never guess phone data."
+            ),
+        ),
+        "phone_devices": CliTool(
+            name="phone_devices",
+            argv=_cli_argv("phone_devices.py"),
+            summary=(
+                "List phones registered with pawn-server, which categories each "
+                "one shares, and when it was last seen. No flags."
             ),
         ),
         "queue_push": CliTool(

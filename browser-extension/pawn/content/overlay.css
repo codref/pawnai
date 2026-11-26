@@ -1,0 +1,173 @@
+/* Pawn overlay badges on Teams.
+ * Floating chat chip uses Shadow DOM (styles in overlays.js) so Teams cannot
+ * override layout. These rules cover in-page message badges only.
+ */
+
+.pawn-overlay-badge {
+  position: absolute !important;
+  top: 8px !important;
+  right: 10px !important;
+  z-index: 2147483000 !important;
+  box-sizing: border-box !important;
+  display: inline-flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  width: 24px !important;
+  height: 24px !important;
+  min-width: 24px !important;
+  min-height: 24px !important;
+  max-width: 24px !important;
+  max-height: 24px !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  border: 1.5px solid #4a9e8e !important;
+  border-radius: 50% !important;
+  background: #14352f !important;
+  color: #e8f7f3 !important;
+  text-decoration: none !important;
+  cursor: pointer !important;
+  pointer-events: auto !important;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.35) !important;
+  user-select: none !important;
+  opacity: 0.96 !important;
+  line-height: 1 !important;
+  font-size: 14px !important;
+  overflow: visible !important;
+  transform: none !important;
+}
+
+.pawn-overlay-badge svg {
+  width: 14px !important;
+  height: 14px !important;
+  display: block !important;
+  fill: currentColor !important;
+  pointer-events: none !important;
+  flex: none !important;
+}
+
+.pawn-overlay-badge:hover,
+.pawn-overlay-badge:focus-visible {
+  opacity: 1 !important;
+  outline: 2px solid #6bc4b4 !important;
+  outline-offset: 2px !important;
+  background: #1f4f46 !important;
+  color: #fff !important;
+}
+
+.pawn-overlay-badge[data-pawn-soft="1"] {
+  border-style: dashed !important;
+  opacity: 0.85 !important;
+}
+
+.pawn-overlay-host {
+  position: relative !important;
+}
+
+/* Tip panel (also hardened — lives on <html>). */
+.pawn-overlay-tip {
+  position: fixed !important;
+  z-index: 2147483641 !important;
+  box-sizing: border-box !important;
+  width: min(320px, calc(100vw - 16px)) !important;
+  max-width: 320px !important;
+  max-height: min(360px, calc(100vh - 24px)) !important;
+  overflow: auto !important;
+  margin: 0 !important;
+  padding: 10px 10px 8px !important;
+  border: 1px solid rgba(74, 158, 142, 0.6) !important;
+  border-radius: 10px !important;
+  background: rgba(14, 22, 20, 0.98) !important;
+  color: #e8f7f3 !important;
+  font: 12px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif !important;
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.55) !important;
+  pointer-events: auto !important;
+  transform: none !important;
+}
+
+.pawn-overlay-tip strong {
+  display: block !important;
+  margin: 0 2px 8px !important;
+  padding: 0 !important;
+  font-weight: 650 !important;
+  font-size: 12px !important;
+  color: #fff !important;
+}
+
+.pawn-overlay-tip-list {
+  display: flex !important;
+  flex-direction: column !important;
+  gap: 4px !important;
+}
+
+.pawn-overlay-tip-item {
+  display: flex !important;
+  flex-direction: column !important;
+  align-items: flex-start !important;
+  gap: 2px !important;
+  box-sizing: border-box !important;
+  width: 100% !important;
+  margin: 0 !important;
+  padding: 8px 10px !important;
+  border: 1px solid transparent !important;
+  border-radius: 8px !important;
+  background: rgba(255, 255, 255, 0.04) !important;
+  color: inherit !important;
+  text-align: left !important;
+  cursor: pointer !important;
+  font: 12px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif !important;
+}
+
+.pawn-overlay-tip-item:hover,
+.pawn-overlay-tip-item:focus-visible {
+  border-color: rgba(74, 158, 142, 0.65) !important;
+  background: rgba(74, 158, 142, 0.18) !important;
+  outline: none !important;
+}
+
+.pawn-overlay-tip-date {
+  font-size: 11px !important;
+  font-weight: 600 !important;
+  letter-spacing: 0.01em !important;
+  color: #9fd9cc !important;
+}
+
+.pawn-overlay-tip-title {
+  color: #f3fffb !important;
+  word-break: break-word !important;
+  font-size: 12px !important;
+}
+
+.pawn-overlay-tip-actions {
+  display: flex !important;
+  margin: 8px 0 0 !important;
+  padding: 0 !important;
+}
+
+.pawn-overlay-tip-action {
+  box-sizing: border-box !important;
+  width: 100% !important;
+  margin: 0 !important;
+  padding: 6px 10px !important;
+  border: 1px dashed rgba(74, 158, 142, 0.55) !important;
+  border-radius: 8px !important;
+  background: transparent !important;
+  color: #9fd9cc !important;
+  font: 11px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif !important;
+  cursor: pointer !important;
+  text-align: center !important;
+}
+
+.pawn-overlay-tip-action:hover,
+.pawn-overlay-tip-action:focus-visible {
+  border-style: solid !important;
+  background: rgba(74, 158, 142, 0.14) !important;
+  color: #e8f7f3 !important;
+  outline: none !important;
+}
+
+.pawn-overlay-tip .pawn-overlay-tip-hint {
+  margin: 8px 2px 2px !important;
+  opacity: 0.72 !important;
+  font-size: 11px !important;
+  color: #e8f7f3 !important;
+}

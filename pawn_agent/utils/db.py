@@ -235,6 +235,56 @@ class KnowledgeChunk(_Base):
     updated_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
 
 
+class Device(_Base):
+    """A registered phone (pawn-assistant) that pushes context and runs tools."""
+
+    __tablename__ = "devices"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    name: Mapped[str] = mapped_column(String, nullable=False)
+    token_hash: Mapped[str] = mapped_column(String, nullable=False)
+    unifiedpush_endpoint: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    enabled_categories: Mapped[Optional[list]] = mapped_column(JSON, nullable=True)
+    created_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    last_seen: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+
+
+class PhoneEvent(_Base):
+    """One opt-in phone event (call, sms, notification, location, status)."""
+
+    __tablename__ = "phone_events"
+    __table_args__ = (UniqueConstraint("device_id", "dedup_key", name="uq_phone_events_dedup"),)
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    device_id: Mapped[str] = mapped_column(
+        String, ForeignKey("devices.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    kind: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    ts: Mapped[datetime] = mapped_column(DateTime, nullable=False, index=True)
+    dedup_key: Mapped[str] = mapped_column(String, nullable=False)
+    payload: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
+    text: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    received_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+
+
+class DeviceCommand(_Base):
+    """A tool call queued for a phone (live read or gated action)."""
+
+    __tablename__ = "device_commands"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    device_id: Mapped[str] = mapped_column(
+        String, ForeignKey("devices.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    tool: Mapped[str] = mapped_column(String, nullable=False)
+    args: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
+    status: Mapped[str] = mapped_column(String, nullable=False, default="pending", index=True)
+    result: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
+    created_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    expires_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    completed_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+
+
 class CoworkerThread(_Base):
     """Movement tracking for one goals thread."""
 

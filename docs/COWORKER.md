@@ -117,6 +117,9 @@ Attention rules:
 
 ## What you see after a meeting
 
+Linked planner events and LLM meeting prep live in [PLANNER.md](PLANNER.md)
+(Day tab); they do not replace this item extract path.
+
 When a `transcribe-diarize` job finishes and chaining resolves to `session_completed` (finalize or one-shot, not an intermediate chunk), the server:
 
 1. Extracts decisions, commitments, open questions, blocks, and contradictions.
@@ -301,6 +304,8 @@ Plugin audio upload is the same one-shot path when the coworker loop is enabled.
 - decisions with no owner
 - questions that have come up at least three times
 - active threads with no movement for `coworker.stale_days` (default 14)
+
+That briefing is one-shot (no interview). Interactive “what is going on today → write a plan” uses the `day_plan` skill in chat, optionally on a durable schedule — see [PLANNER.md](PLANNER.md) and [AGENT_SCHEDULER.md](AGENT_SCHEDULER.md).
 
 `coworker.weekly_cron` (default `0 17 * * 5`) writes `Pawn/Reviews/{week}.md`. Inside it, a fenced `goals` block is a proposed `Goals.md`. Stale active threads are moved under Parked in that proposal. Open the review, then run **Apply goals proposal**. The plugin shows a diff and writes `Goals.md` only after you confirm.
 

@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import Any, Callable, Optional, Sequence
+from typing import TYPE_CHECKING, Any, Callable, Optional, Sequence
 
 from sallm import Agent
 
@@ -16,10 +16,13 @@ from pawn_agent.core.sallm_factory import build_sallm_agent, rebuild_agent_for_c
 from pawn_agent.core.vault_paths import vault_paths_from_steps
 from pawn_agent.utils.config import AgentConfig
 
+if TYPE_CHECKING:
+    from pawn_agent.core.voice_profile import VoiceProfile
+
 logger = logging.getLogger(__name__)
 
 
-def _agent_fingerprint(cfg: AgentConfig) -> tuple:
+def _agent_fingerprint(cfg: AgentConfig, voice: "Optional[VoiceProfile]" = None) -> tuple:
     """Fields that require a new sallm Agent when they change."""
     selection = cfg.model_selection
     return (
@@ -31,6 +34,7 @@ def _agent_fingerprint(cfg: AgentConfig) -> tuple:
         selection.route,
         selection.profile,
         cfg.sallm.model_dump(),
+        voice.fingerprint() if voice is not None else None,
     )
 
 
@@ -101,9 +105,15 @@ class SallmChatSession:
     with ``asyncio.to_thread`` so FastAPI / queue handlers stay responsive.
     """
 
-    def __init__(self, agent: Agent, cfg: AgentConfig) -> None:
+    def __init__(
+        self,
+        agent: Agent,
+        cfg: AgentConfig,
+        voice: "Optional[VoiceProfile]" = None,
+    ) -> None:
         self._agent = agent
         self._cfg = cfg
+        self._voice = voice
         self.conversation_id = agent.session_id
         self.last_metrics: dict[str, Any] = {}
         self.last_vault_paths: list[str] = []
@@ -115,22 +125,29 @@ class SallmChatSession:
         *,
         conversation_id: str,
         trace: Any = None,
+        voice: "Optional[VoiceProfile]" = None,
     ) -> "SallmChatSession":
         """Build a session (sync). Safe to call from a worker thread."""
         agent = build_sallm_agent(
             cfg,
             conversation_id=conversation_id,
             trace=trace,
+            voice=voice,
         )
-        return cls(agent, cfg)
+        return cls(agent, cfg, voice)
 
-    def apply_config(self, cfg: AgentConfig) -> None:
-        """Replace the underlying Agent when model/settings change mid-session."""
-        if _agent_fingerprint(cfg) == _agent_fingerprint(self._cfg):
+    def apply_config(self, cfg: AgentConfig, voice: "Optional[VoiceProfile]" = None) -> None:
+        """Replace the underlying Agent when model/settings/voice access change.
+
+        Rebuilding keeps the same session id + state paths, so durable chat
+        history survives (e.g. a voice conversation going chat → full).
+        """
+        if _agent_fingerprint(cfg, voice) == _agent_fingerprint(self._cfg, self._voice):
             self._cfg = cfg
             return
-        self._agent = rebuild_agent_for_config(self._agent, cfg)
+        self._agent = rebuild_agent_for_config(self._agent, cfg, voice)
         self._cfg = cfg
+        self._voice = voice
 
     def collect_stats(self) -> dict[str, Any]:
         """Snapshot sallm session state + last-turn metrics (sync, cheap)."""

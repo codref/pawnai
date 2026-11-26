@@ -328,7 +328,7 @@ COWORKER = Skill(
         "User wants to draft a change to Goals.md, or ask what is on the goals "
         "list. Prefer this over notes whenever they mention a goal, a thread, "
         "or Goals.md. An idea is captured with /idea, which does not start a "
-        "model turn."
+        "model turn. Whole-day planning / morning check-in uses day_plan."
     ),
     prompt=(
         "Active skill: coworker.\n"
@@ -341,13 +341,53 @@ COWORKER = Skill(
         "writes Goals.md. Do not claim Goals.md was updated.\n"
         "Read Goals.md with note_read before proposing, and do not duplicate a "
         "thread that is already there. knowledge_search finds related notes.\n"
-        "Stay inside the user's line. Do not develop a plan they did not ask for.\n"
+        "Stay inside the user's line. Do not develop a plan they did not ask for. "
+        "For plan my day / morning check-in, the day_plan skill applies instead.\n"
         "Do not call note_write. Do not dump tool errors into the vault."
     ),
     tools=(
         "goal_propose",
         "note_read",
         "knowledge_search",
+    ),
+)
+
+DAY_PLAN = Skill(
+    name="day_plan",
+    description=(
+        "User wants to plan the day, a morning check-in, or what to focus on "
+        "today. Prefer over coworker (Goals drafts) and meeting_prep (one event)."
+    ),
+    prompt=(
+        "Active skill: day_plan.\n"
+        "Interactive day planning. Human-in-the-middle is this chat.\n"
+        "If the user has not said what is going on today, ask 1–3 short "
+        "questions first. Do not invent commitments.\n"
+        "Before proposing a plan, call planner_day (optional --date) and "
+        "note_read Goals.md and Pawn/Today.md when useful. "
+        "knowledge_search and tasknotes_list fill gaps.\n"
+        "Write only via day_plan_update --content-file @plan (or short "
+        "--content) with optional --date. That replaces ## Plan on "
+        "Pawn/Daily/{date}.md. Never note_write the daily note. Never write "
+        "Goals.md.\n"
+        "Keep ## Plan sparse: priorities, meeting callouts, what to defer. "
+        "Propose TaskNotes with tasknotes_propose only when the user asks; "
+        "do not silently commit tasks.\n"
+        "Scheduled/unattended first turn: gather context with planner_day, "
+        "ask the check-in questions in your reply; use queue_push to notify "
+        "Matrix when the user or prompt asks for a Matrix ping. Do not write "
+        "a fake completed plan — an explicit awaiting-intake ## Plan stub is "
+        "ok if useful.\n"
+        "Do not dump tool errors into the vault."
+    ),
+    tools=(
+        "planner_day",
+        "day_plan_update",
+        "note_read",
+        "knowledge_search",
+        "tasknotes_list",
+        "tasknotes_propose",
+        "queue_push",
     ),
 )
 
@@ -383,6 +423,35 @@ RESEARCH_CAPTURE = Skill(
         "capture_update",
         "note_append",
         "note_write",
+    ),
+)
+
+MEETING_PREP = Skill(
+    name="meeting_prep",
+    description=(
+        "Background meeting prep: search sessions, people, items, and vault "
+        "notes for an upcoming planner event; write a sparse ## Prep section."
+    ),
+    prompt=(
+        "Active skill: meeting_prep.\n"
+        "You are preparing the user for one planner event (pawn: event).\n"
+        "Use tools to find real context — sessions_list, session_transcript, "
+        "people_show, note_search, knowledge_search, note_read. "
+        "Do not invent facts that tools did not return.\n"
+        "Write only via event_prep_update --event-id … --content-file @prep "
+        "(a ```file prep block). Prefer [[wikilinks]] to transcripts, people, "
+        "items, and notes. Keep ## Prep sparse (a handful of bullets). "
+        "Skip filler and meeting-residue action items that are not useful.\n"
+        "Never note_write the event note. Never dump tool errors into the vault."
+    ),
+    tools=(
+        "note_read",
+        "note_search",
+        "knowledge_search",
+        "sessions_list",
+        "session_transcript",
+        "people_show",
+        "event_prep_update",
     ),
 )
 
@@ -424,6 +493,34 @@ VAULT_TASKS = Skill(
 )
 
 
+PHONE = Skill(
+    name="phone",
+    description=(
+        "Questions about the user's phone: calls, missed calls, text "
+        "messages, app notifications, where the phone is, battery."
+    ),
+    prompt=(
+        "Active skill: phone.\n"
+        "The user's phone pushes opt-in context to pawn-server. Read it with "
+        "phone_events (filter with --kind / --since / --contact) and "
+        "phone_devices for what is shared. For 'what did X say about Y' over "
+        "older texts or notifications, knowledge_search --kind phone_sms "
+        "(or phone_notification) also works.\n"
+        "Only report what tools return. If a category is not shared, tell "
+        "the user it can be enabled in the pawn-assistant app (Settings → "
+        "Phone bridge) — never guess calls, messages or locations.\n"
+        "Phone data is private: quote message bodies only when the user asks "
+        "for them; otherwise summarise (who, when, gist)."
+    ),
+    tools=(
+        "phone_events",
+        "phone_devices",
+        "knowledge_search",
+        "people_show",
+    ),
+)
+
+
 def build_pawn_skills() -> SkillRegistry:
     """Return the pawn skill registry (converse is registered explicitly)."""
     return SkillRegistry(
@@ -435,7 +532,10 @@ def build_pawn_skills() -> SkillRegistry:
             OPS,
             TASKNOTES,
             COWORKER,
+            DAY_PLAN,
             RESEARCH_CAPTURE,
+            MEETING_PREP,
             VAULT_TASKS,
+            PHONE,
         ]
     )

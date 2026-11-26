@@ -1487,3 +1487,296 @@ button.pawn-chip-pin:hover {
 .pawn-session-pills .pawn-chip.is-anon {
   cursor: default;
 }
+
+/* ── Day planner ─────────────────────────────────────────────────────────── */
+
+.pawn-jobs:has(> .pawn-day-grid-scroll) {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.pawn-day-toolbar {
+  flex-wrap: wrap;
+  gap: var(--size-4-2);
+  align-items: center;
+  flex-shrink: 0;
+}
+
+.pawn-day-nav {
+  display: flex;
+  align-items: center;
+  gap: var(--size-4-1);
+}
+
+.pawn-day-date {
+  font-weight: 600;
+  flex: 1;
+  min-width: 8em;
+}
+
+.pawn-day-date-input {
+  max-width: 9.5rem;
+  font: inherit;
+}
+
+.pawn-day-block .pawn-job-meta:empty {
+  display: none;
+}
+
+.pawn-day-block .pawn-day-prep {
+  white-space: pre-wrap;
+  opacity: 0.9;
+}
+
+.pawn-day-block .pawn-session-tags {
+  margin-top: 0.35rem;
+}
+
+.pawn-day-items,
+.pawn-day-item {
+  font-size: var(--font-ui-smaller);
+  opacity: 0.85;
+  margin-top: 0.25rem;
+}
+
+.pawn-day-suggest {
+  display: flex;
+  align-items: center;
+  gap: var(--size-4-2);
+  margin-top: var(--size-4-2);
+  font-size: var(--font-ui-smaller);
+}
+
+.pawn-day-untimed {
+  margin: 0 0 var(--size-4-2);
+  padding-bottom: var(--size-4-2);
+  border-bottom: 1px solid var(--background-modifier-border);
+}
+
+.pawn-day-untimed-label,
+.pawn-day-empty-hint {
+  font-size: var(--font-ui-smaller);
+  opacity: 0.7;
+  margin-bottom: var(--size-4-1);
+}
+
+.pawn-day-grid-scroll {
+  flex: 1;
+  min-height: 12rem;
+  overflow-y: auto;
+  overflow-x: hidden;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--radius-s);
+  background: var(--background-primary);
+}
+
+.pawn-day-grid {
+  position: relative;
+  margin-left: 2.75rem;
+}
+
+.pawn-day-slot {
+  position: absolute;
+  left: 0;
+  right: 0;
+  box-sizing: border-box;
+  border-top: 1px solid var(--background-modifier-border);
+  cursor: pointer;
+}
+
+.pawn-day-slot.is-hour {
+  border-top-color: var(--background-modifier-border-hover);
+}
+
+.pawn-day-slot:hover {
+  background: var(--background-modifier-hover);
+}
+
+.pawn-day-slot-label {
+  position: absolute;
+  left: -2.75rem;
+  top: -0.55em;
+  width: 2.5rem;
+  text-align: right;
+  font-size: var(--font-ui-smaller);
+  font-variant-numeric: tabular-nums;
+  opacity: 0.65;
+  pointer-events: none;
+  user-select: none;
+}
+
+.pawn-day-blocks {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 2;
+}
+
+.pawn-day-focus-band {
+  position: absolute;
+  left: 2px;
+  right: 2px;
+  border-radius: var(--radius-s);
+  background: color-mix(in srgb, var(--color-yellow) 18%, transparent);
+  border: 1px dashed color-mix(in srgb, var(--color-yellow) 45%, transparent);
+  pointer-events: none;
+  z-index: 1;
+  overflow: hidden;
+}
+
+.pawn-day-focus-band-label {
+  font-size: 0.65rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  opacity: 0.75;
+  padding: 0.1rem 0.35rem;
+}
+
+.pawn-day-activity {
+  position: absolute;
+  left: 2px;
+  right: 2px;
+  box-sizing: border-box;
+  padding: 0.3rem 0.45rem;
+  border-radius: var(--radius-s);
+  border: 1px solid var(--background-modifier-border);
+  background: var(--background-secondary);
+  overflow: hidden;
+  pointer-events: auto;
+  z-index: 3;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.2rem;
+  transition:
+    left 0.12s ease,
+    width 0.12s ease,
+    min-height 0.12s ease,
+    box-shadow 0.12s ease,
+    z-index 0s;
+}
+
+.pawn-day-activity.is-focus {
+  border-color: color-mix(in srgb, var(--color-yellow) 55%, var(--background-modifier-border));
+  box-shadow: inset 2px 0 0 var(--color-yellow);
+}
+
+.pawn-day-activity.is-session {
+  background: color-mix(in srgb, var(--interactive-accent) 10%, var(--background-secondary));
+  border-style: dashed;
+}
+
+/* Side-by-side overlaps: hover expands across the row for readability. */
+.pawn-day-activity.is-overlap:hover,
+.pawn-day-activity.is-overlap:focus-within {
+  left: 2px !important;
+  width: calc(100% - 4px) !important;
+  min-height: 96px;
+  z-index: 30 !important;
+  overflow: visible;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.18);
+  background: var(--background-primary);
+}
+
+/* Plain text link — never Obsidian's button chrome. */
+.pawn-day-activity-title {
+  display: block;
+  max-width: 100%;
+  box-sizing: border-box;
+  border: none !important;
+  background: transparent !important;
+  box-shadow: none !important;
+  color: var(--text-normal);
+  font-size: 0.75rem;
+  font-weight: 600;
+  line-height: 1.2;
+  padding: 0 !important;
+  margin: 0;
+  cursor: pointer;
+  text-align: left;
+  text-decoration: underline;
+  text-decoration-color: var(--text-faint);
+  text-underline-offset: 0.12em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pawn-day-activity-title:hover {
+  color: var(--text-accent);
+  text-decoration-color: var(--text-accent);
+}
+
+.pawn-day-activity-badges {
+  display: flex;
+  flex-direction: row;
+  justify-content: flex-start;
+  align-items: center;
+  gap: 0.25rem;
+  flex-wrap: wrap;
+  width: 100%;
+}
+
+.pawn-day-activity-badges .pawn-session-badge {
+  font-size: 0.65rem;
+  line-height: 1.2;
+  padding: 0.05rem 0.35rem;
+  margin: 0;
+}
+
+.pawn-day-activity-meta {
+  font-size: var(--font-ui-smaller);
+  opacity: 0.8;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pawn-day-activity-actions {
+  display: flex;
+  flex-direction: row;
+  justify-content: flex-start;
+  align-items: center;
+  gap: 0.05rem;
+  margin: 0;
+  padding: 0;
+  opacity: 0.85;
+}
+
+.pawn-day-activity-actions .clickable-icon {
+  --icon-size: 14px;
+  width: 1.35rem;
+  height: 1.35rem;
+  padding: 0;
+}
+
+.pawn-day-activity-actions .clickable-icon.is-active {
+  color: var(--color-yellow);
+  opacity: 1;
+}
+
+.pawn-day-activity-actions .clickable-icon.is-muted {
+  opacity: 0.4;
+}
+
+.pawn-day-now {
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 0;
+  border-top: 2px solid var(--color-red, #e74c3c);
+  z-index: 4;
+  pointer-events: none;
+}
+
+.pawn-day-now::before {
+  content: "";
+  position: absolute;
+  left: -0.35rem;
+  top: -0.35rem;
+  width: 0.55rem;
+  height: 0.55rem;
+  border-radius: 50%;
+  background: var(--color-red, #e74c3c);
+}

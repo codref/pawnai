@@ -2,7 +2,8 @@
 
 Every job is accepted immediately and runs as an asyncio task in the server
 process. Rows live in ``vault_tasks`` (``kind`` = ``ask`` | ``push_note`` |
-``upload`` | ``capture_enrich`` | ``session_reprocess``). ``ask`` jobs also
+``upload`` | ``capture_enrich`` | ``session_reprocess`` | ``meeting_prep``).
+``ask`` jobs also
 get a ``Pawn/Tasks/{id}.md`` note on S3 so devices that are offline or on
 mobile see status and result through Sync Engine, and the vault watcher can
 resume them.
@@ -42,7 +43,14 @@ from pawn_server.core.vault_tasks import (
 
 logger = logging.getLogger(__name__)
 
-JOB_KINDS = ("ask", "push_note", "upload", "capture_enrich", "session_reprocess")
+JOB_KINDS = (
+    "ask",
+    "push_note",
+    "upload",
+    "capture_enrich",
+    "session_reprocess",
+    "meeting_prep",
+)
 TERMINAL_STATUSES = frozenset({"review", "done", "blocked"})
 # Finished enough to remove from the Jobs UI (running jobs must cancel first).
 DELETABLE_STATUSES = frozenset({"review", "done", "blocked"})
@@ -638,6 +646,104 @@ async def create_capture_enrich_job(
     _spawn(
         effective_id,
         _run_capture_enrich(cfg, effective_id, key, registry),
+    )
+    row = get_vault_task(cfg.db_dsn, effective_id)
+    assert row is not None
+    return row
+
+
+# ── meeting_prep ───────────────────────────────────────────────────────────
+
+
+async def _run_meeting_prep(
+    cfg: Any,
+    job_id: str,
+    event_id: str,
+    path: str,
+    registry: SallmSessionRegistry,
+) -> None:
+    from pawn_server.core.meeting_prep import run_meeting_prep  # noqa: PLC0415
+
+    row = get_vault_task(cfg.db_dsn, job_id)
+    conv = row.conversation_id if row else (f"note:{path}" if path else f"event:{event_id}")
+    update_vault_task(cfg.db_dsn, job_id, status="running")
+    publish_job_event(job_id, "running", kind="meeting_prep", conversation=conv)
+    try:
+        reply = await run_meeting_prep(
+            cfg,
+            event_id=event_id,
+            path=path,
+            registry=registry,
+            job_id=job_id,
+        )
+    except FileNotFoundError as exc:
+        _finish(
+            cfg,
+            job_id,
+            "blocked",
+            "meeting_prep",
+            conv,
+            str(exc)[:2000],
+            "not_found",
+        )
+        return
+    except Exception as exc:
+        logger.error("meeting_prep %s failed: %s", job_id, exc, exc_info=True)
+        _finish(
+            cfg,
+            job_id,
+            "blocked",
+            "meeting_prep",
+            conv,
+            str(exc)[:2000],
+            "prep_failed",
+        )
+        return
+    from pawn_agent.core.sallm_session import strip_tool_trail  # noqa: PLC0415
+
+    display = strip_tool_trail(reply or "") or "prep written"
+    _finish(
+        cfg,
+        job_id,
+        "done",
+        "meeting_prep",
+        conv,
+        display[:4000],
+    )
+
+
+async def create_meeting_prep_job(
+    cfg: Any,
+    *,
+    registry: SallmSessionRegistry,
+    event_id: str,
+    path: str = "",
+    job_id: Optional[str] = None,
+) -> VaultTask:
+    """Enqueue an LLM meeting-prep turn for one planner event."""
+    from pawn_server.core.meeting_prep import new_prep_job_id  # noqa: PLC0415
+
+    eid = (event_id or "").strip()
+    if not eid:
+        raise JobError("event_id is required", status_code=422)
+    key = normalize_vault_key(path) if path else ""
+    if key and not key.lower().endswith(".md"):
+        key = f"{key}.md"
+    effective = job_id or new_prep_job_id()
+    conv = f"note:{key}" if key else f"event:{eid}"
+    title = f"Prep {key or eid}"
+    effective_id = _new_side_job(
+        cfg,
+        job_id=effective,
+        kind="meeting_prep",
+        title=title,
+        conversation=conv,
+        note_path=key or None,
+        payload={"event_id": eid, "path": key},
+    )
+    _spawn(
+        effective_id,
+        _run_meeting_prep(cfg, effective_id, eid, key, registry),
     )
     row = get_vault_task(cfg.db_dsn, effective_id)
     assert row is not None

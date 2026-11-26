@@ -18,12 +18,18 @@ from pawn_core.vault import VaultError
 logger = logging.getLogger(__name__)
 
 SLASH_HELP = (
-    "Supported slash commands: /idea <line>, /goal <line>, /goal apply, "
-    "/park <line>, /goals, /inbox, /model [id|reset], /stats, /reset, /exit, /quit. "
+    "Supported slash commands: /idea <line>, /event <title> [when], "
+    "/goal <line>, /goal apply, /park <line>, /goals, /inbox, "
+    "/model [id|reset], /stats, /reset, /exit, /quit. "
     "Triage an inbox item with todo, file, task, delete, ignore, or later plus its id."
 )
 
 _IDEA_USAGE = "Usage: /idea <one line>\nExample: /idea implement multi-model in pawnai"
+_EVENT_USAGE = (
+    "Usage: /event <title> [when]\n"
+    "Example: /event Product weekly 2026-10-28T10:00\n"
+    "Writes a planner event note under Pawn/Events/."
+)
 _GOAL_USAGE = (
     "Usage: /goal <one line>\n"
     "Writes an Active thread in Goals.md. /goal apply writes the latest proposal."
@@ -72,6 +78,12 @@ def classify_chat_text(text: str, *, triage: bool = False) -> _Directive:
         if not idea:
             return _Directive("usage", _IDEA_USAGE)
         return _Directive("direct", command="idea", arg=idea)
+
+    event = _command_arg(raw, "/event")
+    if event is not None:
+        if not event:
+            return _Directive("usage", _EVENT_USAGE)
+        return _Directive("direct", command="event", arg=event)
 
     goal = _command_arg(raw, "/goal")
     if goal is not None:
@@ -203,9 +215,32 @@ def _capture_idea(cfg: AgentConfig, store: Any, line: str) -> str:
     return capture_idea(cfg, line=line, store=store)
 
 
+def _capture_event(cfg: AgentConfig, store: Any, line: str) -> str:
+    from pawn_server.core.planner import (  # noqa: PLC0415
+        parse_event_slash_arg,
+        upsert_event,
+    )
+
+    title, start = parse_event_slash_arg(line)
+    if not title:
+        return _EVENT_USAGE
+    ev = upsert_event(
+        cfg,
+        title=title,
+        start=start,
+        source="manual",
+        store=store,
+    )
+    when = ev.get("start") or ""
+    suffix = f" @ {when}" if when else ""
+    return f"Event {ev.get('path')}{suffix}."
+
+
 def _run_direct(cfg: AgentConfig, directive: _Directive, *, store: Any) -> str:
     if directive.command == "idea":
         return _capture_idea(cfg, store, directive.arg)
+    if directive.command == "event":
+        return _capture_event(cfg, store, directive.arg)
     if directive.command == "goal":
         return _add_thread(cfg, store, directive.arg, status="active")
     if directive.command == "park":

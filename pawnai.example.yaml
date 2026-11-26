@@ -314,6 +314,16 @@ coworker:
     ntfy_url: ""
     topic: ""
 
+devices:
+  # Phone bridge: pawn-assistant (Android) pushes opt-in context and runs
+  # phone tools. See docs/PHONE_BRIDGE.md. Needs migration 0024.
+  retention_days: 90
+  # Event kinds embedded into knowledge_chunks as phone_<kind>.
+  index_kinds: [sms, notification, call]
+  max_batch: 500
+  # Live phone tool round trip (keep below sallm's 60 s tool timeout).
+  command_timeout_s: 45
+
 agent_queue:
   # Queue consumed by `pawn-agent listen` / pawn-server queue listener.
   # Credentials and endpoint come from the top-level s3 section.

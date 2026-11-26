@@ -45,6 +45,7 @@ async def run_agent_turn(
     parent_run_id: Optional[str] = None,
     depth: int = 0,
     event_id: Optional[str] = None,
+    voice: Any = None,
 ) -> AgentRunResult:
     """Persist and execute one sallm agent turn.
 
@@ -125,6 +126,7 @@ async def run_agent_turn(
                     vault_paths_out=vault_paths,
                     images=images,
                     force_caption=force_caption,
+                    voice=voice,
                 )
             except ImageRejected as exc:
                 reply = str(exc)

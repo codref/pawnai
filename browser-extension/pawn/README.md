@@ -1,8 +1,10 @@
 # Pawn Capture (browser extension)
 
-MV3 side panel for Chrome, Edge, and Firefox. Captures ordered text selections
-and image regions into the Pawn vault. There is no chat UI — Obsidian and Matrix
-remain the places you talk to the agent.
+MV3 side panel for Chrome, Edge, and Firefox. Two tabs:
+
+- **Capture** — ordered text selections and image regions into the Pawn vault.
+- **Chat** — ask Pawn about the page / attached clips via `POST /v1/pawn/chat`
+  (same agent as the Obsidian plugin), with suggested action chips.
 
 ## Build / package
 
@@ -16,12 +18,17 @@ make browser-extension-dist     # Chrome + Firefox zips under browser-extension/
 Or from this directory:
 
 ```bash
-make build
+make build                      # patch-bumps version + verify files
 make dist                       # pawn-capture.zip + pawn-capture-firefox.zip
 make package-chrome             # Chrome/Edge only
 make package-firefox            # Firefox only
 make icons                      # regenerate PNG icons
 ```
+
+`make build` bumps the patch in both manifests (skipped when `CI=true`).
+After **Reload** on `chrome://extensions` / `edge://extensions`, Settings shows
+`Extension vX.Y.Z` from `chrome.runtime.getManifest()` — that is the build
+actually loaded, not a cached label.
 
 Chrome and Firefox need different manifests: Chrome uses
 `background.service_worker`; Firefox temporary installs still require
@@ -79,13 +86,18 @@ disabled*.
 
 ## Server requirements
 
-- `pawn-server` running with the capture routes (`GET/POST /v1/captures`,
-  `GET /v1/sessions`). Same Bearer token as the Obsidian plugin.
+- `pawn-server` running with capture routes (`GET/POST /v1/captures`,
+  `GET /v1/sessions`) and chat (`POST /v1/pawn/chat`, `GET /v1/pawn/models`).
+  Same Bearer token as the Obsidian plugin.
 - Vault Sync Engine (or equivalent) so `Pawn/Captures/` appears in Obsidian.
 - For a remote host, use HTTPS or accept that Chromium will warn on mixed
   content; the extension’s host permissions allow `http://` and `https://`.
+- Ensure `api.cors_origins` allows the extension origin if you hit CORS errors
+  on chat streaming.
 
 ## Use
+
+### Capture
 
 1. Target defaults to **New page** (creates `Pawn/Captures/{date} {title}.md`).
 2. Or pick a recent capture, a diarization **session** (writes into transcript
@@ -95,9 +107,18 @@ disabled*.
 3. **Selection** / right-click **Send selection to Pawn**, or **Clip**
    (region on a frozen screenshot, or whole visible area) / right-click
    **Capture region to Pawn**.
-4. Reorder or drop items in the tray, then **Save**. The target stays sticky so
-   the next batch appends to the same note. **Start new note** (destination
-   row) starts a fresh note.
+4. Reorder or drop items in the tray, then **Save**. Use the message icon on a
+   tray card to **Attach to chat** without saving first.
+
+### Chat
+
+1. Open the **Chat** tab. The top bar has a **conversation picker** (past
+   chats) and **New chat**.
+2. Attach page clips (selection/region) or vault context via the **+** chip /
+   typing **@** — searchable overlay of sessions and recent captures (or type
+   a vault path).
+3. Ask freely, or use chips that inject prompts (`Create TODO`, `/idea`, …).
+4. Model picker sits next to **Send** (bottom). Uses `/v1/pawn/models`.
 
 ## API
 
@@ -108,7 +129,10 @@ Bearer auth against pawn-server:
 | GET | `/v1/meta` | Vault name for Obsidian links |
 | GET | `/v1/sessions` | Session picker |
 | GET | `/v1/captures` | Recent capture notes |
-| POST | `/v1/captures` | Append ordered snippets |
+| GET | `/v1/captures/anchors` | Overlay reverse lookup by `page_key` |
+| POST | `/v1/captures` | Append ordered snippets (optional `anchor`) |
 | DELETE | `/v1/captures/snippets/{id}?path=` | Remove one block |
+| GET | `/v1/pawn/models` | Chat model catalog |
+| POST | `/v1/pawn/chat` | Streaming chat (SSE) |
 
 See [docs/BROWSER_CAPTURE.md](../../docs/BROWSER_CAPTURE.md).

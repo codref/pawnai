@@ -1,18 +1,27 @@
 # Browser snippet capture
 
 The **Pawn Capture** extension (`browser-extension/pawn/`) is a Chrome / Edge /
-Firefox side panel that appends ordered text and image snippets to a vault note.
-There is no chat UI in the extension — continue the conversation in Obsidian or
-Matrix after Sync Engine pulls the note.
+Firefox side panel with two tabs:
+
+- **Capture** — append ordered text and image snippets to a vault note (or
+  Research inbox / session Annotations).
+- **Chat** — talk to Pawn about the current page via `POST /v1/pawn/chat`
+  (same SSE agent path as the Obsidian plugin). Attach selections or
+  screenshots as context; use suggested action chips for common tasks.
+
+Vault writes still sync into Obsidian through Sync Engine. Chat memory lives
+in sallm under a `chat:{uuid}` conversation key (New chat starts a fresh id).
 
 ## Flow
+
+### Capture tab
 
 1. Open the side panel. The target defaults to **New page**.
 2. The **destination** row shows the sticky note (title + full path). When
    `vault.obsidian_vault_name` is set, the title is an `obsidian://open` link.
 3. Capture a **selection**, or use **Clip** (region drag on a frozen screenshot,
    or whole **visible area**). Items stack in the tray (reorder / delete before
-   save). Only one clip runs at a time.
+   save). Only one clip runs at a time. Each tray card can **Attach to chat**.
 4. **Save** appends unsaved items, in tray order, to the current target. The
    target stays selected so the next batch continues the same note (except
    Research, which writes one inbox atom per snippet).
@@ -22,15 +31,45 @@ Matrix after Sync Engine pulls the note.
 The panel does not guess which meeting you are in. Pick a diarization session
 from the list when you want snippets on that transcript.
 
+### Chat tab
+
+Layout mirrors the Obsidian plugin chat pane (no Background toggle):
+
+1. Toolbar: **conversation picker** (searchable history) · **New chat** ·
+   attach selection / Clip.
+2. Context chips: page title/URL; Capture sticky/session (detachable);
+   **+ / `@`** searchable overlay to attach vault notes or diarization
+   sessions (`active_note` + `context[]`, `inline: false`); text/images
+   (max 4 images). Type a vault path in the overlay when the note is not
+   in recent captures.
+3. Thread with Markdown replies (vault paths / `[[wikilinks]]` →
+   `obsidian://open` when `vault.obsidian_vault_name` is set). Message actions:
+   user **Copy** / **Edit in composer**; assistant **Copy** / **Open in
+   Obsidian** / follow-up chips. Suggested action chips inject editable prompts
+   or slash commands (`/idea`, `/goal`, Create TODO, …) into the composer.
+4. Composer: message · **model** (bottom; OpenRouter **Effort** / **Route**
+   when the catalog exposes them) · attach selection/Clip · Send / Stop.
+5. Conversations are local (`chat:{uuid}` keys, up to 40 non-empty); New chat
+   starts a fresh id. Image turns prefer a `vision: true` model from
+   `GET /v1/pawn/models`.
+
 ## Targets
 
 | Target | What happens |
 |--------|----------------|
 | New page (default) | Creates `Pawn/Captures/{YYYY-MM-DD} {title}.md` with `pawn: capture`. Later saves append to the same path. |
+| Planner event… | Upserts a `pawn: event` note under `Pawn/Events/` (`kind: event`; title/start/end + snippet body). See [PLANNER.md](PLANNER.md). |
 | Research… | One inbox note per snippet under `capture.inbox_dir` (default `Pawn/Captures/Inbox/`). Optional collection + hint. When `capture.auto_enrich` is true, enqueues a `capture_enrich` job per new note. |
 | Recent capture | Append to an existing note under `Pawn/Captures/`. |
 | Session | If `vault_notes` maps the session to a transcript, snippets are spliced into that note’s `## Annotations` section (preserved on transcript push). Otherwise a capture note is created with `session_id` in frontmatter. |
 | Other note | Append to a vault path. Allowed under `Pawn/`; outside that root the note needs `pawn: editable`. |
+
+### Outlook → planner
+
+On Outlook Web (`outlook.office.com` / `live.com` / …), use **Add to planner**
+in the Capture toolbar. The extension scrapes the open event detail when it
+can (title, times, attendees), falls back to tab title + selection, then
+saves as `kind: event`. No Graph API and no continuous calendar sync.
 
 Images are stored at `Pawn/Captures/assets/{snippet-id}.png` (or jpg/gif/webp)
 and embedded with Obsidian wikilinks. Each block is wrapped in
@@ -88,11 +127,32 @@ mapped in `vault_notes`.
 ### `GET /v1/captures?limit=`
 
 Recent markdown notes under `{agent_root}/Captures/` (assets excluded).
+Each row includes `path`, `title`, optional `session_id`, and when present
+`source_url` plus `anchors` (page overlay metadata).
+
+### `GET /v1/captures/anchors?page_key=&site=`
+
+Reverse lookup for in-page overlays. Scans recent Captures (+ research inbox)
+frontmatter for matching `anchors[].page_key` (optional `site` filter, e.g.
+`teams`). Returns `{ object, data: [{ path, title, snippet_id, site, page_key,
+message_id, deep_link, fallback }] }`.
 
 ### `GET /v1/captures/collections`
 
 Existing collection folder names under `capture.enriched_dir` (discovered from
 the vault, not from config).
+
+### `POST /v1/pawn/chat`
+
+Same native streaming chat as the Obsidian plugin (Bearer token, SSE
+`progress` / `answer` / `job` / `error` / `done`). The extension sends
+`conversation`, `message`, optional `selection` (attached text + page URL),
+optional `active_note` (sticky capture/transcript path, `inline: false`),
+optional `images[]` (`role: "question"`), and optional `model`.
+
+### `GET /v1/pawn/models`
+
+Catalog used by the Chat model picker (`vision` flag gates screenshot turns).
 
 ### `POST /v1/captures`
 
@@ -113,7 +173,18 @@ the vault, not from config).
       "kind": "text",
       "text": "…",
       "source_url": "https://…",
-      "captured_at": "2026-10-07T10:00:00Z"
+      "captured_at": "2026-10-07T10:00:00Z",
+      "anchor": {
+        "site": "teams",
+        "page_key": "19:…@thread.v2",
+        "message_id": "1563480968434",
+        "deep_link": "https://teams.microsoft.com/l/message/…",
+        "fallback": {
+          "author": "Robert Bryant",
+          "text_quote": "No reply yet…",
+          "approx_time": "6:36 PM"
+        }
+      }
     },
     {
       "id": "c0ffee00c0ffee00",
@@ -128,10 +199,66 @@ the vault, not from config).
 
 `kind` on the target: `new` | `capture` | `note` | `session` | `research`.
 Response includes `path`, `mode` (`append`, `annotations`, or `research`),
-`written`, `skipped`, and `images`. Research also returns `paths`,
+`written`, `skipped`, and `images`. When overlays were registered (`new` /
+`capture` / `research` only), also `anchors`. Research also returns `paths`,
 `enrich_paths`, `enrich`, and optionally `jobs`.
 
+Optional per-snippet `anchor` is merged into the capture note’s frontmatter
+`anchors:` list (deduped by `snippet_id`). Prefer `deep_link` as `source_url`
+when the client omits one.
+
 Image payloads are capped at 4MB (same as chat vision).
+
+## Page overlays (Teams)
+
+The extension injects a content script on Teams hosts that re-paints a small
+**Pawn** badge on chat bubbles that were captured into the vault. Persistence
+is the vault frontmatter + `GET /v1/captures/anchors` — not the live DOM
+(Teams virtualizes messages away).
+
+Flow:
+
+1. Prefer **Selection** on the bubble text (most reliable). Region clip works
+   when the crop center hits a message; otherwise you get a chat-level **Pawn**
+   chip (top-right) after Save, not a per-bubble badge.
+2. Save to a **New page**, **Recent capture**, or **Research** target.
+3. Leave the chat and come back — the badge / chip should reappear.
+4. Click **Pawn** → `obsidian://open` (requires `vault.obsidian_vault_name`).
+
+Matching prefers `message_id`; soft-match uses author + text quote when ids are
+missing (dashed ring). Overlays require a conversation fingerprint
+(`page_key`: chat thread id, or `meet:…` / meetup-join token). When that id
+cannot be resolved (common on bare call stage UIs), captures still save but
+**no overlay is registered** — the extension does not paint a site-wide chip.
+Session / other-note targets still save snippets but do not register overlays
+in v1.
+
+The floating chip is a **circle with a pawn icon**. A small number on it is the
+count of captures for this chat that are not currently pinned to a visible
+message bubble. Hover opens a menu of captures (newest first) with **capture
+date + title**; click a row to open that note in Obsidian. Drag moves the chip
+(position is remembered).
+
+Overlay rows are cached in `chrome.storage.local` (`pawnAnchorsByPage`) so SPA
+navigation stays snappy, but a **successful** `GET /v1/captures/anchors`
+(including an empty list after you delete notes) replaces that cache. On
+network failure only, the extension keeps the last good cache. To force a wipe
+and refetch: hover the chip → **Refresh from vault**, or open the side panel
+Settings → **Refresh Teams overlays**.
+
+Reload the unpacked extension after updating so content scripts pick up changes.
+
+### Manual checklist
+
+- Capture a message → Save → badge appears (or after a short refresh).
+- Switch to another chat and back → badge returns.
+- Switch to a different call/chat → prior chat’s chip does **not** appear.
+- Capture on a call stage with no chat/meeting id → note saves, no overlay.
+- Scroll the message out of view and back (virtualization) → badge re-paints.
+- Click badge → Obsidian opens the capture note.
+- Re-save the same snippet id → still a single `anchors` row.
+- Delete the capture note in Obsidian → chip menu **Refresh from vault** (or
+  Settings → **Refresh Teams overlays**) removes the badge.
 
 ### `POST /v1/captures/file`
 
