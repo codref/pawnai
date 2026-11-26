@@ -132,12 +132,15 @@ def build_router(get_cfg: Callable[[], Any], require_token: Callable[..., None])
                 body.events,
                 index_kinds=list(getattr(settings, "index_kinds", []) or []),
                 retention_days=int(getattr(settings, "retention_days", 0) or 0),
+                coworker_kinds=list(getattr(settings, "coworker_kinds", []) or []),
             )
         except devices.DeviceError as exc:
             _raise(exc)
             raise
         if result.to_index:
             background.add_task(asyncio.to_thread, devices.index_events, cfg, result.to_index)
+        if result.to_coworker:
+            background.add_task(devices.forward_to_coworker, cfg, result.to_coworker)
         return {
             "accepted": result.accepted,
             "duplicates": result.duplicates,

@@ -16,7 +16,7 @@ import hmac
 import logging
 import secrets
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Any, Iterable, Optional
 
@@ -45,6 +45,8 @@ class IngestResult:
     duplicates: int
     rejected: int
     to_index: list[tuple[str, str, str]]  # (source_kind, source_ref, text)
+    # New events eligible for the coworker pipeline (source_kind, source_ref, text).
+    to_coworker: list[tuple[str, str, str]] = field(default_factory=list)
 
 
 def _now() -> datetime:
@@ -256,6 +258,18 @@ def event_text(kind: str, payload: dict[str, Any], text: Optional[str]) -> str:
     return ""
 
 
+# Directions that can carry a follow-up for the user (see coworker_eligible).
+_COWORKER_DIRECTIONS: dict[str, str] = {"sms": "received", "call": "missed"}
+
+
+def coworker_eligible(kind: str, payload: dict[str, Any], kinds: Iterable[str]) -> bool:
+    """True for a received SMS or a missed call whose kind is in *kinds*."""
+    wanted = _COWORKER_DIRECTIONS.get(kind)
+    if wanted is None or kind not in set(kinds):
+        return False
+    return str(payload.get("direction") or "").strip().lower() == wanted
+
+
 def ingest_events(
     dsn: str,
     device_id: str,
@@ -263,6 +277,7 @@ def ingest_events(
     *,
     index_kinds: Iterable[str] = (),
     retention_days: int = 0,
+    coworker_kinds: Iterable[str] = (),
 ) -> IngestResult:
     """Store events idempotently on ``(device_id, dedup_key)``.
 
@@ -271,6 +286,7 @@ def ingest_events(
     category the user just switched off.
     """
     indexable = set(index_kinds)
+    forwardable = set(coworker_kinds)
     now = _now()
     with _get_session(dsn) as db:
         device = db.get(Device, device_id)
@@ -319,6 +335,7 @@ def ingest_events(
             )
 
         to_index: list[tuple[str, str, str]] = []
+        to_coworker: list[tuple[str, str, str]] = []
         accepted = 0
         for item in valid:
             if item["key"] in existing:
@@ -337,17 +354,24 @@ def ingest_events(
                 )
             )
             accepted += 1
+            ref = source_ref(device_id, event_id)
             if item["kind"] in indexable and item["text"]:
-                to_index.append(
-                    (f"phone_{item['kind']}", source_ref(device_id, event_id), item["text"])
-                )
+                to_index.append((f"phone_{item['kind']}", ref, item["text"]))
+            if item["text"] and coworker_eligible(item["kind"], item["payload"], forwardable):
+                to_coworker.append((f"phone_{item['kind']}", ref, item["text"]))
         duplicates = len(valid) - accepted
 
     if retention_days > 0:
         pruned = purge_events(dsn, device_id, older_than=now - timedelta(days=retention_days))
         if pruned:
             logger.info("phone bridge: pruned %d events for device %s", pruned, device_id)
-    return IngestResult(accepted=accepted, duplicates=duplicates, rejected=rejected, to_index=to_index)
+    return IngestResult(
+        accepted=accepted,
+        duplicates=duplicates,
+        rejected=rejected,
+        to_index=to_index,
+        to_coworker=to_coworker,
+    )
 
 
 def index_events(cfg: Any, items: list[tuple[str, str, str]]) -> int:
@@ -361,3 +385,24 @@ def index_events(cfg: Any, items: list[tuple[str, str, str]]) -> int:
         except Exception as exc:  # noqa: BLE001 — embedding backend may be down
             logger.warning("phone bridge: indexing %s failed: %s", ref, exc)
     return stored
+
+
+async def forward_to_coworker(cfg: Any, items: list[tuple[str, str, str]]) -> int:
+    """Run the coworker pipeline on new missed calls / received SMS (best effort).
+
+    Requires ``coworker.enabled``; each event is its own source so triage and
+    re-runs stay per event. Returns how many events were processed.
+    """
+    coworker = getattr(cfg, "coworker", None)
+    if not items or not getattr(coworker, "enabled", False):
+        return 0
+    from pawn_agent.core.coworker.pipeline import process_source  # noqa: PLC0415
+
+    done = 0
+    for kind, ref, text in items:
+        try:
+            await process_source(cfg, source_kind=kind, source_ref=ref, source_text=text)
+            done += 1
+        except Exception as exc:  # noqa: BLE001 — model / vault may be down
+            logger.warning("phone bridge: coworker pass for %s failed: %s", ref, exc)
+    return done

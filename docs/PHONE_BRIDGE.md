@@ -99,9 +99,23 @@ with a `message`.
 They are grouped in the `phone` skill. Voice turns with `access="chat"` get no
 tools at all, so phone data is only reachable after the phone-side unlock.
 
+## Coworker follow-ups (opt-in)
+
+With `devices.coworker_kinds` set (for example `[sms, call]`) and
+`coworker.enabled: true`, each **newly ingested** received SMS
+(`payload.direction == "received"`) and missed call (`direction == "missed"`)
+is passed to the coworker pipeline in a background task after the ingest
+reply. Commitments and follow-ups land in `Pawn/Items` and `Pawn/Today.md`
+like those from transcripts (`source_kind` `phone_sms` / `phone_call`,
+`source_ref` `phone:<device>:<event>`). Duplicates re-sent by the outbox are
+not forwarded again; sent SMS, answered or outgoing calls, and other kinds
+never are. Default is `[]` (off).
+
 ## Retention and privacy
 
 - Events older than `devices.retention_days` are pruned on ingest, together
   with their knowledge chunks (`source_ref = phone:<device>:<event>`).
 - Turning a category off, or deleting the device, removes the server copy.
 - Device tokens are separate from the shared API token and revocable per phone.
+- Coworker Items extracted from phone events (see above) are vault notes and
+  item rows of their own; pruning or purging the events does not delete them.

@@ -437,6 +437,9 @@ class DevicesConfig(BaseModel):
     retention_days: int = 90
     # Event kinds whose text is embedded into knowledge_chunks (phone_<kind>).
     index_kinds: list[str] = Field(default_factory=lambda: ["sms", "notification", "call"])
+    # Kinds fed to the coworker pipeline (needs coworker.enabled). Only received
+    # SMS and missed calls qualify; empty (default) keeps the feature off.
+    coworker_kinds: list[str] = Field(default_factory=list)
     # Max events accepted per ingest request.
     max_batch: int = 500
     # Live phone tool round trip budget (must stay under sallm's 60 s tool timeout).

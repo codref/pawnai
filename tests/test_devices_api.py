@@ -143,3 +143,124 @@ def test_parse_ts_variants() -> None:
     assert devices.parse_ts("2026-11-25T10:00:00+01:00").hour == 9
     with pytest.raises(ValueError):
         devices.parse_ts(None)
+
+
+# ── Coworker forwarding ───────────────────────────────────────────────────────
+
+
+def _call(key: str, direction: str) -> dict:
+    return {
+        "kind": "call",
+        "ts": 1_764_000_000_000,
+        "dedup_key": key,
+        "payload": {"number": "+39333111222", "name": "Mario", "direction": direction},
+    }
+
+
+def _note(key: str) -> dict:
+    return {
+        "kind": "notification",
+        "ts": 1_764_000_000_000,
+        "dedup_key": key,
+        "payload": {"app": "Chat", "title": "Mario", "text": "call me back"},
+    }
+
+
+@pytest.fixture
+def forwarded(env: SimpleNamespace, monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, str, str]]:
+    from pawn_agent.core.coworker import pipeline
+
+    seen: list[tuple[str, str, str]] = []
+
+    async def fake_process_source(cfg, *, source_kind, source_ref, source_text, **_kw):  # noqa: ANN001
+        seen.append((source_kind, source_ref, source_text))
+        return {"source_ref": source_ref, "items": 0, "interrupts": 0}
+
+    monkeypatch.setattr(pipeline, "process_source", fake_process_source)
+    env.cfg.coworker = SimpleNamespace(timezone="UTC", enabled=True)
+    return seen
+
+
+def _post_mixed(client: TestClient, device_id: str, dev_auth: dict, keys: str = "") -> dict:
+    sent = _sms(f"s-out{keys}", "ok")
+    sent["payload"] = {**sent["payload"], "direction": "sent"}
+    batch = [
+        _sms(f"s-in{keys}", "remind me to send the contract"),
+        sent,
+        _call(f"c-missed{keys}", "missed"),
+        _call(f"c-in{keys}", "incoming"),
+        _note(f"n{keys}"),
+    ]
+    res = client.post(f"/v1/devices/{device_id}/events", json={"events": batch}, headers=dev_auth)
+    assert res.status_code == 200, res.text
+    return res.json()
+
+
+def _enable_all(client: TestClient, device_id: str, dev_auth: dict) -> None:
+    res = client.put(
+        f"/v1/devices/{device_id}",
+        json={"enabled_categories": ["sms", "call", "notification"]},
+        headers=dev_auth,
+    )
+    assert res.status_code == 200
+
+
+def test_coworker_forwarding_off_by_default(env: SimpleNamespace, forwarded: list) -> None:
+    assert DevicesConfig().coworker_kinds == []
+    with TestClient(api_server.create_app(env.cfg)) as client:
+        device_id, dev_auth = _register(client)
+        _enable_all(client, device_id, dev_auth)
+        assert _post_mixed(client, device_id, dev_auth)["accepted"] == 5
+    assert forwarded == []
+
+
+def test_coworker_forwarding_needs_coworker_enabled(env: SimpleNamespace, forwarded: list) -> None:
+    env.cfg.devices = DevicesConfig(retention_days=0, coworker_kinds=["sms", "call"])
+    env.cfg.coworker = SimpleNamespace(timezone="UTC", enabled=False)
+    with TestClient(api_server.create_app(env.cfg)) as client:
+        device_id, dev_auth = _register(client)
+        _enable_all(client, device_id, dev_auth)
+        _post_mixed(client, device_id, dev_auth)
+    assert forwarded == []
+
+
+def test_coworker_forwards_only_received_sms_and_missed_calls(
+    env: SimpleNamespace, forwarded: list
+) -> None:
+    env.cfg.devices = DevicesConfig(
+        retention_days=0, coworker_kinds=["sms", "call", "notification"]
+    )
+    with TestClient(api_server.create_app(env.cfg)) as client:
+        device_id, dev_auth = _register(client)
+        _enable_all(client, device_id, dev_auth)
+        _post_mixed(client, device_id, dev_auth)
+        assert sorted(kind for kind, _, _ in forwarded) == ["phone_call", "phone_sms"]
+        texts = {kind: text for kind, _, text in forwarded}
+        assert "send the contract" in texts["phone_sms"]
+        assert "missed" in texts["phone_call"]
+        assert all(ref.startswith(f"phone:{device_id}:") for _, ref, _ in forwarded)
+
+        # Re-sent outbox: all duplicates, nothing forwarded again.
+        res = _post_mixed(client, device_id, dev_auth)
+        assert res["accepted"] == 0 and res["duplicates"] == 5
+        assert len(forwarded) == 2
+
+
+def test_coworker_kinds_filter(env: SimpleNamespace, forwarded: list) -> None:
+    env.cfg.devices = DevicesConfig(retention_days=0, coworker_kinds=["call"])
+    with TestClient(api_server.create_app(env.cfg)) as client:
+        device_id, dev_auth = _register(client)
+        _enable_all(client, device_id, dev_auth)
+        _post_mixed(client, device_id, dev_auth)
+    assert [kind for kind, _, _ in forwarded] == ["phone_call"]
+
+
+def test_coworker_eligible() -> None:
+    kinds = ["sms", "call", "notification"]
+    assert devices.coworker_eligible("sms", {"direction": "received"}, kinds)
+    assert devices.coworker_eligible("call", {"direction": "Missed"}, kinds)
+    assert not devices.coworker_eligible("sms", {"direction": "sent"}, kinds)
+    assert not devices.coworker_eligible("sms", {}, kinds)
+    assert not devices.coworker_eligible("call", {"direction": "incoming"}, kinds)
+    assert not devices.coworker_eligible("notification", {"direction": "received"}, kinds)
+    assert not devices.coworker_eligible("sms", {"direction": "received"}, ["call"])

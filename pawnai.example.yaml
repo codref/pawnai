@@ -320,6 +320,10 @@ devices:
   retention_days: 90
   # Event kinds embedded into knowledge_chunks as phone_<kind>.
   index_kinds: [sms, notification, call]
+  # Feed new received SMS / missed calls into the coworker pipeline (Items,
+  # Today.md) so follow-ups get extracted. Needs coworker.enabled. Off by
+  # default; opt in with e.g. [sms, call].
+  coworker_kinds: []
   max_batch: 500
   # Live phone tool round trip (keep below sallm's 60 s tool timeout).
   command_timeout_s: 45
