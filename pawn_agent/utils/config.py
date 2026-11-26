@@ -427,6 +427,22 @@ class PlannerConfig(BaseModel):
     events_dir: str = "{agent_root}/Events"
 
 
+class DevicesConfig(BaseModel):
+    """``devices:`` — phone bridge (pawn-assistant pushes context, runs tools).
+
+    See docs/PHONE_BRIDGE.md.
+    """
+
+    # Phone events older than this are pruned (with their knowledge chunks).
+    retention_days: int = 90
+    # Event kinds whose text is embedded into knowledge_chunks (phone_<kind>).
+    index_kinds: list[str] = Field(default_factory=lambda: ["sms", "notification", "call"])
+    # Max events accepted per ingest request.
+    max_batch: int = 500
+    # Live phone tool round trip budget (must stay under sallm's 60 s tool timeout).
+    command_timeout_s: float = 45.0
+
+
 class CoworkerConfig(BaseModel):
     """``coworker:`` — goal-driven inbox, briefings, and bounded autonomy."""
 
@@ -501,6 +517,7 @@ class AgentConfig(PawnConfig):
     tasknotes: TaskNotesConfig = Field(default_factory=TaskNotesConfig)
     capture: CaptureConfig = Field(default_factory=CaptureConfig)
     planner: PlannerConfig = Field(default_factory=PlannerConfig)
+    devices: DevicesConfig = Field(default_factory=DevicesConfig)
 
     # ── Flat property aliases (old flat-field names used throughout pawn_agent) ─
 

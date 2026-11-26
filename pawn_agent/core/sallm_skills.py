@@ -493,6 +493,34 @@ VAULT_TASKS = Skill(
 )
 
 
+PHONE = Skill(
+    name="phone",
+    description=(
+        "Questions about the user's phone: calls, missed calls, text "
+        "messages, app notifications, where the phone is, battery."
+    ),
+    prompt=(
+        "Active skill: phone.\n"
+        "The user's phone pushes opt-in context to pawn-server. Read it with "
+        "phone_events (filter with --kind / --since / --contact) and "
+        "phone_devices for what is shared. For 'what did X say about Y' over "
+        "older texts or notifications, knowledge_search --kind phone_sms "
+        "(or phone_notification) also works.\n"
+        "Only report what tools return. If a category is not shared, tell "
+        "the user it can be enabled in the pawn-assistant app (Settings → "
+        "Phone bridge) — never guess calls, messages or locations.\n"
+        "Phone data is private: quote message bodies only when the user asks "
+        "for them; otherwise summarise (who, when, gist)."
+    ),
+    tools=(
+        "phone_events",
+        "phone_devices",
+        "knowledge_search",
+        "people_show",
+    ),
+)
+
+
 def build_pawn_skills() -> SkillRegistry:
     """Return the pawn skill registry (converse is registered explicitly)."""
     return SkillRegistry(
@@ -508,5 +536,6 @@ def build_pawn_skills() -> SkillRegistry:
             RESEARCH_CAPTURE,
             MEETING_PREP,
             VAULT_TASKS,
+            PHONE,
         ]
     )

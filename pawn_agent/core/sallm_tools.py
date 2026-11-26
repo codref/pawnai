@@ -279,8 +279,31 @@ def build_pawn_clitools() -> dict[str, CliTool]:
             argv=_cli_argv("knowledge_search.py"),
             summary=(
                 "Semantic search across vault notes, transcripts, and coworker items. "
-                "Flags: --query TEXT --kind note|transcript|analysis|item --limit N. "
+                "Flags: --query TEXT --kind note|transcript|analysis|item"
+                "|phone_sms|phone_notification|phone_call --limit N. "
                 "Use when the user asks where something was discussed."
+            ),
+        ),
+        "phone_events": CliTool(
+            name="phone_events",
+            argv=_cli_argv("phone_events.py"),
+            summary=(
+                "Read what the user's phone shared with pawn (stored on the "
+                "server, works while the phone is offline): calls, received/sent "
+                "SMS, app notifications, location fixes, battery/network status. "
+                "Flags: --kind call|sms|notification|location|status "
+                "--since 24h|7d|30m|ISO-date --contact NAME_OR_NUMBER "
+                "--query TEXT --limit N --device NAME. "
+                "Use for 'who called me', 'any texts from X', 'what did I miss'. "
+                "If a kind is not shared, say so — never guess phone data."
+            ),
+        ),
+        "phone_devices": CliTool(
+            name="phone_devices",
+            argv=_cli_argv("phone_devices.py"),
+            summary=(
+                "List phones registered with pawn-server, which categories each "
+                "one shares, and when it was last seen. No flags."
             ),
         ),
         "queue_push": CliTool(

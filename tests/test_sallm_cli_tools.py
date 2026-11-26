@@ -53,6 +53,8 @@ def test_build_pawn_clitools_names() -> None:
         "tasknotes_update",
         "tasknotes_board",
         "goal_propose",
+        "phone_events",
+        "phone_devices",
     }
 
 

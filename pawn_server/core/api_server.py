@@ -341,6 +341,20 @@ class ChatImage(BaseModel):
     role: str = "question"
 
 
+class PawnVoiceRequest(BaseModel):
+    """POST /v1/pawn/voice — short spoken turns from the pawn voice assistant.
+
+    ``access="chat"`` runs the agent with no executable tools; ``"full"`` is
+    the stock pawn surface. The caller (pawn-assistant) decides the level after
+    its own keypad unlock; the Bearer token remains the trust boundary.
+    """
+
+    conversation: str
+    message: str = ""
+    access: str = "chat"
+    lang: str = "it"
+
+
 class PawnChatRequest(BaseModel):
     """POST /v1/pawn/chat — native streaming chat for the Pawn Obsidian plugin."""
 
@@ -824,6 +838,11 @@ app = FastAPI(
     description="HTTP interface for the pawn-server conversational AI.",
     version="1.0.0",
 )
+
+# Phone bridge (/v1/devices/*) — see docs/PHONE_BRIDGE.md.
+from pawn_server.core.devices_api import build_router as _build_devices_router  # noqa: E402
+
+app.include_router(_build_devices_router(_get_cfg, _require_token))
 
 
 @app.get("/health", include_in_schema=True)
@@ -2228,6 +2247,91 @@ async def pawn_chat(body: PawnChatRequest, cfg: Any = Depends(_get_cfg)) -> Stre
                 run_id = data.run_id
                 yield _sse_event("answer", {"content": strip_tool_trail(data.response or "")})
         yield _sse_event("done", {"conversation": conversation, "run_id": run_id})
+
+    return StreamingResponse(_gen(), media_type="text/event-stream")
+
+
+@app.post("/v1/pawn/voice", dependencies=[Depends(_require_token)])
+async def pawn_voice(body: PawnVoiceRequest, cfg: Any = Depends(_get_cfg)) -> StreamingResponse:
+    """SSE voice turn: ``progress``, ``answer`` (speakable text), ``error``, ``done``.
+
+    Conversations must be namespaced ``voice:…`` so voice agents (built with a
+    restricted tool surface and a spoken-style system prompt) never share an
+    in-memory Agent with Obsidian / browser chats.
+    """
+    from pawn_agent.core.voice_profile import (  # noqa: PLC0415
+        VOICE_NUDGE,
+        VoiceProfile,
+        parse_access,
+        split_voice_reply,
+        voice_answer_body,
+    )
+    from pawn_server.core.progress import stream_turn  # noqa: PLC0415
+
+    conversation = body.conversation.strip()
+    message = body.message.strip()
+    if not conversation.startswith("voice:") or len(conversation) <= len("voice:"):
+        raise HTTPException(status_code=400, detail="conversation must start with 'voice:'")
+    if not message:
+        raise HTTPException(status_code=422, detail="message is required")
+    lang = (body.lang or "it").strip().lower()[:5] or "it"
+    voice = VoiceProfile(access=parse_access(body.access), lang=lang)
+    loop = asyncio.get_running_loop()
+    _schedule_idle_reset(loop, cfg.api_model_idle_timeout_minutes * 60)
+    keepalive = float(getattr(cfg.api, "stream_keepalive_seconds", 10.0))
+
+    async def _gen() -> AsyncIterator[str]:
+        if message == _RESET_SENTINEL:
+            await _sallm_registry.reset(conversation, cfg.db_dsn)
+            yield _sse_event("answer", {"content": "Ok."})
+            yield _sse_event("done", {"conversation": conversation})
+            return
+
+        async def _turn(prompt: str, on_progress: Any) -> Any:
+            return await run_agent_turn(
+                cfg=cfg,
+                registry=_sallm_registry,
+                prompt=prompt,
+                session_id=conversation,
+                source="voice",
+                command="run",
+                on_progress=on_progress,
+                voice=voice,
+            )
+
+        async def _run(on_progress: Any) -> Any:
+            result = await _turn(message, on_progress)
+            if not voice_answer_body(result.response or ""):
+                # The agent stopped on tool results: ask once for the spoken answer.
+                logger.info("pawn voice %r: no answer after tools, nudging once", conversation)
+                result = await _turn(VOICE_NUDGE.get(lang[:2], VOICE_NUDGE["en"]), on_progress)
+            return result
+
+        run_id: Optional[str] = None
+        async for event, data in stream_turn(_run, keepalive_seconds=keepalive):
+            if event == "keepalive":
+                yield _SSE_KEEPALIVE
+            elif event == "progress":
+                yield _sse_event("progress", data)
+            elif event == "error":
+                logger.error("pawn voice error for %r: %s", conversation, data)
+                yield _sse_event("error", {"message": data})
+            elif event == "result":
+                run_id = data.run_id
+                speech, screen, controls = split_voice_reply(
+                    voice_answer_body(data.response or ""), lang[:2]
+                )
+                answer: dict[str, Any] = {
+                    "content": speech,
+                    "access": voice.access,
+                    "controls": controls,
+                }
+                if screen:
+                    answer["display"] = screen
+                yield _sse_event("answer", answer)
+        yield _sse_event(
+            "done", {"conversation": conversation, "run_id": run_id, "access": voice.access}
+        )
 
     return StreamingResponse(_gen(), media_type="text/event-stream")
 

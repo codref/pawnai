@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
 
 from sallm import Agent, EmbeddingProfile, RetrievalConfig
 from sallm.prom import SessionMetrics
@@ -26,6 +26,9 @@ from pawn_agent.utils.model_catalog import (
     routed_litellm_model,
     think_override,
 )
+
+if TYPE_CHECKING:
+    from pawn_agent.core.voice_profile import VoiceProfile
 
 logger = logging.getLogger(__name__)
 
@@ -69,6 +72,7 @@ def build_sallm_agent(
     *,
     conversation_id: str,
     trace: Optional[Tracer] = None,
+    voice: "Optional[VoiceProfile]" = None,
 ) -> Agent:
     """Construct one durable Agent for *conversation_id*.
 
@@ -108,8 +112,9 @@ def build_sallm_agent(
         api_key=selection.api_key,
         extra_headers=headers or None,
         think=think_override(selection),
-        tools=build_pawn_clitools(),
-        skills=build_pawn_skills(),
+        tools=voice.tools() if voice is not None else build_pawn_clitools(),
+        skills=voice.skills() if voice is not None else build_pawn_skills(),
+        system=voice.system_extra() if voice is not None else None,
         state_path=state_dir / "state.db",
         vector_path=state_dir / "vectors",
         session_id=conversation_id,
@@ -130,6 +135,7 @@ def build_sallm_agent(
 def rebuild_agent_for_config(
     agent: Agent,
     cfg: AgentConfig,
+    voice: "Optional[VoiceProfile]" = None,
 ) -> Agent:
     """Rebuild an Agent after a per-turn model override (same session id/paths).
 
@@ -140,4 +146,5 @@ def rebuild_agent_for_config(
         cfg,
         conversation_id=agent.session_id,
         trace=agent.trace,
+        voice=voice,
     )

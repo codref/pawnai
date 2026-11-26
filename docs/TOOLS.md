@@ -76,6 +76,8 @@ to `Pawn/Analyses/{session_id}.md` via `save_to_vault`. Free-form notes use
 | `event_prep_update` | `event_prep_impl` | Replace `## Prep` on a planner event note |
 | `planner_day` | `day_plan_impl` | Compact merged day timeline (events / sessions / items) |
 | `day_plan_update` | `day_plan_impl` | Replace `## Plan` on `Pawn/Daily/{date}.md` |
+| `phone_events` | `phone_impl` | Calls / SMS / notifications / location / status pushed by the phone (see `PHONE_BRIDGE.md`) |
+| `phone_devices` | `phone_impl` | Registered phones and what each shares |
 
 ## Shared helpers
 

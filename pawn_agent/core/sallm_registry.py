@@ -40,7 +40,9 @@ class SallmSessionRegistry:
             self._locks[session_id] = asyncio.Lock()
         return self._locks[session_id]
 
-    async def _build_session(self, session_id: str, cfg: Any) -> SallmChatSession:
+    async def _build_session(
+        self, session_id: str, cfg: Any, voice: Any = None
+    ) -> SallmChatSession:
         trace = build_optional_tracer(session_id=session_id, cfg=cfg)
         # create() is sync (opens SQLite/Lance); keep the event loop free.
         return await asyncio.to_thread(
@@ -48,9 +50,12 @@ class SallmSessionRegistry:
             cfg,
             conversation_id=session_id,
             trace=trace,
+            voice=voice,
         )
 
-    async def get_or_create(self, session_id: str, cfg: Any, db_dsn: str = "") -> SallmChatSession:
+    async def get_or_create(
+        self, session_id: str, cfg: Any, db_dsn: str = "", *, voice: Any = None
+    ) -> SallmChatSession:
         """Return a cached session, creating it if needed.
 
         ``db_dsn`` is accepted for call-site compatibility with the old
@@ -59,13 +64,13 @@ class SallmSessionRegistry:
         del db_dsn  # unused — kept for API compatibility
         if session_id in self._sessions:
             session = self._sessions[session_id]
-            session.apply_config(cfg)
+            session.apply_config(cfg, voice)
             return session
         async with self._registry_lock:
             if session_id not in self._sessions:
-                self._sessions[session_id] = await self._build_session(session_id, cfg)
+                self._sessions[session_id] = await self._build_session(session_id, cfg, voice)
             else:
-                self._sessions[session_id].apply_config(cfg)
+                self._sessions[session_id].apply_config(cfg, voice)
         return self._sessions[session_id]
 
     async def handle_turn(
@@ -79,6 +84,7 @@ class SallmSessionRegistry:
         vault_paths_out: Optional[list[str]] = None,
         images: Optional[list[Any]] = None,
         force_caption: bool = False,
+        voice: Any = None,
         **_kwargs: Any,
     ) -> str:
         """Process one user turn under the per-session lock.
@@ -90,8 +96,10 @@ class SallmSessionRegistry:
         ``vault_paths_out``, when given, is filled inside the session lock with
         vault keys this turn wrote (see ``SallmChatSession.last_vault_paths``).
         """
-        session = await self.get_or_create(session_id, cfg, db_dsn)
         async with self._session_lock(session_id):
+            # Inside the lock: a voice access change rebuilds the Agent and
+            # must not swap it out under a turn that is still running.
+            session = await self.get_or_create(session_id, cfg, db_dsn, voice=voice)
             reply = await session.handle_user_input(
                 text,
                 on_progress=on_progress,
