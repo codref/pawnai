@@ -4,9 +4,9 @@ pawn-assistant (the Android app) can share opt-in context from the phone with
 pawn-server, and pawn-agent can read it through tools. Every category is off
 by default and is switched on per phone in the app (Settings → Phone bridge).
 
-Status: **push half implemented** (registration, ingest, purge, read tools).
-Live phone tools over UnifiedPush/ntfy (`phone_location_now`, `phone_sms_send`,
-…) are the next step; the `device_commands` table already exists for them.
+Status: push half (registration, ingest, purge, read tools) and the server
+side of live phone tools (command queue + UnifiedPush wake-up) are
+implemented. Migrations `0024` and `0025`.
 
 ## Data flow
 
@@ -18,7 +18,7 @@ pawn-agent ← phone_events / phone_devices / knowledge_search --kind phone_sms
 
 ## Setup
 
-1. `alembic upgrade head` (migration `0024`).
+1. `alembic upgrade head` (migrations `0024`, `0025`).
 2. Optional `devices:` section in `pawnai.yaml` (see `pawnai.example.yaml`).
 3. In the app: set the server URL + API token, open **Phone bridge**,
    **Register this phone**, then enable the categories to share.
@@ -30,9 +30,42 @@ pawn-agent ← phone_events / phone_devices / knowledge_search --kind phone_sms
 | POST | `/v1/devices/register` | shared API token | Body `{name}` → `{device_id, device_token, name}`. The token is shown once; only its SHA-256 is stored. |
 | GET | `/v1/devices` | shared API token | List devices. |
 | GET | `/v1/devices/{id}` | device token or shared | Device view. |
-| PUT | `/v1/devices/{id}` | device token or shared | `{name?, unifiedpush_endpoint?, enabled_categories?}`. Removing a category **purges** the server copy of it (`purged_categories` in the reply). |
+| PUT | `/v1/devices/{id}` | device token or shared | `{name?, unifiedpush_endpoint?, enabled_categories?, capabilities?}`. Removing a category **purges** the server copy of it (`purged_categories` in the reply). Unknown capabilities are dropped. |
 | DELETE | `/v1/devices/{id}` | device token or shared | Revokes the device and deletes its events and knowledge chunks. |
 | POST | `/v1/devices/{id}/events` | device token or shared | `{events:[…]}` (≤ `devices.max_batch`) → `{accepted, duplicates, rejected}`. |
+| POST | `/v1/devices/{id}/commands` | **shared token only** | `{tool, args, timeout_s?}`: queue a live tool and wait for the phone. Returns the command view plus `text`. Handy for curl testing; the agent's CLI tools do the same in-process. |
+| GET | `/v1/devices/{id}/commands/pending` | device token or shared | Unexpired pending commands; they become `delivered`. |
+| POST | `/v1/devices/{id}/commands/{cid}/result` | device token or shared | `{status: ok\|denied\|error, result?, message?}`. `409` once the command is final (e.g. `expired`). |
+
+## Live tools (command queue)
+
+```
+phone_* CliTool ─ insert device_commands(pending) ─ POST {"type":"cmd"} → device's UnifiedPush endpoint (ntfy)
+                                                                         ↓ wakes the phone
+phone: GET …/commands/pending → run (actions: biometric confirm first) → POST …/commands/{cid}/result
+CliTool polls the row → ok | denied | error | expired | delivered (answered too late)
+```
+
+- The push body never carries data, because ntfy topics may live on a shared
+  server. The phone always pulls the command over the authenticated API.
+- The phone declares what it will run in `capabilities`, and the server
+  refuses anything else. Declare a capability only when its toggle and
+  permission are on.
+- `expires_at` = creation + `devices.command_timeout_s` (45 s). The phone must
+  skip a command whose `expires_at` has passed, **including after a biometric
+  prompt**, so a stale SMS is never sent.
+- The phone should also drain `…/commands/pending` when the app starts and
+  when the push distributor reconnects.
+
+| tool | args | action (biometric) | result fields |
+|------|------|--------------------|---------------|
+| `location_now` | — | no | `lat`, `lon`, `accuracy_m`, `ts?`, `place?` |
+| `status_now` | — | no | `battery_pct`, `charging`, `network`, `ringer` |
+| `sms_send` | `to`, `body` | **yes**: show recipient and exact text | — |
+| `notify` | `text`, `title?` | no | — |
+
+A declined confirmation is `status: "denied"`. A failure is `status: "error"`
+with a `message`.
 
 ### Event shape
 
@@ -59,6 +92,8 @@ pawn-agent ← phone_events / phone_devices / knowledge_search --kind phone_sms
 
 - `phone_events --kind … --since 24h|7d|ISO --contact NAME_OR_NUMBER --query TEXT --limit N --device NAME`
 - `phone_devices`
+- `phone_location_now`, `phone_status_now`, `phone_notify --text … [--title …]`,
+  `phone_sms_send --to NUMBER --body TEXT` (live; `--device NAME` when several phones)
 - `knowledge_search --kind phone_sms|phone_notification|phone_call` for older content.
 
 They are grouped in the `phone` skill. Voice turns with `access="chat"` get no

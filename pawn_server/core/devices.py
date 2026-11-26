@@ -69,11 +69,23 @@ def _clean_categories(raw: Optional[Iterable[Any]]) -> list[str]:
     return out
 
 
+def _clean_capabilities(raw: Optional[Iterable[Any]]) -> list[str]:
+    from pawn_server.core.device_commands import TOOLS  # noqa: PLC0415
+
+    out: list[str] = []
+    for item in raw or []:
+        name = str(item or "").strip().lower()
+        if name in TOOLS and name not in out:
+            out.append(name)
+    return out
+
+
 def device_view(row: Device) -> dict[str, Any]:
     return {
         "device_id": row.id,
         "name": row.name,
         "enabled_categories": list(row.enabled_categories or []),
+        "capabilities": list(row.capabilities or []),
         "unifiedpush": bool(row.unifiedpush_endpoint),
         "created_at": row.created_at.isoformat() if row.created_at else None,
         "last_seen": row.last_seen.isoformat() if row.last_seen else None,
@@ -135,6 +147,7 @@ def update_device(
     name: Optional[str] = None,
     unifiedpush_endpoint: Optional[str] = None,
     enabled_categories: Optional[list[str]] = None,
+    capabilities: Optional[list[str]] = None,
 ) -> tuple[dict[str, Any], list[str]]:
     """Update a device. Returns ``(view, newly_disabled_categories)``.
 
@@ -157,6 +170,8 @@ def update_device(
             new = _clean_categories(enabled_categories)
             disabled = [k for k in (row.enabled_categories or []) if k not in new]
             row.enabled_categories = new
+        if capabilities is not None:
+            row.capabilities = _clean_capabilities(capabilities)
         row.last_seen = _now()
         view = device_view(row)
     for kind in disabled:

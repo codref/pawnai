@@ -14,7 +14,7 @@ from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, Field
 
-from pawn_server.core import devices
+from pawn_server.core import device_commands, devices
 
 _bearer = HTTPBearer(auto_error=False)
 
@@ -27,10 +27,23 @@ class UpdateRequest(BaseModel):
     name: Optional[str] = None
     unifiedpush_endpoint: Optional[str] = None
     enabled_categories: Optional[list[str]] = None
+    capabilities: Optional[list[str]] = None
 
 
 class EventsRequest(BaseModel):
     events: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class CommandRequest(BaseModel):
+    tool: str
+    args: dict[str, Any] = Field(default_factory=dict)
+    timeout_s: Optional[float] = None
+
+
+class ResultRequest(BaseModel):
+    status: str
+    result: Optional[dict[str, Any]] = None
+    message: str = ""
 
 
 def _raise(exc: devices.DeviceError) -> None:
@@ -84,6 +97,7 @@ def build_router(get_cfg: Callable[[], Any], require_token: Callable[..., None])
                 name=body.name,
                 unifiedpush_endpoint=body.unifiedpush_endpoint,
                 enabled_categories=body.enabled_categories,
+                capabilities=body.capabilities,
             )
         except devices.DeviceError as exc:
             _raise(exc)
@@ -129,5 +143,50 @@ def build_router(get_cfg: Callable[[], Any], require_token: Callable[..., None])
             "duplicates": result.duplicates,
             "rejected": result.rejected,
         }
+
+    # ── Live tools (command queue) ────────────────────────────────────────────
+
+    @router.post("/{device_id}/commands", dependencies=[Depends(require_token)])
+    async def run(device_id: str, body: CommandRequest, cfg: Any = Depends(get_cfg)) -> dict:
+        """Queue a live tool and wait for the phone (shared token: agent / admin)."""
+        settings = getattr(cfg, "devices", None)
+        budget = float(getattr(settings, "command_timeout_s", 45.0))
+        timeout = min(budget, body.timeout_s) if body.timeout_s else budget
+        try:
+            view = await asyncio.to_thread(
+                device_commands.run_command,
+                cfg.db_dsn,
+                body.tool,
+                body.args,
+                device=device_id,
+                timeout_s=timeout,
+            )
+        except device_commands.CommandError as exc:
+            raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+        return {**view, "text": device_commands.describe(view)}
+
+    @router.get("/{device_id}/commands/pending")
+    async def pending(device_id: str = Depends(require_device), cfg: Any = Depends(get_cfg)) -> dict:
+        return {"commands": await asyncio.to_thread(device_commands.take_pending, cfg.db_dsn, device_id)}
+
+    @router.post("/{device_id}/commands/{command_id}/result")
+    async def result(
+        command_id: str,
+        body: ResultRequest,
+        device_id: str = Depends(require_device),
+        cfg: Any = Depends(get_cfg),
+    ) -> dict:
+        try:
+            return await asyncio.to_thread(
+                device_commands.post_result,
+                cfg.db_dsn,
+                device_id,
+                command_id,
+                status=body.status,
+                result=body.result,
+                message=body.message,
+            )
+        except device_commands.CommandError as exc:
+            raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
 
     return router

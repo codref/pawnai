@@ -80,6 +80,7 @@ to `Pawn/Analyses/{session_id}.md` via `save_to_vault`. Free-form notes use
 | `day_plan_update` | `day_plan_impl` | Replace `## Plan` on `Pawn/Daily/{date}.md` |
 | `phone_events` | `phone_impl` | Calls / SMS / notifications / location / status pushed by the phone (see `PHONE_BRIDGE.md`) |
 | `phone_devices` | `phone_impl` | Registered phones and what each shares |
+| `phone_location_now` / `phone_status_now` / `phone_notify` / `phone_sms_send` | `device_commands` (via `phone_command.py`) | Live tools run on the phone over the command queue; `phone_sms_send` is confirmed on the phone |
 
 ## Shared helpers
 

@@ -245,6 +245,8 @@ class Device(_Base):
     token_hash: Mapped[str] = mapped_column(String, nullable=False)
     unifiedpush_endpoint: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     enabled_categories: Mapped[Optional[list]] = mapped_column(JSON, nullable=True)
+    # Live tools the phone will run (location_now, status_now, sms_send, notify).
+    capabilities: Mapped[Optional[list]] = mapped_column(JSON, nullable=True)
     created_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     last_seen: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
 
