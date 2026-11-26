@@ -311,6 +311,44 @@ def build_pawn_clitools() -> dict[str, CliTool]:
                 "If a kind is not shared, say so — never guess phone data."
             ),
         ),
+        "phone_location_now": CliTool(
+            name="phone_location_now",
+            argv=[*_cli_argv("phone_command.py"), "location_now"],
+            summary=(
+                "Ask the phone for its current location right now (live; up to "
+                "~45 s). Optional: --device NAME. Prefer phone_events --kind "
+                "location for where the phone was earlier."
+            ),
+        ),
+        "phone_status_now": CliTool(
+            name="phone_status_now",
+            argv=[*_cli_argv("phone_command.py"), "status_now"],
+            summary=(
+                "Ask the phone for battery, charging, network and ringer state "
+                "right now (live). Optional: --device NAME."
+            ),
+        ),
+        "phone_sms_send": CliTool(
+            name="phone_sms_send",
+            argv=[*_cli_argv("phone_command.py"), "sms_send"],
+            summary=(
+                "Send an SMS from the user's phone. Required: --to NUMBER "
+                "--body TEXT. Optional: --device NAME. The user must confirm "
+                "on the phone (biometric prompt showing the exact text); if "
+                "they decline, say so and do not retry. Only when the user "
+                "explicitly asked to send it; read the text back first. "
+                "Resolve the number with phone_events --contact if needed."
+            ),
+        ),
+        "phone_notify": CliTool(
+            name="phone_notify",
+            argv=[*_cli_argv("phone_command.py"), "notify"],
+            summary=(
+                "Show a notification on the user's phone. Required: --text TEXT. "
+                "Optional: --title TEXT --device NAME. Use for reminders or "
+                "hand-offs the user asked to get on the phone."
+            ),
+        ),
         "phone_devices": CliTool(
             name="phone_devices",
             argv=_cli_argv("phone_devices.py"),

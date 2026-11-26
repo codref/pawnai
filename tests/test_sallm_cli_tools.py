@@ -56,6 +56,10 @@ def test_build_pawn_clitools_names() -> None:
         "goal_propose",
         "phone_events",
         "phone_devices",
+        "phone_location_now",
+        "phone_status_now",
+        "phone_sms_send",
+        "phone_notify",
     }
 
 

@@ -523,11 +523,22 @@ PHONE = Skill(
         "the user it can be enabled in the pawn-assistant app (Settings → "
         "Phone bridge) — never guess calls, messages or locations.\n"
         "Phone data is private: quote message bodies only when the user asks "
-        "for them; otherwise summarise (who, when, gist)."
+        "for them; otherwise summarise (who, when, gist).\n"
+        "Live tools reach the phone now (each can take up to ~45 s): "
+        "phone_location_now, phone_status_now, phone_notify, and "
+        "phone_sms_send. Send an SMS only when the user explicitly asked, "
+        "after reading back recipient and text; the phone then asks the user "
+        "to confirm with a biometric prompt. If the result says declined, "
+        "accept it and do not retry. If the phone does not answer, say so — "
+        "never claim a message was sent unless the tool said so."
     ),
     tools=(
         "phone_events",
         "phone_devices",
+        "phone_location_now",
+        "phone_status_now",
+        "phone_sms_send",
+        "phone_notify",
         "knowledge_search",
         "people_show",
     ),
