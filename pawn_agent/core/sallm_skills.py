@@ -355,21 +355,33 @@ COWORKER = Skill(
 DAY_PLAN = Skill(
     name="day_plan",
     description=(
-        "User wants to plan the day, a morning check-in, or what to focus on "
-        "today. Prefer over coworker (Goals drafts) and meeting_prep (one event)."
+        "User wants to plan the day, a morning check-in, put meetings on the "
+        "Day calendar, or what to focus on today. Prefer over coworker "
+        "(Goals drafts) and meeting_prep (one event's prep)."
     ),
     prompt=(
         "Active skill: day_plan.\n"
         "Interactive day planning. Human-in-the-middle is this chat.\n"
+        "Two different writes:\n"
+        "1) Day-tab calendar activities are pawn: event notes under "
+        "Pawn/Events/. Create/update them with event_upsert "
+        "(--title --start YYYY-MM-DDTHH:MM [--end …]). That is what the "
+        "Obsidian Day grid shows. day_plan_update never creates activities.\n"
+        "2) ## Plan on Pawn/Daily/{date}.md is sparse priorities text via "
+        "day_plan_update --content-file @plan (or short --content). "
+        "Never note_write the daily note. Never write Goals.md.\n"
         "If the user has not said what is going on today, ask 1–3 short "
-        "questions first. Do not invent commitments.\n"
-        "Before proposing a plan, call planner_day (optional --date) and "
+        "questions first. Do not invent commitments or meetings.\n"
+        "Before proposing, call planner_day (optional --date) and "
         "note_read Goals.md and Pawn/Today.md when useful. "
         "knowledge_search and tasknotes_list fill gaps.\n"
-        "Write only via day_plan_update --content-file @plan (or short "
-        "--content) with optional --date. That replaces ## Plan on "
-        "Pawn/Daily/{date}.md. Never note_write the daily note. Never write "
-        "Goals.md.\n"
+        "Calendar screenshot / Outlook list / 'put these on the Day "
+        "calendar' / 'I see the plan note but no activities': for each "
+        "timed meeting the user (or image) clearly shows, call event_upsert "
+        "once with title+start+end (and attendees/location/meeting-url when "
+        "visible). Then optionally refresh ## Plan. Do not only rewrite "
+        "## Plan — that will not fill the Day grid. Re-call planner_day to "
+        "confirm the timeline.\n"
         "Keep ## Plan sparse: priorities, meeting callouts, what to defer. "
         "Propose TaskNotes with tasknotes_propose only when the user asks; "
         "do not silently commit tasks.\n"
@@ -383,6 +395,7 @@ DAY_PLAN = Skill(
     tools=(
         "planner_day",
         "day_plan_update",
+        "event_upsert",
         "note_read",
         "knowledge_search",
         "tasknotes_list",

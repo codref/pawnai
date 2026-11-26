@@ -41,6 +41,7 @@ def test_build_pawn_clitools_names() -> None:
         "note_append",
         "capture_update",
         "event_prep_update",
+        "event_upsert",
         "planner_day",
         "day_plan_update",
         "task_update",
@@ -111,10 +112,12 @@ def test_day_plan_skill_allowlist() -> None:
     assert skill.tools is not None
     assert "planner_day" in skill.tools
     assert "day_plan_update" in skill.tools
+    assert "event_upsert" in skill.tools
     assert "note_write" not in skill.tools
     visible = registry.resolve_tools("day_plan", available)
     assert "planner_day" in visible
     assert "day_plan_update" in visible
+    assert "event_upsert" in visible
     assert "queue_push" in visible
     assert "note_write" not in visible
 

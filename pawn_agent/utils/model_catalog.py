@@ -160,6 +160,26 @@ def _is_openrouter(api_base: Optional[str]) -> bool:
     return host == "openrouter.ai" or host.endswith(".openrouter.ai")
 
 
+def reasoning_mandatory(model: Optional[str]) -> bool:
+    """True when the endpoint rejects ``reasoning.effort=none``.
+
+    Matches LiteLLM / catalog ids such as ``openai/z-ai/glm-5.3-flash`` and
+    bare ``glm-5.3-flash``. Keep in sync with ``sallm.llm.reasoning_mandatory``.
+    """
+    name = (model or "").strip()
+    if name.startswith("openai/"):
+        name = name[len("openai/") :]
+    leaf = name.split(":", 1)[0].rsplit("/", 1)[-1].lower()
+    return leaf.startswith("glm")
+
+
+def openrouter_reasoning_efforts(model: Optional[str]) -> list[str]:
+    """Composer efforts for an OpenRouter model (no Off when mandatory)."""
+    if reasoning_mandatory(model):
+        return ["low", "medium", "high"]
+    return ["none", "low", "medium", "high"]
+
+
 def routed_litellm_model(selection: ModelSelection) -> str:
     """LiteLLM id, with an OpenRouter routing suffix when one is selected."""
     model = selection.litellm_model
@@ -175,6 +195,9 @@ def think_override(selection: ModelSelection) -> Optional[str | bool]:
         return None
     effort = (selection.reasoning or "").strip().lower()
     if effort == "none":
+        # GLM (and similar) reject disabled reasoning; keep the cheapest trace.
+        if reasoning_mandatory(selection.litellm_model or selection.catalog_id):
+            return "low"
         return False
     if effort in {"low", "medium", "high"}:
         return effort
@@ -195,6 +218,10 @@ def apply_turn_options(
         if effort not in _REASONING:
             known = ", ".join(sorted(_REASONING))
             raise ValueError(f"Unknown reasoning {reasoning!r}. Choose one of: {known}")
+        if effort == "none" and reasoning_mandatory(
+            selection.litellm_model or selection.catalog_id
+        ):
+            effort = "low"
         updates["reasoning"] = effort
     if route and route.strip():
         chosen = route.strip().lower()
@@ -293,8 +320,12 @@ def _public_model(entry: CatalogEntry) -> dict[str, Any]:
         "vision": bool(entry.vision),
     }
     if _is_openrouter(entry.api_base):
-        item["reasoning"] = ["none", "low", "medium", "high"]
-        item["reasoning_default"] = entry.reasoning or "low"
+        efforts = openrouter_reasoning_efforts(entry.model)
+        default = entry.reasoning or "low"
+        if default not in efforts:
+            default = efforts[0]
+        item["reasoning"] = efforts
+        item["reasoning_default"] = default
         item["routes"] = ["balanced", "nitro", "floor", "exacto"]
         item["route_default"] = entry.route or "balanced"
     return item

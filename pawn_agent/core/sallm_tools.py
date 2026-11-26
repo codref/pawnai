@@ -235,6 +235,19 @@ def build_pawn_clitools() -> dict[str, CliTool]:
                 "Do not use note_write for prep."
             ),
         ),
+        "event_upsert": CliTool(
+            name="event_upsert",
+            argv=_cli_argv("event_upsert.py"),
+            summary=(
+                "Create/upsert a Day-tab activity (Pawn/Events note). "
+                "Required: --title. Timed grid needs --start YYYY-MM-DDTHH:MM "
+                "and usually --end. Optional: --attendees (comma), --location, "
+                "--meeting-url, --source-url, --organizer, --source, "
+                "--event-id, --body / --body-file. "
+                "This is what shows on the Obsidian Day calendar — "
+                "day_plan_update only writes ## Plan text, not activities."
+            ),
+        ),
         "planner_day": CliTool(
             name="planner_day",
             argv=_cli_argv("planner_day.py"),

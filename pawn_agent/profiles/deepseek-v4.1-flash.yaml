@@ -1,10 +1,10 @@
 # DeepSeek V4.1 Flash on OpenRouter (deepseek/deepseek-v4.1-flash).
 #
-# 1,048,576-token context. Thinking is on by default and shares the output
-# cap with the visible reply, so a non-streaming agent turn looks stuck
-# until the whole trace finishes. think: low keeps a short trace (about a
-# fifth of the output cap) so the reply is better without a multi-minute wait.
-# The composer can raise it to medium or high, or turn it off.
+# 1,048,576-token context. Thinking is on by default. Profile token caps are
+# the visible-reply budget; sallm inflates the wire max_tokens so reasoning
+# does not consume that reply. think: low keeps a short trace (about a fifth
+# of the wire cap). The composer can raise it to medium or high, or turn it
+# off (GLM and other mandatory-reasoning models clamp off → low).
 #
 #   openrouter:
 #     base_url: https://openrouter.ai/api/v1

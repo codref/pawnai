@@ -34,6 +34,7 @@ pawn_agent/tools/
     queue_push.py
     planner_day.py
     day_plan_update.py
+    event_upsert.py
     event_prep_update.py
 ```
 
@@ -74,6 +75,7 @@ to `Pawn/Analyses/{session_id}.md` via `save_to_vault`. Free-form notes use
 | `queue_push` | `push_queue_message` | Publish to a named queue producer |
 | `knowledge_search` | `knowledge_search` | Semantic search across notes, transcripts, and coworker items |
 | `event_prep_update` | `event_prep_impl` | Replace `## Prep` on a planner event note |
+| `event_upsert` | `event_upsert_impl` | Create/upsert a Day-tab activity (`Pawn/Events/`) |
 | `planner_day` | `day_plan_impl` | Compact merged day timeline (events / sessions / items) |
 | `day_plan_update` | `day_plan_impl` | Replace `## Plan` on `Pawn/Daily/{date}.md` |
 | `phone_events` | `phone_impl` | Calls / SMS / notifications / location / status pushed by the phone (see `PHONE_BRIDGE.md`) |

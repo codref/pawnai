@@ -60,12 +60,52 @@ def test_openai_compatible_think_false_disables_reasoning() -> None:
     assert kwargs["extra_body"]["reasoning"] == {"effort": "none", "enabled": False}
 
 
+def test_glm_think_false_keeps_minimum_reasoning() -> None:
+    """OpenRouter GLM rejects effort=none; clamp disable and reserve reply budget."""
+    from sallm.llm import prepare_completion_kwargs, reasoning_mandatory
+
+    assert reasoning_mandatory("openai/z-ai/glm-5.3-flash")
+    kwargs = prepare_completion_kwargs(
+        "openai/z-ai/glm-5.3-flash",
+        {"max_tokens": 1024, "think": False},
+    )
+    assert kwargs["extra_body"]["reasoning"] == {"effort": "low"}
+    assert "enabled" not in kwargs["extra_body"]["reasoning"]
+    # low ≈ 20% of the wire cap; inflate so 1024 remains for the reply.
+    assert kwargs["max_tokens"] == 1280
+
+
 def test_ollama_think_flag_is_preserved() -> None:
     from sallm.llm import prepare_completion_kwargs
 
     kwargs = prepare_completion_kwargs("ollama/gemma4:26b", {"think": False})
     assert kwargs["think"] is False
     assert "extra_body" not in kwargs
+
+
+def test_glm_openrouter_think_override_clamps_none() -> None:
+    from pawn_agent.utils.model_catalog import (
+        ModelSelection,
+        openrouter_reasoning_efforts,
+        think_override,
+    )
+
+    selection = ModelSelection(
+        catalog_id="openrouter@z-ai/glm-5.3-flash",
+        litellm_model="openai/z-ai/glm-5.3-flash",
+        api_base="https://openrouter.ai/api/v1",
+        api_key="sk-test",
+        user_agent="pawn/1.0",
+        profile=None,
+        provider="openrouter",
+        reasoning="none",
+    )
+    assert think_override(selection) == "low"
+    assert openrouter_reasoning_efforts("z-ai/glm-5.3-flash") == [
+        "low",
+        "medium",
+        "high",
+    ]
 
 
 def test_bundled_large_profile_is_10x_defaults() -> None:

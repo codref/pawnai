@@ -75,7 +75,8 @@ Migrated CliTools: `sessions_list`, `session_transcript`, `session_analyze`,
 `speakers_show`, `speakers_update`, `speaker_enroll`, `session_reidentify`,
 `people_show`, `people_ensure`, `people_append`, `note_read`, `note_search`,
 `note_write`, `note_append`, `capture_update`, `event_prep_update`,
-`planner_day`, `day_plan_update`, `task_update`, `schedule_propose`,
+`event_upsert`, `planner_day`, `day_plan_update`, `task_update`,
+`schedule_propose`,
 `queue_push`, `goal_propose`.
 
 `session_analyze --save` / `note_write`: prefer `--save` for analysis Markdown

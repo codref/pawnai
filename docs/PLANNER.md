@@ -129,9 +129,16 @@ notes” list is shown as prep.
 Skill `day_plan` owns whole-day planning and morning check-ins in chat. It
 reads the merged timeline via CliTool `planner_day` (same data as
 `GET /v1/planner/day`), plus Goals / Today when useful, asks what is going on
-if you have not said, then writes a sparse `## Plan` on
-`Pawn/Daily/{date}.md` via `day_plan_update`. It does not edit `Goals.md` and
-does not replace one-event `meeting_prep`.
+if you have not said, then:
+
+- Upserts timed Day-tab activities with `event_upsert` (same notes as
+  **Add activity** / `POST /v1/planner/events` under `Pawn/Events/`).
+- Writes a sparse `## Plan` on `Pawn/Daily/{date}.md` via `day_plan_update`.
+
+`## Plan` is narrative priorities only — it does **not** appear on the Day
+grid. Calendar screenshots and “put these on the calendar” need
+`event_upsert` per meeting. It does not edit `Goals.md` and does not replace
+one-event `meeting_prep`.
 
 Optional weekday mornings: propose a durable cron on conversation key
 `coworker:daily` (approve via `pawn-server schedules`). Example and prompt
