@@ -1,5 +1,10 @@
 # Obsidian vault agent loop
 
+> **The Obsidian plugin is frozen** (bug fixes only). New UI work goes into the
+> Pawn Portal at `/portal`: see [PORTAL.md](PORTAL.md). Chats from the plugin can
+> be brought into the portal with `pawn-server portal import`. The vault, Sync
+> Engine and task-loop parts of this document still apply.
+
 Pawn treats notes as plain Markdown under an S3 prefix. Obsidian (desktop +
 mobile) syncs that prefix with **Sync Engine**. Pawn never imports Obsidian
 APIs — only the plugin does.

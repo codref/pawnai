@@ -42,7 +42,14 @@ coworker_app = typer.Typer(
 app.add_typer(schedules_app, name="schedules")
 app.add_typer(queue_app, name="queue")
 app.add_typer(blacklist_app, name="blacklist")
+portal_app = typer.Typer(
+    name="portal",
+    help="Pawn Portal maintenance: import existing sallm chats.",
+    add_completion=False,
+    rich_markup_mode="rich",
+)
 app.add_typer(coworker_app, name="coworker")
+app.add_typer(portal_app, name="portal")
 
 
 def _load_scheduler_service(config: Optional[str]):
@@ -687,6 +694,69 @@ def coworker_status(config: Optional[str] = typer.Option(None, "--config", "-c")
     cfg = load_config(config)
     console.print(
         f"enabled={cfg.coworker.enabled} paused={is_paused(cfg)} mode={effective_mode(cfg)}"
+    )
+
+
+@portal_app.command("import")
+def portal_import(
+    prefix: Optional[list[str]] = typer.Option(
+        None,
+        "--prefix",
+        "-p",
+        help="sallm conversation-key prefix to import (repeatable; default: chat: and matrix:).",
+    ),
+    all_sessions: bool = typer.Option(
+        False, "--all", help="Import every sallm session that has chat turns."
+    ),
+    folder: str = typer.Option(
+        "Imported", "--folder", help="Portal chat folder for imported chats ('' for none)."
+    ),
+    tag: Optional[list[str]] = typer.Option(None, "--tag", "-t", help="Tag to add (repeatable)."),
+    limit: Optional[int] = typer.Option(
+        None, "--limit", "-n", help="Only the N most recently active sessions."
+    ),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Show what would be imported."),
+    config: Optional[str] = typer.Option(None, "--config", "-c"),
+) -> None:
+    """Bring sallm conversations that predate the portal into its chat list.
+
+    Each imported chat keeps its sallm session id, so replying from the portal
+    continues the same memory. Only user/assistant turns are mirrored. Sessions
+    already in the portal are skipped, so this is safe to re-run.
+    """
+    from pawn_agent.utils.config import load_config  # noqa: PLC0415
+    from pawn_server.core.portal_import import (  # noqa: PLC0415
+        DEFAULT_PREFIXES,
+        import_sallm_chats,
+    )
+
+    cfg = load_config(config)
+    prefixes = ("*",) if all_sessions else tuple(prefix or DEFAULT_PREFIXES)
+    try:
+        report = import_sallm_chats(
+            cfg,
+            prefixes=prefixes,
+            folder=folder or None,
+            tags=tag or (),
+            limit=limit,
+            dry_run=dry_run,
+        )
+    except FileNotFoundError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1)
+
+    if report.imported:
+        table = Table(title="Would import" if dry_run else "Imported")
+        table.add_column("Conversation")
+        table.add_column("Title")
+        table.add_column("Msgs", justify="right")
+        for key, title, n in report.imported:
+            table.add_row(key, title, str(n))
+        console.print(table)
+    verb = "Would import" if dry_run else "Imported"
+    console.print(
+        f"{verb} {len(report.imported)} chat(s); skipped {len(report.skipped_existing)} "
+        f"already in the portal and {len(report.skipped_empty)} without chat turns."
     )
 
 

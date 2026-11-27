@@ -67,7 +67,7 @@ ollama pull qwen3-embedding:0.6b
 
 ## Configuration
 
-Settings live in `pawnai.yaml` (auto-discovered in the current directory, or `--config`). Precedence: **CLI flags → YAML → environment variables → defaults**. Env vars use `PAWN_` with `__` nesting (e.g. `PAWN_DB_DSN`, `PAWN_MODELS__HF_TOKEN`). Copy `pawnai.example.yaml` for a full commented template — do not commit a real `pawnai.yaml` (it may contain secrets).
+Settings live in `pawnai.yaml` (auto-discovered in the current directory, or `--config`). Precedence: **portal settings overrides (`{state_dir}/settings.override.yaml`) → environment variables → YAML → defaults**; with an explicit `--config` path the YAML beats environment variables. Env vars use `PAWN_` with `__` nesting (e.g. `PAWN_DB_DSN`, `PAWN_MODELS__HF_TOKEN`). Copy `pawnai.example.yaml` for a full commented template — do not commit a real `pawnai.yaml` (it may contain secrets).
 
 Minimal sketch of current shape:
 
@@ -284,7 +284,10 @@ VITE_PAWN_MOCK=1 make portal-dev   # run against the in-browser mock API
 
 The portal keeps its own message mirror (`portal_messages`) so messages have stable ids for clips, annotations and forks. sallm stays the agent's memory, and each portal chat maps to the sallm session `chat:{uuid}`. The backend is `pawn_server/core/portal_api.py` (`/v1/portal/chats`, `/folders`, `/tags`, `/search`, `/clips`, `/annotations`, `/files`, `/workspace`).
 
-Status: the backend API and the shell above are in place. Still to come are tiled, floating and pinned windows, the right-click "ask about this" side chats, annotations in the UI, the items panel, the settings panel, and importing existing sallm chats.
+- **Workspace.** Tabs can be split side by side or floated. Right-click any text for Ask about this (a grounded side chat), Fork from here, Save as clip, Annotate and more.
+- **Inbox and Settings.** Triage coworker Items, Ideas and Captures; edit common config knobs (written to `{state_dir}/settings.override.yaml`, never `pawnai.yaml`).
+
+Chats that predate the portal (Obsidian plugin, Matrix, API) live only in sallm. Bring them in once with `pawn-server portal import --dry-run`, then without `--dry-run`. Full guide: [docs/PORTAL.md](docs/PORTAL.md).
 
 ---
 
@@ -361,7 +364,8 @@ Mypy checks `pawn_diarize` and `pawn_agent` unless paths are added. Agent operat
 
 | Doc | Topic |
 |-----|--------|
-| [docs/OBSIDIAN_AGENT.md](docs/OBSIDIAN_AGENT.md) | Vault, plugin chat/jobs, task loop |
+| [docs/PORTAL.md](docs/PORTAL.md) | Pawn Portal web UI, settings, chat import |
+| [docs/OBSIDIAN_AGENT.md](docs/OBSIDIAN_AGENT.md) | Vault, plugin chat/jobs (frozen), task loop |
 | [docs/COWORKER.md](docs/COWORKER.md) | Items, Goals, Inbox, crons |
 | [docs/SPEAKERS.md](docs/SPEAKERS.md) | Speakers gallery |
 | [docs/PEOPLE.md](docs/PEOPLE.md) | People bios |
