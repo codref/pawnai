@@ -72,6 +72,7 @@ class FakeS3Client:
                     "Key": key,
                     "Size": len(obj["body"]),
                     "ETag": obj["etag"],
+                    "LastModified": obj.get("last_modified"),
                 }
             )
         return {"Contents": contents, "IsTruncated": False}

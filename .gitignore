@@ -258,3 +258,7 @@ obsidian-plugin/**/main.js.map
 
 
 .tmp
+
+# Pawn Portal (Vite build + deps)
+portal/dist/
+portal/node_modules/

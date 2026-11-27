@@ -1,0 +1,198 @@
+:root {
+  --pawn-border: rgba(0, 0, 0, 0.12);
+  --pawn-muted: rgba(0, 0, 0, 0.6);
+  --pawn-bubble-user: #e8f0fe;
+  --pawn-bubble-assistant: transparent;
+  --pawn-code-bg: rgba(0, 0, 0, 0.05);
+  --pawn-unseen: #1976d2;
+  --pawn-drop: rgba(25, 118, 210, 0.15);
+  --pawn-hover: rgba(0, 0, 0, 0.045);
+  --pawn-active: rgba(25, 118, 210, 0.1);
+  --pawn-guide: rgba(0, 0, 0, 0.12);
+  --pawn-tabbar: #f5f6f8;
+  --pawn-bg: #ffffff;
+  --pawn-chip: rgba(0, 0, 0, 0.06);
+  /* Annotation highlights (::highlight(pawn-ann-*)) and their markers. */
+  --pawn-ann-yellow: rgba(255, 213, 0, 0.38);
+  --pawn-ann-green: rgba(76, 175, 80, 0.3);
+  --pawn-ann-blue: rgba(33, 150, 243, 0.26);
+  --pawn-ann-pink: rgba(233, 30, 99, 0.24);
+  --pawn-ann-purple: rgba(156, 39, 176, 0.24);
+  --pawn-ann-active: #1976d2;
+}
+body.body--dark {
+  --pawn-border: rgba(255, 255, 255, 0.14);
+  --pawn-muted: rgba(255, 255, 255, 0.65);
+  --pawn-bubble-user: #1e2a3d;
+  --pawn-code-bg: rgba(255, 255, 255, 0.07);
+  --pawn-unseen: #64b5f6;
+  --pawn-drop: rgba(100, 181, 246, 0.2);
+  --pawn-hover: rgba(255, 255, 255, 0.06);
+  --pawn-active: rgba(100, 181, 246, 0.16);
+  --pawn-guide: rgba(255, 255, 255, 0.14);
+  --pawn-tabbar: #1b1d21;
+  --pawn-bg: #121212;
+  --pawn-chip: rgba(255, 255, 255, 0.09);
+  --pawn-ann-yellow: rgba(255, 213, 0, 0.3);
+  --pawn-ann-green: rgba(102, 187, 106, 0.3);
+  --pawn-ann-blue: rgba(100, 181, 246, 0.3);
+  --pawn-ann-pink: rgba(240, 98, 146, 0.3);
+  --pawn-ann-purple: rgba(186, 104, 200, 0.32);
+  --pawn-ann-active: #64b5f6;
+}
+html,
+body,
+#app {
+  height: 100%;
+}
+.text-muted {
+  color: var(--pawn-muted);
+}
+.border-b {
+  border-bottom: 1px solid var(--pawn-border);
+}
+.border-t {
+  border-top: 1px solid var(--pawn-border);
+}
+.unseen-dot {
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--pawn-unseen);
+  flex: none;
+}
+.drop-target {
+  background: var(--pawn-drop);
+  border-radius: 4px;
+}
+/* Sidebar resize: no transitions or text selection while dragging. */
+body.pawn-resizing {
+  cursor: col-resize;
+  user-select: none;
+}
+body.pawn-resizing .q-drawer,
+body.pawn-resizing .q-drawer-container,
+body.pawn-resizing .q-page-container,
+body.pawn-resizing .q-header {
+  transition: none !important;
+}
+.age {
+  flex: none;
+  white-space: nowrap;
+  font-size: 0.72rem;
+  color: var(--pawn-muted);
+  font-variant-numeric: tabular-nums;
+  margin-left: 6px;
+}
+.tag-chip {
+  display: inline-block;
+  font-size: 0.7rem;
+  line-height: 1.5;
+  padding: 0 6px;
+  border-radius: 8px;
+  background: var(--pawn-chip);
+  color: var(--pawn-muted);
+  margin-right: 3px;
+  white-space: nowrap;
+}
+.ellipsis-1 {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
+
+/* Rendered Markdown */
+.markdown {
+  line-height: 1.55;
+  overflow-wrap: anywhere;
+}
+.markdown > :first-child {
+  margin-top: 0;
+}
+.markdown > :last-child {
+  margin-bottom: 0;
+}
+.markdown h1 { font-size: 1.6rem; line-height: 1.25; margin: 1rem 0 0.6rem; font-weight: 600; }
+.markdown h2 { font-size: 1.3rem; line-height: 1.3; margin: 1rem 0 0.5rem; font-weight: 600; }
+.markdown h3 { font-size: 1.1rem; line-height: 1.35; margin: 0.9rem 0 0.4rem; font-weight: 600; }
+.markdown h4, .markdown h5, .markdown h6 { font-size: 1rem; margin: 0.8rem 0 0.4rem; font-weight: 600; }
+.markdown p, .markdown ul, .markdown ol, .markdown pre, .markdown table, .markdown blockquote {
+  margin: 0 0 0.75rem;
+}
+.markdown ul, .markdown ol { padding-left: 1.4rem; }
+.markdown code {
+  background: var(--pawn-code-bg);
+  padding: 0.1em 0.3em;
+  border-radius: 3px;
+  font-size: 0.9em;
+}
+.markdown pre {
+  background: var(--pawn-code-bg);
+  padding: 0.75rem;
+  border-radius: 6px;
+  overflow-x: auto;
+}
+.markdown pre code { background: none; padding: 0; }
+.markdown table { border-collapse: collapse; display: block; overflow-x: auto; }
+.markdown th, .markdown td { border: 1px solid var(--pawn-border); padding: 4px 8px; }
+.markdown blockquote {
+  border-left: 3px solid var(--pawn-border);
+  padding-left: 0.75rem;
+  color: var(--pawn-muted);
+}
+.markdown img { max-width: 100%; }
+.markdown a.wikilink {
+  text-decoration: none;
+  border-bottom: 1px dashed currentColor;
+}
+.markdown a.wikilink.wikilink-missing {
+  opacity: 0.6;
+  border-bottom-style: dotted;
+}
+/* Split gutters and floating windows. */
+body.pawn-resizing-row {
+  cursor: col-resize;
+  user-select: none;
+}
+body.pawn-resizing-column {
+  cursor: row-resize;
+  user-select: none;
+}
+body.pawn-moving {
+  user-select: none;
+}
+body.pawn-moving iframe,
+body.pawn-resizing-row iframe,
+body.pawn-resizing-column iframe {
+  pointer-events: none;
+}
+
+/* Annotations: highlights painted by lib/highlights.ts (CSS Custom Highlight API). */
+::highlight(pawn-ann-yellow) { background-color: var(--pawn-ann-yellow); }
+::highlight(pawn-ann-green) { background-color: var(--pawn-ann-green); }
+::highlight(pawn-ann-blue) { background-color: var(--pawn-ann-blue); }
+::highlight(pawn-ann-pink) { background-color: var(--pawn-ann-pink); }
+::highlight(pawn-ann-purple) { background-color: var(--pawn-ann-purple); }
+::highlight(pawn-ann-active) {
+  text-decoration: underline 2px var(--pawn-ann-active);
+  text-underline-offset: 3px;
+}
+.ann-c-yellow { background: var(--pawn-ann-yellow); }
+.ann-b-yellow { border-left-color: var(--pawn-ann-yellow) !important; }
+.ann-c-green { background: var(--pawn-ann-green); }
+.ann-b-green { border-left-color: var(--pawn-ann-green) !important; }
+.ann-c-blue { background: var(--pawn-ann-blue); }
+.ann-b-blue { border-left-color: var(--pawn-ann-blue) !important; }
+.ann-c-pink { background: var(--pawn-ann-pink); }
+.ann-b-pink { border-left-color: var(--pawn-ann-pink) !important; }
+.ann-c-purple { background: var(--pawn-ann-purple); }
+.ann-b-purple { border-left-color: var(--pawn-ann-purple) !important; }
+.ann-swatch {
+  display: inline-block;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  flex: none;
+}

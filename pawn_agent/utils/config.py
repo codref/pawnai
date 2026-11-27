@@ -256,6 +256,8 @@ class ApiSection(BaseModel):
     # Generate a self-signed pair with ``make ssl-cert`` (see Makefile).
     ssl_certfile: Optional[str] = None
     ssl_keyfile: Optional[str] = None
+    # Built portal SPA (``make portal``); mounted at /portal when it exists.
+    portal_dir: str = "portal/dist"
 
 
 class MlflowSection(BaseModel):
@@ -421,6 +423,26 @@ class CaptureConfig(BaseModel):
     instructions: str = ""
 
 
+class PortalConfig(BaseModel):
+    """``portal:`` — the chat-first web portal served at ``/portal``. See docs/PORTAL.md."""
+
+    # Writable scratchpad root for portal-native notes and saved clips.
+    scratch_dir: str = "{agent_root}/Scratch"
+    recent_limit: int = 50
+    default_chat_sort: str = "updated"
+    # Full-text file index (portal search): seconds between vault reconcile
+    # passes (0 disables the loop; portal writes still index immediately).
+    index_interval_seconds: int = 300
+    # Caption images with the background model when it is vision-enabled.
+    index_images: bool = True
+    # Skip extraction for files larger than this (bytes).
+    index_max_bytes: int = 25_000_000
+    # Let the background model name and tag chats (until the user edits them).
+    auto_name: bool = True
+    # Re-run auto-naming after this many new messages (0: first answer only).
+    auto_name_every: int = 6
+
+
 class PlannerConfig(BaseModel):
     """``planner:`` — day view event atoms (Outlook clip / manual)."""
 
@@ -520,6 +542,7 @@ class AgentConfig(PawnConfig):
     tasknotes: TaskNotesConfig = Field(default_factory=TaskNotesConfig)
     capture: CaptureConfig = Field(default_factory=CaptureConfig)
     planner: PlannerConfig = Field(default_factory=PlannerConfig)
+    portal: PortalConfig = Field(default_factory=PortalConfig)
     devices: DevicesConfig = Field(default_factory=DevicesConfig)
 
     # ── Flat property aliases (old flat-field names used throughout pawn_agent) ─
@@ -679,27 +702,136 @@ class AgentConfig(PawnConfig):
 # ── Public factory (keeps load_config() signature unchanged) ──────────────────
 
 
+OVERRIDE_FILE = "settings.override.yaml"
+_loaded_config_file: Optional[str] = None
+_loaded_explicit = False
+
+
+def state_dir_of(cfg: Any) -> Path:
+    """Absolute ``agent.sallm.state_dir`` (same rule as ``sallm_factory``)."""
+    raw = Path(cfg.agent.sallm.state_dir).expanduser()
+    return raw if raw.is_absolute() else (Path.cwd() / raw).resolve()
+
+
+def override_path(cfg: Any) -> Path:
+    """``{state_dir}/settings.override.yaml`` — portal settings overrides."""
+    return state_dir_of(cfg) / OVERRIDE_FILE
+
+
+def read_overrides(cfg: Any) -> dict[str, Any]:
+    """The override mapping, or ``{}`` when the file is missing or unreadable."""
+    path = override_path(cfg)
+    if not path.is_file():
+        return {}
+    try:
+        data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    except (OSError, yaml.YAMLError) as exc:
+        logging.getLogger(__name__).warning("Ignoring unreadable %s: %s", path, exc)
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def write_overrides(cfg: Any, data: dict[str, Any]) -> Path:
+    """Write the override file atomically (temp file + rename). Empty removes it."""
+    path = override_path(cfg)
+    if not data:
+        path.unlink(missing_ok=True)
+        return path
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    tmp.write_text(
+        "# Written by the Pawn portal settings panel. pawnai.yaml is never edited;\n"
+        "# delete a key (or reset it in the portal) to fall back to the yaml value.\n"
+        + yaml.safe_dump(data, sort_keys=True, allow_unicode=True),
+        encoding="utf-8",
+    )
+    os.replace(tmp, path)
+    return path
+
+
+def deep_merge(base: dict[str, Any], over: dict[str, Any]) -> dict[str, Any]:
+    """Recursive dict merge; *over* wins, nested mappings merge key by key."""
+    out = dict(base)
+    for key, value in over.items():
+        if isinstance(value, dict) and isinstance(out.get(key), dict):
+            out[key] = deep_merge(out[key], value)
+        else:
+            out[key] = value
+    return out
+
+
+def discovered_config_file() -> Optional[str]:
+    """The yaml file ``AgentConfig()`` auto-discovers in the cwd, if any."""
+    for name in AgentConfig.model_config.get("yaml_file") or []:
+        if Path(name).is_file():
+            return str(Path(name).resolve())
+    return None
+
+
+def loaded_config_file() -> Optional[str]:
+    """The yaml file the last :func:`load_config` call used (None: defaults/env)."""
+    return _loaded_config_file
+
+
+def loaded_config_explicit() -> bool:
+    """True when the last load used an explicit path (yaml then beats env)."""
+    return _loaded_explicit
+
+
+def raw_yaml() -> dict[str, Any]:
+    """The loaded yaml file as a plain mapping (``{}`` when none)."""
+    if not _loaded_config_file:
+        return {}
+    try:
+        data = yaml.safe_load(Path(_loaded_config_file).read_text(encoding="utf-8")) or {}
+    except (OSError, yaml.YAMLError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def build_config(overrides: Optional[dict[str, Any]] = None) -> AgentConfig:
+    """Rebuild a config the way the last :func:`load_config` did, with *overrides*.
+
+    Used by the settings API to validate a candidate and to find the value a
+    field falls back to once its override is removed. No side effects.
+    """
+    over = overrides or {}
+    if _loaded_explicit and _loaded_config_file:
+        yaml_path = _loaded_config_file
+
+        class ExplicitAgentConfig(AgentConfig):
+            model_config = {**AgentConfig.model_config, "yaml_file": [yaml_path]}
+
+        return ExplicitAgentConfig(**deep_merge(raw_yaml(), over))
+    return AgentConfig(**over)
+
+
 def load_config(config_path: Optional[str] = None) -> AgentConfig:
     """Load :class:`AgentConfig` from YAML + environment variables.
 
-    Priority (highest → lowest):
+    File priority (highest → lowest):
     1. ``config_path`` argument
     2. ``PAWN_AGENT_CONFIG`` environment variable
     3. ``pawnai.yaml`` / ``pawnai.yml`` / ``.pawn-diarize.yml`` in cwd
     4. Dataclass defaults / environment variables
+
+    Portal overrides in ``{state_dir}/settings.override.yaml`` are merged on
+    top, so value precedence is: overrides > env > yaml > defaults (with an
+    explicit path the yaml is passed as init kwargs and also beats env).
     """
+    global _loaded_config_file, _loaded_explicit
     yaml_file = config_path or os.environ.get("PAWN_AGENT_CONFIG")
-    cfg: AgentConfig
     if yaml_file and Path(yaml_file).exists():
-        yaml_path = Path(yaml_file).resolve()
-        raw = yaml.safe_load(yaml_path.read_text(encoding="utf-8")) or {}
-
-        class ExplicitAgentConfig(AgentConfig):
-            model_config = {**AgentConfig.model_config, "yaml_file": [str(yaml_path)]}
-
-        cfg = ExplicitAgentConfig(**raw)
+        _loaded_config_file = str(Path(yaml_file).resolve())
+        _loaded_explicit = True
     else:
-        cfg = AgentConfig()
+        _loaded_config_file = discovered_config_file()
+        _loaded_explicit = False
+    cfg = build_config()
+    overrides = read_overrides(cfg)
+    if overrides:
+        # Init kwargs beat env and yaml; pydantic-settings deep-merges them.
+        cfg = build_config(overrides)
     from pawn_agent.utils.model_catalog import catalog_entries  # noqa: PLC0415
 
     catalog_entries(cfg)

@@ -24,7 +24,8 @@ CERT_SAN        ?= DNS:localhost,IP:127.0.0.1
 .PHONY: build push run mlflow clean ssl-cert \
 	obsidian-plugin obsidian-plugin-dist obsidian-plugin-adb obsidian-plugin-list-vaults \
 	browser-extension browser-extension-dist \
-	thunderbird-extension thunderbird-extension-dist
+	thunderbird-extension thunderbird-extension-dist \
+	portal portal-dev portal-test
 
 build:
 	docker build -f $(DOCKERFILE) -t $(IMAGE):$(TAG) .
@@ -68,6 +69,20 @@ thunderbird-extension:
 # Temporary: Add-ons → Debug Add-ons → Load Temporary Add-on → manifest.json
 thunderbird-extension-dist:
 	$(MAKE) -C thunderbird-extension/pawn dist
+
+# Pawn Portal web UI (portal/): vue-tsc typecheck + Vite build into portal/dist,
+# served by pawn-server at /portal.
+portal:
+	$(MAKE) -C portal build
+
+# Portal unit tests (vitest): anchoring / re-anchoring of annotations.
+portal-test:
+	$(MAKE) -C portal test
+
+# Vite dev server (http://localhost:5173/portal/) proxying /v1 to :8000.
+# VITE_PAWN_MOCK=1 make portal-dev runs against the in-browser mock API.
+portal-dev:
+	$(MAKE) -C portal dev
 
 push:
 	docker push $(IMAGE):$(TAG)

@@ -53,7 +53,9 @@ dependencies = [
     "croniter>=2.0.0",
     "python-multipart",
     # Local editable by default; switch to git+https://github.com/codref/sallm-agent.git when needed.
-    "sallm-agent"
+    "sallm-agent",
+    "pypdf>=5.0",
+    "python-docx>=1.1",
 ]
 
 [project.optional-dependencies]

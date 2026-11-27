@@ -844,6 +844,20 @@ from pawn_server.core.devices_api import build_router as _build_devices_router  
 
 app.include_router(_build_devices_router(_get_cfg, _require_token))
 
+# Chat-first web portal API (/v1/portal/*) — see docs/PORTAL.md.
+from pawn_server.core.portal_api import build_router as _build_portal_router  # noqa: E402
+
+app.include_router(_build_portal_router(_get_cfg, _require_token))
+
+# Portal Inbox (ideas, research captures, counts) and settings.
+from pawn_server.core.inbox_api import build_router as _build_inbox_router  # noqa: E402
+
+app.include_router(_build_inbox_router(_get_cfg, _require_token))
+
+from pawn_server.core.settings_api import build_router as _build_settings_router  # noqa: E402
+
+app.include_router(_build_settings_router(_get_cfg, _require_token))
+
 
 @app.get("/health", include_in_schema=True)
 async def health() -> dict:
@@ -2094,6 +2108,23 @@ async def vault_task_approve(
 # ── Native streaming chat for the Pawn plugin ─────────────────────────────────
 
 
+class PawnChatHooks:
+    """Callbacks that let a caller persist a chat turn (portal mirror).
+
+    Each hook returns extra ``(event, data)`` pairs to emit on the stream.
+    The default implementation does nothing, so ``/v1/pawn/chat`` is
+    unchanged.
+    """
+
+    async def on_user(self, message: str) -> list[tuple[str, dict]]:
+        return []
+
+    async def on_answer(
+        self, content: str, *, run_id: Optional[str], written_files: list[str]
+    ) -> list[tuple[str, dict]]:
+        return []
+
+
 @app.post("/v1/pawn/chat", dependencies=[Depends(_require_token)])
 async def pawn_chat(body: PawnChatRequest, cfg: Any = Depends(_get_cfg)) -> StreamingResponse:
     """SSE chat with typed events: ``progress``, ``answer``, ``job``, ``error``, ``done``.
@@ -2101,6 +2132,22 @@ async def pawn_chat(body: PawnChatRequest, cfg: Any = Depends(_get_cfg)) -> Stre
     Context (active note, selection, extra notes) is structured; the server
     builds the agent prompt. ``background: true`` turns the message into an
     ``ask`` job instead of a live turn.
+    """
+    return StreamingResponse(pawn_chat_stream(body, cfg), media_type="text/event-stream")
+
+
+def pawn_chat_stream(
+    body: PawnChatRequest,
+    cfg: Any,
+    hooks: Optional[PawnChatHooks] = None,
+    *,
+    source: str = "obsidian",
+) -> AsyncIterator[str]:
+    """Validate *body* and return the SSE generator for one chat turn.
+
+    Shared by ``/v1/pawn/chat`` and the portal (``/v1/portal/chats/{id}/messages``).
+    With *hooks*, the user turn and the answer are reported to the caller and
+    vault keys written by the run are emitted as a ``files`` event.
     """
     from pawn_core.vault_config import vault_store_from_config  # noqa: PLC0415
     from pawn_server.core.chat_context import (  # noqa: PLC0415
@@ -2120,10 +2167,29 @@ async def pawn_chat(body: PawnChatRequest, cfg: Any = Depends(_get_cfg)) -> Stre
     _schedule_idle_reset(loop, cfg.api_model_idle_timeout_minutes * 60)
     keepalive = float(getattr(cfg.api, "stream_keepalive_seconds", 10.0))
 
+    async def _extra(pairs: list[tuple[str, dict]]) -> AsyncIterator[str]:
+        for event, data in pairs:
+            yield _sse_event(event, data)
+
+    async def _answer(
+        content: str, run_id: Optional[str] = None, written: Optional[list[str]] = None
+    ) -> AsyncIterator[str]:
+        yield _sse_event("answer", {"content": content})
+        if hooks is not None:
+            if written:
+                yield _sse_event("files", {"paths": written, "run_id": run_id})
+            pairs = await hooks.on_answer(content, run_id=run_id, written_files=written or [])
+            async for chunk in _extra(pairs):
+                yield chunk
+
     async def _gen() -> AsyncIterator[str]:
+        if hooks is not None:
+            async for chunk in _extra(await hooks.on_user(message)):
+                yield chunk
         if message == _RESET_SENTINEL:
             await _sallm_registry.reset(conversation, cfg.db_dsn)
-            yield _sse_event("answer", {"content": "Session reset."})
+            async for chunk in _answer("Session reset."):
+                yield chunk
             yield _sse_event("done", {"conversation": conversation})
             return
 
@@ -2131,7 +2197,8 @@ async def pawn_chat(body: PawnChatRequest, cfg: Any = Depends(_get_cfg)) -> Stre
 
         resolved = await resolve_chat_message(cfg, message, registry=_sallm_registry)
         if resolved.mode == "reply":
-            yield _sse_event("answer", {"content": resolved.text})
+            async for chunk in _answer(resolved.text):
+                yield chunk
             yield _sse_event("done", {"conversation": conversation})
             return
         agent_message = resolved.text if resolved.rewritten else message
@@ -2224,7 +2291,7 @@ async def pawn_chat(body: PawnChatRequest, cfg: Any = Depends(_get_cfg)) -> Stre
                 registry=_sallm_registry,
                 prompt=prompt,
                 session_id=conversation,
-                source="obsidian",
+                source=source,
                 command="run",
                 model=(body.model or "").strip() or None,
                 reasoning=(body.reasoning or "").strip() or None,
@@ -2234,6 +2301,9 @@ async def pawn_chat(body: PawnChatRequest, cfg: Any = Depends(_get_cfg)) -> Stre
                 force_caption=bool(body.force_caption),
             )
 
+        from pawn_server.core.vault_events import vault_events  # noqa: PLC0415
+
+        seq_before = vault_events.seq
         run_id: Optional[str] = None
         async for event, data in stream_turn(_run, keepalive_seconds=keepalive):
             if event == "keepalive":
@@ -2245,10 +2315,16 @@ async def pawn_chat(body: PawnChatRequest, cfg: Any = Depends(_get_cfg)) -> Stre
                 yield _sse_event("error", {"message": data})
             elif event == "result":
                 run_id = data.run_id
-                yield _sse_event("answer", {"content": strip_tool_trail(data.response or "")})
+                written: list[str] = []
+                if hooks is not None and run_id:
+                    for ev in vault_events.snapshot(seq_before)["events"]:
+                        if ev.get("run_id") == run_id:
+                            written.extend(p for p in ev["paths"] if p not in written)
+                async for chunk in _answer(strip_tool_trail(data.response or ""), run_id, written):
+                    yield chunk
         yield _sse_event("done", {"conversation": conversation, "run_id": run_id})
 
-    return StreamingResponse(_gen(), media_type="text/event-stream")
+    return _gen()
 
 
 @app.post("/v1/pawn/voice", dependencies=[Depends(_require_token)])
@@ -2389,4 +2465,18 @@ def create_app(cfg: Any) -> FastAPI:
         app.add_middleware(IpGuardMiddleware, get_cfg=lambda: _cfg)
         _ip_guard_installed = True
 
+    _mount_portal(cfg)
     return app
+
+
+def _mount_portal(cfg: Any) -> None:
+    """Serve the built portal SPA at ``/portal`` (no-op until ``make portal``)."""
+    from fastapi.staticfiles import StaticFiles  # noqa: PLC0415
+
+    if any(getattr(route, "path", None) == "/portal" for route in app.routes):
+        return
+    raw = getattr(getattr(cfg, "api", None), "portal_dir", "") or ""
+    path = Path(raw)
+    if not raw or not (path / "index.html").is_file():
+        return
+    app.mount("/portal", StaticFiles(directory=str(path), html=True), name="portal")

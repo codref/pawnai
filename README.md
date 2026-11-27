@@ -1,6 +1,6 @@
 # PawnAI
 
-A Python monolith for speaker diarization, audio transcription, and an LLM coworker that lives in your Obsidian vault. Three console scripts from `pyproject.toml`:
+A Python monolith for speaker diarization, audio transcription, and an LLM coworker whose output lives in an S3 Markdown vault and is browsed through the Pawn Portal web UI. Three console scripts from `pyproject.toml`:
 
 - **pawn-diarize** — transcription, diarization, speaker gallery, S3/queue workers
 - **pawn-agent** — sallm ReAct agent (skills + CliTools) for chat and domain tools
@@ -8,7 +8,8 @@ A Python monolith for speaker diarization, audio transcription, and an LLM cowor
 
 Companion UIs (separate packages in this repo):
 
-- **Obsidian plugin** — chat pane, Inbox, Sessions, background jobs (`obsidian-plugin/pawn/`)
+- **Pawn Portal** — chat-first web UI served by pawn-server at `/portal` (`portal/`)
+- **Obsidian plugin** — *frozen*, to be removed; chat pane, Inbox, Sessions, background jobs (`obsidian-plugin/pawn/`)
 - **Browser capture** — MV3 side panel for text/image snippets (`browser-extension/pawn/`)
 - **Thunderbird capture** — MailExtension companion tray (`thunderbird-extension/pawn/`)
 
@@ -21,7 +22,8 @@ Companion UIs (separate packages in this repo):
 - **People bios** — vault notes under `People/` linked from transcript Speakers tables
 - **Conversation analysis** — titles, summaries, topics, sentiment; optional vault save under `Pawn/Analyses/`
 - **Knowledge / RAG index** — transcript and vault-note embeddings for related search
-- **Obsidian vault** — S3 Markdown vault (Sync Engine); transcripts, tasks, captures, coworker notes
+- **Vault store** — S3 Markdown bucket holding everything Pawn writes (transcripts, analyses, tasks, captures, coworker notes)
+- **Pawn Portal** — saved chats in folders and hierarchical tags, search, forks and side chats, a file browser and scratchpad over the vault
 - **Coworker loop** — after sessions, extract/score items against `Goals.md`, Inbox triage, morning/weekly crons
 - **Background queues** — S3-backed pawn-queue with lease-based concurrency
 - **Durable agent scheduler** — PostgreSQL schedules (`once` / `interval` / `cron`)
@@ -229,6 +231,7 @@ Chat completions always go through the embedded sallm agent. Surfaces:
 
 | Surface | Docs |
 |---------|------|
+| Pawn Portal (`/portal`, `/v1/portal/*`) | [Pawn Portal](#pawn-portal) below |
 | OpenAI-compatible `/v1/chat/completions` | [docs/OPENAI_API.md](docs/OPENAI_API.md) |
 | Obsidian plugin chat + jobs (`/v1/pawn/chat`, `/v1/jobs`) | [docs/OBSIDIAN_AGENT.md](docs/OBSIDIAN_AGENT.md) |
 | Browser / Thunderbird captures | [docs/BROWSER_CAPTURE.md](docs/BROWSER_CAPTURE.md), [docs/THUNDERBIRD_CAPTURE.md](docs/THUNDERBIRD_CAPTURE.md) |
@@ -263,7 +266,31 @@ When exposing the API, set `api.token`, turn `api.enable_docs` off, and prefer a
 
 ---
 
+## Pawn Portal
+
+A chat-first web UI (Vue 3 + Quasar + TypeScript) that replaces Obsidian as the way to use Pawn. pawn-server serves the built app at `/portal` from `api.portal_dir` (default `portal/dist`), and it signs in with the same `api.token` bearer token as the rest of the API.
+
+```bash
+alembic upgrade head          # 0026 adds the portal_* tables
+make portal                   # vue-tsc + Vite build into portal/dist
+pawn-server serve             # then open http://localhost:8000/portal
+make portal-dev               # Vite dev server on :5173/portal/, proxies /v1 to :8000
+VITE_PAWN_MOCK=1 make portal-dev   # run against the in-browser mock API
+```
+
+- **Left sidebar: chats.** Create, rename, tag (`/`-separated hierarchy such as `work/acme/q4`), pin, archive and search. Organize chats in nested folders, and sort by updated, created, name or tag.
+- **Right sidebar: files.** A browser over the whole vault bucket with a writable scratchpad (`portal.scratch_dir`, default `Pawn/Scratch`). It supports upload, new note, move and delete, within the vault write guards.
+- **Center: chat and file panels.** Answers show chips for the vault files written during that turn.
+
+The portal keeps its own message mirror (`portal_messages`) so messages have stable ids for clips, annotations and forks. sallm stays the agent's memory, and each portal chat maps to the sallm session `chat:{uuid}`. The backend is `pawn_server/core/portal_api.py` (`/v1/portal/chats`, `/folders`, `/tags`, `/search`, `/clips`, `/annotations`, `/files`, `/workspace`).
+
+Status: the backend API and the shell above are in place. Still to come are tiled, floating and pinned windows, the right-click "ask about this" side chats, annotations in the UI, the items panel, the settings panel, and importing existing sallm chats.
+
+---
+
 ## Obsidian plugin & capture extensions
+
+The Obsidian plugin is frozen (no new features) and will be removed once the portal covers its workflows.
 
 ```bash
 make obsidian-plugin          # build
@@ -284,7 +311,8 @@ parakeet/
 ├── pawn_diarize/           # CLI + audio business logic
 ├── pawn_agent/             # CLI, sallm harness, scheduler, CliTools, coworker/people
 ├── pawn_server/            # FastAPI, queue listener, Matrix, vault watcher, jobs/captures
-├── obsidian-plugin/pawn/   # Obsidian desktop/mobile plugin
+├── portal/                 # Pawn Portal web UI (Vue 3 + Quasar), served at /portal
+├── obsidian-plugin/pawn/   # Obsidian plugin (frozen)
 ├── browser-extension/pawn/ # MV3 capture side panel
 ├── thunderbird-extension/pawn/
 ├── migrations/             # Alembic
@@ -309,7 +337,8 @@ Transcription engine lives in `pawn_core/transcription.py`; `pawn_diarize/core/t
 | HTTP | FastAPI + uvicorn |
 | S3 / queue | boto3 / aioboto3, pawn-queue |
 | Scheduler | PostgreSQL + croniter |
-| Notes | Obsidian Sync Engine + plugin |
+| Notes | S3 Markdown vault (`VaultStore`) |
+| Web UI | Vue 3, Quasar 2, Pinia, Vite, markdown-it + DOMPurify, CodeMirror 6 |
 | CLI | Typer + Rich |
 
 ## Development

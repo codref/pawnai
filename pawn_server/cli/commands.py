@@ -945,6 +945,20 @@ def serve(
         )
         server = _Server(uv_config)
 
+        # Portal full-text file index: background reconcile next to the API.
+        from pawn_server.core.file_index import run_index_loop  # noqa: PLC0415
+
+        index_task = asyncio.create_task(run_index_loop(cfg))
+        try:
+            await _run_workers(server, shared_registry)
+        finally:
+            index_task.cancel()
+            try:
+                await index_task
+            except (asyncio.CancelledError, Exception):
+                pass
+
+    async def _run_workers(server: Any, shared_registry: Any) -> None:
         if (
             not with_queue
             and not with_scheduler

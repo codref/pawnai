@@ -404,12 +404,19 @@ class VaultStore:
 
     def list(self, prefix: str = "", *, suffix: str = ".md") -> list[str]:
         """List relative vault keys under *prefix* (optional *suffix* filter)."""
+        return [stat.key for stat in self.list_meta(prefix, suffix=suffix)]
+
+    def list_meta(self, prefix: str = "", *, suffix: str = "") -> list[VaultStat]:
+        """Like :meth:`list` but with etag, size and last-modified per key.
+
+        Unlike :meth:`list`, *suffix* defaults to no filter.
+        """
         rel_prefix = normalize_vault_key(prefix)
         full_prefix = self._full_key(rel_prefix)
         if rel_prefix and not full_prefix.endswith("/"):
             # Allow listing a folder by path without trailing slash.
             full_prefix = full_prefix + "/"
-        keys: list[str] = []
+        stats: list[VaultStat] = []
         token: Optional[str] = None
         vault_prefix = self.prefix.rstrip("/")
         while True:
@@ -435,11 +442,43 @@ class VaultStore:
                     rel = full
                 if suffix and not rel.endswith(suffix):
                     continue
-                keys.append(rel)
+                stats.append(
+                    VaultStat(
+                        key=rel,
+                        etag=_strip_etag(item.get("ETag")),
+                        size=int(item.get("Size") or 0),
+                        last_modified=item.get("LastModified"),
+                    )
+                )
             if not resp.get("IsTruncated"):
                 break
             token = resp.get("NextContinuationToken")
-        return sorted(keys)
+        return sorted(stats, key=lambda st: st.key)
+
+    def move(self, src: str, dst: str, *, overwrite: bool = False) -> VaultStat:
+        """Move *src* to *dst* (copy then delete). Both keys must be writable.
+
+        Deletes are only allowed under the agent root, so *src* must live
+        there; *dst* follows the normal write guards (Markdown) or the
+        binary-under-agent-root rule (everything else).
+        """
+        s = normalize_vault_key(src)
+        d = normalize_vault_key(dst)
+        if not s or not d:
+            raise VaultWriteDenied("empty vault key")
+        if s == d:
+            raise VaultError("source and destination are the same")
+        if not is_under_agent_root(s, self.agent_root) or is_obsidian_meta(s):
+            raise VaultWriteDenied(f"move denied outside {self.agent_root}/: {s!r}")
+        if not overwrite and self.exists(d):
+            raise VaultConflict(f"{d!r} already exists")
+        data = self.read_bytes(s)
+        if d.endswith(".md"):
+            stat = self.write(d, data.decode("utf-8"))
+        else:
+            stat = self.write_bytes(d, data)
+        self.delete(s)
+        return stat
 
     def delete(self, key: str) -> None:
         """Delete a key (agent_root only)."""
