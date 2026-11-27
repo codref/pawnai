@@ -88,6 +88,7 @@ def _rewrite_note(store: Any, item: dict[str, Any], *, status: str, action: str 
         interrupt=bool(item.get("interrupt")),
         action=action,
         opened_at=existing["opened_at"],
+        start_sec=(item.get("payload") or {}).get("start_sec"),
     )
     store.write(key, body)
 

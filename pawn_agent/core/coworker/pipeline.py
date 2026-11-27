@@ -8,7 +8,11 @@ from typing import Any, Optional
 from zoneinfo import ZoneInfo
 
 from pawn_agent.core.coworker import db as itemdb
-from pawn_agent.core.coworker.extract import extract_items
+from pawn_agent.core.coworker.extract import (
+    ANNOTATIONS_HEADING,
+    TRANSCRIPT_HEADING,
+    extract_items,
+)
 from pawn_agent.core.coworker.notes import render_item_note, render_today
 from pawn_agent.core.coworker.policy import PolicyContext, apply_policy, fingerprint
 from pawn_agent.core.coworker.score import score_items
@@ -91,7 +95,19 @@ def _source_with_annotations(transcript: str, annotations: str) -> str:
     ann = (annotations or "").strip()
     if not ann:
         return transcript
-    return f"## User annotations\n{ann}\n\n## Transcript\n{transcript}"
+    return f"{ANNOTATIONS_HEADING}\n{ann}\n\n{TRANSCRIPT_HEADING}\n{transcript}"
+
+
+def _item_payload(item: dict[str, Any]) -> Optional[dict[str, Any]]:
+    """Where in the source the item came from (window, time, quote match)."""
+    payload: dict[str, Any] = {}
+    if item.get("start_sec") is not None:
+        payload["start_sec"] = round(float(item["start_sec"]), 2)
+    if item.get("window") is not None:
+        payload["window"] = int(item["window"])
+    if item.get("quote_score") is not None:
+        payload["quote_score"] = float(item["quote_score"])
+    return payload or None
 
 
 def _local_now(goals: Goals, cfg: AgentConfig) -> datetime:
@@ -200,6 +216,7 @@ async def process_source(
             fingerprint=fp,
             recurrence=recurrence,
             status="new",
+            payload=_item_payload(item),
         )
         from pawn_agent.core.coworker.actions import item_note_key  # noqa: PLC0415
 
@@ -219,6 +236,7 @@ async def process_source(
             reason=row.get("reason") or "",
             interrupt=interrupt,
             related=related,
+            start_sec=item.get("start_sec"),
         )
         try:
             store.write(note_key, note)

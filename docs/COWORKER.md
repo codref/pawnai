@@ -128,7 +128,15 @@ When a `transcribe-diarize` job finishes and chaining resolves to `session_compl
    `quote` from the source. Extract source is the DB transcript plus any
    non-empty vault `## Annotations` on the session note (the default stub is
    ignored). Edit Annotations to explain people, relations, or what to skip,
-   then re-run extract.
+   then re-run extract. Long sources are read in overlapping windows
+   (`coworker.extract_window_chars`, default 12000 characters, about 3k
+   tokens; `coworker.extract_window_overlap`, default 1500), cut on speaker
+   turns, one model call each. Annotations go with every window. Duplicates
+   from the overlap are merged, keeping the copy with the better-matching
+   quote. When the quote is found in a transcript, the item records where:
+   `start_sec` in the item note's frontmatter and `payload`, and
+   "Source: … at mm:ss" in the note. A failed window is skipped and logged;
+   extraction fails only when every window fails.
 2. Scores them against the active threads. A hit has to name one of those threads.
 3. Writes `Pawn/Items/{YYYY-MM-DD}-{slug}-{short_id}.md` and refreshes `Pawn/Today.md`.
 4. Pushes Matrix (and optional ntfy) only for interrupts.
@@ -174,6 +182,7 @@ kind: decision
 thread: Project X storage
 source_kind: session
 source_ref: session-id
+start_sec: 872.4
 action:
 ---
 
@@ -187,7 +196,7 @@ deploy; moving earlier risks breaking the Sync Engine cutover. Owner unclear.
 > We should not move the bucket before the deploy.
 > Mira: yes, keep it on our S3 through Friday at least.
 
-Source: [[Pawn/Transcripts/2026-09-28 session-id.md]]
+Source: [[Pawn/Transcripts/2026-09-28 session-id.md]] at 14:32
 
 ## Why you were notified
 

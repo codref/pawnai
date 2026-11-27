@@ -22,6 +22,21 @@ def _meta_str(value: Any) -> str:
     return str(value).strip()
 
 
+def format_offset(seconds: float | None) -> str:
+    """``mm:ss`` (or ``h:mm:ss``) for a source offset, empty when unknown."""
+    if seconds is None:
+        return ""
+    try:
+        total = max(0, int(float(seconds)))
+    except (TypeError, ValueError):
+        return ""
+    hours, rest = divmod(total, 3600)
+    minutes, secs = divmod(rest, 60)
+    if hours:
+        return f"{hours}:{minutes:02d}:{secs:02d}"
+    return f"{minutes:02d}:{secs:02d}"
+
+
 def render_item_note(
     *,
     item_id: str,
@@ -40,6 +55,7 @@ def render_item_note(
     related: list[str] | None = None,
     action: str = "",
     opened_at: str = "",
+    start_sec: float | None = None,
 ) -> str:
     """Serialize one ``pawn: item`` note."""
     meta: dict[str, Any] = {
@@ -60,6 +76,9 @@ def render_item_note(
     opened = (opened_at or "").strip()
     if opened:
         meta["opened_at"] = opened
+    at = format_offset(start_sec)
+    if at:
+        meta["start_sec"] = round(float(start_sec or 0.0), 2)
     body_parts = [text.strip() or "(empty)"]
     if context.strip():
         body_parts.append("")
@@ -71,7 +90,11 @@ def render_item_note(
             body_parts.append(f"> {line}")
     if source_link.strip():
         body_parts.append("")
-        body_parts.append(f"Source: {source_link.strip()}")
+        suffix = f" at {at}" if at else ""
+        body_parts.append(f"Source: {source_link.strip()}{suffix}")
+    elif at:
+        body_parts.append("")
+        body_parts.append(f"At {at} in the source.")
     if interrupt and reason.strip():
         body_parts.append("")
         body_parts.append("## Why you were notified")

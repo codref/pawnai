@@ -499,6 +499,10 @@ class CoworkerConfig(BaseModel):
     related_limit: int = 5
     related_max_distance: float = 0.45
     related_fetch_multiplier: int = 6
+    # Extraction windows (characters, ~4 per token). Long transcripts are
+    # split into overlapping windows, one model call each.
+    extract_window_chars: int = 12000
+    extract_window_overlap: int = 1500
     people: CoworkerPeopleConfig = Field(default_factory=CoworkerPeopleConfig)
     autonomy: CoworkerAutonomyConfig = Field(default_factory=CoworkerAutonomyConfig)
     notify: CoworkerNotifyConfig = Field(default_factory=CoworkerNotifyConfig)
