@@ -51,8 +51,10 @@ def _now() -> datetime:
     return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
-def fingerprint(kind: str, subject_id: Optional[str], text: str) -> str:
-    base = f"{kind}|{subject_id or ''}|{'' if subject_id else text.lower()}"
+def fingerprint(kind: str, subject_id: Optional[str], text: str, key: str = "") -> str:
+    """Same kind + subject (or explicit ``key``) = same provocation."""
+    anchor = key or subject_id or ""
+    base = f"{kind}|{anchor}|{'' if anchor else text.lower()}"
     return hashlib.sha256(base.encode()).hexdigest()[:24]
 
 
@@ -90,9 +92,14 @@ def add(
     subject_id: Optional[str] = None,
     features: Optional[dict[str, float]] = None,
     day: Optional[str] = None,
+    key: str = "",
 ) -> Optional[dict[str, Any]]:
-    """Add a candidate unless the same one was raised in the last two weeks."""
-    fp = fingerprint(kind, subject_id, text)
+    """Add a candidate unless the same one was raised in the last two weeks.
+
+    ``key`` identifies candidates that have no subject (a person, say), so a
+    changed count in the text does not make it new.
+    """
+    fp = fingerprint(kind, subject_id, text, key)
     since = _now() - timedelta(days=_REPEAT_DAYS)
     with _get_session(cfg.db_dsn) as db:
         recent = db.scalars(

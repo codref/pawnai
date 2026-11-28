@@ -183,7 +183,9 @@ def refresh_people(cfg: Any, store: Any, *, days: int = 60) -> int:
             except Exception as exc:
                 logger.warning("people note %s not updated: %s", sid, exc)
         concern_sources = {c["source_ref"] for c in concerns}
-        if len(concerns) >= 3 and len(concern_sources) >= 2:
+        from pawn_agent.core.emergence.ledger import is_mine  # noqa: PLC0415
+
+        if len(concerns) >= 3 and len(concern_sources) >= 2 and not is_mine(cfg, name):
             provocations.add(
                 cfg,
                 kind="recurring_concern",
@@ -194,6 +196,7 @@ def refresh_people(cfg: Any, store: Any, *, days: int = 60) -> int:
                     f"“{concerns[-1]['text']}”). On your radar?"
                 ),
                 features={"people_weight": 1.0, "recurrence": float(len(concerns))},
+                key=f"person:{name.lower()}",
             )
     return written
 

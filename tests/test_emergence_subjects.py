@@ -263,3 +263,52 @@ def test_timeline_dedupe_and_raw_labels():
     assert [r["source_ref"] for r in dedupe(rows)] == ["m1", "m2"]
     assert _RAW_LABEL.match("SPEAKER_01") and _RAW_LABEL.match("speaker 3")
     assert not _RAW_LABEL.match("Ansgar")
+
+
+def test_fingerprint_key_ignores_changing_text():
+    a = provocations.fingerprint("recurring_concern", None, "Luca raised 3 concerns", "person:luca")
+    b = provocations.fingerprint("recurring_concern", None, "Luca raised 5 concerns", "person:luca")
+    c = provocations.fingerprint("recurring_concern", None, "Luca raised 3 concerns")
+    d = provocations.fingerprint("recurring_concern", None, "Luca raised 5 concerns")
+    assert a == b and c != d
+
+
+def test_dream_stops_at_the_nightly_cap(monkeypatch: pytest.MonkeyPatch):
+    base = datetime(2026, 9, 1)
+    pool = [
+        {
+            "id": str(i),
+            "text": f"t{i}",
+            "source_ref": f"s{i}",
+            "created_at": base + timedelta(days=10 * i),
+            "embedding": _vec(0, 1, 2 + i % 2),
+        }
+        for i in range(8)
+    ]
+    calls: list[str] = []
+
+    async def ask(cfg, prompt, **kw):  # noqa: ARG001
+        calls.append(prompt[:10])
+        if prompt.startswith("Be a strict"):
+            return {"keep": True}
+        return {"connected": True, "hypothesis": f"h{len(calls)}", "test": ""}
+
+    created: list[dict] = []
+    monkeypatch.setattr(dream.subj, "recent_observations", lambda dsn, days: pool)
+    monkeypatch.setattr(dream, "ask_json", ask)
+    monkeypatch.setattr(dream.labels, "embed_many", lambda cfg, texts: [_vec(len(created) % 8)])
+    monkeypatch.setattr(dream.subj, "list_subjects", lambda dsn, kinds=None: [])
+    monkeypatch.setattr(
+        dream.subj,
+        "create_subject",
+        lambda dsn, **f: created.append(f) or {"id": str(len(created)), **f},
+    )
+    monkeypatch.setattr(dream.subj, "link", lambda *a, **k: True)
+    monkeypatch.setattr(dream.subj, "get_subject", lambda dsn, sid: None)
+    monkeypatch.setattr(dream.vault_notes, "render_subject", lambda *a, **k: "k")
+    monkeypatch.setattr(dream.provocations, "add", lambda *a, **k: None)
+    cfg = SimpleNamespace(
+        emergence=SimpleNamespace(dream_pairs=10, dream_max_hypotheses=2), db_dsn="x"
+    )
+    assert asyncio.run(dream.dream(cfg, object(), seed=3)) == 2
+    assert len(created) == 2

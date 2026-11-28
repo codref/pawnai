@@ -78,10 +78,11 @@ async def dream(cfg: Any, store: Any, *, budget: Any = None, seed: Optional[int]
     n = int(getattr(getattr(cfg, "emergence", None), "dream_pairs", 12) or 0)
     if n <= 0:
         return 0
+    cap = int(getattr(getattr(cfg, "emergence", None), "dream_max_hypotheses", 2) or 0)
     pool = subj.recent_observations(cfg.db_dsn, days=120)
     kept = 0
     for a, b, distance in _pairs(pool, n, seed=seed):
-        if budget is not None and budget.exhausted:
+        if (budget is not None and budget.exhausted) or kept >= cap:
             break
         idea = await ask_json(
             cfg,

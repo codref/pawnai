@@ -592,8 +592,10 @@ class EmergenceConfig(BaseModel):
     )
     # Morning brief.
     brief_max_per_day: int = 3
-    # Dreaming: pairs examined per night; survivors become hypotheses.
+    # Dreaming: pairs examined per night; survivors become hypotheses
+    # (at most dream_max_hypotheses a night, so hunches do not crowd the brief).
     dream_pairs: int = 12
+    dream_max_hypotheses: int = 2
     # People notes: tone trend is opt-in.
     people_tone: bool = False
     # Observation types to extract (subset of the built-in list).

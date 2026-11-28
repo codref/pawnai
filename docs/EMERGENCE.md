@@ -157,3 +157,4 @@ All under `emergence:` (env `PAWN_EMERGENCE__*`). The extraction settings are in
 | `night_jobs` | all but `prompt_search` | Which jobs run |
 | `brief_max_per_day` | 3 | Provocations per morning |
 | `dream_pairs` | 12 | Pairs examined per night (0 turns dreaming off) |
+| `dream_max_hypotheses` | 2 | Hypotheses kept per night |
