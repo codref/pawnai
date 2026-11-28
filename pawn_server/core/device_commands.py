@@ -66,9 +66,38 @@ TOOLS: dict[str, ToolSpec] = {
         required=("text",),
         optional=("title",),
         max_len=500,
-        summary="show a notification on the phone",
+        summary="show a notification on the device",
+    ),
+    # Assistants (docs/ASSISTANTS.md): any voice assistant, phone or desktop.
+    "speak": ToolSpec(
+        "speak",
+        action=False,
+        required=("text",),
+        max_len=500,
+        summary="say a sentence aloud on the assistant",
+    ),
+    "timer_set": ToolSpec(
+        "timer_set",
+        action=False,
+        required=("seconds",),
+        optional=("label",),
+        max_len=120,
+        summary="start a countdown timer on the assistant",
+    ),
+    "access_approve": ToolSpec(
+        "access_approve",
+        action=True,
+        required=("requester", "minutes"),
+        optional=("request_id",),
+        max_len=120,
+        summary="approve full voice access for another assistant (confirmed on the phone)",
     ),
 }
+
+#: Device kinds. Phones are woken over UnifiedPush; desktops hold an SSE stream.
+DEVICE_KINDS: tuple[str, ...] = ("phone", "desktop")
+
+_MAX_TIMER_S = 24 * 3600
 
 
 class CommandError(Exception):
@@ -105,7 +134,21 @@ def validate_args(tool: str, args: Optional[dict[str, Any]]) -> dict[str, str]:
     missing = [key for key in spec.required if key not in clean]
     if missing:
         raise CommandError(f"Missing args for {tool}: {', '.join(missing)}")
+    if tool == "timer_set":
+        clean["seconds"] = str(_positive_int(clean["seconds"], "seconds", _MAX_TIMER_S))
+    if tool == "access_approve":
+        clean["minutes"] = str(_positive_int(clean["minutes"], "minutes", 24 * 60))
     return clean
+
+
+def _positive_int(raw: str, key: str, limit: int) -> int:
+    try:
+        value = int(float(raw))
+    except ValueError as exc:
+        raise CommandError(f"{key} must be a number") from exc
+    if value <= 0 or value > limit:
+        raise CommandError(f"{key} must be between 1 and {limit}")
+    return value
 
 
 def command_view(row: DeviceCommand) -> dict[str, Any]:
@@ -119,17 +162,64 @@ def command_view(row: DeviceCommand) -> dict[str, Any]:
         "result": row.result,
         "created_at": row.created_at.isoformat() if row.created_at else None,
         "expires_at": row.expires_at.isoformat() if row.expires_at else None,
+        "completed_at": row.completed_at.isoformat() if row.completed_at else None,
     }
 
 
-def resolve_device(dsn: str, device: str = "") -> Device:
-    """Pick a device by id/name; with one device registered, *device* may be empty."""
+def _is_fresh(row: Device, fresh_s: float, now: datetime) -> bool:
+    if row.presence_at is None:
+        return False
+    state = str((row.presence or {}).get("state") or "active")
+    return state != "away" and (now - row.presence_at).total_seconds() <= fresh_s
+
+
+def pick_auto(rows: list[Device], *, tool: str = "", fresh_s: float = 600.0) -> Optional[Device]:
+    """The device the user is most likely near that can run *tool*.
+
+    Order: a fresh ``active`` presence, then a fresh ``idle`` one (newest
+    report first), then the most recently seen device.
+    """
+    able = [row for row in rows if not tool or tool in (row.capabilities or [])]
+    if not able:
+        return None
+    now = _now()
+    fresh = [row for row in able if _is_fresh(row, fresh_s, now)]
+    if fresh:
+        def rank(row: Device) -> tuple[int, datetime]:
+            state = str((row.presence or {}).get("state") or "active")
+            return (1 if state == "active" else 0, row.presence_at or datetime.min)
+
+        return max(fresh, key=rank)
+    return max(able, key=lambda row: row.last_seen or row.created_at or datetime.min)
+
+
+def resolve_device(
+    dsn: str,
+    device: str = "",
+    *,
+    tool: str = "",
+    fresh_s: float = 600.0,
+    kind: str = "",
+) -> Device:
+    """Pick a device by id/name; with one device registered, *device* may be empty.
+
+    ``device="auto"`` picks by presence among the devices offering *tool*
+    (see :func:`pick_auto`). *kind* narrows the candidates when *device* is
+    empty or ``auto`` (``phone_*`` tools pass ``kind="phone"``).
+    """
     with _get_session(dsn) as db:
         rows = list(db.scalars(select(Device).order_by(Device.created_at)).all())
         for row in rows:
             db.expunge(row)
+    if kind and device in ("", "auto"):
+        rows = [row for row in rows if (row.kind or "phone") == kind]
     if not rows:
-        raise CommandError("No phone is registered with pawn-server (phone bridge is off).", status_code=404)
+        raise CommandError("No assistant is registered with pawn-server (phone bridge is off).", status_code=404)
+    if device == "auto":
+        picked = pick_auto(rows, tool=tool, fresh_s=fresh_s)
+        if picked is None:
+            raise CommandError(f"No registered assistant offers {tool}.", status_code=404)
+        return picked
     if device:
         matches = [row for row in rows if device in (row.id, row.name)]
         if not matches:
@@ -137,7 +227,7 @@ def resolve_device(dsn: str, device: str = "") -> Device:
         return matches[0]
     if len(rows) > 1:
         names = ", ".join(row.name for row in rows)
-        raise CommandError(f"Several phones are registered ({names}); pass --device NAME")
+        raise CommandError(f"Several devices are registered ({names}); pass --device NAME or auto")
     return rows[0]
 
 
@@ -163,8 +253,8 @@ def create_command(
 ) -> str:
     if tool not in (device.capabilities or []):
         raise CommandError(
-            f"The phone '{device.name}' does not offer {tool} "
-            "(turn it on in pawn-assistant → Phone bridge)."
+            f"The {device.kind or 'phone'} '{device.name}' does not offer {tool} "
+            "(turn it on in the assistant's settings)."
         )
     command_id = uuid.uuid4().hex
     now = _now()
@@ -183,6 +273,41 @@ def create_command(
     return command_id
 
 
+def queue_command(
+    dsn: str,
+    tool: str,
+    args: Optional[dict[str, Any]] = None,
+    *,
+    device: str = "",
+    ttl_s: float = 45.0,
+    fresh_s: float = 600.0,
+    kind: str = "",
+    push: Optional[Callable[[str], Optional[str]]] = None,
+) -> tuple[Device, str, Optional[str]]:
+    """Insert a command and wake the device. Returns ``(device, command_id, push_error)``.
+
+    Desktops (``kind="desktop"``) hold ``GET …/commands/stream`` open, so they
+    need no push; phones need a UnifiedPush endpoint.
+    """
+    clean = validate_args(tool, args)
+    target = resolve_device(dsn, device, tool=tool, fresh_s=fresh_s, kind=kind)
+    streamed = (target.kind or "phone") == "desktop"
+    if not streamed and not target.unifiedpush_endpoint:
+        raise CommandError(
+            f"The phone '{target.name}' has no push channel yet "
+            "(install a UnifiedPush distributor such as ntfy on the phone)."
+        )
+    command_id = create_command(dsn, target, tool, clean, ttl_s=ttl_s)
+    error: Optional[str] = None
+    if target.unifiedpush_endpoint:
+        error = (push or send_push)(target.unifiedpush_endpoint)
+        if error and not streamed:
+            logger.warning("phone bridge: %s for device %s", error, target.id)
+        elif error:
+            error = None  # the stream delivers it anyway
+    return target, command_id, error
+
+
 def run_command(
     dsn: str,
     tool: str,
@@ -191,41 +316,57 @@ def run_command(
     device: str = "",
     timeout_s: float = 45.0,
     poll_s: float = 0.5,
+    fresh_s: float = 600.0,
+    kind: str = "",
     push: Optional[Callable[[str], Optional[str]]] = None,
     sleep: Callable[[float], None] = time.sleep,
 ) -> dict[str, Any]:
-    """Queue *tool* on the phone, wake it, wait for the answer.
+    """Queue *tool* on the device, wake it, wait for the answer.
 
     Returns the command view; ``status`` is one of ``ok`` / ``denied`` /
-    ``error`` / ``expired`` / ``delivered`` (phone took it but did not answer
+    ``error`` / ``expired`` / ``delivered`` (device took it but did not answer
     in time — an action may still complete on the phone).
     """
-    clean = validate_args(tool, args)
-    target = resolve_device(dsn, device)
-    if not target.unifiedpush_endpoint:
-        raise CommandError(
-            f"The phone '{target.name}' has no push channel yet "
-            "(install a UnifiedPush distributor such as ntfy on the phone)."
-        )
-    command_id = create_command(dsn, target, tool, clean, ttl_s=timeout_s)
-    error = (push or send_push)(target.unifiedpush_endpoint)
-    if error:
-        logger.warning("phone bridge: %s for device %s", error, target.id)
+    target, command_id, error = queue_command(
+        dsn, tool, args, device=device, ttl_s=timeout_s, fresh_s=fresh_s, kind=kind, push=push
+    )
     deadline = time.monotonic() + timeout_s
     while True:
         with _get_session(dsn) as db:
             row = db.get(DeviceCommand, command_id)
             assert row is not None
             if row.status in FINAL:
-                return command_view(row)
+                return {**command_view(row), "device": target.name}
             if time.monotonic() >= deadline:
                 if row.status == "pending":
                     row.status = "expired"
                     row.completed_at = _now()
                     if error:
                         row.result = {"message": error}
-                return command_view(row)
+                return {**command_view(row), "device": target.name}
         sleep(poll_s)
+
+
+def get_command(dsn: str, command_id: str) -> Optional[dict[str, Any]]:
+    with _get_session(dsn) as db:
+        row = db.get(DeviceCommand, command_id)
+        if row is None:
+            return None
+        if row.status == "pending" and row.expires_at and row.expires_at < _now():
+            row.status = "expired"
+            row.completed_at = _now()
+        return command_view(row)
+
+
+def list_commands(dsn: str, device_id: str, *, limit: int = 20) -> list[dict[str, Any]]:
+    with _get_session(dsn) as db:
+        rows = db.scalars(
+            select(DeviceCommand)
+            .where(DeviceCommand.device_id == device_id)
+            .order_by(DeviceCommand.created_at.desc())
+            .limit(max(1, min(limit, 200)))
+        ).all()
+        return [command_view(row) for row in rows]
 
 
 # ── Phone side ────────────────────────────────────────────────────────────────
@@ -252,8 +393,12 @@ def take_pending(dsn: str, device_id: str) -> list[dict[str, Any]]:
     expire_stale(dsn, device_id)
     with _get_session(dsn) as db:
         device = db.get(Device, device_id)
-        if device is not None:
-            device.last_seen = _now()
+        now = _now()
+        # The desktop stream polls every second: only refresh last_seen now and then.
+        if device is not None and (
+            device.last_seen is None or (now - device.last_seen).total_seconds() >= 30
+        ):
+            device.last_seen = now
         rows = db.scalars(
             select(DeviceCommand)
             .where(DeviceCommand.device_id == device_id, DeviceCommand.status == "pending")
@@ -313,7 +458,16 @@ def describe(view: dict[str, Any]) -> str:
         if tool == "sms_send":
             return f"SMS sent to {view['args'].get('to')}."
         if tool == "notify":
-            return "Notification shown on the phone."
+            return f"Notification shown on {view.get('device') or 'the device'}."
+        if tool == "speak":
+            return f"Said aloud on {view.get('device') or 'the assistant'}."
+        if tool == "timer_set":
+            label = view["args"].get("label")
+            return f"Timer of {view['args'].get('seconds')} s started on {view.get('device') or 'the assistant'}" + (
+                f" ({label})." if label else "."
+            )
+        if tool == "access_approve":
+            return "Access approved on the phone."
         return f"{tool}: " + json.dumps(result, ensure_ascii=False)
     if status == "denied":
         return f"The user declined {tool} on the phone." + (f" ({note})" if note else "")
@@ -322,6 +476,6 @@ def describe(view: dict[str, Any]) -> str:
     if status == "delivered":
         tail = " It may still complete on the phone." if TOOLS[tool].action else ""
         return f"The phone received {tool} but did not answer in time.{tail}"
-    return "Error: the phone did not answer (it may be offline or its push channel is down)." + (
+    return "Error: the device did not answer (it may be offline or its push channel is down)." + (
         f" ({note})" if note else ""
     )

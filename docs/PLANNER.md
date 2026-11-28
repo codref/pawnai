@@ -64,7 +64,9 @@ ignored so unrelated clips do not collapse into one note. Updating
 | Endpoint | Role |
 |----------|------|
 | `GET /v1/planner/day?date=YYYY-MM-DD` | Merged timeline for one day |
+| `GET /v1/planner/range?from=&to=` | Up to 14 days for the week grid |
 | `GET /v1/planner/events?from=&to=` | Event range |
+| `PATCH /v1/planner/events/{id}` | Edit one event; keeps prep and snippets |
 | `POST /v1/planner/events` | Create / upsert |
 | `POST /v1/planner/events/{id}/link` | Set or clear `session_id` |
 | `DELETE /v1/planner/events/{id}` | Delete the event note |
@@ -73,7 +75,21 @@ ignored so unrelated clips do not collapse into one note. Updating
 Capture target `kind: event` on `POST /v1/captures` also upserts an event
 (title/start/end + snippet body).
 
+## Portal Day view
+
+The portal Day tab (`#/day`, tool tab `day:main`) is the current surface. The Obsidian Day tab below is legacy and gets no new work.
+
+- **Day / week.** One time grid, 24 hours, overlap layout, a now line on today, and an all-day row. Week columns are Monday–Sunday. Click a column header to open that day.
+- **Editor.** Replaces the agenda while an event is open. Title, date, start and end, attendees, organizer, location, meeting URL, focus and prep minutes, the linked session, prep markdown, and notes. Changes save through `PATCH /v1/planner/events/{id}`, which keeps `## Prep` and snippet blocks.
+- **Agenda.** The day's plan (`## Plan` of `Pawn/Daily/{date}.md`), untimed events, open TODOs, and sessions that are not linked yet.
+- **Plan my day.** Opens or reuses a side chat whose origin is that date.
+- **Notes.** A file with `pawn: event` shows **Open in Day**, which focuses that event. The home screen's Today card lists the next three events that have not ended.
+
+`GET /v1/planner/range?from=&to=` covers at most 14 days. Session blocks on the grid use the recording span: a batch upload is `updated_at` minus the duration, and a chunked recording is `created_at` plus the duration.
+
 ## Day tab (Obsidian)
+
+Legacy. The portal Day view above replaces this tab.
 
 Pawn pane → **Day**: prev / today / next, date picker, **Add activity**.
 

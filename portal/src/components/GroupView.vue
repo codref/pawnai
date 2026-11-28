@@ -5,8 +5,8 @@
 import { computed, onBeforeUnmount, ref } from "vue";
 import { registerSlot } from "@/lib/groupSlots";
 import { useTabsStore, tabId, type Side } from "@/stores/tabs";
-import { focusGroup, openChat, syncRoute } from "@/router";
-import { DND_CHAT, DND_TAB, draggingTab, hasType } from "@/lib/dnd";
+import { focusGroup, openChat, openFile, syncRoute } from "@/router";
+import { DND_CHAT, DND_FILE, DND_TAB, draggingTab, hasType } from "@/lib/dnd";
 import TabBar from "./TabBar.vue";
 import HomePanel from "@/panels/HomePanel.vue";
 
@@ -20,7 +20,7 @@ const isFocused = computed(() => tabs.focusedId === props.groupId);
 const empty = computed(() => !tabs.tabsIn(props.groupId).length);
 
 function accepts(ev: DragEvent): boolean {
-  return Boolean(draggingTab.value) || hasType(ev, DND_TAB) || hasType(ev, DND_CHAT);
+  return Boolean(draggingTab.value) || hasType(ev, DND_TAB) || hasType(ev, DND_CHAT) || hasType(ev, DND_FILE);
 }
 
 function zoneAt(ev: DragEvent, el: HTMLElement): Zone {
@@ -35,8 +35,17 @@ function zoneAt(ev: DragEvent, el: HTMLElement): Zone {
   return "center";
 }
 
+/** A panel inside took the drop itself (a chat attaching a dragged file). */
+function takenInside(ev: DragEvent): boolean {
+  return ev.defaultPrevented && !draggingTab.value && hasType(ev, DND_FILE) && !hasType(ev, DND_CHAT);
+}
+
 function onDragOver(ev: DragEvent): void {
   if (!accepts(ev)) return;
+  if (takenInside(ev)) {
+    zone.value = null;
+    return;
+  }
   ev.preventDefault();
   if (ev.dataTransfer) ev.dataTransfer.dropEffect = "move";
   zone.value = zoneAt(ev, ev.currentTarget as HTMLElement);
@@ -50,18 +59,20 @@ function onDragLeave(ev: DragEvent): void {
 function onDrop(ev: DragEvent): void {
   const z = zone.value;
   zone.value = null;
-  if (!z || !accepts(ev)) return;
+  if (!z || !accepts(ev) || takenInside(ev)) return;
   ev.preventDefault();
   ev.stopPropagation();
   let id = draggingTab.value || ev.dataTransfer?.getData(DND_TAB) || "";
   draggingTab.value = null;
   if (!id) {
     const chatId = ev.dataTransfer?.getData(DND_CHAT);
-    if (!chatId) return;
-    id = tabId("chat", chatId);
+    const filePath = chatId ? "" : ev.dataTransfer?.getData(DND_FILE);
+    if (!chatId && !filePath) return;
+    id = chatId ? tabId("chat", chatId) : tabId("file", filePath!);
     if (!tabs.find(id)) {
       tabs.focusGroup(props.groupId);
-      openChat(chatId, { pin: true });
+      if (chatId) openChat(chatId, { pin: true });
+      else openFile(filePath!, { pin: true });
       if (z === "center") return;
     }
   }

@@ -466,6 +466,22 @@ class DevicesConfig(BaseModel):
     max_batch: int = 500
     # Live phone tool round trip budget (must stay under sallm's 60 s tool timeout).
     command_timeout_s: float = 45.0
+    # Assistants (docs/ASSISTANTS.md). A presence report younger than this
+    # counts when picking a device with ``--device auto``.
+    presence_fresh_s: float = 600.0
+    # A voice conversation idle for less than this can be taken over ("continua qui").
+    handoff_window_s: float = 600.0
+    # How long the phone has to approve a full-access request from another device.
+    access_request_timeout_s: float = 60.0
+    # Longest full-access grant a phone approval can give.
+    access_max_minutes: int = 30
+    # Wake-word clips and models; empty → ``{state_dir}/wake``.
+    wake_dir: str = ""
+    wake_clip_retention_days: int = 90
+    wake_clip_max_bytes: int = 1_000_000
+    wake_model_max_bytes: int = 20_000_000
+    # Mirror voice turns into portal chats (folder ``Voice``).
+    mirror_voice_to_portal: bool = True
 
 
 class CoworkerConfig(BaseModel):
@@ -499,9 +515,125 @@ class CoworkerConfig(BaseModel):
     related_limit: int = 5
     related_max_distance: float = 0.45
     related_fetch_multiplier: int = 6
+    # Extraction windows (characters, ~4 per token). Long transcripts are
+    # split into overlapping windows, one model call each.
+    extract_window_chars: int = 12000
+    extract_window_overlap: int = 1500
     people: CoworkerPeopleConfig = Field(default_factory=CoworkerPeopleConfig)
     autonomy: CoworkerAutonomyConfig = Field(default_factory=CoworkerAutonomyConfig)
     notify: CoworkerNotifyConfig = Field(default_factory=CoworkerNotifyConfig)
+
+
+class EmergenceConfig(BaseModel):
+    """``emergence:`` — observation layer (docs/plans/EMERGENCE.md).
+
+    When enabled, coworker extraction runs triage + one prompt per
+    observation type over each window, stores every observation, and
+    projects the actionable ones into Items.
+    """
+
+    enabled: bool = False
+    # Catalog id for the per-window passes; empty → background default.
+    fast_model: str = ""
+    window_chars: int = 12000
+    window_overlap: int = 1500
+    # A type is extracted from a window when triage scores it at least this.
+    triage_threshold: float = 0.35
+    # Extracted from every window regardless of triage. Triage scores are
+    # poorly calibrated (0.2-0.4 on windows with clear commitments), so the
+    # kinds that become Items are not left to it.
+    always_types: list[str] = Field(
+        default_factory=lambda: ["decision", "commitment", "block"]
+    )
+    # Observations whose quote matches the window less than this are rejected.
+    quote_min_score: float = 0.8
+    # Types whose extraction lets the model reason first. Triage never thinks.
+    # Thinking costs 2-5k tokens a call; it pays off on the kinds that
+    # become Items, less on concerns/facts/predictions.
+    think_types: list[str] = Field(
+        default_factory=lambda: ["decision", "commitment", "block"]
+    )
+    # Retrieved examples from the user's labels in each typed prompt.
+    few_shot: bool = True
+    few_shot_accept: int = 3
+    few_shot_reject: int = 2
+    # Relevance ranker trained on labels (numpy logistic regression).
+    ranker: bool = True
+    ranker_min_labels: int = 30
+    # Items scoring below this are stored as observations but not filed.
+    # 0 = score only. Applied only once the ranker's cross-validated AUC
+    # reaches ranker_min_auc.
+    ranker_min_score: float = 0.0
+    ranker_min_auc: float = 0.7
+    # Bulk deletes (Delete all / multi-select) are recorded but not trained on.
+    train_on_bulk: bool = False
+    # ── Phase 3+: subjects, night shift, provocations ──
+    # Vault root for thread / question / decision / retro notes.
+    vault_root: str = "Pawn"
+    # Directed pass: one call per window asking about nearby open subjects.
+    directed: bool = True
+    directed_max_subjects: int = 12
+    # Routing an observation to a subject by embedding (cosine distance).
+    route_max_distance: float = 0.32
+    route_margin: float = 0.04
+    route_ambiguous_distance: float = 0.45
+    # Emergent threads: clusters of unrouted observations.
+    cluster_distance: float = 0.35
+    cluster_min_observations: int = 4
+    cluster_min_sources: int = 2
+    cluster_window_days: int = 30
+    proposed_expiry_days: int = 21
+    # Ledger.
+    decision_review_days: int = 30
+    commitment_days: int = 7
+    # Night shift.
+    night_cron: str = "30 1 * * *"
+    night_max_minutes: int = 300
+    night_max_calls: int = 400
+    night_jobs: list[str] = Field(
+        default_factory=lambda: [
+            "sync",
+            "boards",
+            "clustering",
+            "synthesis",
+            "assumptions",
+            "commitments",
+            "predictions",
+            "contradictions",
+            "people",
+            "dreaming",
+            "council",
+            "retros",
+            "provocations",
+        ]
+    )
+    # Morning brief.
+    brief_max_per_day: int = 3
+    # Dreaming: pairs examined per night; survivors become hypotheses
+    # (at most dream_max_hypotheses a night, so hunches do not crowd the brief).
+    dream_pairs: int = 12
+    dream_max_hypotheses: int = 2
+    # Question boards (portal): the ``boards`` night job and the directed pass.
+    board_directed_slots: int = 3  # board questions offered per window beyond the nearest
+    board_backfill_days: int = 30  # how far back the night looks for evidence
+    board_max_candidates: int = 24  # observations judged per board per night
+    board_dream_pairs: int = 6  # pairs dreamt among one board's evidence
+    board_dream_max: int = 1  # hunches kept per board per night
+    # People notes: tone trend is opt-in.
+    people_tone: bool = False
+    # Observation types to extract (subset of the built-in list).
+    types: list[str] = Field(
+        default_factory=lambda: [
+            "decision",
+            "commitment",
+            "question",
+            "block",
+            "contradiction",
+            "prediction",
+            "concern",
+            "fact",
+        ]
+    )
 
 
 # ── AgentConfig ───────────────────────────────────────────────────────────────
@@ -539,6 +671,7 @@ class AgentConfig(PawnConfig):
     matrix_bot: MatrixBotConfig = Field(default_factory=MatrixBotConfig)
     vault_watcher: VaultWatcherConfig = Field(default_factory=VaultWatcherConfig)
     coworker: CoworkerConfig = Field(default_factory=CoworkerConfig)
+    emergence: EmergenceConfig = Field(default_factory=EmergenceConfig)
     tasknotes: TaskNotesConfig = Field(default_factory=TaskNotesConfig)
     capture: CaptureConfig = Field(default_factory=CaptureConfig)
     planner: PlannerConfig = Field(default_factory=PlannerConfig)

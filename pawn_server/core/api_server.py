@@ -29,7 +29,8 @@ DELETE /v1/jobs/{id}, POST /v1/jobs/delete, GET /v1/jobs/events
     Delete removes finished jobs (and ask task notes). ``flush_terminal`` clears done/blocked.
     ``/v1/vault/tasks*`` remain as deprecated aliases.
 
-GET /v1/sessions, GET /v1/sessions/{id}, POST /v1/speakers,
+GET /v1/sessions, GET /v1/sessions/{id},
+GET|PATCH|DELETE /v1/speakers, POST /v1/speakers, POST /v1/speakers/{id}/merge,
 POST /v1/sessions/{id}/enroll|reidentify|relabel|reprocess|extract|ignore|speakers-trained,
 GET /v1/meta
     Small authenticated config for clients (e.g. ``obsidian_vault_name`` for
@@ -108,6 +109,7 @@ from pathlib import Path
 from typing import Any, AsyncIterator, List, Optional, Union
 
 from fastapi import (
+    BackgroundTasks,
     Depends,
     FastAPI,
     File,
@@ -353,6 +355,19 @@ class PawnVoiceRequest(BaseModel):
     message: str = ""
     access: str = "chat"
     lang: str = "it"
+    # Registered assistant sending the turn (docs/ASSISTANTS.md): links the
+    # conversation to a device for hand-off and the portal mirror.
+    device_id: Optional[str] = None
+
+
+class VoiceClaimRequest(BaseModel):
+    device_id: str
+
+
+class AccessRequestBody(BaseModel):
+    device_id: str
+    conversation: Optional[str] = None
+    minutes: int = 15
 
 
 class PawnChatRequest(BaseModel):
@@ -466,12 +481,51 @@ class PlannerLinkRequest(BaseModel):
     session_id: Optional[str] = None
 
 
+class PlannerEventPatch(BaseModel):
+    """PATCH /v1/planner/events/{id} — partial update of one event note."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    title: Optional[str] = None
+    start: Optional[str] = None
+    end: Optional[str] = None
+    attendees: Optional[List[str]] = None
+    organizer: Optional[str] = None
+    location: Optional[str] = None
+    meeting_url: Optional[str] = None
+    topics: Optional[List[str]] = None
+    focus: Optional[bool] = None
+    focus_before: Optional[int] = None
+    session_id: Optional[str] = None
+    body: Optional[str] = None
+
+
 class CreateSpeakerRequest(BaseModel):
     """POST /v1/speakers — create a Speakers gallery person."""
 
     model_config = ConfigDict(extra="ignore")
 
     display_name: str
+
+
+class SpeakerPatchRequest(BaseModel):
+    """PATCH /v1/speakers/{id} — rename, aliases, notes, optional reidentify."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    display_name: Optional[str] = None
+    aliases: Optional[List[str]] = None
+    notes: Optional[str] = None
+    reidentify: bool = False
+
+
+class SpeakerMergeRequest(BaseModel):
+    """POST /v1/speakers/{id}/merge — fold this person into another."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    into: str
+    reidentify: bool = False
 
 
 class SessionEnrollRequest(BaseModel):
@@ -532,6 +586,16 @@ class SessionExtractRequest(BaseModel):
 
     items: bool = True
     people: bool = False
+
+
+class BulkReidentifyRequest(BaseModel):
+    """POST /v1/sessions/reidentify — reidentify several sessions in the background."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    session_ids: Optional[List[str]] = None
+    needs_speakers: bool = False
+    limit: int = 50
 
 
 class VaultTaskCreateRequest(BaseModel):
@@ -844,6 +908,11 @@ from pawn_server.core.devices_api import build_router as _build_devices_router  
 
 app.include_router(_build_devices_router(_get_cfg, _require_token))
 
+# Voice assistants: wake-word training + the portal Assistants tab — see docs/ASSISTANTS.md.
+from pawn_server.core.assistants_api import build_router as _build_assistants_router  # noqa: E402
+
+app.include_router(_build_assistants_router(_get_cfg, _require_token))
+
 # Chat-first web portal API (/v1/portal/*) — see docs/PORTAL.md.
 from pawn_server.core.portal_api import build_router as _build_portal_router  # noqa: E402
 
@@ -857,6 +926,16 @@ app.include_router(_build_inbox_router(_get_cfg, _require_token))
 from pawn_server.core.settings_api import build_router as _build_settings_router  # noqa: E402
 
 app.include_router(_build_settings_router(_get_cfg, _require_token))
+
+# Brainmap boards (corkboard over Items and the emergence web) — docs/PORTAL.md.
+from pawn_server.core.brainmap_api import build_router as _build_brainmap_router  # noqa: E402
+
+app.include_router(_build_brainmap_router(_get_cfg, _require_token))
+
+# User boards (lens / manual / question, board chat, proposals) — docs/PORTAL.md.
+from pawn_server.core.boards_api import build_router as _build_boards_router  # noqa: E402
+
+app.include_router(_build_boards_router(_get_cfg, _require_token))
 
 
 @app.get("/health", include_in_schema=True)
@@ -1362,22 +1441,35 @@ _VAULT_POLL_MAX_SECONDS = 25.0
 @app.get("/v1/sessions", dependencies=[Depends(_require_token)])
 async def sessions_list(
     limit: int = Query(default=50, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
     q: str = Query(default=""),
     needs_speakers: bool = Query(default=False),
     speaker: str = Query(default=""),
+    date_from: str = Query(default="", alias="from"),
+    date_to: str = Query(default="", alias="to"),
+    sort: str = Query(default="recent"),
+    has_analysis: Optional[bool] = Query(default=None),
     cfg: Any = Depends(_get_cfg),
 ) -> dict:
     """Recent diarization sessions (plugin Sessions tab + capture picker)."""
     from pawn_server.core import sessions_api  # noqa: PLC0415
 
-    page = await asyncio.to_thread(
-        sessions_api.list_sessions_page,
-        cfg,
-        limit=limit,
-        q=q,
-        needs_speakers=needs_speakers,
-        speaker=speaker,
-    )
+    try:
+        page = await asyncio.to_thread(
+            sessions_api.list_sessions_page,
+            cfg,
+            limit=limit,
+            offset=offset,
+            q=q,
+            needs_speakers=needs_speakers,
+            speaker=speaker,
+            date_from=date_from,
+            date_to=date_to,
+            sort=sort,
+            has_analysis=has_analysis,
+        )
+    except sessions_api.SessionsApiError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
     return {
         "object": "list",
         "data": page["data"],
@@ -1396,6 +1488,109 @@ async def sessions_get(session_id: str, cfg: Any = Depends(_get_cfg)) -> dict:
         raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
 
 
+@app.get(
+    "/v1/sessions/{session_id}/transcript",
+    dependencies=[Depends(_require_token)],
+)
+async def sessions_transcript(
+    session_id: str,
+    words: bool = Query(default=False),
+    cfg: Any = Depends(_get_cfg),
+) -> dict:
+    """Merged transcript turns, captures and per-file offsets."""
+    from pawn_server.core import sessions_api  # noqa: PLC0415
+
+    try:
+        return await asyncio.to_thread(
+            sessions_api.session_transcript, cfg, session_id, words=words
+        )
+    except sessions_api.SessionsApiError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+
+
+@app.post(
+    "/v1/sessions/{session_id}/audio-url",
+    dependencies=[Depends(_require_token)],
+)
+async def sessions_audio_url(
+    session_id: str,
+    request: Request,
+    cfg: Any = Depends(_get_cfg),
+) -> dict:
+    """Signed same-origin audio URLs (the player cannot send a bearer token)."""
+    from pawn_server.core import sessions_api  # noqa: PLC0415
+
+    try:
+        return await asyncio.to_thread(
+            sessions_api.session_audio_urls, cfg, session_id, str(request.base_url)
+        )
+    except sessions_api.SessionsApiError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+
+
+@app.get("/v1/sessions/{session_id}/audio/{index}")
+async def sessions_audio(
+    session_id: str,
+    index: int,
+    request: Request,
+    sig: str = Query(default=""),
+    exp: int = Query(default=0),
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(_security),
+    cfg: Any = Depends(_get_cfg),
+) -> StreamingResponse:
+    """Proxy one session audio file, with HTTP Range. Bearer token or HMAC sig."""
+    from pawn_server.core import sessions_api  # noqa: PLC0415
+
+    token = str(getattr(cfg, "api_token", "") or "")
+    bearer_ok = bool(token) and credentials is not None and credentials.credentials == token
+    signed_ok = sessions_api.audio_signature_ok(token, session_id, index, exp, sig or None)
+    if token and not bearer_ok and not signed_ok:
+        if sig:
+            # 403, not 401: an expired player link must not count toward the
+            # auth-fail auto-ban. The client re-signs and resumes.
+            raise HTTPException(status_code=403, detail="Audio link expired or invalid")
+        raise HTTPException(status_code=401, detail="Invalid or missing Bearer token")
+    range_header = request.headers.get("range")
+    try:
+        status, mime, headers, chunks = await asyncio.to_thread(
+            sessions_api.open_session_audio, cfg, session_id, index, range_header
+        )
+    except sessions_api.SessionsApiError as exc:
+        raise HTTPException(
+            status_code=exc.status_code, detail=str(exc), headers=exc.headers or None
+        ) from exc
+    return StreamingResponse(chunks, status_code=status, media_type=mime, headers=headers)
+
+
+@app.post(
+    "/v1/sessions/reidentify",
+    status_code=202,
+    dependencies=[Depends(_require_token)],
+)
+async def sessions_reidentify_bulk(
+    body: BulkReidentifyRequest,
+    background: BackgroundTasks,
+    cfg: Any = Depends(_get_cfg),
+) -> JSONResponse:
+    """Reidentify many sessions. Returns a job id; work runs after the response."""
+    from pawn_server.core import sessions_api  # noqa: PLC0415
+
+    try:
+        queued = await asyncio.to_thread(
+            sessions_api.queue_bulk_reidentify,
+            cfg,
+            session_ids=body.session_ids,
+            needs_speakers=body.needs_speakers,
+            limit=body.limit,
+        )
+    except sessions_api.SessionsApiError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+    background.add_task(
+        sessions_api.run_bulk_reidentify, cfg, queued["job_id"], queued["session_ids"]
+    )
+    return JSONResponse(status_code=202, content=queued)
+
+
 @app.post("/v1/speakers", dependencies=[Depends(_require_token)])
 async def speakers_create(body: CreateSpeakerRequest, cfg: Any = Depends(_get_cfg)) -> dict:
     """Create (or return existing) Speakers gallery person."""
@@ -1404,6 +1599,131 @@ async def speakers_create(body: CreateSpeakerRequest, cfg: Any = Depends(_get_cf
     try:
         return await asyncio.to_thread(sessions_api.create_speaker, cfg, body.display_name)
     except sessions_api.SessionsApiError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+
+
+def _schedule_reidentify(background: BackgroundTasks, cfg: Any, payload: dict) -> dict:
+    """Start the bulk reidentify worker when a gallery write queued one."""
+    from pawn_server.core import sessions_api  # noqa: PLC0415
+
+    ids = list(payload.pop("_reidentify_ids", []) or [])
+    job_id = payload.get("job_id")
+    if job_id and ids:
+        background.add_task(sessions_api.run_bulk_reidentify, cfg, str(job_id), ids)
+    return payload
+
+
+@app.get("/v1/speakers", dependencies=[Depends(_require_token)])
+async def speakers_list(
+    q: str = Query(default=""),
+    include_inactive: bool = Query(default=False),
+    cfg: Any = Depends(_get_cfg),
+) -> dict:
+    """Gallery cards: counts, last seen, and the People note path when it exists."""
+    from pawn_server.core import speakers_api  # noqa: PLC0415
+
+    try:
+        return await asyncio.to_thread(
+            speakers_api.list_speakers, cfg, query=q, include_inactive=include_inactive
+        )
+    except speakers_api.SpeakersApiError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+
+
+@app.get("/v1/speakers/{speaker_id}", dependencies=[Depends(_require_token)])
+async def speakers_get(speaker_id: str, cfg: Any = Depends(_get_cfg)) -> dict:
+    """One person, their enrollments, and the sessions that name them."""
+    from pawn_server.core import speakers_api  # noqa: PLC0415
+
+    try:
+        return await asyncio.to_thread(speakers_api.speaker_detail, cfg, speaker_id)
+    except speakers_api.SpeakersApiError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+
+
+@app.patch("/v1/speakers/{speaker_id}", dependencies=[Depends(_require_token)])
+async def speakers_patch(
+    speaker_id: str,
+    body: SpeakerPatchRequest,
+    background: BackgroundTasks,
+    cfg: Any = Depends(_get_cfg),
+) -> dict:
+    """Rename, edit aliases or notes. Optionally queue reidentify for mapped sessions."""
+    from pawn_server.core import speakers_api  # noqa: PLC0415
+
+    try:
+        payload = await asyncio.to_thread(
+            speakers_api.update_speaker,
+            cfg,
+            speaker_id,
+            **body.model_dump(exclude_unset=True),
+        )
+    except speakers_api.SpeakersApiError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+    return _schedule_reidentify(background, cfg, payload)
+
+
+@app.delete("/v1/speakers/{speaker_id}", dependencies=[Depends(_require_token)])
+async def speakers_deactivate(speaker_id: str, cfg: Any = Depends(_get_cfg)) -> dict:
+    """Soft-deactivate a gallery person. Enrollments stay until removed."""
+    from pawn_server.core import speakers_api  # noqa: PLC0415
+
+    try:
+        return await asyncio.to_thread(speakers_api.deactivate_speaker, cfg, speaker_id)
+    except speakers_api.SpeakersApiError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+
+
+@app.delete(
+    "/v1/speakers/{speaker_id}/enrollments/{enrollment_id}",
+    dependencies=[Depends(_require_token)],
+)
+async def speakers_delete_enrollment(
+    speaker_id: str,
+    enrollment_id: str,
+    cfg: Any = Depends(_get_cfg),
+) -> Response:
+    """Drop one approved voiceprint."""
+    from pawn_server.core import speakers_api  # noqa: PLC0415
+
+    try:
+        await asyncio.to_thread(speakers_api.delete_enrollment, cfg, speaker_id, enrollment_id)
+    except speakers_api.SpeakersApiError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+    return Response(status_code=204)
+
+
+@app.post("/v1/speakers/{speaker_id}/merge", dependencies=[Depends(_require_token)])
+async def speakers_merge(
+    speaker_id: str,
+    body: SpeakerMergeRequest,
+    background: BackgroundTasks,
+    cfg: Any = Depends(_get_cfg),
+) -> dict:
+    """Move enrollments and session links onto another person, then deactivate."""
+    from pawn_server.core import speakers_api  # noqa: PLC0415
+
+    try:
+        payload = await asyncio.to_thread(
+            speakers_api.merge_speakers,
+            cfg,
+            speaker_id,
+            body.into,
+            reidentify=body.reidentify,
+        )
+    except speakers_api.SpeakersApiError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+    return _schedule_reidentify(background, cfg, payload)
+
+
+@app.post("/v1/speakers/{speaker_id}/people", dependencies=[Depends(_require_token)])
+async def speakers_people(speaker_id: str, cfg: Any = Depends(_get_cfg)) -> dict:
+    """Create the People note when it is missing. An existing note is kept."""
+    from pawn_server.core import speakers_api  # noqa: PLC0415
+
+    try:
+        return await asyncio.to_thread(speakers_api.ensure_people_note, cfg, speaker_id)
+    except speakers_api.SpeakersApiError as exc:
         raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
 
 
@@ -1682,6 +2002,21 @@ async def planner_events_list(
     return {"object": "list", "data": rows}
 
 
+@app.get("/v1/planner/range", dependencies=[Depends(_require_token)])
+async def planner_range(
+    date_from: str = Query(alias="from"),
+    date_to: str = Query(alias="to"),
+    cfg: Any = Depends(_get_cfg),
+) -> dict:
+    """Merged timelines for an inclusive local-date range (14 days max)."""
+    from pawn_server.core import planner  # noqa: PLC0415
+
+    try:
+        return await asyncio.to_thread(planner.build_range, cfg, date_from, date_to)
+    except planner.PlannerError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+
+
 @app.post("/v1/planner/events", dependencies=[Depends(_require_token)])
 async def planner_events_create(body: PlannerEventRequest, cfg: Any = Depends(_get_cfg)) -> dict:
     """Create or upsert a ``pawn: event`` note."""
@@ -1704,6 +2039,29 @@ async def planner_events_create(body: PlannerEventRequest, cfg: Any = Depends(_g
             session_id=body.session_id or "",
             body=body.body or "",
             event_id=body.id or "",
+        )
+    except planner.PlannerError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+
+
+@app.patch(
+    "/v1/planner/events/{event_id}",
+    dependencies=[Depends(_require_token)],
+)
+async def planner_events_patch(
+    event_id: str,
+    body: PlannerEventPatch,
+    cfg: Any = Depends(_get_cfg),
+) -> dict:
+    """Partially update one event note. Prep, snippets and extra frontmatter stay."""
+    from pawn_server.core import planner  # noqa: PLC0415
+
+    try:
+        return await asyncio.to_thread(
+            planner.update_event,
+            cfg,
+            event_id,
+            **body.model_dump(exclude_unset=True),
         )
     except planner.PlannerError as exc:
         raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
@@ -2045,6 +2403,168 @@ async def item_action(
     return {"receipt": receipt, "item": item}
 
 
+class EmergenceLabelRequest(BaseModel):
+    """A verdict on something Pawn extracted, or something it missed."""
+
+    type: str
+    text: str
+    verdict: str = "missed"  # missed | accept | reject
+    quote: Optional[str] = None
+    source_ref: Optional[str] = None
+    start_sec: Optional[float] = None
+    target_id: Optional[str] = None
+
+
+@app.post("/v1/emergence/labels", dependencies=[Depends(_require_token)])
+async def emergence_label(
+    body: EmergenceLabelRequest,
+    cfg: Any = Depends(_get_cfg),
+) -> dict:
+    """Record a label. ``missed`` marks a passage Pawn should have extracted."""
+    from pawn_agent.core.emergence.labels import record_api_label  # noqa: PLC0415
+
+    try:
+        return await asyncio.to_thread(record_api_label, cfg, body.model_dump())
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+def _public_subject(row: dict) -> dict:
+    out = {k: v for k, v in row.items() if k != "centroid" and not k.startswith("_")}
+    out["fields"] = {k: v for k, v in (row.get("fields") or {}).items() if not k.startswith("_")}
+    for key in ("last_evidence_at", "state_at", "checked_at", "review_at", "created_at", "updated_at"):
+        if out.get(key) is not None and hasattr(out[key], "isoformat"):
+            out[key] = out[key].isoformat()
+    return out
+
+
+@app.get("/v1/emergence/subjects", dependencies=[Depends(_require_token)])
+async def emergence_subjects(
+    kind: Optional[str] = None,
+    status: Optional[str] = None,
+    cfg: Any = Depends(_get_cfg),
+) -> dict:
+    """Threads, questions, decisions, commitments, predictions, hypotheses."""
+    from pawn_agent.core.emergence import subjects as subj  # noqa: PLC0415
+
+    kinds = [k for k in (kind or "").split(",") if k] or None
+    statuses = [s for s in (status or "").split(",") if s] or None
+    rows = await asyncio.to_thread(subj.list_subjects, cfg.db_dsn, kinds=kinds, statuses=statuses)
+    return {"subjects": [_public_subject(r) for r in rows]}
+
+
+@app.get("/v1/emergence/subjects/{subject_id}", dependencies=[Depends(_require_token)])
+async def emergence_subject(subject_id: str, cfg: Any = Depends(_get_cfg)) -> dict:
+    """One subject with its linked observations and history."""
+    from datetime import datetime  # noqa: PLC0415
+
+    from pawn_agent.core.emergence import subjects as subj  # noqa: PLC0415
+
+    row = await asyncio.to_thread(subj.get_subject, cfg.db_dsn, subject_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="no such subject")
+    observations = await asyncio.to_thread(subj.subject_observations, cfg.db_dsn, subject_id)
+    for o in observations:
+        o.pop("embedding", None)
+        for key in ("created_at", "linked_at"):
+            if o.get(key) is not None:
+                o[key] = o[key].isoformat()
+    since = row.get("created_at") or datetime.min
+    events = [
+        {**e, "at": e["at"].isoformat()}
+        for e in await asyncio.to_thread(subj.events_since, cfg.db_dsn, since)
+        if e["subject_id"] == subject_id
+    ]
+    return {"subject": _public_subject(row), "observations": observations, "events": events}
+
+
+class EmergenceStatusRequest(BaseModel):
+    status: str
+    # Where the verdict was given (labels record it): api | brainmap.
+    surface: Optional[str] = None
+
+
+@app.post("/v1/emergence/subjects/{subject_id}/status", dependencies=[Depends(_require_token)])
+async def emergence_subject_status(
+    subject_id: str, body: EmergenceStatusRequest, cfg: Any = Depends(_get_cfg)
+) -> dict:
+    """Accept (``active``), drop (``dismissed``), close (``done``) a subject."""
+    from pawn_agent.core.emergence import subjects as subj  # noqa: PLC0415
+    from pawn_agent.core.emergence.threads import USER_STATUSES  # noqa: PLC0415
+
+    if body.status not in USER_STATUSES:
+        raise HTTPException(status_code=400, detail=f"status must be one of {sorted(USER_STATUSES)}")
+    from pawn_agent.core.emergence.labels import record_subject_label  # noqa: PLC0415
+
+    before = await asyncio.to_thread(subj.get_subject, cfg.db_dsn, subject_id)
+    if before is None:
+        raise HTTPException(status_code=404, detail="no such subject")
+    row = await asyncio.to_thread(subj.set_status, cfg.db_dsn, subject_id, body.status, reason="api")
+    if row is None:
+        raise HTTPException(status_code=404, detail="no such subject")
+    if before["status"] != body.status:
+        surface = body.surface if body.surface in {"api", "brainmap"} else "api"
+        await asyncio.to_thread(record_subject_label, cfg, before, body.status, surface=surface)
+    return {"subject": _public_subject(row)}
+
+
+@app.get("/v1/emergence/provocations", dependencies=[Depends(_require_token)])
+async def emergence_provocations(days: int = 14, cfg: Any = Depends(_get_cfg)) -> dict:
+    """Recent provocations (shown and candidate) with verdicts."""
+    from pawn_agent.core.emergence.provocations import list_recent  # noqa: PLC0415
+
+    return {"provocations": await asyncio.to_thread(list_recent, cfg, days=days)}
+
+
+class EmergenceVerdictRequest(BaseModel):
+    verdict: str  # useful | wrong | not_now
+
+
+@app.post("/v1/emergence/provocations/{short_id}/verdict", dependencies=[Depends(_require_token)])
+async def emergence_verdict(
+    short_id: str, body: EmergenceVerdictRequest, cfg: Any = Depends(_get_cfg)
+) -> dict:
+    """Record a verdict on a provocation (and act on its subject)."""
+    from pawn_agent.core.emergence.provocations import apply_verdict  # noqa: PLC0415
+
+    return {"receipt": await asyncio.to_thread(apply_verdict, cfg, short_id, body.verdict)}
+
+
+class EmergenceNightRequest(BaseModel):
+    jobs: Optional[list[str]] = None
+
+
+@app.post("/v1/emergence/night", status_code=202, dependencies=[Depends(_require_token)])
+async def emergence_night(
+    body: EmergenceNightRequest, background: BackgroundTasks, cfg: Any = Depends(_get_cfg)
+) -> dict:
+    """Start the night shift now (all jobs, or the ones listed)."""
+    from pawn_agent.core.emergence.night import JOBS, run_night  # noqa: PLC0415
+
+    unknown = [j for j in body.jobs or [] if j not in JOBS]
+    if unknown:
+        raise HTTPException(status_code=400, detail=f"unknown jobs: {unknown}")
+    background.add_task(run_night, cfg, jobs=body.jobs)
+    return {"started": body.jobs or "all"}
+
+
+@app.post("/v1/emergence/subjects/{subject_id}/council", status_code=202,
+          dependencies=[Depends(_require_token)])
+async def emergence_council(
+    subject_id: str, background: BackgroundTasks, cfg: Any = Depends(_get_cfg)
+) -> dict:
+    """Run the council (five personas + pre-mortem) on a decision."""
+    from pawn_agent.core.emergence import subjects as subj  # noqa: PLC0415
+    from pawn_agent.core.emergence.dream import council  # noqa: PLC0415
+    from pawn_core.vault_config import vault_store_from_config  # noqa: PLC0415
+
+    row = await asyncio.to_thread(subj.get_subject, cfg.db_dsn, subject_id)
+    if row is None or row["kind"] != "decision":
+        raise HTTPException(status_code=404, detail="no such decision")
+    background.add_task(council, cfg, vault_store_from_config(cfg), subject_id)
+    return {"started": subject_id}
+
+
 # ── Deprecated vault task aliases (plugin <= 0.1) ─────────────────────────────
 
 
@@ -2120,7 +2640,12 @@ class PawnChatHooks:
         return []
 
     async def on_answer(
-        self, content: str, *, run_id: Optional[str], written_files: list[str]
+        self,
+        content: str,
+        *,
+        run_id: Optional[str],
+        written_files: list[str],
+        extra_context: Optional[dict] = None,
     ) -> list[tuple[str, dict]]:
         return []
 
@@ -2142,8 +2667,14 @@ def pawn_chat_stream(
     hooks: Optional[PawnChatHooks] = None,
     *,
     source: str = "obsidian",
+    board: Optional[str] = None,
+    board_selection: Optional[list[str]] = None,
 ) -> AsyncIterator[str]:
     """Validate *body* and return the SSE generator for one chat turn.
+
+    With *board* (a board chat), every turn carries the board snapshot (the
+    *board_selection* first), runs with :class:`BoardProfile`, and the ghosts
+    the turn proposed are emitted as a ``board`` event.
 
     Shared by ``/v1/pawn/chat`` and the portal (``/v1/portal/chats/{id}/messages``).
     With *hooks*, the user turn and the answer are reported to the caller and
@@ -2172,13 +2703,21 @@ def pawn_chat_stream(
             yield _sse_event(event, data)
 
     async def _answer(
-        content: str, run_id: Optional[str] = None, written: Optional[list[str]] = None
+        content: str,
+        run_id: Optional[str] = None,
+        written: Optional[list[str]] = None,
+        proposals: Optional[list[dict]] = None,
     ) -> AsyncIterator[str]:
         yield _sse_event("answer", {"content": content})
+        if proposals:
+            yield _sse_event("board", {"board": board, "proposals": proposals, "run_id": run_id})
         if hooks is not None:
             if written:
                 yield _sse_event("files", {"paths": written, "run_id": run_id})
-            pairs = await hooks.on_answer(content, run_id=run_id, written_files=written or [])
+            extra_ctx = {"board_proposals": [p["id"] for p in proposals]} if proposals else None
+            pairs = await hooks.on_answer(
+                content, run_id=run_id, written_files=written or [], extra_context=extra_ctx
+            )
             async for chunk in _extra(pairs):
                 yield chunk
 
@@ -2246,11 +2785,29 @@ def pawn_chat_stream(
             store,
             [NoteRef(n.path, n.content, inline=n.inline) for n in body.context],
         )
+        board_sections: list[tuple[str, str]] = []
+        profile: Any = None
+        if board:
+            from pawn_agent.core.board_profile import BoardProfile  # noqa: PLC0415
+            from pawn_server.core import boards as boards_mod  # noqa: PLC0415
+
+            profile = BoardProfile(board)
+            try:
+                snap = await asyncio.to_thread(
+                    boards_mod.snapshot, cfg, board, list(board_selection or [])
+                )
+                board_sections.append(("Board", snap))
+            except Exception as exc:  # the turn still runs without the snapshot
+                logger.warning("board snapshot failed for %s: %s", board, exc)
         if resolved.rewritten:
             prompt = agent_message
         else:
             prompt = build_chat_prompt(
-                message, active_note=active, selection=body.selection, context=extra
+                message,
+                active_note=active,
+                selection=body.selection,
+                context=extra,
+                extra_sections=board_sections,
             )
 
         from pawn_agent.core.vision import (  # noqa: PLC0415
@@ -2299,6 +2856,7 @@ def pawn_chat_stream(
                 on_progress=on_progress,
                 images=turn_images or None,
                 force_caption=bool(body.force_caption),
+                voice=profile,
             )
 
         from pawn_server.core.vault_events import vault_events  # noqa: PLC0415
@@ -2320,7 +2878,19 @@ def pawn_chat_stream(
                     for ev in vault_events.snapshot(seq_before)["events"]:
                         if ev.get("run_id") == run_id:
                             written.extend(p for p in ev["paths"] if p not in written)
-                async for chunk in _answer(strip_tool_trail(data.response or ""), run_id, written):
+                proposals: list[dict] = []
+                if board and run_id:
+                    from pawn_server.core import boards as boards_mod  # noqa: PLC0415
+
+                    try:
+                        proposals = await asyncio.to_thread(
+                            boards_mod.proposals_for_run, cfg.db_dsn, run_id
+                        )
+                    except Exception as exc:
+                        logger.warning("board proposals not collected: %s", exc)
+                async for chunk in _answer(
+                    strip_tool_trail(data.response or ""), run_id, written, proposals
+                ):
                     yield chunk
         yield _sse_event("done", {"conversation": conversation, "run_id": run_id})
 
@@ -2356,9 +2926,14 @@ async def pawn_voice(body: PawnVoiceRequest, cfg: Any = Depends(_get_cfg)) -> St
     _schedule_idle_reset(loop, cfg.api_model_idle_timeout_minutes * 60)
     keepalive = float(getattr(cfg.api, "stream_keepalive_seconds", 10.0))
 
+    from pawn_server.core import voice_threads  # noqa: PLC0415
+
+    device_id = (body.device_id or "").strip() or None
+
     async def _gen() -> AsyncIterator[str]:
         if message == _RESET_SENTINEL:
             await _sallm_registry.reset(conversation, cfg.db_dsn)
+            await asyncio.to_thread(voice_threads.end_thread, cfg.db_dsn, conversation)
             yield _sse_event("answer", {"content": "Ok."})
             yield _sse_event("done", {"conversation": conversation})
             return
@@ -2405,11 +2980,89 @@ async def pawn_voice(body: PawnVoiceRequest, cfg: Any = Depends(_get_cfg)) -> St
                 if screen:
                     answer["display"] = screen
                 yield _sse_event("answer", answer)
+                await asyncio.to_thread(
+                    voice_threads.record_turn,
+                    cfg,
+                    conversation,
+                    device_id=device_id,
+                    access=voice.access,
+                    lang=lang,
+                    user=message,
+                    answer=speech,
+                    display=screen or None,
+                    run_id=run_id,
+                    ended="end" in controls,
+                )
         yield _sse_event(
             "done", {"conversation": conversation, "run_id": run_id, "access": voice.access}
         )
 
     return StreamingResponse(_gen(), media_type="text/event-stream")
+
+
+def _voice_error(exc: Exception) -> HTTPException:
+    return HTTPException(status_code=getattr(exc, "status_code", 422), detail=str(exc))
+
+
+@app.get("/v1/pawn/voice/active", dependencies=[Depends(_require_token)])
+async def pawn_voice_active(
+    exclude_device: Optional[str] = None, cfg: Any = Depends(_get_cfg)
+) -> dict:
+    """Newest voice conversation that another assistant can take over (or null)."""
+    from pawn_server.core import voice_threads  # noqa: PLC0415
+
+    window = float(getattr(getattr(cfg, "devices", None), "handoff_window_s", 600.0))
+    thread = await asyncio.to_thread(
+        voice_threads.active_thread, cfg.db_dsn, exclude_device=exclude_device, window_s=window
+    )
+    return {"thread": thread}
+
+
+@app.post("/v1/pawn/voice/{conversation}/claim", dependencies=[Depends(_require_token)])
+async def pawn_voice_claim(
+    conversation: str, body: VoiceClaimRequest, cfg: Any = Depends(_get_cfg)
+) -> dict:
+    """Move a voice conversation to *device_id* ("continua qui"); access drops to chat."""
+    from pawn_server.core import voice_threads  # noqa: PLC0415
+
+    window = float(getattr(getattr(cfg, "devices", None), "handoff_window_s", 600.0))
+    try:
+        return await asyncio.to_thread(
+            voice_threads.claim_thread, cfg.db_dsn, conversation, body.device_id, window_s=window
+        )
+    except voice_threads.VoiceThreadError as exc:
+        raise _voice_error(exc) from exc
+
+
+@app.post(
+    "/v1/pawn/voice/access-requests",
+    status_code=202,
+    dependencies=[Depends(_require_token)],
+)
+async def pawn_voice_access_request(body: AccessRequestBody, cfg: Any = Depends(_get_cfg)) -> dict:
+    """Ask the user's phone to approve full access for *device_id* (biometric)."""
+    from pawn_server.core import voice_threads  # noqa: PLC0415
+
+    try:
+        return await asyncio.to_thread(
+            voice_threads.create_access_request,
+            cfg,
+            body.device_id,
+            conversation=body.conversation,
+            minutes=body.minutes,
+        )
+    except voice_threads.VoiceThreadError as exc:
+        raise _voice_error(exc) from exc
+
+
+@app.get("/v1/pawn/voice/access-requests/{request_id}", dependencies=[Depends(_require_token)])
+async def pawn_voice_access_status(request_id: str, cfg: Any = Depends(_get_cfg)) -> dict:
+    from pawn_server.core import voice_threads  # noqa: PLC0415
+
+    try:
+        return await asyncio.to_thread(voice_threads.get_access_request, cfg.db_dsn, request_id)
+    except voice_threads.VoiceThreadError as exc:
+        raise _voice_error(exc) from exc
 
 
 # ──────────────────────────────────────────────────────────────────────────────

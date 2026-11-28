@@ -1,0 +1,39 @@
+{
+  "_comment": "Expected client view of each golden transcript. Both assistant clients replay these files in their unit tests; pawn-server's tests/test_voice_contract.py checks that the real endpoint still produces them. See docs/VOICE_PROTOCOL.md.",
+  "cases": [
+    {
+      "file": "turn.sse",
+      "progress": ["Ran planner_day"],
+      "answer": {
+        "text": "Domani alle nove hai la riunione con Sean.",
+        "access": "chat",
+        "controls": ["end"],
+        "display": "- 09:00 Sean\n- 14:00 Dentista",
+        "run_id": "run-1"
+      }
+    },
+    {
+      "file": "reset.sse",
+      "progress": [],
+      "answer": {
+        "text": "Ok.",
+        "access": "chat",
+        "controls": [],
+        "display": null,
+        "run_id": null
+      }
+    },
+    {
+      "file": "error.sse",
+      "progress": [],
+      "error": "model down"
+    }
+  ],
+  "device_stream": {
+    "file": "device_stream.sse",
+    "commands": [
+      {"id": "c1", "tool": "speak", "args": {"text": "La pasta è pronta."}},
+      {"id": "c2", "tool": "timer_set", "args": {"seconds": "600", "label": "pasta"}}
+    ]
+  }
+}

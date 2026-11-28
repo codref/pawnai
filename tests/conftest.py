@@ -19,3 +19,16 @@ def temp_db_path(tmp_path):
     db_path = tmp_path / "test_db"
     db_path.mkdir()
     return str(db_path)
+
+
+@pytest.fixture(autouse=True)
+def _clear_module_caches():
+    """Process-level caches (planner event notes, session audio files) must not leak across tests."""
+    yield
+    try:
+        from pawn_server.core import planner, sessions_api
+
+        planner.clear_event_cache()
+        sessions_api.invalidate_session_files()
+    except Exception:  # pragma: no cover - optional server deps
+        pass

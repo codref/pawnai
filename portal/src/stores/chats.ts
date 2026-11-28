@@ -19,7 +19,12 @@ export type ChatView = "folders" | "tags" | "all";
 
 /** A side chat ("Ask about this") that has not been promoted. */
 export function isSideChat(c: Pick<Chat, "origin">): boolean {
-  return Boolean(c.origin && !c.origin.promoted);
+  return Boolean(c.origin && !c.origin.promoted && c.origin.kind);
+}
+
+/** A board's own chat: it lives beside its board, not in the chat lists. */
+export function isBoardChat(c: Pick<Chat, "origin">): boolean {
+  return Boolean(c.origin && c.origin.kind === "board" && !c.origin.promoted);
 }
 
 export interface SortChoice {
@@ -72,6 +77,7 @@ export const useChatsStore = defineStore("chats", () => {
   });
   /** Chat lists hide side chats that show nested under a listed parent. */
   function nested(c: Chat): boolean {
+    if (isBoardChat(c)) return true;
     return isSideChat(c) && Boolean(c.parent_chat_id && chats.value.some((p) => p.id === c.parent_chat_id));
   }
   /** "Scroll to this message" request for an open ChatPanel. */

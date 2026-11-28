@@ -216,7 +216,7 @@ async def _apply_item_actions(cfg: Any, store: Any, *, registry: Any) -> int:
             project = str(parsed.get("todo_project") or "").strip()
             if project:
                 arg = project
-        await apply_action(cfg, item_id, action, arg, registry=registry, store=store)
+        await apply_action(cfg, item_id, action, arg, registry=registry, store=store, surface="note")
         acted += 1
     return acted
 

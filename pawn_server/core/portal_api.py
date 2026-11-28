@@ -52,7 +52,7 @@ from pawn_server.core.portal_models import (
 logger = logging.getLogger(__name__)
 
 CHAT_SORTS = ("updated", "created", "name", "tag")
-TARGET_KINDS = ("message", "file", "item", "session", "clip", "capture")
+TARGET_KINDS = ("message", "file", "item", "session", "clip", "capture", "event")
 _TITLE_LEN = 80
 _TEXT_SUFFIXES = (".md", ".txt", ".json", ".yaml", ".yml", ".csv", ".base", ".canvas")
 
@@ -269,6 +269,37 @@ def _annotation_context(db: Session, anns: list[PortalAnnotation]) -> dict[str, 
         elif a.target_kind == "file":
             out[a.id] = {"label": a.target_ref.rsplit("/", 1)[-1]}
     return out
+
+
+def new_chat(
+    db: Session,
+    *,
+    title: str = "",
+    folder_id: Optional[str] = None,
+    tags: Optional[Iterable[str]] = None,
+    parent_chat_id: Optional[str] = None,
+    origin: Optional[dict[str, Any]] = None,
+) -> PortalChat:
+    """Insert a portal chat (``conversation_key`` ``chat:{id}``) and flush it."""
+    now = _now()
+    chat_id = _new_id()
+    tag_list = clean_tags(tags or [])
+    chat = PortalChat(
+        id=chat_id,
+        conversation_key=f"chat:{chat_id}",
+        title=(title or "").strip(),
+        folder_id=folder_id,
+        tags=tag_list,
+        parent_chat_id=parent_chat_id,
+        origin=origin,
+        title_auto=not (title or "").strip(),
+        tags_auto=not tag_list,
+        created_at=now,
+        updated_at=now,
+    )
+    db.add(chat)
+    db.flush()
+    return chat
 
 
 def _get_chat(db: Session, chat_id: str) -> PortalChat:
@@ -647,6 +678,8 @@ class MessageCreate(BaseModel):
     model: Optional[str] = None
     reasoning: Optional[str] = None
     route: Optional[str] = None
+    # Board chats: the cards selected on the board when the message was sent.
+    board_selection: list[str] = Field(default_factory=list)
 
 
 class ForkRequest(BaseModel):
@@ -728,15 +761,202 @@ def _item_context(cfg: Any, item_id: str) -> tuple[Optional[str], list[dict]]:
         return None, []
     if not item:
         return None, []
-    parts = [f"Coworker item ({item.get('kind') or 'item'}, {item.get('status') or 'new'}): {item.get('text') or ''}"]
+    parts = [
+        f"Coworker item ({item.get('kind') or 'item'}, {item.get('status') or 'new'}): {item.get('text') or ''}"
+    ]
     if item.get("quote"):
         parts.append(f"Quote: {item['quote']}")
     if item.get("reason"):
         parts.append(f"Why it surfaced: {item['reason']}")
     if item.get("source_kind") or item.get("source_ref"):
-        parts.append(f"Source: {item.get('source_kind') or ''} {item.get('source_ref') or ''}".strip())
+        parts.append(
+            f"Source: {item.get('source_kind') or ''} {item.get('source_ref') or ''}".strip()
+        )
     notes = [{"path": str(item["note_key"]), "inline": True}] if item.get("note_key") else []
     return "\n".join(parts), notes
+
+
+def _merge_quote(quote: Optional[str], extra: Optional[str]) -> Optional[str]:
+    parts = [p.strip() for p in (quote, extra) if p and str(p).strip()]
+    return "\n\n".join(parts) or None
+
+
+def _clock(seconds: float) -> str:
+    """Name a transcript offset as ``m:ss`` or ``h:mm:ss``."""
+    total = max(0, int(round(float(seconds))))
+    hours, rem = divmod(total, 3600)
+    minutes, secs = divmod(rem, 60)
+    if hours:
+        return f"{hours}:{minutes:02d}:{secs:02d}"
+    return f"{minutes}:{secs:02d}"
+
+
+def _read_note(cfg: Any, path: str) -> Optional[str]:
+    try:
+        return _store(cfg).read(path)
+    except Exception as exc:  # noqa: BLE001 - grounding is best effort
+        logger.debug("origin note %s unavailable: %s", path, exc)
+        return None
+
+
+def _session_origin(cfg: Any, origin: dict[str, Any]) -> tuple[Optional[str], list[dict]]:
+    """Transcript note when mapped; otherwise a header plus the transcript tool hint."""
+    sid = str(origin.get("ref") or "").strip()
+    detail: dict[str, Any] = {
+        "session_id": sid,
+        "title": sid,
+        "speakers": [],
+        "transcript_path": None,
+    }
+    try:
+        from pawn_server.core.sessions_api import get_session  # noqa: PLC0415
+
+        detail = get_session(cfg, sid)
+    except Exception as exc:  # noqa: BLE001 - grounding is best effort
+        logger.debug("session origin lookup failed: %s", exc)
+
+    title = str(detail.get("title") or sid)
+    when = str(detail.get("created_at") or detail.get("updated_at") or "")
+    speakers = [str(s) for s in (detail.get("speakers") or []) if str(s).strip()]
+    path = str(detail.get("transcript_path") or "").strip()
+    lines = [f"Session: {title}"]
+    if when:
+        lines.append(f"Date: {when}")
+    if path:
+        lines.append(f"Speakers: {', '.join(speakers)}" if speakers else "Speakers: unknown")
+    else:
+        lines.append(f"Speakers: {', '.join(speakers) if speakers else 'unknown'}")
+    lines.append(f"Session id: {sid}")
+    notes: list[dict] = []
+    if path:
+        notes.append({"path": path, "inline": True})
+    else:
+        lines.append(f"use `session_transcript --session-id {sid}`")
+    raw_t = origin.get("t")
+    if raw_t is not None and str(raw_t).strip() != "":
+        try:
+            secs = float(raw_t)
+            lines.append(f"Timestamp: {_clock(secs)} ({secs:g}s)")
+        except (TypeError, ValueError):
+            lines.append(f"Timestamp: {raw_t}")
+    return "\n".join(lines), notes
+
+
+def _event_origin(cfg: Any, origin: dict[str, Any]) -> tuple[Optional[str], list[dict]]:
+    """Inline the event note (its body includes ``## Prep``)."""
+    eid = str(origin.get("ref") or "").strip()
+    try:
+        from pawn_server.core.planner import find_event_by_id  # noqa: PLC0415
+
+        ev = find_event_by_id(cfg, eid)
+    except Exception as exc:  # noqa: BLE001 - grounding is best effort
+        logger.debug("event origin lookup failed: %s", exc)
+        return f"Event: {eid}", []
+    path = str(ev.get("path") or "").strip()
+    notes = [{"path": path, "inline": True}] if path else []
+    title = str(ev.get("title") or eid)
+    start = str(ev.get("start") or "")
+    line = f"Event: {title}" + (f" ({start})" if start else "")
+    return line, notes
+
+
+def _render_day(day: dict[str, Any]) -> str:
+    """Compact text of one planner day, for a side chat's first turn."""
+    lines = [f"Day {day.get('date') or ''}"]
+    events = list(day.get("events") or [])
+    if events:
+        lines.append("Events:")
+        for ev in events:
+            if not isinstance(ev, dict):
+                continue
+            start = str(ev.get("start") or "")
+            end = str(ev.get("end") or "")
+            clock = ""
+            if "T" in start:
+                clock = start.split("T", 1)[1][:5]
+                if "T" in end:
+                    clock += "–" + end.split("T", 1)[1][:5]
+            title = str(ev.get("title") or "Untitled")
+            bits = [b for b in (clock, title) if b]
+            attendees = [str(a) for a in (ev.get("attendees") or []) if str(a).strip()]
+            if attendees:
+                bits.append("(" + ", ".join(attendees[:6]) + ")")
+            lines.append("- " + " ".join(bits))
+    else:
+        lines.append("Events: none")
+    sessions = [s for s in (day.get("sessions") or []) if isinstance(s, dict)]
+    if sessions:
+        lines.append("Sessions:")
+        for sess in sessions:
+            dur = sess.get("duration_seconds")
+            dur_s = ""
+            try:
+                if dur is not None:
+                    dur_s = f" ({int(float(dur) // 60)}m)"
+            except (TypeError, ValueError):
+                dur_s = ""
+            lines.append(f"- {sess.get('title') or sess.get('session_id')}{dur_s}")
+    others = day.get("other_items") or []
+    lines.append(f"Open TODOs: {len(others) if isinstance(others, list) else 0}")
+    lines.append("Use the day_plan skill.")
+    return "\n".join(lines)
+
+
+def _day_origin(cfg: Any, origin: dict[str, Any]) -> tuple[Optional[str], list[dict]]:
+    ref = str(origin.get("ref") or "").strip()
+    try:
+        from pawn_server.core.planner import build_day  # noqa: PLC0415
+
+        payload = build_day(cfg, ref)
+    except Exception as exc:  # noqa: BLE001 - grounding is best effort
+        logger.debug("day origin lookup failed: %s", exc)
+        payload = {"date": ref, "events": [], "sessions": [], "other_items": []}
+    return _render_day(payload), []
+
+
+def _people_note_path(cfg: Any, speaker_id: str) -> str:
+    try:
+        from pawn_agent.core.people.notes import people_note_key  # noqa: PLC0415
+
+        return people_note_key(cfg, speaker_id)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("people note path failed: %s", exc)
+        return f"People/{speaker_id}.md"
+
+
+def _speaker_summary(cfg: Any, speaker_id: str) -> str:
+    lines = [f"Speaker id: {speaker_id}"]
+    try:
+        from pawn_diarize.core.speaker_gallery import SpeakerGallery  # noqa: PLC0415
+
+        gallery = SpeakerGallery(cfg.db_dsn, config=getattr(cfg, "speakers", None))
+        speaker = gallery.get_speaker(speaker_id) or gallery.find_speaker_by_name(speaker_id)
+        if speaker is None:
+            return "\n".join(lines)
+        enrollments = gallery.list_enrollments(speaker.id)
+        seconds = sum(float(getattr(row, "duration", 0) or 0) for row in enrollments)
+        aliases = ", ".join(str(a) for a in (speaker.aliases or []) if str(a).strip()) or "none"
+        lines = [
+            f"Speaker: {speaker.display_name} ({speaker.id})",
+            f"Aliases: {aliases}",
+            f"Enrollments: {len(enrollments)} ({int(seconds)}s)",
+            f"Active: {'yes' if speaker.active else 'no'}",
+        ]
+        if getattr(speaker, "notes", None):
+            lines.append(f"Notes: {speaker.notes}")
+    except Exception as exc:  # noqa: BLE001 - grounding is best effort
+        logger.debug("speaker origin lookup failed: %s", exc)
+    return "\n".join(lines)
+
+
+def _speaker_origin(cfg: Any, origin: dict[str, Any]) -> tuple[Optional[str], list[dict]]:
+    """People note when it exists, plus the gallery card."""
+    sid = str(origin.get("ref") or "").strip()
+    path = _people_note_path(cfg, sid)
+    notes: list[dict] = []
+    if _read_note(cfg, path) is not None:
+        notes.append({"path": path, "inline": True})
+    return _speaker_summary(cfg, sid), notes
 
 
 def _origin_context(
@@ -747,13 +967,28 @@ def _origin_context(
         return None, []
     quote = (origin.get("quote") or "").strip() or None
     notes: list[dict] = []
-    if origin.get("kind") == "file" and origin.get("ref"):
+    kind = origin.get("kind")
+    if kind == "file" and origin.get("ref"):
         notes.append({"path": str(origin["ref"]), "inline": True})
-    if origin.get("kind") == "item" and origin.get("ref") and cfg is not None:
+    if kind == "item" and origin.get("ref") and cfg is not None:
         item_text, item_notes = _item_context(cfg, str(origin["ref"]))
         if item_text:
-            quote = f"{quote}\n\n{item_text}" if quote else item_text
+            quote = _merge_quote(quote, item_text)
         notes.extend(item_notes)
+    if cfg is not None and origin.get("ref"):
+        extra: Optional[str] = None
+        extra_notes: list[dict] = []
+        if kind == "session":
+            extra, extra_notes = _session_origin(cfg, origin)
+        elif kind == "event":
+            extra, extra_notes = _event_origin(cfg, origin)
+        elif kind == "day":
+            extra, extra_notes = _day_origin(cfg, origin)
+        elif kind == "speaker":
+            extra, extra_notes = _speaker_origin(cfg, origin)
+        if extra:
+            quote = _merge_quote(quote, extra)
+        notes.extend(extra_notes)
     return quote, notes
 
 
@@ -802,9 +1037,16 @@ class PortalMirrorHooks:
         return [("message", {"id": msg.id, "seq": msg.seq, "role": "user"})]
 
     async def on_answer(
-        self, content: str, *, run_id: Optional[str], written_files: list[str]
+        self,
+        content: str,
+        *,
+        run_id: Optional[str],
+        written_files: list[str],
+        extra_context: Optional[dict] = None,
     ) -> list[tuple[str, dict]]:
-        ctx = {"written_files": written_files} if written_files else None
+        ctx: Optional[dict] = {"written_files": written_files} if written_files else None
+        if extra_context:
+            ctx = {**(ctx or {}), **extra_context}
         msg = await asyncio.to_thread(
             self._append,
             "assistant",
@@ -1005,23 +1247,14 @@ def build_router(get_cfg: Callable[[], Any], require_token: Callable[..., None])
                 raise HTTPException(status_code=404, detail="Folder not found")
             if body.parent_chat_id:
                 _get_chat(db, body.parent_chat_id)
-            now = _now()
-            chat_id = _new_id()
-            chat = PortalChat(
-                id=chat_id,
-                conversation_key=f"chat:{chat_id}",
-                title=body.title.strip(),
+            chat = new_chat(
+                db,
+                title=body.title,
                 folder_id=body.folder_id,
-                tags=clean_tags(body.tags),
+                tags=body.tags,
                 parent_chat_id=body.parent_chat_id,
                 origin=body.origin,
-                title_auto=not body.title.strip(),
-                tags_auto=not body.tags,
-                created_at=now,
-                updated_at=now,
             )
-            db.add(chat)
-            db.flush()
             return _chat_out(chat, message_count=0)
 
     @router.get("/chats/{chat_id}")
@@ -1124,10 +1357,13 @@ def build_router(get_cfg: Callable[[], Any], require_token: Callable[..., None])
                 count = db.scalar(select(func.count()).where(PortalMessage.chat_id == chat_id))
                 return chat.conversation_key, chat.origin, int(count or 0)
 
+        from pawn_server.core.boards import board_for_origin  # noqa: PLC0415
+
         conversation, origin, count = await asyncio.to_thread(_load)
         selection = body.selection
         notes = [n.model_dump() for n in body.context]
-        if count == 0 and origin:
+        board = board_for_origin(origin)
+        if count == 0 and origin and not board:
             # First turn of a side chat: ground it in what it was spawned from.
             quote, origin_notes = await asyncio.to_thread(_origin_context, origin, cfg)
             selection = selection or quote
@@ -1159,8 +1395,17 @@ def build_router(get_cfg: Callable[[], Any], require_token: Callable[..., None])
             ]
         if count == 0 and origin:
             context["origin"] = origin
+        if board and body.board_selection:
+            context["board_selection"] = list(body.board_selection)
         hooks = PortalMirrorHooks(cfg, chat_id, body, context)
-        stream: AsyncIterator[str] = pawn_chat_stream(request, cfg, hooks, source="portal")
+        stream: AsyncIterator[str] = pawn_chat_stream(
+            request,
+            cfg,
+            hooks,
+            source="portal",
+            board=board,
+            board_selection=list(body.board_selection),
+        )
         return StreamingResponse(stream, media_type="text/event-stream")
 
     @router.post("/chats/{chat_id}/fork", status_code=201)
@@ -1458,10 +1703,29 @@ def build_router(get_cfg: Callable[[], Any], require_token: Callable[..., None])
                                 PortalFileIndex(key=row.key, title="", kind="", tags=row.tags)
                             )
 
+            sessions: list[dict[str, Any]] = []
+            if text:
+                try:
+                    from pawn_server.core.sessions_api import list_sessions_page  # noqa: PLC0415
+
+                    page = list_sessions_page(cfg, q=text, limit=limit)
+                    sessions = [
+                        {
+                            "session_id": row["session_id"],
+                            "title": row.get("title") or row["session_id"],
+                            "snippet": _snippet(str(row.get("summary") or row.get("title") or "")),
+                            "created_at": row.get("created_at"),
+                        }
+                        for row in page.get("data") or []
+                    ][:limit]
+                except Exception as exc:  # noqa: BLE001
+                    logger.debug("session search: %s", exc)
+
             return {
                 "query": text,
                 "tags": want_tags,
                 "chats": [_chat_out(c) for c in chats],
+                "sessions": sessions,
                 "messages": [
                     {
                         "id": m.id,

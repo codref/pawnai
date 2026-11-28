@@ -11,6 +11,7 @@ from sqlalchemy import (
     JSON,
     Boolean,
     DateTime,
+    Float,
     ForeignKey,
     Integer,
     String,
@@ -245,10 +246,95 @@ class Device(_Base):
     token_hash: Mapped[str] = mapped_column(String, nullable=False)
     unifiedpush_endpoint: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     enabled_categories: Mapped[Optional[list]] = mapped_column(JSON, nullable=True)
-    # Live tools the phone will run (location_now, status_now, sms_send, notify).
+    # Live tools the device will run (location_now, status_now, sms_send, notify, speak, …).
     capabilities: Mapped[Optional[list]] = mapped_column(JSON, nullable=True)
     created_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     last_seen: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    # phone (UnifiedPush wake-ups) | desktop (SSE command stream). See docs/ASSISTANTS.md.
+    kind: Mapped[str] = mapped_column(String, nullable=False, default="phone", server_default="phone")
+    platform: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    # Last reported presence: {state: active|idle|away, headset?, on_call?, last_wake_at?}.
+    presence: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
+    presence_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+
+
+class VoiceThread(_Base):
+    """One ``voice:`` conversation and the device that currently holds it."""
+
+    __tablename__ = "voice_threads"
+
+    conversation: Mapped[str] = mapped_column(String, primary_key=True)
+    device_id: Mapped[Optional[str]] = mapped_column(
+        String, ForeignKey("devices.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    access: Mapped[str] = mapped_column(String, nullable=False, default="chat")
+    lang: Mapped[str] = mapped_column(String, nullable=False, default="it")
+    # active | handed_off | ended
+    state: Mapped[str] = mapped_column(String, nullable=False, default="active", index=True)
+    turns: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    last_user: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    last_answer: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    portal_chat_id: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    started_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    last_turn_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True, index=True)
+
+
+class AccessRequest(_Base):
+    """A request for full voice access on one device, approved on another (phone)."""
+
+    __tablename__ = "access_requests"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    requester_device_id: Mapped[str] = mapped_column(
+        String, ForeignKey("devices.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    approver_device_id: Mapped[Optional[str]] = mapped_column(
+        String, ForeignKey("devices.id", ondelete="CASCADE"), nullable=True
+    )
+    conversation: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    minutes: Mapped[int] = mapped_column(Integer, nullable=False, default=15)
+    # pending | approved | denied | expired | error
+    status: Mapped[str] = mapped_column(String, nullable=False, default="pending", index=True)
+    command_id: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    message: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    created_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    expires_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    access_until: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+
+
+class WakeClip(_Base):
+    """A labelled 2 s wake-word clip uploaded by an assistant for retraining."""
+
+    __tablename__ = "wake_clips"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    device_id: Mapped[Optional[str]] = mapped_column(
+        String, ForeignKey("devices.id", ondelete="CASCADE"), nullable=True, index=True
+    )
+    label: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    score: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    path: Mapped[str] = mapped_column(String, nullable=False)
+    size: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    meta: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
+    captured_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True, index=True)
+
+
+class WakeModel(_Base):
+    """A published wake-word model; the ``active`` one is what assistants download."""
+
+    __tablename__ = "wake_models"
+
+    version: Mapped[str] = mapped_column(String, primary_key=True)
+    name: Mapped[str] = mapped_column(String, nullable=False, default="hey_pawn")
+    path: Mapped[str] = mapped_column(String, nullable=False)
+    sha256: Mapped[str] = mapped_column(String, nullable=False)
+    size: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    notes: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    # Suggested {wake, barge_in} thresholds from `wake-train calibrate`.
+    thresholds: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
+    active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    created_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
 
 
 class PhoneEvent(_Base):
@@ -314,6 +400,197 @@ class CoworkerDecision(_Base):
     outcome: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     agent_run_id: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     error: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    created_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+
+
+class EmSource(_Base):
+    """One processed source for the emergence layer (session, note, mail, …)."""
+
+    __tablename__ = "em_sources"
+    __table_args__ = (UniqueConstraint("kind", "ref", name="uq_em_sources_kind_ref"),)
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    kind: Mapped[str] = mapped_column(String, nullable=False)
+    ref: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    occurred_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    content_hash: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    pipeline_version: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    run_id: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    status: Mapped[str] = mapped_column(String, nullable=False, default="done")
+    stats: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
+    processed_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+
+
+class EmWindow(_Base):
+    """One slice of a source with its triage scores (latest run only)."""
+
+    __tablename__ = "em_windows"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    source_id: Mapped[str] = mapped_column(
+        String, ForeignKey("em_sources.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    run_id: Mapped[str] = mapped_column(String, nullable=False)
+    ordinal: Mapped[int] = mapped_column(Integer, nullable=False)
+    char_start: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    char_end: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    start_sec: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    end_sec: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    content_hash: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    triage: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
+    triage_model: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    embedding: Mapped[Optional[list]] = mapped_column(Vector(1024), nullable=True)
+
+
+class EmObservation(_Base):
+    """One atomic, typed, quoted claim extracted from a window."""
+
+    __tablename__ = "em_observations"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    source_id: Mapped[str] = mapped_column(
+        String, ForeignKey("em_sources.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    window_id: Mapped[Optional[str]] = mapped_column(
+        String, ForeignKey("em_windows.id", ondelete="SET NULL"), nullable=True
+    )
+    run_id: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    type: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    text: Mapped[str] = mapped_column(Text, nullable=False)
+    context: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    speaker_name: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    speaker_id: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    quote: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    quote_score: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    start_sec: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    fields: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
+    confidence: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    extractor: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    model: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    embedding: Mapped[Optional[list]] = mapped_column(Vector(1024), nullable=True)
+    # live | rejected | superseded
+    status: Mapped[str] = mapped_column(String, nullable=False, default="live", index=True)
+    reject_reason: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    created_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+
+
+class EmLabel(_Base):
+    """A user's verdict on an observation, item or review line (training row)."""
+
+    __tablename__ = "em_labels"
+    __table_args__ = (UniqueConstraint("target_kind", "target_id", name="uq_em_labels_target"),)
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    # item | observation | review | window
+    target_kind: Mapped[str] = mapped_column(String, nullable=False)
+    target_id: Mapped[str] = mapped_column(String, nullable=False)
+    # accept | reject | edit | missed
+    verdict: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    # inbox | matrix | note | chat | review | bulk | api
+    surface: Mapped[str] = mapped_column(String, nullable=False)
+    # Observation type (decision, commitment, question, …).
+    type: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    text: Mapped[str] = mapped_column(Text, nullable=False)
+    quote: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    context: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    source_ref: Mapped[Optional[str]] = mapped_column(String, nullable=True, index=True)
+    start_sec: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    observation_id: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    item_id: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    extractor: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    features: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
+    before: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
+    after: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
+    embedding: Mapped[Optional[list]] = mapped_column(Vector(1024), nullable=True)
+    created_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    updated_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+
+
+class EmSubject(_Base):
+    """A long-lived subject: thread, question, decision, commitment, …"""
+
+    __tablename__ = "em_subjects"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    # thread | question | decision | commitment | prediction | hypothesis
+    kind: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    title: Mapped[str] = mapped_column(Text, nullable=False)
+    slug: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    # goal | emergent | user | extracted | dream
+    origin: Mapped[str] = mapped_column(String, nullable=False)
+    # proposed | active | open | done | dismissed | expired | resolved
+    status: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    state_md: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    fields: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
+    momentum: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    source_ref: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    parent_id: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    last_evidence_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    state_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    checked_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    review_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    note_key: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    centroid: Mapped[Optional[list]] = mapped_column(Vector(1024), nullable=True)
+    created_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    updated_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+
+
+class EmLink(_Base):
+    """An observation attached to a subject with a role."""
+
+    __tablename__ = "em_links"
+    __table_args__ = (
+        UniqueConstraint("observation_id", "subject_id", name="uq_em_links_obs_subject"),
+    )
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    observation_id: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    subject_id: Mapped[str] = mapped_column(
+        String, ForeignKey("em_subjects.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    # mentions | evidence_for | evidence_against | updates | resolves | contradicts | origin
+    role: Mapped[str] = mapped_column(String, nullable=False)
+    score: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    # embedding | model | directed | cluster | user | ledger
+    linked_by: Mapped[str] = mapped_column(String, nullable=False)
+    created_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+
+
+class EmSubjectEvent(_Base):
+    """Append-only history of a subject."""
+
+    __tablename__ = "em_subject_events"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    subject_id: Mapped[str] = mapped_column(
+        String, ForeignKey("em_subjects.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    at: Mapped[datetime] = mapped_column(DateTime, nullable=False, index=True)
+    kind: Mapped[str] = mapped_column(String, nullable=False)
+    diff: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
+    cause_observation_ids: Mapped[Optional[list]] = mapped_column(JSON, nullable=True)
+
+
+class EmProvocation(_Base):
+    """A surfaced change in a subject, phrased as a question to the user."""
+
+    __tablename__ = "em_provocations"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    short_id: Mapped[str] = mapped_column(String, nullable=False, unique=True)
+    day: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    subject_id: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    kind: Mapped[str] = mapped_column(String, nullable=False)
+    text: Mapped[str] = mapped_column(Text, nullable=False)
+    score: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    features: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
+    fingerprint: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    # candidate | shown | skipped
+    status: Mapped[str] = mapped_column(String, nullable=False, default="candidate", index=True)
+    shown_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    # useful | wrong | not_now
+    verdict: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    verdict_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     created_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
 
 

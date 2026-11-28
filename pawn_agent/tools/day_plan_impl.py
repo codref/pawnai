@@ -146,6 +146,12 @@ def planner_day_impl(
     return format_planner_day(payload)
 
 
+def extract_plan(text: str) -> str:
+    """Return the ``## Plan`` body, or ``\"\"`` when the section is absent."""
+    match = _PLAN_SECTION_RE.search(text or "")
+    return match.group(1).strip() if match else ""
+
+
 def replace_plan_section(text: str, plan: str) -> str:
     """Replace or append ``## Plan`` in a daily note body."""
     body = text if text.endswith("\n") or not text else text + "\n"

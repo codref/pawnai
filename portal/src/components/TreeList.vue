@@ -3,17 +3,32 @@
 // guides only appear while the pointer is over the tree. Row content comes
 // from the default slot; the component owns indentation, expand/collapse,
 // lazy loading and selection highlighting.
-import { computed } from "vue";
+//
+// Drag and drop: rows re-emit dragover/drop with their node. A parent accepts
+// a drag by calling preventDefault() in its row-dragover handler; the tree
+// then highlights the row and opens a collapsed branch after a short hover.
+import { computed, onBeforeUnmount, ref } from "vue";
 import type { TreeItem } from "@/lib/tree";
+import { leftElement } from "@/lib/dnd";
 
 const props = withDefaults(
-  defineProps<{ nodes: T[]; expanded: string[]; selected?: string | null; indent?: number; emptyLabel?: string }>(),
-  { selected: null, indent: 14, emptyLabel: "" },
+  defineProps<{
+    nodes: T[];
+    expanded: string[];
+    selected?: string | null;
+    /** A secondary mark (e.g. the folder new files go to). */
+    marked?: string | null;
+    indent?: number;
+    emptyLabel?: string;
+  }>(),
+  { selected: null, marked: null, indent: 14, emptyLabel: "" },
 );
 const emit = defineEmits<{
   (e: "update:expanded", value: string[]): void;
   (e: "select", node: T): void;
   (e: "lazy-load", node: T): void;
+  (e: "row-dragover", ev: DragEvent, node: T): void;
+  (e: "row-drop", ev: DragEvent, node: T): void;
 }>();
 
 interface Row {
@@ -59,6 +74,44 @@ function onClick(row: Row): void {
   emit("select", row.node);
 }
 
+// ── drag and drop ────────────────────────────────────────────────────────
+const AUTO_EXPAND_MS = 600;
+const overKey = ref<string | null>(null);
+let expandTimer: ReturnType<typeof setTimeout> | undefined;
+
+function onRowDragOver(ev: DragEvent, row: Row): void {
+  emit("row-dragover", ev, row.node);
+  if (!ev.defaultPrevented) return;
+  if (overKey.value === row.node.key) return;
+  overKey.value = row.node.key;
+  clearTimeout(expandTimer);
+  if (row.hasKids && !row.open) expandTimer = setTimeout(() => toggle(row), AUTO_EXPAND_MS);
+}
+
+function onRowDragLeave(ev: DragEvent, row: Row): void {
+  if (overKey.value !== row.node.key || !leftElement(ev)) return;
+  overKey.value = null;
+  clearTimeout(expandTimer);
+}
+
+function onRowDrop(ev: DragEvent, row: Row): void {
+  overKey.value = null;
+  clearTimeout(expandTimer);
+  emit("row-drop", ev, row.node);
+}
+
+function endDrag(): void {
+  overKey.value = null;
+  clearTimeout(expandTimer);
+}
+window.addEventListener("dragend", endDrag);
+window.addEventListener("drop", endDrag);
+onBeforeUnmount(() => {
+  window.removeEventListener("dragend", endDrag);
+  window.removeEventListener("drop", endDrag);
+  clearTimeout(expandTimer);
+});
+
 function onKey(ev: KeyboardEvent, row: Row): void {
   if (ev.key === "Enter" || ev.key === " ") {
     ev.preventDefault();
@@ -77,13 +130,16 @@ function onKey(ev: KeyboardEvent, row: Row): void {
       v-for="row in rows"
       :key="row.node.key"
       class="tree-row"
-      :class="{ selected: selected === row.node.key }"
+      :class="{ selected: selected === row.node.key, marked: marked === row.node.key, 'drop-into': overKey === row.node.key }"
       :style="{ '--depth': row.depth }"
       role="treeitem"
       :aria-expanded="row.hasKids ? row.open : undefined"
       tabindex="0"
       @click="onClick(row)"
       @keydown="onKey($event, row)"
+      @dragover="onRowDragOver($event, row)"
+      @dragleave="onRowDragLeave($event, row)"
+      @drop="onRowDrop($event, row)"
     >
       <span class="tree-chevron" @click.stop="toggle(row)">
         <svg v-if="row.hasKids" viewBox="0 0 16 16" :class="{ open: row.open }" aria-hidden="true">
@@ -100,7 +156,7 @@ function onKey(ev: KeyboardEvent, row: Row): void {
 
 <style scoped>
 .tree-list {
-  padding: 2px 4px;
+  padding: 2px 6px 2px 4px;
   --guide: transparent;
 }
 .tree-list:hover {
@@ -111,8 +167,9 @@ function onKey(ev: KeyboardEvent, row: Row): void {
   align-items: center;
   min-height: 28px;
   padding-left: calc(var(--depth) * var(--indent) + 2px);
-  padding-right: 6px;
+  padding-right: 4px;
   border-radius: 6px;
+  position: relative;
   cursor: pointer;
   user-select: none;
   outline: none;
@@ -139,6 +196,17 @@ function onKey(ev: KeyboardEvent, row: Row): void {
 .tree-row.selected {
   background-color: var(--pawn-active);
   color: var(--q-primary);
+}
+.tree-row.marked::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 5px;
+  bottom: 5px;
+  width: 2px;
+  border-radius: 1px;
+  background: var(--q-primary);
+  opacity: 0.7;
 }
 .tree-chevron {
   flex: none;

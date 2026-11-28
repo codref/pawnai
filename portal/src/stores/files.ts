@@ -41,6 +41,32 @@ export const useFilesStore = defineStore("files", () => {
     return () => keyWatchers.delete(w);
   }
 
+  /**
+   * Debounced listener for vault writes under *prefix* (the prefix itself or a
+   * descendant). Sessions watch transcripts; Day watches events and daily notes.
+   */
+  function onVaultChange(prefix: string, fn: (paths: string[]) => void): () => void {
+    const root = prefix.replace(/\/+$/, "");
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let pending: string[] = [];
+    const stop = onKeys(
+      (key) => key === root || key.startsWith(`${root}/`),
+      (paths) => {
+        pending.push(...paths);
+        clearTimeout(timer);
+        timer = setTimeout(() => {
+          const batch = pending;
+          pending = [];
+          fn(batch);
+        }, 500);
+      },
+    );
+    return () => {
+      clearTimeout(timer);
+      stop();
+    };
+  }
+
   function notifyWatchers(paths: string[]): void {
     for (const w of keyWatchers) {
       const hit = paths.filter(w.match);
@@ -196,9 +222,9 @@ export const useFilesStore = defineStore("files", () => {
     }
   }
 
-  async function move(src: string, dst: string): Promise<string | null> {
+  async function move(src: string, dst: string, overwrite = false): Promise<string | null> {
     try {
-      const stat = await api().moveFile(src, dst);
+      const stat = await api().moveFile(src, dst, overwrite);
       recordEvent([src, stat.key], "portal", false);
       markSeen(src);
       await refreshFor([src, stat.key]);
@@ -246,6 +272,7 @@ export const useFilesStore = defineStore("files", () => {
     startEvents,
     stopEvents,
     onKeys,
+    onVaultChange,
     resolveWikilink,
     upload,
     createNote,

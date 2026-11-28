@@ -181,3 +181,98 @@ def test_http_routes(workdir: Path) -> None:
         assert status["db"]["reachable"] is True
         assert status["db"]["head"]
         assert status["config_file"].endswith("pawnai.yaml")
+
+
+def test_emergence_fields_resolve(workdir: Path) -> None:
+    cfg = load_config()
+    payload = settings_api.settings_payload(cfg)
+    assert "emergence" in [g["id"] for g in payload["groups"]]
+    rows = [f for f in payload["fields"] if f["group"] == "emergence"]
+    assert {r["path"] for r in rows} >= {"emergence.enabled", "emergence.night_cron", "emergence.fast_model"}
+    assert _field(payload, "emergence.night_cron")["next"]
+    out = settings_api.apply_patch(cfg, {"emergence.triage_threshold": 0.5, "emergence.fast_model": ""})
+    assert cfg.emergence.triage_threshold == 0.5
+    assert _field(out, "emergence.triage_threshold")["source"] == "override"
+    with pytest.raises(settings_api.SettingsError):
+        settings_api.apply_patch(cfg, {"emergence.fast_model": "nope@nothing"})
+
+
+def test_config_view_redacts(workdir: Path) -> None:
+    from pawn_server.core import diagnostics
+
+    cfg = load_config()
+    body = diagnostics.config_payload(cfg)
+    assert body["config"]["api"]["token"] == diagnostics.MASK
+    assert body["config"]["coworker"]["notify"]["token"] == diagnostics.MASK
+    assert body["config"]["agent"]["name"] == "Yamlbob"
+    assert body["editable"]["coworker.timezone"] == "coworker"
+    assert diagnostics.redact("postgresql://pawn:hunter2@db:5433/pawn") == (
+        f"postgresql://pawn:{diagnostics.MASK}@db:5433/pawn"
+    )
+    assert diagnostics.redact({"max_tokens": 5, "keep": "x"}) == {"max_tokens": 5, "keep": "x"}
+
+
+def test_scheduler_view(workdir: Path) -> None:
+    from datetime import datetime, timedelta, timezone
+
+    from pawn_agent.core import worker_status
+    from pawn_agent.utils.db import (
+        AgentRun,
+        AgentSchedule,
+        AgentScheduleFire,
+        AgentScheduleProposal,
+        _get_session,
+    )
+    from pawn_core.database import Base, get_engine
+    from pawn_server.core import diagnostics
+
+    cfg = load_config()
+    tables = [t.__table__ for t in (AgentRun, AgentSchedule, AgentScheduleFire, AgentScheduleProposal)]
+    Base.metadata.create_all(get_engine(cfg.db_dsn), tables=tables)
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    with _get_session(cfg.db_dsn) as db:
+        db.add(
+            AgentSchedule(
+                id="s1", name="Daily digest", prompt="digest", session_id="x", status="active",
+                schedule_kind="cron", timezone="UTC", cron_expression="0 9 * * *",
+                next_run_at=now + timedelta(hours=2), created_at=now, updated_at=now,
+            )
+        )
+        db.add(
+            AgentRun(
+                id="r1", source="schedule", command="run", model="m", status="failed",
+                error="boom", created_at=now, started_at=now, completed_at=now + timedelta(seconds=3),
+            )
+        )
+        db.add(AgentRun(id="r2", source="portal", command="chat", model="m", status="done", created_at=now))
+        db.flush()
+        db.add(
+            AgentScheduleFire(
+                id="f1", schedule_id="s1", scheduled_for=now, status="failed", agent_run_id="r1",
+                claimed_at=now, started_at=now, completed_at=now + timedelta(seconds=3), created_at=now,
+            )
+        )
+    worker_status.reset()
+    worker_status.started("scheduler", poll_interval_seconds=30)
+    worker_status.tick("scheduler", last_claimed=1)
+    try:
+        body = diagnostics.scheduler_payload(cfg)
+    finally:
+        worker_status.reset()
+    assert "db_error" not in body
+    assert body["config"]["poll_interval_seconds"] == 30.0
+    assert body["workers"]["scheduler"]["ticks"] == 1
+    assert [s["name"] for s in body["schedules"]] == ["Daily digest"]
+    fire = body["fires"][0]
+    assert fire["schedule_name"] == "Daily digest" and fire["error"] == "boom"
+    assert fire["duration_s"] == 3.0
+    assert body["fire_counts_24h"] == {"failed": 1}
+    assert [r["id"] for r in body["runs"]] == ["r1"]  # interactive chat is left out
+    crons = {c["id"]: c for c in body["crons"]}
+    assert crons["briefing"]["enabled"] is False and crons["briefing"]["gate"] == "coworker.enabled"
+
+    with TestClient(api_server.create_app(cfg)) as client:
+        assert client.get("/v1/portal/settings/scheduler").status_code == 401
+        assert client.get("/v1/portal/settings/scheduler", headers=AUTH).status_code == 200
+        cfgv = client.get("/v1/portal/settings/config", headers=AUTH).json()
+        assert cfgv["config"]["api"]["token"] == diagnostics.MASK

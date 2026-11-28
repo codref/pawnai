@@ -78,7 +78,13 @@ async def run_briefing(cfg: Any, *, store: Any = None) -> None:
         stale = stale_threads(threads, now=now, stale_days=cfg.coworker.stale_days)
         day = datetime.now(_zone(cfg)).date().isoformat()
         daily_key = f"{cfg.coworker.daily_dir.strip('/')}/{day}.md"
-        lines = [f"# {day}", "", f"Unsnoozed: {woken}", "", "## Open loops"]
+        provoking = _provocations_for(cfg, day)
+        lines = [f"# {day}", ""]
+        if provoking:
+            from pawn_agent.core.emergence.provocations import render_section  # noqa: PLC0415
+
+            lines.extend(render_section(provoking))
+        lines += [f"Unsnoozed: {woken}", "", "## Open loops"]
         if not loops and not stale:
             lines.append("")
             lines.append("_Nothing stalled._")
@@ -91,13 +97,39 @@ async def run_briefing(cfg: Any, *, store: Any = None) -> None:
         await notify(
             cfg,
             kind="coworker_briefing",
-            text=f"Pawn morning note is ready ({len(loops)} open loops).",
+            text=(
+                f"Pawn morning note is ready ({len(loops)} open loops"
+                + (f", {len(provoking)} provocations" if provoking else "")
+                + ")."
+            ),
             link=cfg.coworker.today_path,
         )
         update_agent_run(cfg.db_dsn, run_id, "completed", response=daily_key)
     except Exception as exc:
         update_agent_run(cfg.db_dsn, run_id, "failed", error=str(exc))
         raise
+
+
+def _provocations_for(cfg: Any, day: str) -> list[dict[str, Any]]:
+    """Today's provocations when the emergence layer is on (never raises)."""
+    if not getattr(getattr(cfg, "emergence", None), "enabled", False):
+        return []
+    try:
+        from pawn_agent.core.emergence.provocations import select_for_day  # noqa: PLC0415
+
+        return select_for_day(cfg, day)
+    except Exception as exc:
+        logger.warning("provocations unavailable: %s", exc)
+        return []
+
+
+async def run_night_shift(cfg: Any) -> dict[str, Any]:
+    """Run the emergence night jobs (subjects, ledger, reflection, dreaming)."""
+    from pawn_agent.core.emergence.night import run_night  # noqa: PLC0415
+
+    results = await run_night(cfg)
+    logger.info("emergence night shift: %s", results)
+    return results
 
 
 async def run_weekly_review(cfg: Any, *, store: Any = None) -> str:
@@ -161,29 +193,87 @@ async def start_coworker(cfg: Any) -> None:
     now = datetime.now(timezone.utc)
     next_briefing = _next_fire(cfg.coworker.briefing_cron, now, zone)
     next_weekly = _next_fire(cfg.coworker.weekly_cron, now, zone)
+    emergence = getattr(cfg, "emergence", None)
+    night_cron = str(getattr(emergence, "night_cron", "") or "")
+    next_night = (
+        _next_fire(night_cron, now, zone)
+        if getattr(emergence, "enabled", False) and night_cron
+        else None
+    )
     logger.info(
         "Starting coworker loop | briefing=%s weekly=%s",
         next_briefing,
         next_weekly,
     )
+    from pawn_agent.core import worker_status  # noqa: PLC0415
+
+    worker_status.started(
+        "coworker",
+        timezone=str(zone),
+        poll_interval_seconds=float(cfg.vault_watcher.poll_interval_seconds),
+        crons={
+            "briefing": cfg.coworker.briefing_cron,
+            "weekly": cfg.coworker.weekly_cron,
+            "night": night_cron if next_night is not None else None,
+        },
+        next={"briefing": next_briefing, "weekly": next_weekly, "night": next_night},
+        last={},
+    )
+    last: dict[str, dict[str, Any]] = {}
+
+    async def _fire(job: str, call: Any) -> None:
+        t0 = datetime.now(timezone.utc)
+        try:
+            result = await call
+            last[job] = {"at": t0, "ok": True, "result": _brief(result)}
+        except Exception as exc:
+            last[job] = {"at": t0, "ok": False, "result": str(exc) or type(exc).__name__}
+            raise
+        finally:
+            worker_status.update("coworker", last=last)
+
     try:
         while True:
             now = datetime.now(timezone.utc)
             try:
                 if next_briefing is not None and now >= next_briefing:
-                    await run_briefing(cfg)
                     next_briefing = _next_fire(cfg.coworker.briefing_cron, now, zone)
+                    await _fire("briefing", run_briefing(cfg))
                 if next_weekly is not None and now >= next_weekly:
-                    await run_weekly_review(cfg)
                     next_weekly = _next_fire(cfg.coworker.weekly_cron, now, zone)
+                    await _fire("weekly", run_weekly_review(cfg))
+                if next_night is not None and now >= next_night:
+                    next_night = _next_fire(night_cron, now, zone)
+                    await _fire("night", run_night_shift(cfg))
                 from pawn_server.core.vault_scanner import run_vault_scanner_tick  # noqa: PLC0415
 
                 stats = await run_vault_scanner_tick(cfg)
                 if any(stats.values()):
                     logger.info("coworker scan %s", stats)
+                worker_status.tick(
+                    "coworker",
+                    next={"briefing": next_briefing, "weekly": next_weekly, "night": next_night},
+                    last_scan=stats,
+                )
             except Exception as exc:
                 logger.error("coworker tick failed: %s", exc, exc_info=True)
+                worker_status.tick(
+                    "coworker",
+                    next={"briefing": next_briefing, "weekly": next_weekly, "night": next_night},
+                    error=str(exc) or type(exc).__name__,
+                )
             await asyncio.sleep(float(cfg.vault_watcher.poll_interval_seconds))
     except asyncio.CancelledError:
         logger.info("Coworker loop cancelled")
         raise
+    finally:
+        worker_status.stopped("coworker")
+
+
+def _brief(result: Any) -> Any:
+    """A short, JSON-safe summary of a cron job's return value."""
+    if result is None or isinstance(result, (bool, int, float)):
+        return result
+    if isinstance(result, dict):
+        return {str(k): (v if isinstance(v, (bool, int, float)) else str(v)[:200]) for k, v in result.items()}
+    return str(result)[:200]

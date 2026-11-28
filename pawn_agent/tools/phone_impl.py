@@ -160,8 +160,20 @@ def phone_devices_impl(cfg: Any) -> str:
         for row in rows:
             shared = ", ".join(row.enabled_categories or []) or "nothing"
             seen = _local(row.last_seen, tz) if row.last_seen else "never"
-            live = "yes" if row.unifiedpush_endpoint else "no"
-            out.append(f"- {row.name} (id {row.id}): shares {shared}; last seen {seen}; live tools {live}")
+            kind = row.kind or "phone"
+            live = "yes" if (row.unifiedpush_endpoint or kind == "desktop") else "no"
+            tools = ", ".join(row.capabilities or []) or "none"
+            presence = row.presence or {}
+            here = ""
+            if row.presence_at is not None:
+                flags = [k for k in ("headset", "on_call", "in_session") if presence.get(k)]
+                here = f"; presence {presence.get('state', '?')}" + (
+                    f" ({', '.join(flags)})" if flags else ""
+                ) + f" at {_local(row.presence_at, tz)}"
+            out.append(
+                f"- {row.name} ({kind}, id {row.id}): shares {shared}; runs {tools}; "
+                f"last seen {seen}{here}; live tools {live}"
+            )
         return "\n".join(out)
 
 

@@ -19,6 +19,7 @@ logger = logging.getLogger(__name__)
 
 NOTE_CHAR_LIMIT = 3000
 SELECTION_CHAR_LIMIT = 6000
+EXTRA_SECTION_CHAR_LIMIT = 8000
 MAX_CONTEXT_NOTES = 8
 
 _POINTER_HINT = (
@@ -87,10 +88,19 @@ def build_chat_prompt(
     active_note: Optional[NoteRef] = None,
     selection: Optional[str] = None,
     context: Sequence[NoteRef] = (),
+    extra_sections: Sequence[tuple[str, str]] = (),
 ) -> str:
-    """Compose the agent prompt; the bare message when there is no context."""
+    """Compose the agent prompt; the bare message when there is no context.
+
+    ``extra_sections`` are ``(heading, text)`` blocks that are not vault notes
+    (a board snapshot); they come first, each capped separately.
+    """
     message = (message or "").strip()
     sections: list[str] = []
+    for heading, text in extra_sections:
+        body = (text or "").strip()
+        if body:
+            sections.append(f"## {heading}\n{body[:EXTRA_SECTION_CHAR_LIMIT]}")
     if active_note is not None:
         path_line = f"Active note: {_link(active_note.path)} " f"(vault path `{active_note.path}`)"
         sections.append(path_line)
@@ -113,8 +123,9 @@ def build_chat_prompt(
         sections.append(_body_section(note))
     if not sections:
         return message
+    where = "the board and the user's vault" if extra_sections else "the user's Obsidian vault"
     return (
         f"{message}\n\n---\n"
-        "Context from the user's Obsidian vault (reference material; "
+        f"Context from {where} (reference material; "
         "the message above is the request):\n\n" + "\n\n".join(sections)
     )

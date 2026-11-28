@@ -1,0 +1,11 @@
+event: progress
+data: {"kind": "tool", "text": "Ran planner_day"}
+
+: keep-alive
+
+event: answer
+data: {"content": "Domani alle nove hai la riunione con Sean.", "access": "chat", "controls": ["end"], "display": "- 09:00 Sean\n- 14:00 Dentista"}
+
+event: done
+data: {"conversation": "voice:contract", "run_id": "run-1", "access": "chat"}
+

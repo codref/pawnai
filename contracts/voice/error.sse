@@ -1,0 +1,6 @@
+event: error
+data: {"message": "model down"}
+
+event: done
+data: {"conversation": "voice:contract", "run_id": null, "access": "chat"}
+

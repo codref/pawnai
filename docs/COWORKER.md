@@ -128,7 +128,15 @@ When a `transcribe-diarize` job finishes and chaining resolves to `session_compl
    `quote` from the source. Extract source is the DB transcript plus any
    non-empty vault `## Annotations` on the session note (the default stub is
    ignored). Edit Annotations to explain people, relations, or what to skip,
-   then re-run extract.
+   then re-run extract. Long sources are read in overlapping windows
+   (`coworker.extract_window_chars`, default 12000 characters, about 3k
+   tokens; `coworker.extract_window_overlap`, default 1500), cut on speaker
+   turns, one model call each. Annotations go with every window. Duplicates
+   from the overlap are merged, keeping the copy with the better-matching
+   quote. When the quote is found in a transcript, the item records where:
+   `start_sec` in the item note's frontmatter and `payload`, and
+   "Source: … at mm:ss" in the note. A failed window is skipped and logged;
+   extraction fails only when every window fails.
 2. Scores them against the active threads. A hit has to name one of those threads.
 3. Writes `Pawn/Items/{YYYY-MM-DD}-{slug}-{short_id}.md` and refreshes `Pawn/Today.md`.
 4. Pushes Matrix (and optional ntfy) only for interrupts.
@@ -174,6 +182,7 @@ kind: decision
 thread: Project X storage
 source_kind: session
 source_ref: session-id
+start_sec: 872.4
 action:
 ---
 
@@ -187,7 +196,7 @@ deploy; moving earlier risks breaking the Sync Engine cutover. Owner unclear.
 > We should not move the bucket before the deploy.
 > Mira: yes, keep it on our S3 through Friday at least.
 
-Source: [[Pawn/Transcripts/2026-09-28 session-id.md]]
+Source: [[Pawn/Transcripts/2026-09-28 session-id.md]] at 14:32
 
 ## Why you were notified
 
@@ -199,6 +208,98 @@ A decision with no owner on Project X storage.
 ```
 
 `## Related` is filled from the shared knowledge index (same embedding model as sallm). Queries use sallm's instruct template; neighbors must clear `coworker.related_max_distance` (cosine distance). Transcript hits also need a proper-noun overlap with the item summary/quote when one exists. Prior item notes rank above raw meeting windows; empty Related is omitted.
+
+## Observation layer (emergence)
+
+Off by default. With it on, step 1 above changes: instead of one prompt per
+window, Pawn stores **observations** and files Items from the actionable ones.
+Threads, the ledger, the night shift and provocations are in
+[EMERGENCE.md](EMERGENCE.md); design: [plans/EMERGENCE.md](plans/EMERGENCE.md).
+
+```bash
+alembic upgrade head   # 0029: em_sources, em_windows, em_observations
+```
+
+```yaml
+emergence:
+  enabled: true
+  fast_model: ""          # catalog id for the per-window passes; empty → background default
+  window_chars: 12000
+  window_overlap: 1500
+  triage_threshold: 0.35  # a type is extracted when triage scores it at least this
+  always_types: [decision, commitment, block]  # extracted from every window, triage or not
+  quote_min_score: 0.8    # below this the quote was not found → rejected
+  think_types: [decision, commitment, block]  # reasoning on for these; triage never thinks
+  types: [decision, commitment, question, block, contradiction, prediction, concern, fact]
+```
+
+For each window:
+
+1. **Triage**: one short call scores every type 0–1. Types under the
+   threshold are skipped for that window, so quiet stretches cost one call.
+   An unusable reply extracts every type rather than losing anything.
+2. **Typed extraction**: one prompt per remaining type, each with its own
+   fields (a decision has `choice`, `rationale`, `assumptions`, `owner`,
+   `alternatives`; a commitment has `debtor`, `creditor`, `what`, `due`; and
+   so on in `pawn_agent/core/emergence/prompts.py`).
+3. **Verification**: the quote is looked up in the window. No quote, or a
+   match under `quote_min_score`, stores the observation as `rejected` and
+   files no Item. Live ones get `start_sec`; duplicates from the overlap merge.
+
+Decisions, commitments, questions, blocks and contradictions become Items
+(question → `open_question`) with `observation_id` in the item `payload`.
+Predictions, concerns and facts are stored only; later phases use them. A
+re-run marks the earlier run's observations `superseded`. Failed calls are
+skipped; the run fails only when every call fails.
+
+Check it on a real meeting before switching it on:
+
+```bash
+# Both extractors side by side, nothing stored; tick useful items in the note
+pawn-server coworker compare --session <id>          # → Pawn/Reviews/extract-compare-<id>.md
+
+# What the last run stored
+pawn-server coworker observations --session <id> [--rejected] [--type decision]
+```
+
+### Learning from your verdicts
+
+With emergence on, Pawn keeps your verdicts as labels (`em_labels`,
+migration `0031`) and uses them two ways:
+
+- **Few-shot examples.** Each typed prompt gets your nearest past verdicts on
+  that kind (`few_shot_accept`, default 3 wanted; `few_shot_reject`, default 2
+  not wanted). Off automatically while there are no labels.
+- **Ranker.** A logistic regression over the label embeddings scores every
+  observation (`rank_score` in the item payload and in compare notes). It
+  retrains when the label count changes and needs `ranker_min_labels`
+  (default 30, with at least 5 of each verdict). Scores are shown only until
+  you set `ranker_min_score`; even then items are filtered only while the
+  cross-validated AUC is at least `ranker_min_auc` (default 0.7).
+
+Where labels come from:
+
+| Surface | Wanted | Not wanted |
+|---------|--------|------------|
+| Inbox / note `action:` / chat and Matrix verbs | `todo`, `task`, `file` | `delete`, `ignore` (one item) |
+| Compare notes (`labels import`) | ticked line | unticked line, once the note says `reviewed: true` |
+| `POST /v1/emergence/labels` | `verdict: missed` or `accept` | `verdict: reject` |
+
+Delete all and multi-select deletes are stored as `bulk` and are not trained
+on (`train_on_bulk: false`). `later` is not a verdict. In a compare note's
+Rejected section a tick means the quote check was wrong.
+
+```bash
+pawn-server coworker labels import            # every extract-compare-* note
+pawn-server coworker labels stats             # counts + ranker state
+pawn-server coworker ranker                   # retrain now, print AUC
+```
+
+```http
+POST /v1/emergence/labels
+{ "type": "commitment", "text": "Luca sends the RFC by Friday", "verdict": "missed",
+  "quote": "I'll send the RFC Friday", "source_ref": "<session id>", "start_sec": 812 }
+```
 
 ## Triage
 
@@ -366,4 +467,8 @@ Env vars use `PAWN_COWORKER__*` (`PAWN_COWORKER__ENABLED=true`, `PAWN_COWORKER__
 | `pawn-server coworker pause` / `resume` | Kill switch for unattended follow-ups |
 | `pawn-server coworker process --session ID` | Extract meeting items → `Pawn/Items` |
 | `pawn-server coworker people-refresh --session ID` | People bios only → `People/{id}.md` |
+| `pawn-server coworker compare --session ID` | Single-prompt vs. observation extraction review note |
+| `pawn-server coworker observations --session ID` | Observations stored by the last emergence run |
+| `pawn-server coworker labels import` / `labels stats` | Learn from ticked compare notes; label counts |
+| `pawn-server coworker ranker` | Retrain the relevance ranker and print its AUC |
 | `pawn-server coworker reindex` | Backfill the knowledge index |

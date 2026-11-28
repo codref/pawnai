@@ -349,12 +349,32 @@ def build_pawn_clitools() -> dict[str, CliTool]:
                 "hand-offs the user asked to get on the phone."
             ),
         ),
+        "assistant_speak": CliTool(
+            name="assistant_speak",
+            argv=[*_cli_argv("phone_command.py"), "speak", "--any-kind"],
+            summary=(
+                "Say one short sentence aloud on the user's voice assistant "
+                "(laptop or phone). Required: --text TEXT. Optional: --device "
+                "NAME (default auto: the assistant the user was last near). "
+                "Use for spoken reminders or hand-offs the user asked for."
+            ),
+        ),
+        "assistant_timer": CliTool(
+            name="assistant_timer",
+            argv=[*_cli_argv("phone_command.py"), "timer_set", "--any-kind"],
+            summary=(
+                "Start a countdown timer on the user's voice assistant. "
+                "Required: --seconds N. Optional: --label TEXT --device NAME "
+                "(default auto). The assistant rings and says the label."
+            ),
+        ),
         "phone_devices": CliTool(
             name="phone_devices",
             argv=_cli_argv("phone_devices.py"),
             summary=(
-                "List phones registered with pawn-server, which categories each "
-                "one shares, and when it was last seen. No flags."
+                "List phones and voice assistants registered with pawn-server, "
+                "which categories each one shares, what it can run, its presence "
+                "and when it was last seen. No flags."
             ),
         ),
         "queue_push": CliTool(
@@ -424,6 +444,30 @@ def build_pawn_clitools() -> dict[str, CliTool]:
                 "--group-by status|assignee|priority --swimlane assignee|priority. "
                 "A board file the user customized (pawn marker removed) is left alone. "
                 "Open the .base file in Obsidian."
+            ),
+        ),
+        "board_read": CliTool(
+            name="board_read",
+            argv=_cli_argv("board_read.py"),
+            summary=(
+                "Read a brainmap board as text: its cards (ids item:…, subject:…, obs:…, "
+                "note:…) and strings. Required: --board ID. Optional: --node ID for one "
+                "card's full evidence. The board chat already gets a snapshot each turn."
+            ),
+        ),
+        "board_propose": CliTool(
+            name="board_propose",
+            argv=_cli_argv("board_propose.py"),
+            summary=(
+                "Propose a change to a board; it shows as a ghost the user accepts or burns. "
+                "Required: --board ID --kind string|card|group|pin. "
+                "string: --from ID --to ID [--role mentions|evidence_for|evidence_against|"
+                "updates|resolves|contradicts] between evidence (item:/obs:) and a subject, two "
+                "subjects, or a note; two pieces of evidence take a group or a card instead. "
+                "card: --title [--content-file @note] "
+                "--source ID (repeat). group: --title --node ID (2+). pin: --node ID "
+                "(repeat; a card not on the board yet). Always --reason one line. "
+                "Card ids must come from the board. Nothing changes until the user accepts."
             ),
         ),
         "goal_propose": CliTool(

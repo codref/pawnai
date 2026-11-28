@@ -269,9 +269,7 @@ async def dispatch(
 # ──────────────────────────────────────────────────────────────────────────────
 
 
-def _resolve_audio_paths(
-    paths: List[str], cfg: Any
-) -> tuple[List[str], List[str], Dict[str, str]]:
+def _resolve_audio_paths(paths: List[str], cfg: Any) -> tuple[List[str], List[str], Dict[str, str]]:
     """Download any s3:// paths and return (resolved_local, temp_dirs, path_map).
 
     *path_map* maps each local temp path → the original ``s3://`` URI so
@@ -439,8 +437,8 @@ def _run_transcribe_diarize(
 
     if session:
         # load_session_state returns (embeddings, time_cursor, processed_files, segment_count)
-        prior_embeddings, time_cursor, processed_files, prior_segment_count = (
-            load_session_state(session, engine)
+        prior_embeddings, time_cursor, processed_files, prior_segment_count = load_session_state(
+            session, engine
         )
         audio_paths, skipped = _pending_audio_paths(audio_paths, processed_files)
         if skipped:
@@ -515,12 +513,18 @@ def _run_transcribe_diarize(
 
             # Persist canonical s3:// URIs (not /tmp downloads) in processed_files.
             new_processed = processed_files + to_canonical_paths(resolved, path_map)
+            from .database import canonical_file_offsets, stored_file_offsets
+
+            offset_rows = canonical_file_offsets(result.get("file_offsets"), path_map)
+            if offset_rows:
+                offset_rows = stored_file_offsets(session, engine) + offset_rows
             save_session_state(
                 session,
                 result.get("session_speaker_embeddings") or {},
                 result.get("new_time_cursor", 0.0),
                 new_processed,
                 engine,
+                **({"file_offsets": offset_rows} if offset_rows else {}),
             )
             if result.get("segments"):
                 save_transcription_segments(
@@ -692,6 +696,39 @@ def _run_diarize(
         _cleanup(temps)
 
 
+def _settle_reprocess(
+    session_id: str,
+    job_id: Any,
+    *,
+    db_dsn: str,
+    ok: bool,
+    error: str = "",
+) -> None:
+    """Clear the processing marker and close the vault job, if one was queued."""
+    from types import SimpleNamespace
+
+    from .database import get_engine, set_session_processing
+
+    try:
+        set_session_processing(session_id, None, get_engine(db_dsn))
+    except Exception:
+        logger.exception("clear processing failed for %s", session_id)
+    if not job_id:
+        return
+    try:
+        from pawn_server.core.jobs import finish_session_reprocess_job
+
+        finish_session_reprocess_job(
+            SimpleNamespace(db_dsn=db_dsn),
+            str(job_id),
+            status="done" if ok else "blocked",
+            result=(error or f"Reprocess finished for {session_id}")[:2000],
+            error_code=None if ok else "reprocess_failed",
+        )
+    except Exception:
+        logger.exception("reprocess job update failed for %s", session_id)
+
+
 def _run_rediarize(
     params: Dict[str, Any], cfg: Any, model_cache: Optional[ModelCache] = None
 ) -> None:
@@ -702,18 +739,25 @@ def _run_rediarize(
         raise ValueError("rediarize: 'session' is required")
     db_dsn = _resolve_db_dsn(params, cfg)
     margin = params.get("margin")
-    rediarize_session_job(
-        str(session),
-        db_dsn,
-        cfg,
-        threshold=float(params.get("threshold", 0.7)),
-        cross_file_threshold=float(params.get("cross_file_threshold", 0.55)),
-        margin=float(margin) if margin is not None else None,
-        device=str(params.get("device") or "auto"),
-        push_vault=bool(params.get("push_vault", True)),
-        resolve_audio=_resolve_audio_paths,
-        cleanup_temps=_cleanup,
-    )
+    try:
+        rediarize_session_job(
+            str(session),
+            db_dsn,
+            cfg,
+            threshold=float(params.get("threshold", 0.7)),
+            cross_file_threshold=float(params.get("cross_file_threshold", 0.55)),
+            margin=float(margin) if margin is not None else None,
+            device=str(params.get("device") or "auto"),
+            push_vault=bool(params.get("push_vault", True)),
+            resolve_audio=_resolve_audio_paths,
+            cleanup_temps=_cleanup,
+        )
+    except Exception as exc:
+        _settle_reprocess(
+            str(session), params.get("job_id"), db_dsn=db_dsn, ok=False, error=str(exc)
+        )
+        raise
+    _settle_reprocess(str(session), params.get("job_id"), db_dsn=db_dsn, ok=True)
     _ = model_cache  # reserved for future diarization engine reuse
 
 
@@ -736,23 +780,30 @@ def _run_retranscribe(
             device, backend, language=language
         )
         diarization_engine = model_cache.get_diarization_engine(device)
-    retranscribe_session(
-        str(session),
-        db_dsn,
-        cfg,
-        backend=backend,
-        language=language,
-        threshold=float(params.get("threshold", 0.7)),
-        cross_file_threshold=float(params.get("cross_file_threshold", 0.55)),
-        device=device,
-        chunk_duration=params.get("chunk_duration"),
-        verbose=bool(params.get("verbose", False)),
-        push_vault=bool(params.get("push_vault", True)),
-        resolve_audio=_resolve_audio_paths,
-        cleanup_temps=_cleanup,
-        transcription_engine=transcription_engine,
-        diarization_engine=diarization_engine,
-    )
+    try:
+        retranscribe_session(
+            str(session),
+            db_dsn,
+            cfg,
+            backend=backend,
+            language=language,
+            threshold=float(params.get("threshold", 0.7)),
+            cross_file_threshold=float(params.get("cross_file_threshold", 0.55)),
+            device=device,
+            chunk_duration=params.get("chunk_duration"),
+            verbose=bool(params.get("verbose", False)),
+            push_vault=bool(params.get("push_vault", True)),
+            resolve_audio=_resolve_audio_paths,
+            cleanup_temps=_cleanup,
+            transcription_engine=transcription_engine,
+            diarization_engine=diarization_engine,
+        )
+    except Exception as exc:
+        _settle_reprocess(
+            str(session), params.get("job_id"), db_dsn=db_dsn, ok=False, error=str(exc)
+        )
+        raise
+    _settle_reprocess(str(session), params.get("job_id"), db_dsn=db_dsn, ok=True)
 
 
 def _run_embed(params: Dict[str, Any], cfg: Any) -> None:

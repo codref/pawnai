@@ -105,6 +105,12 @@ def classify_chat_text(text: str, *, triage: bool = False) -> _Directive:
         return _Directive("direct", command="inbox")
 
     if triage:
+        from pawn_agent.core.emergence.provocations import parse_verdict  # noqa: PLC0415
+
+        verdict = parse_verdict(raw)
+        if verdict is not None:
+            return _Directive("direct", command="provocation", arg=verdict[1], extra=verdict[0])
+
         from pawn_agent.core.coworker.actions import parse_coworker_command  # noqa: PLC0415
 
         parsed = parse_coworker_command(raw)
@@ -237,6 +243,10 @@ def _capture_event(cfg: AgentConfig, store: Any, line: str) -> str:
 
 
 def _run_direct(cfg: AgentConfig, directive: _Directive, *, store: Any) -> str:
+    if directive.command == "provocation":
+        from pawn_agent.core.emergence.provocations import apply_verdict  # noqa: PLC0415
+
+        return apply_verdict(cfg, directive.arg, directive.extra)
     if directive.command == "idea":
         return _capture_idea(cfg, store, directive.arg)
     if directive.command == "event":
@@ -294,6 +304,7 @@ async def resolve_chat_message(
                 classified.extra or None,
                 registry=registry,
                 store=store,
+                surface="chat",
             )
         except Exception as exc:
             logger.exception("triage command failed")

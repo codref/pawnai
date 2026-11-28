@@ -18,8 +18,14 @@ async def run(
     cfg: AgentConfig,
     prompt: str,
     system_prompt: Optional[str] = None,
+    *,
+    think: Optional[bool] = None,
 ) -> str:
-    """Run a single-turn completion and return the response string."""
+    """Run a single-turn completion and return the response string.
+
+    ``think=False`` asks the provider to skip reasoning (Ollama and
+    OpenAI-compatible hosts, via sallm); ``None`` keeps the model default.
+    """
     from sallm.llm import complete  # noqa: PLC0415
     from sallm.messages import system, user  # noqa: PLC0415
 
@@ -36,6 +42,8 @@ async def run(
         headers = completion_headers(selection, "pawn")
         if headers:
             extra["extra_headers"] = headers
+        if think is not None:
+            extra["think"] = think
         result = complete(
             model=selection.litellm_model,
             messages=messages,

@@ -12,6 +12,9 @@
   --pawn-tabbar: #f5f6f8;
   --pawn-bg: #ffffff;
   --pawn-chip: rgba(0, 0, 0, 0.06);
+  --pawn-folder: #d4962a;
+  --pawn-row-icon: 16px;
+  --pawn-mono: ui-monospace, SFMono-Regular, "JetBrains Mono", Menlo, Consolas, monospace;
   /* Annotation highlights (::highlight(pawn-ann-*)) and their markers. */
   --pawn-ann-yellow: rgba(255, 213, 0, 0.38);
   --pawn-ann-green: rgba(76, 175, 80, 0.3);
@@ -33,6 +36,7 @@ body.body--dark {
   --pawn-tabbar: #1b1d21;
   --pawn-bg: #121212;
   --pawn-chip: rgba(255, 255, 255, 0.09);
+  --pawn-folder: #e0a43a;
   --pawn-ann-yellow: rgba(255, 213, 0, 0.3);
   --pawn-ann-green: rgba(102, 187, 106, 0.3);
   --pawn-ann-blue: rgba(100, 181, 246, 0.3);
@@ -84,6 +88,108 @@ body.pawn-resizing .q-header {
   color: var(--pawn-muted);
   font-variant-numeric: tabular-nums;
   margin-left: 6px;
+  min-width: 2.4em;
+  text-align: right;
+}
+/* Sidebar/panel scroller: native, vertical only, gutter reserved so the
+   scrollbar never paints over right-aligned ages and counts. */
+.pawn-scroll {
+  overflow-y: auto;
+  overflow-x: hidden;
+  scrollbar-gutter: stable;
+  scrollbar-width: thin;
+  scrollbar-color: transparent transparent;
+  min-height: 0;
+}
+.pawn-scroll:hover,
+.pawn-scroll:focus-within {
+  scrollbar-color: var(--pawn-guide) transparent;
+}
+.pawn-scroll::-webkit-scrollbar {
+  width: 6px;
+}
+.pawn-scroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+.pawn-scroll::-webkit-scrollbar-thumb {
+  background: transparent;
+  border-radius: 3px;
+}
+.pawn-scroll:hover::-webkit-scrollbar-thumb {
+  background: var(--pawn-guide);
+}
+/* One icon column for every sidebar row, so labels start at the same x. */
+.row-icon {
+  flex: none;
+  width: 18px;
+  height: 18px;
+  font-size: var(--pawn-row-icon);
+  margin-right: 6px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--pawn-muted);
+}
+.row-icon.folder-icon {
+  color: var(--pawn-folder);
+}
+/* Small uppercase heading inside a pane (no padding of its own). */
+.sub-label {
+  font-size: 0.7rem;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--pawn-muted);
+  margin: 4px 0 6px;
+}
+.section-label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.68rem;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--pawn-muted);
+  padding: 10px 10px 4px;
+}
+.sidebar-root {
+  container-type: inline-size;
+  container-name: sidebar;
+}
+@container sidebar (max-width: 300px) {
+  .row-tag {
+    display: none !important;
+  }
+}
+/* Narrow sidebar: only the active segment keeps its label. */
+@container sidebar (max-width: 340px) {
+  .seg-btn:not(.active) .seg-label {
+    display: none;
+  }
+  .seg-stretch .seg-btn:not(.active) {
+    flex: 0 0 auto !important;
+  }
+}
+/* Drop feedback shared by sidebars. */
+.drop-into {
+  background: var(--pawn-drop) !important;
+  box-shadow: inset 0 0 0 1px var(--q-primary);
+  border-radius: 6px;
+}
+.drop-overlay {
+  position: absolute;
+  inset: 6px;
+  border: 1.5px dashed var(--q-primary);
+  border-radius: 8px;
+  background: var(--pawn-drop);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  font-size: 0.85rem;
+  pointer-events: none;
+  z-index: 5;
 }
 .tag-chip {
   display: inline-block;
@@ -179,6 +285,12 @@ body.pawn-resizing-column iframe {
   text-decoration: underline 2px var(--pawn-ann-active);
   text-underline-offset: 3px;
 }
+::highlight(pawn-now) {
+  background-color: rgba(25, 118, 210, 0.28);
+}
+::highlight(pawn-find) {
+  background-color: rgba(255, 193, 7, 0.45);
+}
 .ann-c-yellow { background: var(--pawn-ann-yellow); }
 .ann-b-yellow { border-left-color: var(--pawn-ann-yellow) !important; }
 .ann-c-green { background: var(--pawn-ann-green); }
@@ -195,4 +307,959 @@ body.pawn-resizing-column iframe {
   height: 16px;
   border-radius: 50%;
   flex: none;
+}
+
+/* Cyberpunk skin. Layout and type scale stay put; tokens, rules, and the
+   busy-tab mark change. Bright cyan is a rule, not a button fill. */
+body.pawn-skin-cyberpunk {
+  --pawn-neon: #5ce1ff;
+  --pawn-hot: #ff4d9a;
+  --pawn-ink: #5ce1ff;
+}
+body.pawn-skin-cyberpunk.body--dark {
+  --pawn-border: rgba(92, 225, 255, 0.28);
+  --pawn-muted: rgba(180, 220, 235, 0.72);
+  --pawn-bubble-user: #10202c;
+  --pawn-code-bg: rgba(92, 225, 255, 0.08);
+  --pawn-unseen: var(--pawn-hot);
+  --pawn-drop: rgba(92, 225, 255, 0.16);
+  --pawn-hover: rgba(92, 225, 255, 0.06);
+  --pawn-active: rgba(92, 225, 255, 0.14);
+  --pawn-guide: rgba(92, 225, 255, 0.28);
+  --pawn-tabbar: #0d141c;
+  --pawn-bg: #070b10;
+  --pawn-chip: rgba(92, 225, 255, 0.1);
+  color: #e7f4fb;
+  background: #070b10;
+}
+body.pawn-skin-cyberpunk.body--light {
+  --pawn-neon: #0c6a80;
+  --pawn-hot: #c2185b;
+  --pawn-ink: #0c6a80;
+  --pawn-border: rgba(12, 106, 128, 0.35);
+  --pawn-muted: rgba(7, 30, 40, 0.62);
+  --pawn-bubble-user: #e5f7fb;
+  --pawn-code-bg: rgba(12, 106, 128, 0.08);
+  --pawn-unseen: var(--pawn-hot);
+  --pawn-drop: rgba(12, 106, 128, 0.12);
+  --pawn-hover: rgba(12, 106, 128, 0.06);
+  --pawn-active: rgba(12, 106, 128, 0.12);
+  --pawn-guide: rgba(12, 106, 128, 0.28);
+  --pawn-tabbar: #eef6f8;
+  --pawn-bg: #f7fbfc;
+  --pawn-chip: rgba(12, 106, 128, 0.08);
+  color: #102028;
+  background: var(--pawn-bg);
+}
+body.pawn-skin-cyberpunk .q-header {
+  background: #070b10 !important;
+  color: #e7f6ff !important;
+  border-bottom: 1px solid #5ce1ff !important;
+}
+body.pawn-skin-cyberpunk.body--dark .q-layout,
+body.pawn-skin-cyberpunk.body--dark .q-page {
+  background-color: var(--pawn-bg);
+}
+body.pawn-skin-cyberpunk.body--dark .q-layout,
+body.pawn-skin-cyberpunk.body--dark .q-page,
+body.pawn-skin-cyberpunk.body--dark .q-drawer {
+  background-image:
+    linear-gradient(rgba(92, 225, 255, 0.045) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(92, 225, 255, 0.045) 1px, transparent 1px),
+    repeating-linear-gradient(
+      to bottom,
+      rgba(0, 0, 0, 0.03) 0,
+      rgba(0, 0, 0, 0.03) 1px,
+      transparent 1px,
+      transparent 3px
+    );
+  background-size: 28px 28px, 28px 28px, auto;
+  background-attachment: fixed;
+}
+body.pawn-skin-cyberpunk.body--light .q-layout,
+body.pawn-skin-cyberpunk.body--light .q-page,
+body.pawn-skin-cyberpunk.body--light .q-drawer {
+  background-color: var(--pawn-bg);
+  background-image:
+    linear-gradient(rgba(12, 106, 128, 0.06) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(12, 106, 128, 0.06) 1px, transparent 1px);
+  background-size: 28px 28px;
+  background-attachment: fixed;
+}
+body.pawn-skin-cyberpunk :focus-visible {
+  outline: 2px solid var(--pawn-neon);
+  outline-offset: 2px;
+}
+body.pawn-skin-cyberpunk ::selection {
+  background: color-mix(in srgb, var(--pawn-hot) 45%, transparent);
+}
+body.pawn-skin-cyberpunk .text-primary,
+body.pawn-skin-cyberpunk .chat-row.chat-active,
+body.pawn-skin-cyberpunk .tree-row.selected {
+  color: var(--pawn-ink) !important;
+}
+body.pawn-skin-cyberpunk .tree-row:focus-visible {
+  box-shadow: inset 0 0 0 1px var(--pawn-neon);
+}
+body.pawn-skin-cyberpunk .tab.active::before,
+body.pawn-skin-cyberpunk .tab-bar.focused .tab.active::before {
+  background: var(--pawn-neon);
+}
+body.pawn-skin-cyberpunk .tab.busy::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 0;
+  height: 2px;
+  background: linear-gradient(90deg, transparent, var(--pawn-neon), transparent);
+  background-size: 200% 100%;
+  animation: pawn-tab-sweep 1.6s linear infinite;
+}
+body.pawn-skin-cyberpunk .tab-bar.over-end {
+  box-shadow: inset -2px 0 0 var(--pawn-neon);
+}
+body.pawn-skin-cyberpunk .tab.over {
+  box-shadow: inset 2px 0 0 var(--pawn-neon);
+}
+body.pawn-skin-cyberpunk .resize-handle:hover::after,
+body.pawn-resizing.pawn-skin-cyberpunk .resize-handle::after,
+body.pawn-skin-cyberpunk .gutter:hover {
+  background: var(--pawn-neon);
+}
+body.pawn-skin-cyberpunk .drop-zone {
+  border-color: var(--pawn-neon);
+}
+@media (prefers-reduced-motion: reduce) {
+  body.pawn-skin-cyberpunk .tab.busy::before {
+    animation: none;
+    background: var(--pawn-neon);
+  }
+}
+@keyframes pawn-tab-sweep {
+  from { background-position: 100% 0; }
+  to { background-position: -100% 0; }
+}
+
+/* Drag ghost (lib/dnd.ts setDragLabel): rendered off-screen for setDragImage. */
+.pawn-drag-ghost {
+  position: fixed;
+  top: -1000px;
+  left: -1000px;
+  max-width: 280px;
+  padding: 4px 10px;
+  border-radius: 6px;
+  font: 500 12px/1.5 system-ui, sans-serif;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  background: var(--q-primary);
+  color: #fff;
+}
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+.brand-mark {
+  font-size: 1.15em;
+  line-height: 1;
+}
+
+/* ── Cyberpunk: chrome details ───────────────────────────────────────── */
+body.pawn-skin-cyberpunk.body--dark {
+  --pawn-folder: #ffc35a;
+}
+body.pawn-skin-cyberpunk.body--light {
+  --pawn-folder: #a8620a;
+}
+/* Machine-readable bits in monospace: labels, ages, counts, selectors. */
+body.pawn-skin-cyberpunk .section-label,
+body.pawn-skin-cyberpunk .nav-heading,
+body.pawn-skin-cyberpunk .target-caption,
+body.pawn-skin-cyberpunk .sub-label,
+body.pawn-skin-cyberpunk .age,
+body.pawn-skin-cyberpunk .count,
+body.pawn-skin-cyberpunk .kbd,
+body.pawn-skin-cyberpunk .seg-btn,
+body.pawn-skin-cyberpunk .seg-count,
+body.pawn-skin-cyberpunk .field-path,
+body.pawn-skin-cyberpunk .tag-chip {
+  font-family: var(--pawn-mono);
+}
+body.pawn-skin-cyberpunk .section-label,
+body.pawn-skin-cyberpunk .nav-heading,
+body.pawn-skin-cyberpunk .sub-label,
+body.pawn-skin-cyberpunk .target-caption {
+  color: var(--pawn-neon);
+  opacity: 0.85;
+  letter-spacing: 0.14em;
+}
+body.pawn-skin-cyberpunk .section-label::before,
+body.pawn-skin-cyberpunk .nav-heading::before,
+body.pawn-skin-cyberpunk .sub-label::before {
+  content: "//";
+  margin-right: 6px;
+  color: var(--pawn-hot);
+  opacity: 0.9;
+}
+/* Tags read as [#tag]. */
+body.pawn-skin-cyberpunk .tag-chip {
+  background: transparent;
+  border-radius: 2px;
+  color: var(--pawn-neon);
+  padding: 0 2px;
+  font-size: 0.68rem;
+}
+body.pawn-skin-cyberpunk .tag-chip::before {
+  content: "[";
+  opacity: 0.55;
+}
+body.pawn-skin-cyberpunk .tag-chip::after {
+  content: "]";
+  opacity: 0.55;
+}
+/* Rows: hairline neon on hover, a lit left bar for the selection. */
+body.pawn-skin-cyberpunk .tree-row,
+body.pawn-skin-cyberpunk .hit,
+body.pawn-skin-cyberpunk .chat-row {
+  border-radius: 2px;
+}
+body.pawn-skin-cyberpunk .tree-row:hover,
+body.pawn-skin-cyberpunk .hit:hover,
+body.pawn-skin-cyberpunk .chat-row:hover {
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--pawn-neon) 30%, transparent);
+}
+body.pawn-skin-cyberpunk .tree-row.selected,
+body.pawn-skin-cyberpunk .chat-row.chat-active,
+body.pawn-skin-cyberpunk .hit.active {
+  background: linear-gradient(90deg, color-mix(in srgb, var(--pawn-neon) 16%, transparent), transparent 85%);
+  box-shadow: inset 2px 0 0 var(--pawn-neon);
+}
+body.pawn-skin-cyberpunk.body--dark .tree-row.selected,
+body.pawn-skin-cyberpunk.body--dark .chat-row.chat-active {
+  text-shadow: 0 0 8px color-mix(in srgb, var(--pawn-neon) 45%, transparent);
+}
+body.pawn-skin-cyberpunk .tree-row.marked::after {
+  background: var(--pawn-hot);
+  opacity: 1;
+  box-shadow: 0 0 6px var(--pawn-hot);
+}
+body.pawn-skin-cyberpunk .drop-into {
+  background: color-mix(in srgb, var(--pawn-neon) 14%, transparent) !important;
+  box-shadow: inset 0 0 0 1px var(--pawn-neon), 0 0 10px color-mix(in srgb, var(--pawn-neon) 35%, transparent);
+  border-radius: 2px;
+}
+body.pawn-skin-cyberpunk .drop-overlay {
+  border-color: var(--pawn-neon);
+  border-radius: 2px;
+  font-family: var(--pawn-mono);
+  color: var(--pawn-neon);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  font-size: 0.75rem;
+}
+body.pawn-skin-cyberpunk .pawn-drag-ghost {
+  background: #070b10;
+  color: #5ce1ff;
+  border: 1px solid #5ce1ff;
+  border-radius: 2px;
+  font-family: var(--pawn-mono);
+  box-shadow: 0 0 10px rgba(92, 225, 255, 0.5);
+}
+/* Scrollbars: neon thumb on hover. */
+body.pawn-skin-cyberpunk .pawn-scroll:hover {
+  scrollbar-color: color-mix(in srgb, var(--pawn-neon) 55%, transparent) transparent;
+}
+body.pawn-skin-cyberpunk .pawn-scroll:hover::-webkit-scrollbar-thumb {
+  background: color-mix(in srgb, var(--pawn-neon) 55%, transparent);
+  border-radius: 0;
+}
+/* Segmented control: framed track with a notched corner, lit active segment.
+   Matched by its buttons so an unrelated `.seg` (transcript spans) is untouched. */
+body.pawn-skin-cyberpunk .seg:has(> .seg-btn) {
+  border-radius: 0;
+  background: color-mix(in srgb, var(--pawn-neon) 5%, transparent);
+  box-shadow: inset 0 0 0 1px var(--pawn-border);
+  clip-path: polygon(0 0, calc(100% - 8px) 0, 100% 8px, 100% 100%, 8px 100%, 0 calc(100% - 8px));
+}
+body.pawn-skin-cyberpunk .seg-indicator {
+  border-radius: 0;
+  background: color-mix(in srgb, var(--pawn-neon) 14%, transparent);
+  box-shadow:
+    inset 0 -2px 0 var(--pawn-neon),
+    0 0 12px color-mix(in srgb, var(--pawn-neon) 30%, transparent);
+}
+body.pawn-skin-cyberpunk .seg-btn {
+  border-radius: 0;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  font-size: 0.7rem;
+}
+body.pawn-skin-cyberpunk .seg-sm .seg-btn {
+  font-size: 0.66rem;
+}
+body.pawn-skin-cyberpunk .seg-btn.active {
+  color: var(--pawn-neon);
+}
+body.pawn-skin-cyberpunk.body--dark .seg-btn.active {
+  text-shadow: 0 0 8px color-mix(in srgb, var(--pawn-neon) 60%, transparent);
+}
+body.pawn-skin-cyberpunk .seg-count {
+  background: transparent;
+  color: var(--pawn-hot);
+  border: 1px solid currentColor;
+  border-radius: 0;
+  padding: 1px 4px;
+}
+/* Header: glow rule, hot badges, brand mark. */
+body.pawn-skin-cyberpunk .q-header {
+  box-shadow: 0 1px 12px rgba(92, 225, 255, 0.28);
+}
+body.pawn-skin-cyberpunk .q-header .q-badge {
+  background: var(--pawn-hot) !important;
+  font-family: var(--pawn-mono);
+  box-shadow: 0 0 8px color-mix(in srgb, var(--pawn-hot) 60%, transparent);
+}
+body.pawn-skin-cyberpunk .brand {
+  font-family: var(--pawn-mono);
+  text-transform: uppercase;
+  letter-spacing: 0.22em;
+  font-size: 0.95rem;
+}
+body.pawn-skin-cyberpunk .brand-mark {
+  color: var(--pawn-neon);
+  text-shadow: 0 0 10px var(--pawn-neon);
+}
+body.pawn-skin-cyberpunk .q-header .q-btn:hover .q-icon {
+  color: var(--pawn-neon);
+  filter: drop-shadow(0 0 4px var(--pawn-neon));
+}
+/* Drawers: neon edge. */
+body.pawn-skin-cyberpunk .q-drawer--left.q-drawer--bordered {
+  border-right-color: var(--pawn-border);
+}
+body.pawn-skin-cyberpunk .q-drawer--right.q-drawer--bordered {
+  border-left-color: var(--pawn-border);
+}
+/* Settings nav and page header. */
+body.pawn-skin-cyberpunk .nav-item {
+  border-radius: 0;
+}
+body.pawn-skin-cyberpunk .nav-item.active {
+  background: linear-gradient(90deg, color-mix(in srgb, var(--pawn-neon) 16%, transparent), transparent);
+  color: var(--pawn-neon);
+}
+body.pawn-skin-cyberpunk .nav-item.active::before {
+  border-radius: 0;
+  background: var(--pawn-neon);
+  box-shadow: 0 0 8px var(--pawn-neon);
+}
+body.pawn-skin-cyberpunk .page-icon {
+  border-radius: 0;
+  background: transparent;
+  color: var(--pawn-neon);
+  box-shadow: inset 0 0 0 1px var(--pawn-neon), 0 0 12px color-mix(in srgb, var(--pawn-neon) 30%, transparent);
+  clip-path: polygon(0 0, calc(100% - 8px) 0, 100% 8px, 100% 100%, 0 100%);
+}
+body.pawn-skin-cyberpunk .page-title {
+  font-family: var(--pawn-mono);
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  font-size: 1rem;
+}
+body.pawn-skin-cyberpunk .field,
+body.pawn-skin-cyberpunk .skin-choice,
+body.pawn-skin-cyberpunk .target-chip {
+  border-radius: 0;
+}
+body.pawn-skin-cyberpunk .field-dirty {
+  border-color: var(--pawn-hot);
+  box-shadow: 0 0 10px color-mix(in srgb, var(--pawn-hot) 25%, transparent);
+}
+body.pawn-skin-cyberpunk .skin-choice.active {
+  border-color: var(--pawn-neon);
+  box-shadow: 0 0 0 1px var(--pawn-neon), 0 0 14px color-mix(in srgb, var(--pawn-neon) 35%, transparent);
+}
+@media (prefers-reduced-motion: reduce) {
+  .seg-indicator.ready {
+    transition: none !important;
+  }
+}
+
+/* ── Shared tokens for Sessions / Day / Speakers (both skins) ─────────── */
+:root {
+  --pawn-ok: var(--q-positive);
+  --pawn-warn: #b26a00;
+  --pawn-danger: var(--q-negative);
+  --pawn-info: var(--q-primary);
+  --pawn-now: #e53935;
+  --pawn-focus-band: rgba(255, 193, 7, 0.22);
+  --pawn-session-stripe: rgba(25, 118, 210, 0.1);
+  --pawn-session-stripe-2: rgba(25, 118, 210, 0.2);
+  --pawn-card: #ffffff;
+  --pawn-shadow: 0 8px 24px rgba(0, 0, 0, 0.16);
+  --pawn-track: rgba(0, 0, 0, 0.06);
+  --pawn-spk-0: #1e88e5;
+  --pawn-spk-1: #d81b60;
+  --pawn-spk-2: #43a047;
+  --pawn-spk-3: #f4511e;
+  --pawn-spk-4: #8e24aa;
+  --pawn-spk-5: #00897b;
+  --pawn-spk-ink: #ffffff;
+}
+body.body--dark {
+  --pawn-warn: #ffb74d;
+  --pawn-danger: #ef5350;
+  --pawn-now: #ff5252;
+  --pawn-focus-band: rgba(255, 193, 7, 0.16);
+  --pawn-session-stripe: rgba(100, 181, 246, 0.1);
+  --pawn-session-stripe-2: rgba(100, 181, 246, 0.2);
+  --pawn-card: #1d1f24;
+  --pawn-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+  --pawn-track: rgba(255, 255, 255, 0.08);
+  --pawn-spk-0: #64b5f6;
+  --pawn-spk-1: #f06292;
+  --pawn-spk-2: #81c784;
+  --pawn-spk-3: #ff8a65;
+  --pawn-spk-4: #ba68c8;
+  --pawn-spk-5: #4db6ac;
+  --pawn-spk-ink: #101318;
+}
+body.pawn-skin-cyberpunk.body--dark {
+  --pawn-ok: #2ee6a6;
+  --pawn-warn: #ffb347;
+  --pawn-danger: #ff4d6d;
+  --pawn-info: var(--pawn-neon);
+  --pawn-now: var(--pawn-hot);
+  --pawn-focus-band: color-mix(in srgb, #ffb347 14%, transparent);
+  --pawn-session-stripe: color-mix(in srgb, var(--pawn-neon) 6%, transparent);
+  --pawn-session-stripe-2: color-mix(in srgb, var(--pawn-neon) 14%, transparent);
+  --pawn-card: #0b131b;
+  --pawn-shadow: 0 0 0 1px var(--pawn-border), 0 0 18px rgba(92, 225, 255, 0.18);
+  --pawn-track: rgba(92, 225, 255, 0.07);
+  --pawn-spk-0: #5ce1ff;
+  --pawn-spk-1: #ff4d9a;
+  --pawn-spk-2: #2ee6a6;
+  --pawn-spk-3: #ffb347;
+  --pawn-spk-4: #b388ff;
+  --pawn-spk-5: #f5f06a;
+  --pawn-spk-ink: #070b10;
+}
+body.pawn-skin-cyberpunk.body--light {
+  --pawn-ok: #0b7d5c;
+  --pawn-warn: #a35f00;
+  --pawn-danger: #c2185b;
+  --pawn-info: var(--pawn-neon);
+  --pawn-now: var(--pawn-hot);
+  --pawn-focus-band: color-mix(in srgb, #ffb347 22%, transparent);
+  --pawn-session-stripe: color-mix(in srgb, var(--pawn-neon) 7%, transparent);
+  --pawn-session-stripe-2: color-mix(in srgb, var(--pawn-neon) 15%, transparent);
+  --pawn-card: #ffffff;
+  --pawn-shadow: 0 0 0 1px var(--pawn-border), 0 6px 18px rgba(12, 106, 128, 0.14);
+  --pawn-track: rgba(12, 106, 128, 0.08);
+  --pawn-spk-0: #0c6a80;
+  --pawn-spk-1: #c2185b;
+  --pawn-spk-2: #0b7d5c;
+  --pawn-spk-3: #a35f00;
+  --pawn-spk-4: #6a3fc1;
+  --pawn-spk-5: #6b6a00;
+  --pawn-spk-ink: #ffffff;
+}
+
+/* Status pill (StatusBadge.vue): tinted fill, colored hairline. */
+.pawn-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-size: 0.68rem;
+  line-height: 1.6;
+  padding: 0 6px;
+  border-radius: 8px;
+  white-space: nowrap;
+  color: var(--pawn-status, var(--pawn-muted));
+  background: color-mix(in srgb, var(--pawn-status, var(--pawn-muted)) 12%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--pawn-status, var(--pawn-muted)) 40%, transparent);
+}
+.pawn-status.ok { --pawn-status: var(--pawn-ok); }
+.pawn-status.warn { --pawn-status: var(--pawn-warn); }
+.pawn-status.danger { --pawn-status: var(--pawn-danger); }
+.pawn-status.info { --pawn-status: var(--pawn-info); }
+.pawn-status.busy::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+  animation: pawn-pulse 1.2s ease-in-out infinite;
+}
+@keyframes pawn-pulse {
+  50% { opacity: 0.3; }
+}
+
+/* Selectable filter pill (speaker facets, aliases, attendees). */
+.pawn-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  border: 0;
+  font: inherit;
+  font-size: 0.75rem;
+  line-height: 1.7;
+  padding: 0 8px;
+  border-radius: 10px;
+  background: var(--pawn-chip);
+  color: inherit;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.pawn-pill:hover { background: var(--pawn-hover); }
+.pawn-pill.active {
+  background: var(--pawn-active);
+  color: var(--q-primary);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--q-primary) 45%, transparent);
+}
+.pawn-pill .count {
+  opacity: 0.65;
+  font-variant-numeric: tabular-nums;
+}
+.pawn-pill .x {
+  font-size: 14px;
+  opacity: 0.6;
+}
+
+/* Inline notice bar (replaces bg-orange-1 / bg-blue-1 q-banners). */
+.pawn-banner {
+  --pawn-status: var(--pawn-info);
+  background: color-mix(in srgb, var(--pawn-status) 10%, var(--pawn-bg));
+  border-bottom: 1px solid color-mix(in srgb, var(--pawn-status) 35%, transparent);
+  color: inherit;
+}
+.pawn-banner.warn { --pawn-status: var(--pawn-warn); }
+.pawn-banner.danger { --pawn-status: var(--pawn-danger); }
+.pawn-banner .q-banner__avatar,
+.pawn-banner .q-icon { color: var(--pawn-status); }
+
+/* ── Cyberpunk: Quasar primitives ─────────────────────────────────────── */
+body.pawn-skin-cyberpunk .pawn-status,
+body.pawn-skin-cyberpunk .pawn-pill {
+  border-radius: 2px;
+  font-family: var(--pawn-mono);
+  letter-spacing: 0.04em;
+}
+body.pawn-skin-cyberpunk .pawn-status {
+  text-transform: uppercase;
+  font-size: 0.62rem;
+}
+body.pawn-skin-cyberpunk.body--dark .pawn-status {
+  text-shadow: 0 0 6px color-mix(in srgb, var(--pawn-status, var(--pawn-neon)) 55%, transparent);
+}
+body.pawn-skin-cyberpunk .pawn-pill {
+  background: transparent;
+  box-shadow: inset 0 0 0 1px var(--pawn-border);
+}
+body.pawn-skin-cyberpunk .pawn-pill.active {
+  color: var(--pawn-neon);
+  background: color-mix(in srgb, var(--pawn-neon) 12%, transparent);
+  box-shadow: inset 0 0 0 1px var(--pawn-neon), 0 0 10px color-mix(in srgb, var(--pawn-neon) 25%, transparent);
+}
+body.pawn-skin-cyberpunk .pawn-banner {
+  border-left: 3px solid var(--pawn-status);
+  font-family: var(--pawn-mono);
+  font-size: 0.8rem;
+}
+body.pawn-skin-cyberpunk .q-chip {
+  border-radius: 2px;
+  font-family: var(--pawn-mono);
+  font-size: 0.72rem;
+  background: transparent;
+  color: var(--pawn-neon);
+  box-shadow: inset 0 0 0 1px var(--pawn-border);
+}
+body.pawn-skin-cyberpunk .q-chip--selected,
+body.pawn-skin-cyberpunk .q-chip.bg-primary {
+  background: color-mix(in srgb, var(--pawn-neon) 14%, transparent) !important;
+  color: var(--pawn-neon) !important;
+  box-shadow: inset 0 0 0 1px var(--pawn-neon);
+}
+body.pawn-skin-cyberpunk .q-badge {
+  border-radius: 2px;
+  font-family: var(--pawn-mono);
+  font-size: 0.62rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  padding: 2px 5px;
+}
+body.pawn-skin-cyberpunk .q-badge--outline {
+  box-shadow: 0 0 6px color-mix(in srgb, currentColor 35%, transparent);
+}
+body.pawn-skin-cyberpunk .q-tabs .q-tab__indicator {
+  background: var(--pawn-neon);
+  box-shadow: 0 0 8px var(--pawn-neon);
+}
+body.pawn-skin-cyberpunk .q-tab--active {
+  color: var(--pawn-neon);
+}
+body.pawn-skin-cyberpunk .q-tab__label {
+  font-family: var(--pawn-mono);
+  letter-spacing: 0.08em;
+}
+body.pawn-skin-cyberpunk .q-dialog .q-card,
+body.pawn-skin-cyberpunk .q-menu,
+body.pawn-skin-cyberpunk .pawn-popover {
+  background: var(--pawn-card);
+  border-radius: 0;
+  box-shadow: var(--pawn-shadow);
+}
+body.pawn-skin-cyberpunk .q-dialog .q-card {
+  clip-path: polygon(0 0, calc(100% - 14px) 0, 100% 14px, 100% 100%, 14px 100%, 0 calc(100% - 14px));
+  border-top: 1px solid var(--pawn-neon);
+}
+body.pawn-skin-cyberpunk .q-dialog .q-card .text-h6 {
+  font-family: var(--pawn-mono);
+  font-size: 1rem;
+  letter-spacing: 0.08em;
+  color: var(--pawn-neon);
+}
+body.pawn-skin-cyberpunk .q-tooltip {
+  border-radius: 0;
+  background: var(--pawn-card);
+  color: var(--pawn-neon);
+  border: 1px solid var(--pawn-border);
+  font-family: var(--pawn-mono);
+  font-size: 0.72rem;
+}
+body.pawn-skin-cyberpunk .q-slider__track {
+  border-radius: 0;
+  background: var(--pawn-track);
+}
+body.pawn-skin-cyberpunk .q-slider__selection {
+  background: var(--pawn-neon);
+  box-shadow: 0 0 8px var(--pawn-neon);
+}
+body.pawn-skin-cyberpunk .q-slider__thumb {
+  color: var(--pawn-neon);
+}
+body.pawn-skin-cyberpunk .q-field--outlined .q-field__control {
+  border-radius: 0;
+}
+body.pawn-skin-cyberpunk .q-field--outlined .q-field__control:before {
+  border-color: var(--pawn-border);
+}
+body.pawn-skin-cyberpunk .q-field--outlined.q-field--focused .q-field__control:after {
+  border-color: var(--pawn-neon);
+  box-shadow: 0 0 8px color-mix(in srgb, var(--pawn-neon) 35%, transparent);
+}
+body.pawn-skin-cyberpunk .q-field__label,
+body.pawn-skin-cyberpunk .q-field__native::placeholder,
+body.pawn-skin-cyberpunk .q-field__input::placeholder {
+  font-family: var(--pawn-mono);
+  letter-spacing: 0.04em;
+}
+body.pawn-skin-cyberpunk .q-checkbox__bg,
+body.pawn-skin-cyberpunk .q-toggle__track {
+  border-radius: 0;
+}
+body.pawn-skin-cyberpunk .q-toggle__inner--truthy .q-toggle__thumb:after {
+  box-shadow: 0 0 8px var(--pawn-neon);
+}
+body.pawn-skin-cyberpunk .q-btn--outline {
+  border-radius: 0;
+}
+body.pawn-skin-cyberpunk .q-btn--outline:before {
+  border-color: var(--pawn-border);
+}
+body.pawn-skin-cyberpunk .q-btn--outline:hover:before {
+  border-color: var(--pawn-neon);
+}
+body.pawn-skin-cyberpunk .q-separator {
+  background: var(--pawn-border);
+}
+body.pawn-skin-cyberpunk .q-item.q-router-link--active,
+body.pawn-skin-cyberpunk .q-item--active {
+  color: var(--pawn-neon);
+}
+/* Speaker avatars: lit ring in the skin. */
+body.pawn-skin-cyberpunk .spk-avatar {
+  border-radius: 2px;
+  font-family: var(--pawn-mono);
+  box-shadow: 0 0 8px color-mix(in srgb, var(--spk) 55%, transparent);
+}
+/* Transcript: mono stamps, current segment glows. */
+body.pawn-skin-cyberpunk .stamp {
+  font-family: var(--pawn-mono);
+  color: var(--pawn-neon) !important;
+  opacity: 0.75;
+}
+body.pawn-skin-cyberpunk ::highlight(pawn-now) {
+  background-color: color-mix(in srgb, var(--pawn-neon) 22%, transparent);
+  color: var(--pawn-neon);
+}
+body.pawn-skin-cyberpunk ::highlight(pawn-find) {
+  background-color: color-mix(in srgb, var(--pawn-hot) 35%, transparent);
+}
+/* Day tab: mono toolbar date, rail headings like section labels. */
+body.pawn-skin-cyberpunk .day .date-btn {
+  font-family: var(--pawn-mono);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  font-size: 0.8rem;
+}
+body.pawn-skin-cyberpunk .day .toolbar .q-btn--outline {
+  color: var(--pawn-neon);
+}
+body.pawn-skin-cyberpunk .day .toolbar .q-btn--outline:hover {
+  box-shadow: 0 0 10px color-mix(in srgb, var(--pawn-neon) 30%, transparent);
+}
+body.pawn-skin-cyberpunk .day .toggle-on {
+  color: var(--pawn-neon);
+}
+body.pawn-skin-cyberpunk .day .rail-head {
+  font-family: var(--pawn-mono);
+  color: var(--pawn-neon);
+  letter-spacing: 0.14em;
+}
+body.pawn-skin-cyberpunk .day .rail-head::before {
+  content: "//";
+  margin-right: -2px;
+  color: var(--pawn-hot);
+}
+/* Speakers rail: square, mono, uppercase actions like the segmented control. */
+body.pawn-skin-cyberpunk .pawn-rail .actions .q-btn {
+  border-radius: 0;
+  font-family: var(--pawn-mono);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  font-size: 0.66rem;
+}
+body.pawn-skin-cyberpunk .pawn-rail .actions .q-btn--outline {
+  color: var(--pawn-neon);
+}
+body.pawn-skin-cyberpunk .pawn-rail .actions .q-btn--outline:not(.disabled):hover {
+  background: color-mix(in srgb, var(--pawn-neon) 10%, transparent);
+  box-shadow: 0 0 10px color-mix(in srgb, var(--pawn-neon) 30%, transparent);
+}
+body.pawn-skin-cyberpunk .pawn-rail .confirm {
+  border-left-color: var(--pawn-neon);
+  background: color-mix(in srgb, var(--pawn-neon) 6%, transparent);
+  font-family: var(--pawn-mono);
+}
+body.pawn-skin-cyberpunk .pawn-rail .confirm b {
+  color: var(--pawn-neon);
+}
+/* Who-spoke-when strip and talk-share bars. */
+body.pawn-skin-cyberpunk .strip,
+body.pawn-skin-cyberpunk .share {
+  border-radius: 0 !important;
+  box-shadow: inset 0 0 0 1px var(--pawn-border);
+}
+body.pawn-skin-cyberpunk .strip .playhead {
+  background: var(--pawn-hot) !important;
+  box-shadow: 0 0 8px var(--pawn-hot);
+}
+/* Both-axis scroller (time grids, wide tables): same thin bar as .pawn-scroll. */
+.pawn-scroll-xy {
+  overflow: auto;
+  scrollbar-width: thin;
+  scrollbar-color: var(--pawn-guide) transparent;
+  min-height: 0;
+}
+.pawn-scroll-xy::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+.pawn-scroll-xy::-webkit-scrollbar-track,
+.pawn-scroll-xy::-webkit-scrollbar-corner {
+  background: transparent;
+}
+.pawn-scroll-xy::-webkit-scrollbar-thumb {
+  background: var(--pawn-guide);
+  border-radius: 3px;
+}
+/* Cyberpunk: every remaining scroller (menus, dialogs, textareas, editors)
+   gets the thin neon bar, not the OS default. */
+body.pawn-skin-cyberpunk,
+body.pawn-skin-cyberpunk * {
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in srgb, var(--pawn-neon) 40%, transparent) transparent;
+}
+body.pawn-skin-cyberpunk ::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+body.pawn-skin-cyberpunk ::-webkit-scrollbar-track,
+body.pawn-skin-cyberpunk ::-webkit-scrollbar-corner {
+  background: transparent;
+}
+body.pawn-skin-cyberpunk ::-webkit-scrollbar-thumb {
+  background: color-mix(in srgb, var(--pawn-neon) 40%, transparent);
+  border-radius: 0;
+}
+body.pawn-skin-cyberpunk ::-webkit-scrollbar-thumb:hover {
+  background: var(--pawn-neon);
+}
+/* .pawn-scroll keeps its hide-until-hover behaviour in the skin. */
+body.pawn-skin-cyberpunk .pawn-scroll {
+  scrollbar-color: transparent transparent;
+}
+body.pawn-skin-cyberpunk .pawn-scroll::-webkit-scrollbar-thumb {
+  background: transparent;
+}
+/* Cyberpunk: time grid (Day / Week). */
+body.pawn-skin-cyberpunk .tg-hour,
+body.pawn-skin-cyberpunk .tg-day,
+body.pawn-skin-cyberpunk .tg-allday-label,
+body.pawn-skin-cyberpunk .tg-now span {
+  font-family: var(--pawn-mono);
+  letter-spacing: 0.04em;
+}
+body.pawn-skin-cyberpunk .tg-hour {
+  color: var(--pawn-neon);
+  opacity: 0.7;
+}
+body.pawn-skin-cyberpunk .tg-day.today {
+  color: var(--pawn-neon);
+  text-shadow: 0 0 8px color-mix(in srgb, var(--pawn-neon) 60%, transparent);
+}
+body.pawn-skin-cyberpunk .tg-line {
+  border-top-color: color-mix(in srgb, var(--pawn-neon) 16%, transparent);
+}
+body.pawn-skin-cyberpunk .tg-col {
+  border-left-color: color-mix(in srgb, var(--pawn-neon) 20%, transparent);
+}
+body.pawn-skin-cyberpunk .tg-now {
+  box-shadow: 0 0 8px var(--pawn-hot);
+}
+body.pawn-skin-cyberpunk .tg-card,
+body.pawn-skin-cyberpunk .tg-ghost,
+body.pawn-skin-cyberpunk .tg-allday-chip {
+  border-radius: 0;
+}
+body.pawn-skin-cyberpunk .tg-card {
+  background: color-mix(in srgb, var(--pawn-neon) 9%, var(--pawn-card));
+  border-left-color: var(--pawn-neon);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--pawn-neon) 22%, transparent);
+}
+body.pawn-skin-cyberpunk .tg-card:hover {
+  box-shadow: inset 0 0 0 1px var(--pawn-neon), 0 0 12px color-mix(in srgb, var(--pawn-neon) 30%, transparent);
+}
+body.pawn-skin-cyberpunk .tg-card.session {
+  border-left-color: var(--pawn-hot);
+}
+body.pawn-skin-cyberpunk .tg-card.selected,
+body.pawn-skin-cyberpunk .tg-allday-chip.selected {
+  outline: 1px solid var(--pawn-neon);
+  box-shadow: 0 0 14px color-mix(in srgb, var(--pawn-neon) 45%, transparent);
+}
+body.pawn-skin-cyberpunk .tg-ghost {
+  border-color: var(--pawn-neon);
+}
+/* Item-kind filter pills: a colored dot, the pill lights in the kind's tone. */
+.kind-pill .kind-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--kind);
+  flex: none;
+}
+.kind-pill.active {
+  color: var(--kind);
+  background: color-mix(in srgb, var(--kind) 14%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--kind) 55%, transparent);
+}
+body.pawn-skin-cyberpunk .kind-pill .kind-dot {
+  border-radius: 0;
+  box-shadow: 0 0 6px var(--kind);
+}
+body.pawn-skin-cyberpunk .kind-pill.active {
+  color: var(--kind);
+  background: color-mix(in srgb, var(--kind) 12%, transparent);
+  box-shadow: inset 0 0 0 1px var(--kind), 0 0 10px color-mix(in srgb, var(--kind) 30%, transparent);
+}
+
+/* ── Cyberpunk: tiles (inbox items, ideas, captures, agenda TODOs) ───── */
+/* Square frame tinted by the item's kind, a lit left rail, a notched
+   top-right corner traced by a hairline, and mono/uppercase metadata. */
+body.pawn-skin-cyberpunk .pawn-tile {
+  --tile-tone-c: var(--tile-tone, var(--pawn-neon));
+  --tile-notch: 12px;
+  position: relative;
+  border-radius: 0;
+  border: 1px solid color-mix(in srgb, var(--tile-tone-c) 22%, var(--pawn-border));
+  border-left: 2px solid var(--tile-tone-c);
+  background:
+    linear-gradient(90deg, color-mix(in srgb, var(--tile-tone-c) 8%, transparent), transparent 45%),
+    var(--pawn-card);
+  box-shadow: inset 2px 0 10px -6px var(--tile-tone-c);
+  clip-path: polygon(0 0, calc(100% - var(--tile-notch)) 0, 100% var(--tile-notch), 100% 100%, 0 100%);
+  transition: border-color 0.15s ease, background-color 0.15s ease;
+}
+body.pawn-skin-cyberpunk .pawn-tile::after {
+  content: "";
+  position: absolute;
+  top: -1px;
+  right: -1px;
+  width: calc(var(--tile-notch) + 1px);
+  height: calc(var(--tile-notch) + 1px);
+  pointer-events: none;
+  background: linear-gradient(
+    to bottom left,
+    transparent calc(50% - 1.5px),
+    color-mix(in srgb, var(--tile-tone-c) 70%, transparent) calc(50% - 1.5px),
+    color-mix(in srgb, var(--tile-tone-c) 70%, transparent) calc(50% + 0.5px),
+    transparent calc(50% + 0.5px)
+  );
+}
+body.pawn-skin-cyberpunk .pawn-tile:hover {
+  border-color: color-mix(in srgb, var(--tile-tone-c) 55%, var(--pawn-border));
+  border-left-color: var(--tile-tone-c);
+}
+body.pawn-skin-cyberpunk .pawn-tile.interrupt {
+  border-left: 2px solid var(--pawn-danger);
+}
+body.pawn-skin-cyberpunk.body--dark .pawn-tile.interrupt {
+  background:
+    repeating-linear-gradient(-45deg, color-mix(in srgb, var(--pawn-danger) 5%, transparent) 0 6px, transparent 6px 12px) left / 18px 100% no-repeat,
+    linear-gradient(90deg, color-mix(in srgb, var(--pawn-danger) 10%, transparent), transparent 45%),
+    var(--pawn-card);
+}
+body.pawn-skin-cyberpunk .pawn-tile.closed {
+  opacity: 0.55;
+  filter: saturate(0.4);
+}
+body.pawn-skin-cyberpunk .pawn-tile .age {
+  font-size: 0.68rem;
+  color: var(--tile-tone-c) !important;
+  opacity: 0.8;
+}
+body.pawn-skin-cyberpunk .pawn-tile .item-quote {
+  border-left-color: color-mix(in srgb, var(--tile-tone-c) 50%, transparent);
+}
+body.pawn-skin-cyberpunk .pawn-tile .actions .q-btn {
+  border-radius: 0;
+  font-family: var(--pawn-mono);
+  font-size: 0.64rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  opacity: 0.8;
+}
+body.pawn-skin-cyberpunk .pawn-tile .actions .q-btn:hover {
+  opacity: 1;
+  color: var(--pawn-neon);
+}
+body.pawn-skin-cyberpunk .pawn-tile .actions .q-btn[aria-label="Delete"]:hover {
+  color: var(--pawn-danger);
+}
+body.pawn-skin-cyberpunk .group-label {
+  font-family: var(--pawn-mono);
+  color: var(--pawn-neon) !important;
+  opacity: 0.85;
+  letter-spacing: 0.14em;
+}
+body.pawn-skin-cyberpunk .group-label::before {
+  content: "//";
+  margin-right: 6px;
+  color: var(--pawn-hot);
 }

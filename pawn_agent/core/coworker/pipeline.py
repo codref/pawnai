@@ -8,7 +8,11 @@ from typing import Any, Optional
 from zoneinfo import ZoneInfo
 
 from pawn_agent.core.coworker import db as itemdb
-from pawn_agent.core.coworker.extract import extract_items
+from pawn_agent.core.coworker.extract import (
+    ANNOTATIONS_HEADING,
+    TRANSCRIPT_HEADING,
+    extract_items,
+)
 from pawn_agent.core.coworker.notes import render_item_note, render_today
 from pawn_agent.core.coworker.policy import PolicyContext, apply_policy, fingerprint
 from pawn_agent.core.coworker.score import score_items
@@ -91,7 +95,113 @@ def _source_with_annotations(transcript: str, annotations: str) -> str:
     ann = (annotations or "").strip()
     if not ann:
         return transcript
-    return f"## User annotations\n{ann}\n\n## Transcript\n{transcript}"
+    return f"{ANNOTATIONS_HEADING}\n{ann}\n\n{TRANSCRIPT_HEADING}\n{transcript}"
+
+
+def _source_time(cfg: AgentConfig, source_kind: str, source_ref: str) -> Optional[datetime]:
+    """When a session happened: its first transcript segment (naive UTC)."""
+    if source_kind != "session":
+        return None
+    try:
+        from sqlalchemy import func, select  # noqa: PLC0415
+
+        from pawn_core.database import TranscriptionSegment, _get_session  # noqa: PLC0415
+
+        with _get_session(cfg.db_dsn) as db:
+            first = db.scalar(
+                select(func.min(TranscriptionSegment.created_at)).where(
+                    TranscriptionSegment.session_id == source_ref
+                )
+            )
+    except Exception as exc:
+        logger.debug("session time unavailable for %s: %s", source_ref, exc)
+        return None
+    if first is None:
+        return None
+    if first.tzinfo is not None:
+        first = first.astimezone(timezone.utc).replace(tzinfo=None)
+    return first
+
+
+async def _extract(
+    cfg: AgentConfig,
+    *,
+    source_kind: str,
+    source_ref: str,
+    source_text: str,
+    store: Any = None,
+) -> tuple[list[dict[str, Any]], str]:
+    """Item dicts plus an audit summary.
+
+    With ``emergence.enabled`` the observation layer runs (triage, one prompt
+    per type, quote verification, stored observations) and actionable
+    observations become items. Otherwise the single-prompt extractor runs.
+    """
+    if getattr(getattr(cfg, "emergence", None), "enabled", False):
+        from pawn_agent.core.emergence.pipeline import (  # noqa: PLC0415
+            observe_source,
+            project_items,
+        )
+
+        result = await observe_source(
+            cfg,
+            source_kind=source_kind,
+            source_ref=source_ref,
+            source_text=source_text,
+            occurred_at=_source_time(cfg, source_kind, source_ref),
+        )
+        items = _rank_filter(cfg, project_items(result.observations), result.stats)
+        from pawn_agent.core.emergence.route import after_observe  # noqa: PLC0415
+
+        result.stats["subjects"] = await after_observe(cfg, result, store=store)
+        stats = result.stats
+        summary = (
+            f"{len(items)} items from {stats.get('live', 0)} observations "
+            f"({stats.get('rejected', 0)} rejected, {stats.get('windows', 0)} windows, "
+            f"{stats.get('triage_calls', 0) + stats.get('typed_calls', 0)} calls)"
+        )
+        return items, summary
+    items = await extract_items(cfg, source_text)
+    return items, f"{len(items)} items"
+
+
+def _rank_filter(
+    cfg: AgentConfig, items: list[dict[str, Any]], stats: dict[str, Any]
+) -> list[dict[str, Any]]:
+    """Drop items the ranker scores under ``emergence.ranker_min_score``.
+
+    Only once the ranker is trained with cross-validated AUC at least
+    ``emergence.ranker_min_auc``; the observations stay stored either way.
+    """
+    emergence = getattr(cfg, "emergence", None)
+    min_score = float(getattr(emergence, "ranker_min_score", 0.0) or 0.0)
+    ranker = stats.get("ranker") or {}
+    if min_score <= 0 or ranker.get("status") != "trained":
+        return items
+    if float(ranker.get("auc") or 0.0) < float(getattr(emergence, "ranker_min_auc", 0.7)):
+        return items
+    kept = [i for i in items if i.get("rank_score") is None or i["rank_score"] >= min_score]
+    stats["ranker_filtered"] = len(items) - len(kept)
+    return kept
+
+
+def _item_payload(item: dict[str, Any]) -> Optional[dict[str, Any]]:
+    """Where in the source the item came from (window, time, quote match)."""
+    payload: dict[str, Any] = {}
+    if item.get("start_sec") is not None:
+        payload["start_sec"] = round(float(item["start_sec"]), 2)
+    if item.get("window") is not None:
+        payload["window"] = int(item["window"])
+    if item.get("quote_score") is not None:
+        payload["quote_score"] = float(item["quote_score"])
+    if item.get("rank_score") is not None:
+        payload["rank_score"] = float(item["rank_score"])
+    if item.get("observation_id"):
+        payload["observation_id"] = str(item["observation_id"])
+        payload["observation_type"] = str(item.get("observation_type") or "")
+        if item.get("merged_observation_ids"):
+            payload["merged_observation_ids"] = list(item["merged_observation_ids"])
+    return payload or None
 
 
 def _local_now(goals: Goals, cfg: AgentConfig) -> datetime:
@@ -124,8 +234,14 @@ async def process_source(
     goals = _read_goals(cfg, store)
     extract_run = _audit(cfg, "extract", source_text[:500], source_ref)
     try:
-        extracted = await extract_items(cfg, source_text)
-        _finish(cfg, extract_run, f"{len(extracted)} items")
+        extracted, summary = await _extract(
+            cfg,
+            source_kind=source_kind,
+            source_ref=source_ref,
+            source_text=source_text,
+            store=store,
+        )
+        _finish(cfg, extract_run, summary)
     except Exception as exc:
         _fail(cfg, extract_run, exc)
         raise
@@ -200,6 +316,7 @@ async def process_source(
             fingerprint=fp,
             recurrence=recurrence,
             status="new",
+            payload=_item_payload(item),
         )
         from pawn_agent.core.coworker.actions import item_note_key  # noqa: PLC0415
 
@@ -219,6 +336,7 @@ async def process_source(
             reason=row.get("reason") or "",
             interrupt=interrupt,
             related=related,
+            start_sec=item.get("start_sec"),
         )
         try:
             store.write(note_key, note)
@@ -272,6 +390,17 @@ async def process_source(
     return {"source_ref": source_ref, "items": len(saved), "interrupts": interrupts}
 
 
+def session_source_text(cfg: AgentConfig, session_id: str, store: Any) -> str:
+    """Transcript plus vault annotations, as the extractor sees it."""
+    from pawn_agent.utils.transcript import fetch_transcript  # noqa: PLC0415
+
+    transcript = fetch_transcript(cfg, session_id)
+    if transcript.startswith("Error") or transcript.startswith("No transcript"):
+        raise ValueError(transcript)
+    annotations = _session_annotations(cfg, session_id, store)
+    return _source_with_annotations(transcript, annotations)
+
+
 async def process_session(
     cfg: AgentConfig,
     session_id: str,
@@ -279,17 +408,11 @@ async def process_session(
     store: Any = None,
 ) -> dict[str, Any]:
     """Run the coworker loop for one diarization session."""
-    from pawn_agent.utils.transcript import fetch_transcript  # noqa: PLC0415
-
     if store is None:
         from pawn_core.vault_config import vault_store_from_config  # noqa: PLC0415
 
         store = vault_store_from_config(cfg)
-    transcript = fetch_transcript(cfg, session_id)
-    if transcript.startswith("Error") or transcript.startswith("No transcript"):
-        raise ValueError(transcript)
-    annotations = _session_annotations(cfg, session_id, store)
-    source_text = _source_with_annotations(transcript, annotations)
+    source_text = session_source_text(cfg, session_id, store)
     return await process_source(
         cfg,
         source_kind="session",

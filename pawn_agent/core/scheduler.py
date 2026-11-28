@@ -701,16 +701,33 @@ async def start_scheduler(
         cfg.agent_scheduler.poll_interval_seconds,
         cfg.agent_scheduler.max_due_per_tick,
     )
+    from pawn_agent.core import worker_status  # noqa: PLC0415
+
+    worker_status.started(
+        "scheduler",
+        poll_interval_seconds=cfg.agent_scheduler.poll_interval_seconds,
+        max_due_per_tick=cfg.agent_scheduler.max_due_per_tick,
+        fired=0,
+    )
+    fired = 0
     try:
         while True:
             try:
-                await run_scheduler_tick(cfg, registry=registry)
+                claimed = await run_scheduler_tick(cfg, registry=registry)
+                fired += claimed
+                fields: dict[str, Any] = {"last_claimed": claimed, "fired": fired}
+                if claimed:
+                    fields["last_fire_at"] = utc_now()
+                worker_status.tick("scheduler", **fields)
             except Exception as exc:
                 logger.error("Scheduler tick failed: %s", exc, exc_info=True)
+                worker_status.tick("scheduler", error=str(exc) or type(exc).__name__)
             await asyncio.sleep(cfg.agent_scheduler.poll_interval_seconds)
     except asyncio.CancelledError:
         logger.info("Scheduler cancelled - shutting down cleanly")
         raise
+    finally:
+        worker_status.stopped("scheduler")
 
 
 def _write_schedule_output(cfg: Any, path: str, response: str) -> None:

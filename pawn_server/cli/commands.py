@@ -49,6 +49,11 @@ portal_app = typer.Typer(
     rich_markup_mode="rich",
 )
 app.add_typer(coworker_app, name="coworker")
+emergence_app = typer.Typer(
+    help="Emergence layer: threads, ledger, night shift, provocations.",
+    no_args_is_help=True,
+)
+app.add_typer(emergence_app, name="emergence")
 app.add_typer(portal_app, name="portal")
 
 
@@ -620,6 +625,151 @@ def coworker_people_refresh(
     console.print(result)
 
 
+@coworker_app.command("observations")
+def coworker_observations(
+    session: str = typer.Option(..., "--session", "-s", help="Source ref (session id)."),
+    rejected: bool = typer.Option(False, "--rejected", help="Also list rejected ones."),
+    type_name: Optional[str] = typer.Option(None, "--type", "-t", help="Only this type."),
+    config: Optional[str] = typer.Option(None, "--config", "-c"),
+) -> None:
+    """List stored observations from the latest emergence run for a source."""
+    from pawn_agent.core.coworker.notes import format_offset  # noqa: PLC0415
+    from pawn_agent.core.emergence.store import get_source, list_observations  # noqa: PLC0415
+    from pawn_agent.utils.config import load_config  # noqa: PLC0415
+
+    cfg = load_config(config)
+    source = get_source(cfg.db_dsn, session)
+    if source is None:
+        console.print(
+            f"[yellow]No emergence run for {session!r}. Enable emergence and run "
+            "`pawn-server coworker process`.[/yellow]"
+        )
+        raise typer.Exit(1)
+    statuses = ("live", "rejected") if rejected else ("live",)
+    rows = list_observations(cfg.db_dsn, session, statuses=statuses)
+    if type_name:
+        rows = [r for r in rows if r["type"] == type_name]
+    table = Table(title=f"{session} — {source['stats']}")
+    for col in ("at", "type", "status", "speaker", "text"):
+        table.add_column(col)
+    for row in rows:
+        table.add_row(
+            format_offset(row["start_sec"]),
+            row["type"],
+            row["status"] if row["status"] == "live" else f"{row['reject_reason']}",
+            row["speaker_name"],
+            row["text"],
+        )
+    console.print(table)
+
+
+@coworker_app.command("compare")
+def coworker_compare(
+    session: str = typer.Option(..., "--session", "-s", help="Diarization session id."),
+    out: Optional[str] = typer.Option(
+        None,
+        "--out",
+        "-o",
+        help="Vault key for the report (default Pawn/Reviews/extract-compare-{session}.md); "
+        "'-' prints it.",
+    ),
+    config: Optional[str] = typer.Option(None, "--config", "-c"),
+) -> None:
+    """Run the single-prompt and observation extractors side by side.
+
+    Writes a review note with both item lists to tick. Creates no Items and
+    stores no observations, and works whether or not emergence is enabled.
+    """
+    import asyncio  # noqa: PLC0415
+
+    from pawn_agent.core.coworker.pipeline import session_source_text  # noqa: PLC0415
+    from pawn_agent.core.emergence.compare import render_report, run_comparison  # noqa: PLC0415
+    from pawn_agent.utils.config import load_config  # noqa: PLC0415
+    from pawn_core.vault_config import vault_store_from_config  # noqa: PLC0415
+
+    cfg = load_config(config)
+    store = vault_store_from_config(cfg)
+    text = session_source_text(cfg, session, store)
+    report = render_report(asyncio.run(run_comparison(cfg, source_ref=session, source_text=text)))
+    if out == "-":
+        console.print(report, markup=False, highlight=False)
+        return
+    key = out or f"{cfg.coworker.reviews_dir.rstrip('/')}/extract-compare-{session}.md"
+    store.write(key, report)
+    console.print(f"[green]Wrote {key}[/green]")
+
+
+labels_app = typer.Typer(help="Emergence labels: your verdicts Pawn learns from.")
+coworker_app.add_typer(labels_app, name="labels")
+
+
+@labels_app.command("import")
+def coworker_labels_import(
+    note: Optional[str] = typer.Option(
+        None, "--note", "-n", help="One review note key (default: every extract-compare note)."
+    ),
+    config: Optional[str] = typer.Option(None, "--config", "-c"),
+) -> None:
+    """Read ticks from compare review notes into labels.
+
+    Ticked = wanted. Unticked = not wanted only when the note's frontmatter
+    says ``reviewed: true``. Re-importing a note replaces its labels.
+    """
+    from pawn_agent.core.emergence.labels import (  # noqa: PLC0415
+        import_review_note,
+        import_review_notes,
+    )
+    from pawn_agent.utils.config import load_config  # noqa: PLC0415
+    from pawn_core.vault_config import vault_store_from_config  # noqa: PLC0415
+
+    cfg = load_config(config)
+    store = vault_store_from_config(cfg)
+    results = (
+        {note: import_review_note(cfg, note, store.read(note))}
+        if note
+        else import_review_notes(cfg, store)
+    )
+    table = Table(title="Imported labels")
+    for col in ("note", "accept", "reject", "skipped"):
+        table.add_column(col)
+    for key, counts in results.items():
+        table.add_row(key, str(counts["accept"]), str(counts["reject"]), str(counts["skipped"]))
+    console.print(table)
+
+
+@labels_app.command("stats")
+def coworker_labels_stats(config: Optional[str] = typer.Option(None, "--config", "-c")) -> None:
+    """Label counts by surface and verdict, plus the ranker's state."""
+    from pawn_agent.core.emergence import ranker  # noqa: PLC0415
+    from pawn_agent.core.emergence.labels import label_counts  # noqa: PLC0415
+    from pawn_agent.utils.config import load_config  # noqa: PLC0415
+
+    cfg = load_config(config)
+    counts = label_counts(cfg.db_dsn)
+    table = Table(title=f"{counts['total']} labels")
+    for col in ("surface", "verdict", "count"):
+        table.add_column(col)
+    for surface, verdict, n in counts["by"]:
+        table.add_row(surface, verdict, str(n))
+    console.print(table)
+    model = ranker.load(cfg)
+    console.print(
+        {k: v for k, v in (model or {"status": "untrained"}).items() if k not in {"w", "b"}}
+    )
+
+
+@coworker_app.command("ranker")
+def coworker_ranker(config: Optional[str] = typer.Option(None, "--config", "-c")) -> None:
+    """Retrain the relevance ranker on all labels and print its cross-validated AUC."""
+    from pawn_agent.core.emergence import ranker  # noqa: PLC0415
+    from pawn_agent.core.emergence.labels import label_counts  # noqa: PLC0415
+    from pawn_agent.utils.config import load_config  # noqa: PLC0415
+
+    cfg = load_config(config)
+    meta = ranker.train(cfg, label_total=label_counts(cfg.db_dsn)["total"])
+    console.print(meta)
+
+
 @coworker_app.command("reindex")
 def coworker_reindex(
     notes: bool = typer.Option(False, "--notes", help="Index vault markdown."),
@@ -758,6 +908,57 @@ def portal_import(
         f"{verb} {len(report.imported)} chat(s); skipped {len(report.skipped_existing)} "
         f"already in the portal and {len(report.skipped_empty)} without chat turns."
     )
+
+
+@portal_app.command("repair-file-offsets")
+def portal_repair_file_offsets(
+    session: Optional[str] = typer.Option(None, "--session", "-s", help="One session id."),
+    all_sessions: bool = typer.Option(
+        False, "--all", help="Every session whose file offsets are not stored yet."
+    ),
+    force: bool = typer.Option(False, "--force", help="Re-probe sessions that already have offsets."),
+    config: Optional[str] = typer.Option(None, "--config", "-c"),
+) -> None:
+    """Store per-file audio offsets so the portal player can seek chunked sessions.
+
+    Reads only each file's header (FLAC STREAMINFO / WAV chunks) from S3.
+    Sessions where a duration cannot be read are reported and left unstored;
+    the player then estimates offsets from segment times.
+    """
+    from pawn_agent.utils.config import load_config  # noqa: PLC0415
+    from pawn_server.core.sessions_api import (  # noqa: PLC0415
+        backfill_file_offsets,
+        sessions_missing_offsets,
+    )
+
+    if bool(session) == bool(all_sessions):
+        console.print("[red]Provide exactly one of --session ID or --all[/red]")
+        raise typer.Exit(1)
+    cfg = load_config(config)
+    targets = [session] if session else sessions_missing_offsets(cfg.db_dsn, include_stored=force)
+    if not targets:
+        console.print("[green]Every session already has file offsets.[/green]")
+        return
+    stored = 0
+    for sid in targets:
+        try:
+            report = backfill_file_offsets(cfg, sid, force=force)
+        except Exception as exc:  # noqa: BLE001
+            console.print(f"[yellow]{sid}: {exc}[/yellow]")
+            continue
+        if report["stored"]:
+            stored += 1
+            console.print(
+                f"[green]{sid}[/green]: {report['files']} file(s), {report['duration']:.0f}s"
+            )
+        elif not report["files"]:
+            console.print(f"[dim]{sid}: no audio files recorded[/dim]")
+        else:
+            console.print(
+                f"[yellow]{sid}[/yellow]: {report['estimated']}/{report['files']} file(s) "
+                "unreadable (missing from storage or unknown format); not stored"
+            )
+    console.print(f"[cyan]Done. Stored offsets for {stored}/{len(targets)} session(s).[/cyan]")
 
 
 @app.command()
@@ -1093,3 +1294,196 @@ def serve(
     except Exception as exc:
         console.print(f"[red]Error: {exc}[/red]")
         raise typer.Exit(1)
+
+
+# ── emergence ────────────────────────────────────────────────────────────────
+
+
+def _em_cfg(config: Optional[str]) -> Any:
+    from pawn_agent.utils.config import load_config  # noqa: PLC0415
+
+    return load_config(config)
+
+
+@emergence_app.command("night")
+def emergence_night(
+    job: Optional[list[str]] = typer.Option(None, "--job", "-j", help="Run only these jobs."),
+    config: Optional[str] = typer.Option(None, "--config", "-c"),
+) -> None:
+    """Run the night shift now (sync, clustering, synthesis, ledger, …)."""
+    import asyncio  # noqa: PLC0415
+
+    from pawn_agent.core.emergence.night import JOBS, run_night  # noqa: PLC0415
+
+    unknown = [j for j in job or [] if j not in JOBS]
+    if unknown:
+        console.print(f"[red]Unknown jobs {unknown}. Choose from {', '.join(JOBS)}.[/red]")
+        raise typer.Exit(1)
+    cfg = _em_cfg(config)
+    console.print(asyncio.run(run_night(cfg, jobs=list(job) if job else None)))
+
+
+@emergence_app.command("subjects")
+def emergence_subjects(
+    kind: Optional[str] = typer.Option(None, "--kind", "-k", help="thread, question, decision, …"),
+    status: Optional[str] = typer.Option(None, "--status", "-s", help="Comma-separated."),
+    config: Optional[str] = typer.Option(None, "--config", "-c"),
+) -> None:
+    """List subjects with momentum and status."""
+    from pawn_agent.core.emergence import subjects as subj  # noqa: PLC0415
+
+    cfg = _em_cfg(config)
+    rows = subj.list_subjects(
+        cfg.db_dsn,
+        kinds=[kind] if kind else None,
+        statuses=[s for s in (status or "").split(",") if s] or None,
+    )
+    table = Table(title=f"{len(rows)} subjects")
+    for col in ("id", "kind", "status", "origin", "momentum", "title"):
+        table.add_column(col)
+    for r in rows:
+        table.add_row(r["id"][:8], r["kind"], r["status"], r["origin"],
+                      "" if r["momentum"] is None else str(r["momentum"]), r["title"][:80])
+    console.print(table)
+
+
+@emergence_app.command("status")
+def emergence_status(
+    subject_id: str = typer.Argument(..., help="Subject id (prefix ok)."),
+    status: str = typer.Argument(..., help="active, dismissed, done, parked, resolved, open"),
+    config: Optional[str] = typer.Option(None, "--config", "-c"),
+) -> None:
+    """Accept, drop or close a subject."""
+    from pawn_agent.core.emergence import subjects as subj  # noqa: PLC0415
+    from pawn_agent.core.emergence.threads import USER_STATUSES  # noqa: PLC0415
+
+    cfg = _em_cfg(config)
+    if status not in USER_STATUSES:
+        console.print(f"[red]Status must be one of {sorted(USER_STATUSES)}.[/red]")
+        raise typer.Exit(1)
+    match = [s for s in subj.list_subjects(cfg.db_dsn) if s["id"].startswith(subject_id)]
+    if len(match) != 1:
+        console.print(f"[red]{len(match)} subjects match {subject_id!r}.[/red]")
+        raise typer.Exit(1)
+    subj.set_status(cfg.db_dsn, match[0]["id"], status, reason="cli")
+    console.print(f"[green]{match[0]['title']} → {status}[/green]")
+
+
+@emergence_app.command("provocations")
+def emergence_provocations(
+    days: int = typer.Option(14, "--days"),
+    config: Optional[str] = typer.Option(None, "--config", "-c"),
+) -> None:
+    """Recent provocations and verdicts."""
+    from pawn_agent.core.emergence.provocations import list_recent  # noqa: PLC0415
+
+    cfg = _em_cfg(config)
+    table = Table(title="Provocations")
+    for col in ("id", "day", "status", "verdict", "score", "text"):
+        table.add_column(col)
+    for p in list_recent(cfg, days=days):
+        table.add_row(p["short_id"], p["day"], p["status"], p["verdict"] or "",
+                      "" if p["score"] is None else str(p["score"]), p["text"][:90])
+    console.print(table)
+
+
+@emergence_app.command("verdict")
+def emergence_verdict(
+    short_id: str = typer.Argument(...),
+    verdict: str = typer.Argument(..., help="useful | wrong | not_now"),
+    config: Optional[str] = typer.Option(None, "--config", "-c"),
+) -> None:
+    """Record a verdict on a provocation."""
+    from pawn_agent.core.emergence.provocations import apply_verdict  # noqa: PLC0415
+
+    console.print(apply_verdict(_em_cfg(config), short_id, verdict))
+
+
+@emergence_app.command("council")
+def emergence_council(
+    subject_id: str = typer.Argument(..., help="Decision id (prefix ok)."),
+    config: Optional[str] = typer.Option(None, "--config", "-c"),
+) -> None:
+    """Run the council (five personas + pre-mortem) on one decision."""
+    import asyncio  # noqa: PLC0415
+
+    from pawn_agent.core.emergence import subjects as subj  # noqa: PLC0415
+    from pawn_agent.core.emergence.dream import council  # noqa: PLC0415
+    from pawn_core.vault_config import vault_store_from_config  # noqa: PLC0415
+
+    cfg = _em_cfg(config)
+    match = [s for s in subj.list_subjects(cfg.db_dsn, kinds=("decision",))
+             if s["id"].startswith(subject_id)]
+    if len(match) != 1:
+        console.print(f"[red]{len(match)} decisions match {subject_id!r}.[/red]")
+        raise typer.Exit(1)
+    key = asyncio.run(council(cfg, vault_store_from_config(cfg), match[0]["id"]))
+    console.print(f"[green]Wrote {key}[/green]")
+
+
+@emergence_app.command("retro")
+def emergence_retro(
+    kind: str = typer.Option("week", "--kind", "-k", help="week | month | quarter"),
+    force: bool = typer.Option(True, "--force/--no-force", help="Rewrite an existing retro."),
+    config: Optional[str] = typer.Option(None, "--config", "-c"),
+) -> None:
+    """Write the retrospective for the last completed week, month or quarter."""
+    import asyncio  # noqa: PLC0415
+
+    from pawn_agent.core.emergence.reflect import write_retro  # noqa: PLC0415
+    from pawn_core.vault_config import vault_store_from_config  # noqa: PLC0415
+
+    cfg = _em_cfg(config)
+    key = asyncio.run(write_retro(cfg, vault_store_from_config(cfg), kind, force=force))
+    console.print(f"[green]Wrote {key}[/green]" if key else "Nothing to write.")
+
+
+@emergence_app.command("prompt-search")
+def emergence_prompt_search(
+    type_name: str = typer.Option(..., "--type", "-t", help="decision, commitment, block, …"),
+    variants: int = typer.Option(2, "--variants"),
+    config: Optional[str] = typer.Option(None, "--config", "-c"),
+) -> None:
+    """Try prompt variants against your labels; promote a clear winner."""
+    import asyncio  # noqa: PLC0415
+
+    from pawn_agent.core.emergence.search import prompt_search  # noqa: PLC0415
+    from pawn_core.vault_config import vault_store_from_config  # noqa: PLC0415
+
+    cfg = _em_cfg(config)
+    console.print(asyncio.run(
+        prompt_search(cfg, vault_store_from_config(cfg), type_name, variants=variants)
+    ))
+
+
+@emergence_app.command("export")
+def emergence_export(
+    out: str = typer.Option("emergence-labels.jsonl", "--out", "-o"),
+    include_bulk: bool = typer.Option(False, "--include-bulk"),
+    config: Optional[str] = typer.Option(None, "--config", "-c"),
+) -> None:
+    """Export labels as JSONL for fine-tuning a model outside Pawn."""
+    from pathlib import Path  # noqa: PLC0415
+
+    from pawn_agent.core.emergence.search import export_labels  # noqa: PLC0415
+
+    cfg = _em_cfg(config)
+    n = export_labels(cfg.db_dsn, Path(out), include_bulk=include_bulk)
+    console.print(f"[green]Wrote {n} labels to {out}[/green]")
+
+
+@emergence_app.command("render")
+def emergence_render(config: Optional[str] = typer.Option(None, "--config", "-c")) -> None:
+    """Re-render every subject note and the ledger pages."""
+    from pawn_agent.core.emergence import subjects as subj  # noqa: PLC0415
+    from pawn_agent.core.emergence import vault_notes  # noqa: PLC0415
+    from pawn_agent.core.emergence.threads import render_all  # noqa: PLC0415
+    from pawn_core.vault_config import vault_store_from_config  # noqa: PLC0415
+
+    cfg = _em_cfg(config)
+    store = vault_store_from_config(cfg)
+    n = render_all(cfg, store)
+    vault_notes.render_commitments(cfg, store, subj.list_subjects(cfg.db_dsn, kinds=("commitment",)))
+    vault_notes.render_predictions(cfg, store, subj.list_subjects(cfg.db_dsn, kinds=("prediction",)))
+    console.print(f"[green]Rendered {n} subject notes plus Commitments and Predictions.[/green]")
+

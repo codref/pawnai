@@ -28,6 +28,12 @@ function title(tab: Tab): string {
   if (tab.kind === "clip") return "Clip";
   if (tab.kind === "inbox") return "Inbox";
   if (tab.kind === "settings") return "Settings";
+  if (tab.kind === "sessions") return "Sessions";
+  if (tab.kind === "session") return "Session";
+  if (tab.kind === "day") return "Day";
+  if (tab.kind === "speakers") return "Speakers";
+  if (tab.kind === "assistants") return "Assistants";
+  if (tab.kind === "brainmap") return "Brainmap";
   return baseName(tab.ref);
 }
 
@@ -39,6 +45,11 @@ function icon(tab: Tab): string {
   if (tab.kind === "clip") return "content_cut";
   if (tab.kind === "inbox") return "inbox";
   if (tab.kind === "settings") return "settings";
+  if (tab.kind === "sessions" || tab.kind === "session") return "graphic_eq";
+  if (tab.kind === "day") return "calendar_today";
+  if (tab.kind === "speakers") return "record_voice_over";
+  if (tab.kind === "assistants") return "devices";
+  if (tab.kind === "brainmap") return "hub";
   if (/\.(png|jpe?g|gif|webp|svg|bmp|avif)$/i.test(tab.ref)) return "image";
   if (/\.pdf$/i.test(tab.ref)) return "picture_as_pdf";
   return "description";
@@ -145,6 +156,7 @@ function reset(): void {
         active: it.tab.id === group?.activeId,
         preview: !it.tab.pinned,
         sticky: it.tab.sticky,
+        busy: it.status.busy,
         over: overId === it.tab.id && draggingTab !== it.tab.id,
       }"
       role="tab"

@@ -21,6 +21,19 @@ from pawn_server.core.vault_events import publish_vault_event
 logger = logging.getLogger(__name__)
 
 
+def _ledger_brief(cfg: Any, attendees: list[Any]) -> str:
+    """Open commitments, concerns and shaky decisions involving attendees."""
+    if not getattr(getattr(cfg, "emergence", None), "enabled", False) or not attendees:
+        return ""
+    try:
+        from pawn_agent.core.emergence.ledger import meeting_brief  # noqa: PLC0415
+
+        return meeting_brief(cfg, [str(a) for a in attendees])
+    except Exception as exc:
+        logger.warning("ledger brief unavailable: %s", exc)
+        return ""
+
+
 def build_prep_prompt(cfg: Any, *, path: str, event: dict[str, Any]) -> str:
     """Fixed brief for the ``meeting_prep`` skill."""
     goals_path = str(
@@ -56,6 +69,16 @@ def build_prep_prompt(cfg: Any, *, path: str, event: dict[str, Any]) -> str:
     body = (event.get("body") or "").strip()
     if body:
         lines.extend(["", "Event body:", body[:2000]])
+    brief = _ledger_brief(cfg, attendees)
+    if brief:
+        lines.extend(
+            [
+                "",
+                "Pawn ledger for these attendees (from the observation layer; include "
+                "what matters under a **Ledger** line in the prep):",
+                brief,
+            ]
+        )
     lines.extend(
         [
             "",
