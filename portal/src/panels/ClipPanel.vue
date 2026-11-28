@@ -149,7 +149,7 @@ onMounted(load);
           </div>
         </div>
         <template v-if="editing">
-          <span v-if="dirty" class="text-caption text-orange q-mr-sm">unsaved</span>
+          <span v-if="dirty" class="pawn-status warn q-mr-sm">unsaved</span>
           <q-btn flat dense no-caps label="Cancel" class="q-mr-xs" @click="cancelEdit" />
           <q-btn unelevated dense no-caps color="primary" icon="save" label="Save" :loading="saving" @click="saveEdit" />
         </template>
@@ -178,14 +178,14 @@ onMounted(load);
       <div v-if="editing" class="col q-pa-md editor-wrap">
         <CodeEditor v-model="draft" @save="saveEdit" />
       </div>
-      <q-scroll-area v-else class="col">
+      <div v-else class="col pawn-scroll">
         <div class="row no-wrap q-pa-lg clip-row">
           <div ref="bodyEl" v-target="target" class="col clip-body">
             <MarkdownView :source="clip.content_md" />
           </div>
           <AnnotationLayer kind="clip" :refs="clipRefs" :root-for="() => bodyEl" />
         </div>
-      </q-scroll-area>
+      </div>
     </template>
   </div>
 </template>

@@ -299,7 +299,13 @@ async def directed_pass(cfg: Any, result: Any, *, budget: Any = None) -> list[di
         vector = w.embedding
         if vector is None:
             vector = (await asyncio.to_thread(labels.embed_many, cfg, [w.window.text[:6000]]))[0]
-        nearby = [s for _, s in subj.nearest(vector, open_subjects)[:limit]]
+        ranked = [s for _, s in subj.nearest(vector, open_subjects)]
+        nearby = ranked[:limit]
+        # Questions the user is investigating on a board always get a look.
+        board_slots = int(_em(cfg, "board_directed_slots", 3))
+        if board_slots > 0:
+            boarded = [s for s in ranked[limit:] if (s.get("fields") or {}).get("board")]
+            nearby += boarded[:board_slots]
         if not nearby:
             continue
         part = prompts.part_note(w.window.index, len(windows), "")

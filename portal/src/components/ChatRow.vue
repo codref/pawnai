@@ -5,7 +5,8 @@ import { isSideChat, useChatsStore } from "@/stores/chats";
 import { useTabsStore } from "@/stores/tabs";
 import { closeRef, openChat } from "@/router";
 import { confirmAction, promptTags, promptText } from "@/lib/dialogs";
-import { DND_CHAT } from "@/lib/dnd";
+import { DND_CHAT, setDragLabel } from "@/lib/dnd";
+import { ICONS } from "@/lib/icons";
 import { fullTime, relativeTime } from "@/lib/time";
 import { loadJson, saveJson } from "@/lib/storage";
 import { vTarget, type LocalAction, type Target } from "@/lib/targets";
@@ -35,8 +36,8 @@ function toggle(): void {
 
 const icon = computed(() => {
   if (props.chat.pinned) return "push_pin";
-  if (side.value) return props.chat.origin?.kind === "file" ? "find_in_page" : "question_answer";
-  return "chat_bubble_outline";
+  if (side.value) return props.chat.origin?.kind === "file" ? ICONS.sideFile : ICONS.sideChat;
+  return ICONS.chat;
 });
 
 const local = computed<LocalAction[]>(() => [
@@ -73,7 +74,8 @@ const when = computed(() => relativeTime(stamp.value));
 function onDragStart(ev: DragEvent): void {
   ev.dataTransfer?.setData(DND_CHAT, props.chat.id);
   ev.dataTransfer?.setData("text/plain", props.chat.title || props.chat.id);
-  if (ev.dataTransfer) ev.dataTransfer.effectAllowed = "move";
+  if (ev.dataTransfer) ev.dataTransfer.effectAllowed = "copyMove";
+  setDragLabel(ev, props.chat.title || "Untitled chat");
 }
 
 async function rename(): Promise<void> {
@@ -106,13 +108,13 @@ async function remove(): Promise<void> {
     @click="openChat(chat.id)"
     @dblclick="openChat(chat.id, { pin: true })"
   >
-    <q-icon :name="icon" size="15px" class="q-mr-xs text-muted" />
+    <q-icon :name="icon" class="row-icon" />
     <span class="col ellipsis-1">{{ chat.title || "Untitled chat" }}</span>
-    <span v-for="t in chat.tags.slice(0, 1)" :key="t" class="tag-chip ellipsis-1 q-ml-xs" style="max-width: 90px">
+    <span v-for="t in chat.tags.slice(0, 1)" :key="t" class="tag-chip ellipsis-1 q-ml-xs row-tag" style="max-width: 90px">
       #{{ t }}
     </span>
     <span v-if="children.length" class="side-count" @click.stop="toggle">
-      <q-icon name="question_answer" size="12px" /> {{ children.length }}
+      <q-icon :name="ICONS.sideChat" size="12px" /> {{ children.length }}
       <q-tooltip>{{ children.length }} side chat(s)</q-tooltip>
     </span>
     <span class="age">
@@ -139,17 +141,17 @@ async function remove(): Promise<void> {
       </q-item-section>
       <q-item-section>
         <q-item-label class="ellipsis-1">
-          <q-icon v-if="chat.pinned || side" :name="icon" size="14px" class="q-mr-xs text-muted" />
+          <q-icon v-if="chat.pinned || side" :name="icon" size="14px" class="q-mr-xs text-muted chat-inline-icon" />
           {{ chat.title || (side && chat.origin?.quote ? `“${chat.origin.quote}”` : "Untitled chat") }}
         </q-item-label>
-        <q-item-label v-if="chat.tags.length" caption class="ellipsis-1">
+        <q-item-label v-if="chat.tags.length" caption class="ellipsis-1 row-tag">
           <span v-for="t in chat.tags" :key="t" class="tag-chip">#{{ t }}</span>
         </q-item-label>
       </q-item-section>
       <q-item-section side class="age-side">
         <span class="age">
           <span v-if="children.length && !expanded" class="side-count q-mr-xs">
-            <q-icon name="question_answer" size="12px" /> {{ children.length }}
+            <q-icon :name="ICONS.sideChat" size="12px" /> {{ children.length }}
           </span>
           {{ when }}
           <q-tooltip :delay="600">{{ fullTime(stamp) }}</q-tooltip>
@@ -173,6 +175,9 @@ async function remove(): Promise<void> {
 }
 .age-side {
   padding-left: 4px;
+}
+.chat-inline-icon {
+  vertical-align: -2px;
 }
 .chat-compact {
   min-height: 28px;

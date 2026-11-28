@@ -87,4 +87,27 @@ body.body--dark .code-editor :deep(.cm-activeLineGutter) {
 body.body--dark .code-editor :deep(.cm-content) {
   caret-color: #fff;
 }
+body.pawn-skin-cyberpunk .code-editor :deep(.cm-gutters) {
+  background: #0d141c;
+  border-color: var(--pawn-border);
+  color: #7f9eae;
+}
+body.pawn-skin-cyberpunk .code-editor :deep(.cm-activeLine),
+body.pawn-skin-cyberpunk .code-editor :deep(.cm-activeLineGutter) {
+  background: rgba(92, 225, 255, 0.06);
+}
+body.pawn-skin-cyberpunk .code-editor :deep(.cm-content) {
+  caret-color: #5ce1ff;
+}
+body.pawn-skin-cyberpunk.body--light .code-editor :deep(.cm-gutters) {
+  background: #e7f3f6;
+  color: #3d6270;
+}
+body.pawn-skin-cyberpunk.body--light .code-editor :deep(.cm-activeLine),
+body.pawn-skin-cyberpunk.body--light .code-editor :deep(.cm-activeLineGutter) {
+  background: rgba(12, 106, 128, 0.06);
+}
+body.pawn-skin-cyberpunk.body--light .code-editor :deep(.cm-content) {
+  caret-color: #0c6a80;
+}
 </style>

@@ -910,6 +910,57 @@ def portal_import(
     )
 
 
+@portal_app.command("repair-file-offsets")
+def portal_repair_file_offsets(
+    session: Optional[str] = typer.Option(None, "--session", "-s", help="One session id."),
+    all_sessions: bool = typer.Option(
+        False, "--all", help="Every session whose file offsets are not stored yet."
+    ),
+    force: bool = typer.Option(False, "--force", help="Re-probe sessions that already have offsets."),
+    config: Optional[str] = typer.Option(None, "--config", "-c"),
+) -> None:
+    """Store per-file audio offsets so the portal player can seek chunked sessions.
+
+    Reads only each file's header (FLAC STREAMINFO / WAV chunks) from S3.
+    Sessions where a duration cannot be read are reported and left unstored;
+    the player then estimates offsets from segment times.
+    """
+    from pawn_agent.utils.config import load_config  # noqa: PLC0415
+    from pawn_server.core.sessions_api import (  # noqa: PLC0415
+        backfill_file_offsets,
+        sessions_missing_offsets,
+    )
+
+    if bool(session) == bool(all_sessions):
+        console.print("[red]Provide exactly one of --session ID or --all[/red]")
+        raise typer.Exit(1)
+    cfg = load_config(config)
+    targets = [session] if session else sessions_missing_offsets(cfg.db_dsn, include_stored=force)
+    if not targets:
+        console.print("[green]Every session already has file offsets.[/green]")
+        return
+    stored = 0
+    for sid in targets:
+        try:
+            report = backfill_file_offsets(cfg, sid, force=force)
+        except Exception as exc:  # noqa: BLE001
+            console.print(f"[yellow]{sid}: {exc}[/yellow]")
+            continue
+        if report["stored"]:
+            stored += 1
+            console.print(
+                f"[green]{sid}[/green]: {report['files']} file(s), {report['duration']:.0f}s"
+            )
+        elif not report["files"]:
+            console.print(f"[dim]{sid}: no audio files recorded[/dim]")
+        else:
+            console.print(
+                f"[yellow]{sid}[/yellow]: {report['estimated']}/{report['files']} file(s) "
+                "unreadable (missing from storage or unknown format); not stored"
+            )
+    console.print(f"[cyan]Done. Stored offsets for {stored}/{len(targets)} session(s).[/cyan]")
+
+
 @app.command()
 def serve(
     config: Optional[str] = typer.Option(

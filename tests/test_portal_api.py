@@ -49,6 +49,8 @@ def env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace:
     store.write("People/Ada.md", "Ada bio", skip_guards=True)
     store.write(".obsidian/app.json", "{}", skip_guards=True)
     monkeypatch.setattr("pawn_core.vault_config.vault_store_from_config", lambda _c: store)
+    # planner binds the name at import; patch it there too (order-independent).
+    monkeypatch.setattr("pawn_server.core.planner.vault_store_from_config", lambda _c: store)
 
     prompts: list[dict[str, Any]] = []
 
@@ -522,6 +524,31 @@ def test_search_files_full_text(env: SimpleNamespace) -> None:
         assert client.get("/v1/portal/search?q=Ada.md", headers=AUTH).json()["files"]
 
 
+def test_search_includes_sessions(env: SimpleNamespace, monkeypatch: pytest.MonkeyPatch) -> None:
+    def fake_page(cfg: Any, **kwargs: Any) -> dict:  # noqa: ANN001
+        assert kwargs["q"] == "budget"
+        return {
+            "data": [
+                {
+                    "session_id": "weekly",
+                    "title": "Budget review",
+                    "summary": "the budget holds",
+                    "created_at": "2026-11-27T10:00:00",
+                }
+            ],
+            "facets": {},
+        }
+
+    monkeypatch.setattr("pawn_server.core.sessions_api.list_sessions_page", fake_page)
+    with TestClient(api_server.create_app(env.cfg)) as client:
+        hits = client.get("/v1/portal/search?q=budget", headers=AUTH).json()
+        assert hits["sessions"][0]["session_id"] == "weekly"
+        assert hits["sessions"][0]["title"] == "Budget review"
+        assert "budget" in hits["sessions"][0]["snippet"]
+        tagged = client.get("/v1/portal/search?q=%23people", headers=AUTH).json()
+        assert tagged["sessions"] == []
+
+
 def test_auto_name_after_first_answer(env: SimpleNamespace, monkeypatch) -> None:
     calls: list[str] = []
 
@@ -558,3 +585,86 @@ def test_split_query() -> None:
     from pawn_server.core.portal_api import split_query
 
     assert split_query("budget #work/acme  #x q4") == ("budget q4", ["work/acme", "x"])
+
+
+def test_event_annotation_kind(env: SimpleNamespace) -> None:
+    with TestClient(api_server.create_app(env.cfg)) as client:
+        resp = client.post(
+            "/v1/portal/annotations",
+            headers=AUTH,
+            json={"target_kind": "event", "target_ref": "ev1", "body_md": "prep note"},
+        )
+        assert resp.status_code == 201, resp.text
+        assert resp.json()["target_kind"] == "event"
+
+
+def test_side_chat_session_origin_without_transcript(env: SimpleNamespace) -> None:
+    with TestClient(api_server.create_app(env.cfg)) as client:
+        side = _chat(
+            client,
+            origin={"kind": "session", "ref": "sess-1", "t": 75, "quote": "the budget"},
+        )
+        _say(client, side["id"], "Who said this?")
+        prompt = env.prompts[0]["prompt"]
+        assert "the budget" in prompt
+        assert "Session id: sess-1" in prompt
+        assert "session_transcript --session-id sess-1" in prompt
+        assert "1:15" in prompt
+
+
+def test_side_chat_session_origin_inlines_transcript(
+    env: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def fake_get(_cfg: Any, sid: str) -> dict[str, Any]:
+        return {
+            "session_id": sid,
+            "title": "Product weekly",
+            "created_at": "2026-11-27T10:02:00",
+            "speakers": ["Ada", "SPEAKER_00"],
+            "transcript_path": "Pawn/Transcripts/sess-1.md",
+        }
+
+    monkeypatch.setattr("pawn_server.core.sessions_api.get_session", fake_get)
+    with TestClient(api_server.create_app(env.cfg)) as client:
+        side = _chat(client, origin={"kind": "session", "ref": "sess-1", "t": 75})
+        _say(client, side["id"], "Summarize")
+        prompt = env.prompts[0]["prompt"]
+        assert "Product weekly" in prompt
+        assert "Ada, SPEAKER_00" in prompt
+        assert "1:15" in prompt
+        assert "session_transcript" not in prompt
+        assert "[[Pawn/Transcripts/sess-1]]" in prompt
+
+
+def test_side_chat_event_origin_inlines_note(env: SimpleNamespace) -> None:
+    env.store.write(
+        "Pawn/Events/2026-11-27-standup-ab12.md",
+        "---\npawn: event\nid: ab12\ntitle: Standup\nstart: '2026-11-27T09:00:00'\n---\n\n"
+        "# Standup\n\n## Prep\n\nRead the brief.\n",
+        skip_guards=True,
+    )
+    with TestClient(api_server.create_app(env.cfg)) as client:
+        side = _chat(client, origin={"kind": "event", "ref": "ab12"})
+        _say(client, side["id"], "What should I prepare?")
+        prompt = env.prompts[0]["prompt"]
+        assert "Event: Standup" in prompt
+        assert "[[Pawn/Events/2026-11-27-standup-ab12]]" in prompt
+        assert "Read the brief." in prompt
+
+
+def test_side_chat_day_origin_names_the_skill(env: SimpleNamespace) -> None:
+    with TestClient(api_server.create_app(env.cfg)) as client:
+        side = _chat(client, origin={"kind": "day", "ref": "2026-11-27"})
+        _say(client, side["id"], "Plan it")
+        prompt = env.prompts[0]["prompt"]
+        assert "Day 2026-11-27" in prompt
+        assert "Use the day_plan skill." in prompt
+
+
+def test_side_chat_speaker_origin_inlines_people_note(env: SimpleNamespace) -> None:
+    with TestClient(api_server.create_app(env.cfg)) as client:
+        side = _chat(client, origin={"kind": "speaker", "ref": "Ada"})
+        _say(client, side["id"], "Who is this?")
+        prompt = env.prompts[0]["prompt"]
+        assert "Ada" in prompt
+        assert "[[People/Ada]]" in prompt

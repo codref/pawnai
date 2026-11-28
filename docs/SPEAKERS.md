@@ -57,6 +57,24 @@ Agent CliTools: `speakers_list`, `speakers_show`, `speakers_update`,
 `people_show` / `people_ensure` / `people_append` (see [PEOPLE.md](PEOPLE.md)).
 The agent must confirm quality with you before `speaker_enroll`.
 
+## Portal gallery
+
+The portal Speakers tab (`#/speakers`, `?id=` selects a person) is the gallery UI. The Obsidian Train modal remains for the frozen plugin.
+
+| Action | Endpoint |
+|--------|----------|
+| List (`q`, `include_inactive`) | `GET /v1/speakers` |
+| Detail (enrollments, recent sessions) | `GET /v1/speakers/{id}` |
+| Rename, aliases, notes, optional reidentify | `PATCH /v1/speakers/{id}` |
+| Deactivate | `DELETE /v1/speakers/{id}` |
+| Remove one voiceprint | `DELETE /v1/speakers/{id}/enrollments/{eid}` |
+| Merge into another person | `POST /v1/speakers/{id}/merge` `{into, reidentify?}` |
+| Create the People note if missing | `POST /v1/speakers/{id}/people` |
+
+Merge moves enrollments, repoints `session_speaker_map` onto the destination, adds the source display name to the destination aliases, and deactivates the source. It does not delete the source row. Playback uses the session audio URL and seeks to the enrollment start. A rename reports how many sessions still use the previous name and can queue the same bulk reidentify job as `POST /v1/sessions/reidentify`.
+
+Entry points: the header overflow, `g` then `p`, the session rail, and the Sessions speaker-facet context menu.
+
 ## Obsidian plugin (Sessions → Train / Reprocess)
 
 The Pawn pane **Sessions** tab is primarily for navigating recordings

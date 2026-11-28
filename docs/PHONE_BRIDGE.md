@@ -8,6 +8,11 @@ Status: push half (registration, ingest, purge, read tools) and the server
 side of live phone tools (command queue + UnifiedPush wake-up) are
 implemented. Migrations `0024` and `0025`.
 
+Laptops register in the same registry (`kind: desktop`) and take commands
+over an SSE stream instead of UnifiedPush. Presence, hand-off, phone-approved
+access and wake-word training are in [ASSISTANTS.md](ASSISTANTS.md); the
+voice protocol is in [VOICE_PROTOCOL.md](VOICE_PROTOCOL.md).
+
 ## Data flow
 
 ```
@@ -27,7 +32,7 @@ pawn-agent ← phone_events / phone_devices / knowledge_search --kind phone_sms
 
 | Method | Path | Auth | Notes |
 |--------|------|------|-------|
-| POST | `/v1/devices/register` | shared API token | Body `{name}` → `{device_id, device_token, name}`. The token is shown once; only its SHA-256 is stored. |
+| POST | `/v1/devices/register` | shared API token | Body `{name, kind?: phone\|desktop, platform?}` → `{device_id, device_token, name, kind}`. The token is shown once; only its SHA-256 is stored. |
 | GET | `/v1/devices` | shared API token | List devices. |
 | GET | `/v1/devices/{id}` | device token or shared | Device view. |
 | PUT | `/v1/devices/{id}` | device token or shared | `{name?, unifiedpush_endpoint?, enabled_categories?, capabilities?}`. Removing a category **purges** the server copy of it (`purged_categories` in the reply). Unknown capabilities are dropped. |
@@ -36,6 +41,9 @@ pawn-agent ← phone_events / phone_devices / knowledge_search --kind phone_sms
 | POST | `/v1/devices/{id}/commands` | **shared token only** | `{tool, args, timeout_s?}`: queue a live tool and wait for the phone. Returns the command view plus `text`. Handy for curl testing; the agent's CLI tools do the same in-process. |
 | GET | `/v1/devices/{id}/commands/pending` | device token or shared | Unexpired pending commands; they become `delivered`. |
 | POST | `/v1/devices/{id}/commands/{cid}/result` | device token or shared | `{status: ok\|denied\|error, result?, message?}`. `409` once the command is final (e.g. `expired`). |
+| POST | `/v1/devices/{id}/presence` | device token or shared | `{state: active\|idle\|away, headset?, on_call?, in_session?, last_wake_at?}`. Used by `--device auto`. |
+| GET | `/v1/devices/{id}/commands/stream` | device token or shared | SSE for desktops: `ready`, then `cmd` with `{commands}` (rows become `delivered`), plus keep-alives. |
+| GET | `/v1/devices/{id}/commands` | shared token only | Command history, newest first (`?limit=`). |
 
 ## Live tools (command queue)
 
@@ -63,6 +71,9 @@ CliTool polls the row → ok | denied | error | expired | delivered (answered to
 | `status_now` | — | no | `battery_pct`, `charging`, `network`, `ringer` |
 | `sms_send` | `to`, `body` | **yes**: show recipient and exact text | — |
 | `notify` | `text`, `title?` | no | — |
+| `speak` | `text` | no | — |
+| `timer_set` | `seconds`, `label?` | no | — |
+| `access_approve` | `requester`, `minutes`, `request_id?` | **yes**: "Allow *requester* full access for N min?" | — |
 
 A declined confirmation is `status: "denied"`. A failure is `status: "error"`
 with a `message`.

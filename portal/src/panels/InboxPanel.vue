@@ -7,24 +7,25 @@ import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { api, type CaptureAtom, type CaptureCollection, type Idea, type InboxItem, type ItemAction } from "@/api";
 import { useInboxStore, type InboxSection } from "@/stores/inbox";
 import { useTabsStore } from "@/stores/tabs";
-import { openFile } from "@/router";
+import { openBrainmap, openFile, openSession } from "@/router";
 import { confirmAction, promptText } from "@/lib/dialogs";
-import { relativeTime, fullTime } from "@/lib/time";
+import { fullTime, relativeTime } from "@/lib/time";
 import { vTarget, type LocalAction, type Target } from "@/lib/targets";
 import {
   ITEM_KINDS,
   groupByDay,
   groupBySource,
-  isOpen,
-  kindColor,
+  kindTone,
   kindLabel,
-  sourceLabel,
   verbsFor,
   type Group,
   type ItemsScope,
-  type Verb,
 } from "@/lib/inbox";
 import AnnotationLayer from "@/components/AnnotationLayer.vue";
+import StatusBadge from "@/components/StatusBadge.vue";
+import ItemCard from "@/components/ItemCard.vue";
+import SegmentedControl from "@/components/SegmentedControl.vue";
+import type { SegmentOption } from "@/lib/segment";
 
 const props = defineProps<{ tabId: string }>();
 const inbox = useInboxStore();
@@ -40,6 +41,11 @@ const SCOPES: { id: ItemsScope; label: string }[] = [
   { id: "closed", label: "Closed" },
   { id: "all", label: "All" },
 ];
+
+const sectionOptions = computed<SegmentOption<InboxSection>[]>(() =>
+  SECTIONS.map((s) => ({ value: s.id, label: s.label, icon: s.icon, count: sectionCount(s.id) })),
+);
+const scopeOptions: SegmentOption<ItemsScope>[] = SCOPES.map((s) => ({ value: s.id, label: s.label }));
 
 const search = ref(inbox.q);
 const selected = ref<Set<string>>(new Set());
@@ -136,7 +142,18 @@ function itemLocal(item: InboxItem): LocalAction[] {
   if (!isProposal(item)) {
     out.splice(3, 0, { label: "Later (tomorrow)", icon: "snooze", run: () => run(item, "later", isoDay(1)) });
   }
+  if (item.source_kind === "session" && item.source_ref) {
+    const sessionId = item.source_ref;
+    out.push({
+      label: "Open session",
+      icon: "graphic_eq",
+      run: () => {
+        openSession(sessionId, {}, "items");
+      },
+    });
+  }
   if (item.note_key) out.push({ label: "Open note", icon: "description", run: () => openFile(item.note_key!, { pin: true }) });
+  out.push({ label: "Show on brainmap", icon: "hub", run: () => openBrainmap("items", `item:${item.id}`) });
   if (item.source_ref) {
     out.push({
       label: "Show items from this source",
@@ -157,10 +174,6 @@ function itemTarget(item: InboxItem): Target {
 
 function itemRoot(id: string): HTMLElement | null {
   return scroller.value?.querySelector<HTMLElement>(`[data-item="${CSS.escape(id)}"]`) ?? null;
-}
-
-function inlineVerbs(item: InboxItem): Verb[] {
-  return verbsFor(item).filter((v) => v.action !== "delete" && v.action !== "later");
 }
 
 // ── ideas ────────────────────────────────────────────────────────────────
@@ -238,24 +251,12 @@ const sectionCount = (s: InboxSection) =>
 <template>
   <div class="column no-wrap full-height inbox">
     <div class="row items-center no-wrap q-px-md q-py-sm border-b q-gutter-x-xs">
-      <q-btn
-        v-for="s in SECTIONS"
-        :key="s.id"
-        unelevated
-        dense
-        no-caps
-        rounded
-        size="sm"
-        :icon="s.icon"
-        :color="inbox.section === s.id ? 'primary' : undefined"
-        :text-color="inbox.section === s.id ? 'white' : undefined"
-        :flat="inbox.section !== s.id"
-        :label="s.label"
-        class="q-px-sm"
-        @click="inbox.setSection(s.id)"
-      >
-        <q-badge v-if="sectionCount(s.id)" rounded color="orange" class="q-ml-xs" :label="sectionCount(s.id)" />
-      </q-btn>
+      <SegmentedControl
+        :model-value="inbox.section"
+        :options="sectionOptions"
+        aria-label="Inbox section"
+        @update:model-value="inbox.setSection"
+      />
       <q-space />
       <q-btn
         flat
@@ -272,14 +273,11 @@ const sectionCount = (s: InboxSection) =>
     <template v-if="inbox.section === 'items'">
       <div class="q-px-md q-pt-sm q-pb-xs column q-gutter-y-xs border-b">
         <div class="row items-center no-wrap q-gutter-x-xs">
-          <q-btn-toggle
+          <SegmentedControl
             :model-value="inbox.scope"
-            dense
-            no-caps
-            unelevated
+            :options="scopeOptions"
             size="sm"
-            toggle-color="primary"
-            :options="SCOPES.map((s) => ({ label: s.label, value: s.id }))"
+            aria-label="Item status"
             @update:model-value="(v: ItemsScope) => inbox.setQuery({ scope: v })"
           />
           <q-input
@@ -311,26 +309,27 @@ const sectionCount = (s: InboxSection) =>
           />
         </div>
         <div class="row items-center q-gutter-xs">
-          <q-chip
-            dense
-            clickable
-            :outline="inbox.kind !== ''"
-            :color="inbox.kind === '' ? 'primary' : undefined"
-            :text-color="inbox.kind === '' ? 'white' : undefined"
-            label="All kinds"
+          <button
+            type="button"
+            class="pawn-pill"
+            :class="{ active: inbox.kind === '' }"
+            :aria-pressed="inbox.kind === ''"
             @click="inbox.setQuery({ kind: '' })"
-          />
-          <q-chip
+          >
+            All kinds
+          </button>
+          <button
             v-for="k in ITEM_KINDS"
             :key="k"
-            dense
-            clickable
-            :outline="inbox.kind !== k"
-            :color="kindColor(k)"
-            :text-color="inbox.kind === k ? 'white' : kindColor(k)"
-            :label="kindLabel(k)"
+            type="button"
+            class="pawn-pill kind-pill"
+            :class="{ active: inbox.kind === k }"
+            :style="{ '--kind': kindTone(k) }"
+            :aria-pressed="inbox.kind === k"
             @click="inbox.setQuery({ kind: inbox.kind === k ? '' : k })"
-          />
+          >
+            <span class="kind-dot" />{{ kindLabel(k) }}
+          </button>
         </div>
         <div v-if="inbox.sourceRef" class="row items-center text-caption">
           <q-icon name="filter_alt" size="16px" class="q-mr-xs" />
@@ -389,102 +388,18 @@ const sectionCount = (s: InboxSection) =>
           </div>
           <template v-for="g in groups" :key="g.key">
             <div class="group-label text-caption text-muted q-mt-sm q-mb-xs">{{ g.label }} · {{ g.rows.length }}</div>
-            <div
+            <ItemCard
               v-for="item in g.rows"
               :key="item.id"
-              v-target="itemTarget(item)"
-              :data-item="item.id"
-              class="card row no-wrap q-mb-sm"
-              :class="{ closed: !isOpen(item), interrupt: item.interrupt }"
-            >
-              <q-checkbox
-                dense
-                size="sm"
-                class="q-mr-sm self-start"
-                :model-value="selected.has(item.id)"
-                @update:model-value="(v: boolean) => toggle(item.id, v)"
-              />
-              <div class="col" style="min-width: 0">
-                <div class="row items-center q-gutter-x-xs text-caption">
-                  <q-badge :color="kindColor(item.kind)" :label="kindLabel(item.kind)" />
-                  <q-badge v-if="item.interrupt" color="red" outline label="interrupt" />
-                  <span v-if="item.status !== 'new'" class="text-muted">
-                    {{ item.status }}<template v-if="item.snooze_until"> until {{ item.snooze_until.slice(0, 10) }}</template>
-                  </span>
-                  <span v-if="item.owner" class="text-muted">· {{ item.owner }}</span>
-                  <span v-if="item.due" class="text-muted">· due {{ item.due }}</span>
-                  <q-space />
-                  <span class="text-muted" :title="fullTime(item.created_at)">{{ relativeTime(item.created_at) }}</span>
-                </div>
-                <div class="item-text q-mt-xs" data-pawn-anchor-root>{{ item.text }}</div>
-                <div v-if="item.quote" class="item-quote text-caption q-mt-xs">“{{ item.quote }}”</div>
-                <div v-if="item.reason" class="text-caption text-muted q-mt-xs">{{ item.reason }}</div>
-                <div class="row items-center q-mt-xs q-gutter-x-xs actions">
-                  <q-btn
-                    v-if="inbox.groupBy !== 'session' && item.source_ref"
-                    flat
-                    dense
-                    no-caps
-                    size="sm"
-                    icon="link"
-                    class="text-muted"
-                    :label="sourceLabel(item)"
-                    @click="inbox.setQuery({ sourceRef: item.source_ref, scope: 'all' })"
-                  >
-                    <q-tooltip>Show every item from this source</q-tooltip>
-                  </q-btn>
-                  <q-space />
-                  <template v-if="isOpen(item)">
-                    <q-btn
-                      v-for="v in inlineVerbs(item)"
-                      :key="v.action"
-                      flat
-                      dense
-                      no-caps
-                      size="sm"
-                      :icon="v.icon"
-                      :label="v.label"
-                      :loading="inbox.busy.has(item.id)"
-                      @click="run(item, v.action)"
-                    />
-                    <q-btn v-if="!isProposal(item)" flat dense no-caps size="sm" icon="snooze" label="Later">
-                      <q-menu anchor="bottom right" self="top right">
-                        <q-list dense style="min-width: 160px">
-                          <q-item v-close-popup clickable @click="run(item, 'later', isoDay(1))">
-                            <q-item-section>Tomorrow</q-item-section>
-                          </q-item>
-                          <q-item v-close-popup clickable @click="run(item, 'later', isoDay(7))">
-                            <q-item-section>Next week</q-item-section>
-                          </q-item>
-                          <q-separator />
-                          <q-date
-                            minimal
-                            flat
-                            mask="YYYY-MM-DD"
-                            :model-value="isoDay(1)"
-                            :options="(d: string) => d >= isoDay(1).replace(/-/g, '/')"
-                            @update:model-value="(d: string) => run(item, 'later', d)"
-                          />
-                        </q-list>
-                      </q-menu>
-                    </q-btn>
-                  </template>
-                  <q-btn
-                    v-if="item.note_key"
-                    flat
-                    dense
-                    round
-                    size="sm"
-                    icon="description"
-                    aria-label="Open note"
-                    @click="openFile(item.note_key, { pin: true })"
-                  >
-                    <q-tooltip>Open {{ item.note_key }}</q-tooltip>
-                  </q-btn>
-                  <q-btn flat dense round size="sm" icon="delete" aria-label="Delete" @click="run(item, 'delete')" />
-                </div>
-              </div>
-            </div>
+              :item="item"
+              :selected="selected.has(item.id)"
+              :busy="inbox.busy.has(item.id)"
+              :source-link="inbox.groupBy !== 'session' && Boolean(item.source_ref)"
+              :target="itemTarget(item)"
+              @toggle="(on) => toggle(item.id, on)"
+              @action="(action, arg) => run(item, action, arg)"
+              @filter-source="inbox.setQuery({ sourceRef: item.source_ref, scope: 'all' })"
+            />
           </template>
           <div v-if="inbox.items.length < inbox.itemsTotal" class="text-center q-my-md">
             <q-btn flat no-caps label="Load more" :loading="inbox.loadingItems" @click="inbox.loadItems(true)" />
@@ -514,7 +429,8 @@ const sectionCount = (s: InboxSection) =>
             v-for="idea in g.rows"
             :key="idea.path"
             v-target="fileTarget(idea.path, idea.title, idea.line)"
-            class="card q-mb-sm"
+            class="card pawn-tile q-mb-sm"
+            style="--tile-tone: var(--pawn-warn)"
           >
             <div class="text-weight-medium">{{ idea.title }}</div>
             <div v-if="idea.line && idea.line !== idea.title" class="text-body2 q-mt-xs pre-wrap">{{ idea.line }}</div>
@@ -559,14 +475,15 @@ const sectionCount = (s: InboxSection) =>
             v-for="c in g.rows"
             :key="c.path"
             v-target="fileTarget(c.path, c.title, c.caption || c.hint)"
-            class="card q-mb-sm"
+            class="card pawn-tile q-mb-sm"
+            style="--tile-tone: var(--pawn-info)"
           >
             <div class="row items-center q-gutter-x-xs text-caption">
-              <q-badge color="purple" :label="captureType(c)" />
-              <q-badge v-if="c.status === 'proposed'" outline color="teal" label="proposed" />
+              <StatusBadge kind="info" :label="captureType(c)" />
+              <StatusBadge v-if="c.status === 'proposed'" kind="ok" label="proposed" />
               <span v-if="c.collection" class="text-muted">→ {{ c.collection }}<template v-if="c.entity"> / {{ c.entity }}</template></span>
               <q-space />
-              <span class="text-muted" :title="fullTime(c.created)">{{ relativeTime(c.created) }}</span>
+              <span class="age text-muted" :title="fullTime(c.created)">{{ relativeTime(c.created) }}</span>
             </div>
             <div class="text-weight-medium q-mt-xs">{{ c.title }}</div>
             <div v-if="c.caption" class="text-body2 q-mt-xs">{{ c.caption }}</div>

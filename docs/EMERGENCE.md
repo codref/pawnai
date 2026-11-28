@@ -36,6 +36,7 @@ Runs once a night under a budget (`night_max_calls`, default 400; `night_max_min
 | Job | What it does | Writes |
 |---|---|---|
 | `sync` | `Goals.md` threads become goal threads; your status edits in notes are applied; new notes under `Pawn/Questions/` become questions; unaccepted proposals expire after `proposed_expiry_days` (21) | — |
+| `boards` | Question boards ([PORTAL.md](PORTAL.md#boards)): the nearest recent observations are judged and linked, the board's own evidence is dreamt on, a "While you slept" note goes into the board chat, and a `board_update` provocation is raised when the board moved | board chat |
 | `clustering` | Unrouted observations from the last 30 days that cluster (≥ 4 observations from ≥ 2 sources) become a **proposed** emergent thread, with its open question | `Pawn/Threads/…` |
 | `synthesis` | Every thread/question with new evidence gets its summary rewritten and its momentum (this week vs. the trailing three) updated; answered questions are marked resolved | thread and question notes |
 | `assumptions` | Each open decision's assumptions are judged holds / weakened / broken against new evidence; review dates are flagged | `Pawn/Decisions/…` |
@@ -103,6 +104,8 @@ When emergence is on, meeting prep (Day tab) gets a ledger block for the attende
 
 - Labels from triage and compare notes train the extraction ranker and few-shot examples ([COWORKER.md](COWORKER.md#learning-from-your-verdicts)).
 - Provocation verdicts train the provocation ranker.
+- The Portal **Brainmap** ([PORTAL.md](PORTAL.md#brainmap)) records strings you tie, cut, confirm or snip as `link` labels, and accepting or burning a card as a `subject` label. A cut or snipped pair is remembered by subject and observation text, so routing does not tie it again after a re-process.
+- Ghosts proposed by a board chat ([PORTAL.md](PORTAL.md#boards)) that you accept or burn are labelled the same way, with surface `board_chat`.
 - Prompt search promotes a rewritten prompt only when it beats the live one on your labels by 0.02 F1; winners are in `{state_dir}/emergence/prompt_overrides.json` and tag observations (`decision.v2+s1`). Delete the file to go back.
 - For a model of your own, export the labels and fine-tune outside Pawn:
 
@@ -154,7 +157,10 @@ All under `emergence:` (env `PAWN_EMERGENCE__*`). The extraction settings are in
 | `decision_review_days` | 30 | Review reminder for decisions |
 | `commitment_days` | 7 | Undated commitments are overdue after this |
 | `night_cron` / `night_max_calls` / `night_max_minutes` | `30 1 * * *` / 400 / 300 | Night shift schedule and budget |
-| `night_jobs` | all but `prompt_search` | Which jobs run |
+| `night_jobs` | all but `prompt_search` | Which jobs run (a custom list needs `boards` added to work question boards) |
 | `brief_max_per_day` | 3 | Provocations per morning |
 | `dream_pairs` | 12 | Pairs examined per night (0 turns dreaming off) |
 | `dream_max_hypotheses` | 2 | Hypotheses kept per night |
+| `board_directed_slots` | 3 | Board questions the directed pass always offers, beyond the nearest subjects |
+| `board_backfill_days` / `board_max_candidates` | 30 / 24 | How far back, and how many observations, the `boards` job judges per board |
+| `board_dream_pairs` / `board_dream_max` | 6 / 1 | Dreaming among one board's evidence |

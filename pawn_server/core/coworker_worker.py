@@ -205,27 +205,75 @@ async def start_coworker(cfg: Any) -> None:
         next_briefing,
         next_weekly,
     )
+    from pawn_agent.core import worker_status  # noqa: PLC0415
+
+    worker_status.started(
+        "coworker",
+        timezone=str(zone),
+        poll_interval_seconds=float(cfg.vault_watcher.poll_interval_seconds),
+        crons={
+            "briefing": cfg.coworker.briefing_cron,
+            "weekly": cfg.coworker.weekly_cron,
+            "night": night_cron if next_night is not None else None,
+        },
+        next={"briefing": next_briefing, "weekly": next_weekly, "night": next_night},
+        last={},
+    )
+    last: dict[str, dict[str, Any]] = {}
+
+    async def _fire(job: str, call: Any) -> None:
+        t0 = datetime.now(timezone.utc)
+        try:
+            result = await call
+            last[job] = {"at": t0, "ok": True, "result": _brief(result)}
+        except Exception as exc:
+            last[job] = {"at": t0, "ok": False, "result": str(exc) or type(exc).__name__}
+            raise
+        finally:
+            worker_status.update("coworker", last=last)
+
     try:
         while True:
             now = datetime.now(timezone.utc)
             try:
                 if next_briefing is not None and now >= next_briefing:
-                    await run_briefing(cfg)
                     next_briefing = _next_fire(cfg.coworker.briefing_cron, now, zone)
+                    await _fire("briefing", run_briefing(cfg))
                 if next_weekly is not None and now >= next_weekly:
-                    await run_weekly_review(cfg)
                     next_weekly = _next_fire(cfg.coworker.weekly_cron, now, zone)
+                    await _fire("weekly", run_weekly_review(cfg))
                 if next_night is not None and now >= next_night:
-                    await run_night_shift(cfg)
-                    next_night = _next_fire(night_cron, datetime.now(timezone.utc), zone)
+                    next_night = _next_fire(night_cron, now, zone)
+                    await _fire("night", run_night_shift(cfg))
                 from pawn_server.core.vault_scanner import run_vault_scanner_tick  # noqa: PLC0415
 
                 stats = await run_vault_scanner_tick(cfg)
                 if any(stats.values()):
                     logger.info("coworker scan %s", stats)
+                worker_status.tick(
+                    "coworker",
+                    next={"briefing": next_briefing, "weekly": next_weekly, "night": next_night},
+                    last_scan=stats,
+                )
             except Exception as exc:
                 logger.error("coworker tick failed: %s", exc, exc_info=True)
+                worker_status.tick(
+                    "coworker",
+                    next={"briefing": next_briefing, "weekly": next_weekly, "night": next_night},
+                    error=str(exc) or type(exc).__name__,
+                )
             await asyncio.sleep(float(cfg.vault_watcher.poll_interval_seconds))
     except asyncio.CancelledError:
         logger.info("Coworker loop cancelled")
         raise
+    finally:
+        worker_status.stopped("coworker")
+
+
+def _brief(result: Any) -> Any:
+    """A short, JSON-safe summary of a cron job's return value."""
+    if result is None or isinstance(result, (bool, int, float)):
+        return result
+    if isinstance(result, dict):
+        return {str(k): (v if isinstance(v, (bool, int, float)) else str(v)[:200]) for k, v in result.items()}
+    return str(result)[:200]

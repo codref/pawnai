@@ -42,7 +42,6 @@ from pawn_core.database import (  # noqa: F401
     make_db_session,
 )
 
-
 # Dimension produced by pyannote/embedding model.
 EMBEDDING_DIM = 512
 
@@ -98,6 +97,13 @@ class SessionState(Base):
     speakers_trained_at:
         When set, the Sessions UI treats speaker training as done for this
         session (suppresses ``needs training`` even if anonymous labels remain).
+    file_offsets:
+        JSON list of ``{path, start, end}`` (global seconds) for each audio
+        file, in ``processed_files`` order. Written by transcribe-diarize.
+        Legacy sessions are filled by a one-time duration probe.
+    processing:
+        Set while a rediarize/retranscribe job is queued or running:
+        ``{mode, job_id, since}``. Cleared when the diarize worker finishes.
     updated_at:
         UTC timestamp of the last update.
     """
@@ -111,6 +117,8 @@ class SessionState(Base):
     speakers_trained_at: Mapped[Optional[datetime]] = mapped_column(
         DateTime(timezone=True), nullable=True, default=None
     )
+    file_offsets: Mapped[Optional[Any]] = mapped_column(JSONB, nullable=True)
+    processing: Mapped[Optional[Any]] = mapped_column(JSONB, nullable=True)
     updated_at: Mapped[Optional[datetime]] = mapped_column(
         DateTime, nullable=True, default=lambda: datetime.now(timezone.utc)
     )
@@ -172,9 +180,7 @@ def get_session(engine) -> Generator[Session, None, None]:
 # ──────────────────────────────────────────────────────────────────────────────
 
 
-def load_session_state(
-    session_id: str, engine
-) -> Tuple[Dict[str, Any], float, List[str], int]:
+def load_session_state(session_id: str, engine) -> Tuple[Dict[str, Any], float, List[str], int]:
     """Load prior state for a named session.
 
     Returns:
@@ -183,13 +189,13 @@ def load_session_state(
     """
     from sqlalchemy import select
     from sqlalchemy import func as sqlfunc
+
     with Session(engine) as db:
         row = db.get(SessionState, session_id)
-        count = db.scalar(
-            select(sqlfunc.count()).where(
-                TranscriptionSegment.session_id == session_id
-            )
-        ) or 0
+        count = (
+            db.scalar(select(sqlfunc.count()).where(TranscriptionSegment.session_id == session_id))
+            or 0
+        )
     if row is None:
         return {}, 0.0, [], int(count)
     return (
@@ -200,31 +206,110 @@ def load_session_state(
     )
 
 
+# Sentinel: leave the stored column alone (callers that do not know about it).
+_KEEP = object()
+
+
+def canonical_file_offsets(
+    offsets: Any,
+    path_map: Optional[Dict[str, str]] = None,
+) -> Optional[List[Dict[str, Any]]]:
+    """Rewrite transcription ``file_offsets`` paths through *path_map*.
+
+    Each item is ``{path, start, end}``. Temp download paths become the
+    canonical ``s3://`` URI when *path_map* has that entry. Returns ``None``
+    when *offsets* is empty so callers can leave a stored value untouched.
+    """
+    if not offsets:
+        return None
+    mapping = path_map or {}
+    out: List[Dict[str, Any]] = []
+    for item in offsets:
+        if not isinstance(item, dict):
+            continue
+        path = str(item.get("path") or "")
+        out.append(
+            {
+                "path": mapping.get(path, path),
+                "start": float(item.get("start") or 0.0),
+                "end": float(item.get("end") or 0.0),
+            }
+        )
+    return out or None
+
+
+def stored_file_offsets(session_id: str, engine) -> List[Dict[str, Any]]:
+    """Return the persisted ``file_offsets`` list, or ``[]``."""
+    with Session(engine) as db:
+        row = db.get(SessionState, session_id)
+        raw = getattr(row, "file_offsets", None) if row is not None else None
+        return [item for item in list(raw or []) if isinstance(item, dict)]
+
+
 def save_session_state(
     session_id: str,
     speaker_embeddings: Dict[str, Any],
     time_cursor: float,
     processed_files: List[str],
     engine,
+    *,
+    file_offsets: Any = _KEEP,
+    processing: Any = _KEEP,
 ) -> None:
     """Upsert ``SessionState`` for *session_id*.
 
-    Preserves ``speakers_trained_at`` when the row already exists.
+    Preserves ``speakers_trained_at``, ``file_offsets`` and ``processing``
+    unless the caller passes a replacement (``None`` clears the marker).
     """
     with get_session(engine) as db:
         existing = db.get(SessionState, session_id)
         trained_at = (
             getattr(existing, "speakers_trained_at", None) if existing is not None else None
         )
+        kept_offsets = getattr(existing, "file_offsets", None) if existing is not None else None
+        kept_processing = getattr(existing, "processing", None) if existing is not None else None
+        if file_offsets is not _KEEP:
+            kept_offsets = file_offsets
+        if processing is not _KEEP:
+            kept_processing = processing
         row = SessionState(
             session_id=session_id,
             speaker_embeddings=speaker_embeddings,
             time_cursor=time_cursor,
             processed_files=processed_files,
             speakers_trained_at=trained_at,
+            file_offsets=kept_offsets,
+            processing=kept_processing,
             updated_at=datetime.now(timezone.utc),
         )
         db.merge(row)
+
+
+def set_session_processing(session_id: str, processing: Any, engine) -> None:
+    """Set or clear the reprocess marker without touching embeddings.
+
+    ``processing`` is ``{mode, job_id, since}`` or ``None`` to clear it.
+    A missing row is created only when *processing* is not ``None``.
+    """
+    with get_session(engine) as db:
+        row = db.get(SessionState, session_id)
+        now = datetime.now(timezone.utc)
+        if row is None:
+            if processing is None:
+                return
+            db.add(
+                SessionState(
+                    session_id=session_id,
+                    speaker_embeddings={},
+                    time_cursor=0.0,
+                    processed_files=[],
+                    processing=processing,
+                    updated_at=now,
+                )
+            )
+            return
+        row.processing = processing
+        row.updated_at = now
 
 
 def save_transcription_segments(
@@ -358,6 +443,7 @@ def get_session_analysis(
         # session closes without triggering lazy-load errors.
         db.expunge(row)
         from sqlalchemy.orm import make_transient
+
         make_transient(row)
         return row
 
@@ -421,9 +507,7 @@ def get_graph_triples(
 
     with Session(engine) as db:
         rows = list(
-            db.scalars(
-                select(GraphTriple).where(GraphTriple.session_id == session_id)
-            ).all()
+            db.scalars(select(GraphTriple).where(GraphTriple.session_id == session_id)).all()
         )
         for row in rows:
             db.expunge(row)

@@ -331,6 +331,18 @@ def build_router(get_cfg: Callable[[], Any], require_token: Callable[..., None])
     async def settings_status(cfg: Any = Depends(get_cfg)) -> dict:
         return await status_payload(cfg)
 
+    @router.get("/scheduler")
+    async def settings_scheduler(cfg: Any = Depends(get_cfg)) -> dict:
+        from pawn_server.core.diagnostics import scheduler_payload  # noqa: PLC0415
+
+        return await asyncio.to_thread(scheduler_payload, cfg)
+
+    @router.get("/config")
+    async def settings_config(cfg: Any = Depends(get_cfg)) -> dict:
+        from pawn_server.core.diagnostics import config_payload  # noqa: PLC0415
+
+        return await asyncio.to_thread(config_payload, cfg)
+
     @router.delete("/{path:path}")
     async def settings_reset(path: str, cfg: Any = Depends(get_cfg)) -> dict:
         try:

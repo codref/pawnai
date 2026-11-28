@@ -466,6 +466,22 @@ class DevicesConfig(BaseModel):
     max_batch: int = 500
     # Live phone tool round trip budget (must stay under sallm's 60 s tool timeout).
     command_timeout_s: float = 45.0
+    # Assistants (docs/ASSISTANTS.md). A presence report younger than this
+    # counts when picking a device with ``--device auto``.
+    presence_fresh_s: float = 600.0
+    # A voice conversation idle for less than this can be taken over ("continua qui").
+    handoff_window_s: float = 600.0
+    # How long the phone has to approve a full-access request from another device.
+    access_request_timeout_s: float = 60.0
+    # Longest full-access grant a phone approval can give.
+    access_max_minutes: int = 30
+    # Wake-word clips and models; empty → ``{state_dir}/wake``.
+    wake_dir: str = ""
+    wake_clip_retention_days: int = 90
+    wake_clip_max_bytes: int = 1_000_000
+    wake_model_max_bytes: int = 20_000_000
+    # Mirror voice turns into portal chats (folder ``Voice``).
+    mirror_voice_to_portal: bool = True
 
 
 class CoworkerConfig(BaseModel):
@@ -577,6 +593,7 @@ class EmergenceConfig(BaseModel):
     night_jobs: list[str] = Field(
         default_factory=lambda: [
             "sync",
+            "boards",
             "clustering",
             "synthesis",
             "assumptions",
@@ -596,6 +613,12 @@ class EmergenceConfig(BaseModel):
     # (at most dream_max_hypotheses a night, so hunches do not crowd the brief).
     dream_pairs: int = 12
     dream_max_hypotheses: int = 2
+    # Question boards (portal): the ``boards`` night job and the directed pass.
+    board_directed_slots: int = 3  # board questions offered per window beyond the nearest
+    board_backfill_days: int = 30  # how far back the night looks for evidence
+    board_max_candidates: int = 24  # observations judged per board per night
+    board_dream_pairs: int = 6  # pairs dreamt among one board's evidence
+    board_dream_max: int = 1  # hunches kept per board per night
     # People notes: tone trend is opt-in.
     people_tone: bool = False
     # Observation types to extract (subset of the built-in list).

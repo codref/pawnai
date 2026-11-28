@@ -6,10 +6,12 @@ is rewritten only by the ``meeting_prep`` job / ``event_prep_update`` tool.
 
 from __future__ import annotations
 
+import copy
 import hashlib
 import logging
 import re
-from datetime import date, datetime, timezone
+import threading
+from datetime import date, datetime, timedelta, timezone
 from typing import Any, Optional
 from urllib.parse import urlsplit, urlunsplit
 from uuid import uuid4
@@ -25,7 +27,7 @@ from pawn_core.vault import (
     parse_frontmatter,
 )
 from pawn_core.vault_config import vault_store_from_config
-from pawn_server.core.vault_events import publish_vault_event
+from pawn_server.core.vault_events import publish_vault_event, vault_events
 
 logger = logging.getLogger(__name__)
 
@@ -34,9 +36,35 @@ _PREP_SECTION_RE = re.compile(
     re.MULTILINE,
 )
 _TOKEN_RE = re.compile(r"[a-z0-9]+")
-_LOCAL_DT_RE = re.compile(
-    r"^(\d{4}-\d{2}-\d{2})(?:[T ](\d{2}:\d{2})(?::\d{2})?)?$"
+_SNIPPET_BLOCK_RE = re.compile(
+    r"(?s)<!--\s*pawn-snippet:([A-Za-z0-9_-]+)\s*-->.*?<!--\s*/pawn-snippet:\1\s*-->"
 )
+_PATCH_FIELDS = frozenset(
+    {
+        "title",
+        "start",
+        "end",
+        "attendees",
+        "organizer",
+        "location",
+        "meeting_url",
+        "topics",
+        "focus",
+        "focus_before",
+        "session_id",
+        "body",
+    }
+)
+# A single upload stamps every segment together at the finish. Chunked
+# recorders insert the first chunk near the start, so the wall clock between
+# the earliest and latest stamp is a large fraction of the audio length.
+_BATCH_WALL_FLOOR_S = 30
+_BATCH_WALL_FRACTION = 0.25
+_PREP_RUNNING = frozenset({"queued", "running"})
+_RANGE_MAX_DAYS = 14
+_EVENT_CACHE: dict[str, tuple[str, dict[str, Any]]] = {}
+_EVENT_CACHE_LOCK = threading.Lock()
+_LOCAL_DT_RE = re.compile(r"^(\d{4}-\d{2}-\d{2})(?:[T ](\d{2}:\d{2})(?::\d{2})?)?$")
 
 
 class PlannerError(Exception):
@@ -57,9 +85,7 @@ def events_dir(cfg: Any) -> str:
     raw = str(getattr(section, "events_dir", "") or "").strip() if section else ""
     if not raw:
         raw = "{agent_root}/Events"
-    return normalize_vault_key(
-        raw.replace("{agent_root}", _agent_root(cfg))
-    ).rstrip("/")
+    return normalize_vault_key(raw.replace("{agent_root}", _agent_root(cfg))).rstrip("/")
 
 
 def _timezone_name(cfg: Any) -> str:
@@ -195,9 +221,14 @@ def event_identity_url(url: str) -> str:
             return _normalize_identity_url(norm)
         return ""
 
-    if "outlook." in host or host.endswith(".office.com") or host in (
-        "office.com",
-        "office365.com",
+    if (
+        "outlook." in host
+        or host.endswith(".office.com")
+        or host
+        in (
+            "office.com",
+            "office365.com",
+        )
     ):
         if re.search(r"/(?:item|deeplink)/", path, re.I):
             return _normalize_identity_url(norm)
@@ -400,8 +431,7 @@ _MEETING_URL_RE = re.compile(
     re.I,
 )
 _DATE_RANGE_RE = re.compile(
-    r"(\d{1,2}/\d{1,2}/\d{4}),?\s+(\d{1,2}:\d{2}\s*[AP]M)\s*[–—-]\s*"
-    r"(\d{1,2}:\d{2}\s*[AP]M)",
+    r"(\d{1,2}/\d{1,2}/\d{4}),?\s+(\d{1,2}:\d{2}\s*[AP]M)\s*[–—-]\s*" r"(\d{1,2}:\d{2}\s*[AP]M)",
     re.I,
 )
 _PERSON_ROLE_RE = re.compile(
@@ -586,7 +616,9 @@ def enrich_event_fields_from_content(*chunks: str) -> dict[str, Any]:
 
     org = re.search(r"(?im)^(?:organizer|from|hosted by)\s*:\s*(.+)$", blob)
     if org and not out["organizer"]:
-        out["organizer"] = _split_people(org.group(1))[0] if _split_people(org.group(1)) else org.group(1).strip()
+        out["organizer"] = (
+            _split_people(org.group(1))[0] if _split_people(org.group(1)) else org.group(1).strip()
+        )
         people.append(out["organizer"])
 
     out["attendees"] = merge_people(people)
@@ -614,9 +646,7 @@ def enrich_event_fields_from_content(*chunks: str) -> dict[str, Any]:
     for label in ("topics", "tags", "about"):
         m = re.search(rf"(?im)^{label}\s*:\s*(.+)$", blob)
         if m:
-            out["topics"] = [
-                t.strip() for t in re.split(r"[,;|]", m.group(1)) if t.strip()
-            ][:12]
+            out["topics"] = [t.strip() for t in re.split(r"[,;|]", m.group(1)) if t.strip()][:12]
             break
 
     return out
@@ -634,7 +664,9 @@ def parse_event_note(text: str, *, path: str = "") -> dict[str, Any]:
         rest = _PREP_SECTION_RE.sub("", body).strip()
     else:
         rest = body.strip()
-    title = _meta_str(meta.get("title")) or idea_filename_title(rest.splitlines()[0] if rest else "event")
+    title = _meta_str(meta.get("title")) or idea_filename_title(
+        rest.splitlines()[0] if rest else "event"
+    )
     snippet_ids = _SNIPPET_MARK_RE.findall(rest)
     image_embeds = _IMAGE_EMBED_RE.findall(rest)
     return {
@@ -697,6 +729,67 @@ def _event_path(cfg: Any, *, day: str, title: str, short_id: str) -> str:
     return f"{events_dir(cfg)}/{day_part}-{stem}-{short_id}.md"
 
 
+def clear_event_cache() -> None:
+    """Drop parsed event notes. Tests and a vault resync use this."""
+    with _EVENT_CACHE_LOCK:
+        _EVENT_CACHE.clear()
+
+
+def _drop_cached_events(paths: list[str]) -> None:
+    with _EVENT_CACHE_LOCK:
+        if not paths:
+            _EVENT_CACHE.clear()
+            return
+        for path in paths:
+            _EVENT_CACHE.pop(normalize_vault_key(path), None)
+
+
+def _on_vault_event(event: dict[str, Any]) -> None:
+    _drop_cached_events(list(event.get("paths") or []))
+
+
+vault_events.add_listener(_on_vault_event)
+
+
+def _etag_of(store: Any, key: str) -> str:
+    stat = getattr(store, "stat", None)
+    if not callable(stat):
+        return ""
+    try:
+        info = stat(key)
+    except Exception:  # noqa: BLE001
+        return ""
+    if info is None:
+        return ""
+    return str(getattr(info, "etag", "") or "")
+
+
+def _read_event(store: Any, key: str, etag: Optional[str] = None) -> Optional[dict[str, Any]]:
+    """Parse one event note, reusing a copy cached by S3 ETag.
+
+    Pass *etag* from a listing to skip the per-key ``stat`` round trip.
+    """
+    if etag is None:
+        etag = _etag_of(store, key)
+    if etag:
+        with _EVENT_CACHE_LOCK:
+            hit = _EVENT_CACHE.get(key)
+        if hit is not None and hit[0] == etag:
+            return copy.deepcopy(hit[1])
+    try:
+        text = store.read(key)
+    except Exception:  # noqa: BLE001
+        return None
+    try:
+        parsed = parse_event_note(text, path=key)
+    except Exception:  # noqa: BLE001
+        return None
+    if etag:
+        with _EVENT_CACHE_LOCK:
+            _EVENT_CACHE[key] = (etag, copy.deepcopy(parsed))
+    return parsed
+
+
 def _list_event_keys(cfg: Any, store: Any) -> list[str]:
     folder = events_dir(cfg)
     try:
@@ -706,14 +799,35 @@ def _list_event_keys(cfg: Any, store: Any) -> list[str]:
         return []
 
 
+def _list_event_meta(cfg: Any, store: Any) -> list[tuple[str, Optional[str]]]:
+    """``(key, etag)`` for every event note; etag is None when the store has no metadata."""
+    folder = events_dir(cfg)
+    list_meta = getattr(store, "list_meta", None)
+    if callable(list_meta):
+        try:
+            return [
+                (str(stat.key), str(getattr(stat, "etag", "") or "") or None)
+                for stat in list_meta(folder, suffix=".md")
+            ]
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("list events (meta) failed: %s", exc)
+    return [(key, None) for key in _list_event_keys(cfg, store)]
+
+
+_NAME_DAY_RE = re.compile(r"^(\d{4}-\d{2}-\d{2})-")
+
+
+def _name_day(key: str) -> str:
+    match = _NAME_DAY_RE.match(key.rsplit("/", 1)[-1])
+    return match.group(1) if match else ""
+
+
 def _load_events(cfg: Any, store: Any) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
-    for key in _list_event_keys(cfg, store):
-        try:
-            text = store.read(key)
-            out.append(parse_event_note(text, path=key))
-        except Exception as exc:  # noqa: BLE001
-            logger.debug("skip event %s: %s", key, exc)
+    for key, etag in _list_event_meta(cfg, store):
+        ev = _read_event(store, key, etag)
+        if ev is not None:
+            out.append(ev)
     return out
 
 
@@ -751,6 +865,178 @@ def find_event_by_fingerprint(
         if recomputed == fp:
             return ev
     return None
+
+
+def _path_for_day(cfg: Any, path: str, event_id: str, title: str, day: str) -> str:
+    """Move an event note when its start day changes. The short id stays put."""
+    filename = str(path).rsplit("/", 1)[-1]
+    old_day = (
+        filename[:10] if len(filename) >= 10 and filename[4] == "-" and filename[7] == "-" else ""
+    )
+    if not old_day or old_day == day:
+        return path
+    short_id = event_id[4:] if str(event_id).startswith("evt_") and len(event_id) > 4 else ""
+    if not short_id:
+        stem = filename.removesuffix(".md")
+        short_id = stem.rsplit("-", 1)[-1] if "-" in stem else uuid4().hex[:8]
+    return _event_path(cfg, day=day, title=title, short_id=short_id)
+
+
+def _snippet_blocks(body: str) -> list[tuple[str, str]]:
+    return [
+        (match.group(1), match.group(0).strip()) for match in _SNIPPET_BLOCK_RE.finditer(body or "")
+    ]
+
+
+def _without_snippets(body: str) -> str:
+    return _SNIPPET_BLOCK_RE.sub("", body or "").strip()
+
+
+def _retitle_body(body: str, title: str) -> str:
+    lines = (body or "").splitlines()
+    if lines and lines[0].lstrip().startswith("#"):
+        lines[0] = f"# {title}"
+        return "\n".join(lines).strip()
+    base = (body or "").strip()
+    if not base:
+        return f"# {title}"
+    return f"# {title}\n\n{base}"
+
+
+def _apply_body(existing_body: str, title: str, replacement: Optional[str]) -> str:
+    """Keep snippet blocks. *replacement* replaces only the narrative notes."""
+    old_blocks = _snippet_blocks(existing_body)
+    if replacement is None:
+        return _retitle_body(existing_body, title)
+    supplied = _PREP_SECTION_RE.sub("", replacement).strip()
+    kept: list[str] = []
+    seen = {sid for sid, _block in _snippet_blocks(supplied)}
+    for sid, block in old_blocks:
+        if sid not in seen:
+            kept.append(block)
+    narrative = _retitle_body(_without_snippets(supplied), title)
+    extra = "\n\n".join(kept).strip()
+    if extra:
+        return f"{narrative}\n\n{extra}".strip()
+    return narrative
+
+
+def _compose_event_text(meta: dict[str, Any], body: str, prep: str) -> str:
+    parts = [(body or "").rstrip()]
+    prep_text = (prep or "").strip()
+    if prep_text:
+        parts.append(f"## Prep\n\n{prep_text}")
+    return dump_frontmatter(meta, "\n\n".join(part for part in parts if part).strip() + "\n")
+
+
+def update_event(
+    cfg: Any,
+    event_id: str,
+    *,
+    store: Any = None,
+    **fields: Any,
+) -> dict[str, Any]:
+    """Patch one event note. ``## Prep``, snippets and extra frontmatter stay."""
+    unknown = sorted(set(fields) - _PATCH_FIELDS)
+    if unknown:
+        raise PlannerError(f"unknown field: {unknown[0]}", status_code=422)
+    if not fields:
+        raise PlannerError("no fields to update", status_code=422)
+    if store is None:
+        store = vault_store_from_config(cfg)
+    ev = find_event_by_id(cfg, event_id, store=store)
+    path = str(ev.get("path") or "")
+    try:
+        text = store.read(path)
+    except VaultNotFound as exc:
+        raise PlannerError(f"event not found: {event_id}", status_code=404) from exc
+    meta, _body = parse_frontmatter(text)
+    if str(meta.get("pawn") or "").strip() != "event":
+        raise PlannerError(f"event not found: {event_id}", status_code=404)
+    prep = extract_prep(text)
+
+    if "title" in fields:
+        heading = idea_filename_title(str(fields.get("title") or "")).strip()
+        if not heading:
+            raise PlannerError("title is required", status_code=422)
+        meta["title"] = heading
+    title = _meta_str(meta.get("title")) or str(ev.get("title") or "event")
+    if "start" in fields:
+        start = normalize_local_dt(str(fields.get("start") or ""))
+        if fields.get("start") and not day_from_local(start):
+            raise PlannerError("start must be YYYY-MM-DD or YYYY-MM-DDTHH:MM", status_code=422)
+        meta["start"] = start
+    if "end" in fields:
+        end = normalize_local_dt(str(fields.get("end") or ""))
+        if fields.get("end") and not day_from_local(end):
+            raise PlannerError("end must be YYYY-MM-DD or YYYY-MM-DDTHH:MM", status_code=422)
+        meta["end"] = end
+    if "attendees" in fields:
+        people = [
+            str(item).strip() for item in (fields.get("attendees") or []) if str(item).strip()
+        ]
+        if people:
+            meta["attendees"] = people
+        else:
+            meta.pop("attendees", None)
+    if "topics" in fields:
+        topics = [str(item).strip() for item in (fields.get("topics") or []) if str(item).strip()]
+        if topics:
+            meta["topics"] = topics
+        else:
+            meta.pop("topics", None)
+    for key in ("organizer", "location", "meeting_url"):
+        if key not in fields:
+            continue
+        value = str(fields.get(key) or "").strip()
+        if value:
+            meta[key] = value
+        else:
+            meta.pop(key, None)
+    if "focus" in fields:
+        focused = bool(fields.get("focus"))
+        meta["focus"] = focused
+        if focused and "focus_before" not in fields and not _meta_int(meta.get("focus_before"), 0):
+            meta["focus_before"] = 15
+        if not focused:
+            meta["focus"] = False
+    if "focus_before" in fields and fields.get("focus_before") is not None:
+        meta["focus_before"] = max(0, _meta_int(fields.get("focus_before"), 0))
+    if "session_id" in fields:
+        sid = str(fields.get("session_id") or "").strip()
+        if sid:
+            meta["session_id"] = sid
+        else:
+            meta.pop("session_id", None)
+
+    source = _meta_str(meta.get("source")) or "manual"
+    if source == "manual":
+        meta["fingerprint"] = event_fingerprint(
+            source_url=_meta_str(meta.get("source_url")),
+            meeting_url=_meta_str(meta.get("meeting_url")),
+            title=title,
+            start=_meta_str(meta.get("start")),
+        )
+
+    body = _apply_body(
+        str(ev.get("body") or ""), title, fields.get("body") if "body" in fields else None
+    )
+    updated = _compose_event_text(meta, body, prep)
+    day = day_from_local(_meta_str(meta.get("start"))) or _today(cfg)
+    new_path = _path_for_day(cfg, path, str(ev.get("id") or event_id), title, day)
+    try:
+        store.write(new_path, updated)
+        if new_path != path:
+            try:
+                store.delete(path)
+            except VaultNotFound:
+                pass
+            publish_vault_event([new_path, path], source="planner")
+        else:
+            publish_vault_event([path], source="planner")
+    except VaultWriteDenied as exc:
+        raise PlannerError(str(exc), status_code=403) from exc
+    return parse_event_note(updated, path=new_path)
 
 
 def upsert_event(
@@ -857,21 +1143,7 @@ def upsert_event(
             prep=prep,
         )
         day = day_from_local(start_n) or _today(cfg)
-        filename = str(path).rsplit("/", 1)[-1]
-        old_day = (
-            filename[:10]
-            if len(filename) >= 10 and filename[4] == "-" and filename[7] == "-"
-            else ""
-        )
-        new_path = path
-        if old_day and old_day != day:
-            # Keep the filename stem stable across title edits; only move when
-            # the start day changes so Day view's prefix filter can find it.
-            short_id = eid[4:] if str(eid).startswith("evt_") and len(eid) > 4 else ""
-            if not short_id:
-                stem = filename.removesuffix(".md")
-                short_id = stem.rsplit("-", 1)[-1] if "-" in stem else uuid4().hex[:8]
-            new_path = _event_path(cfg, day=day, title=heading, short_id=short_id)
+        new_path = _path_for_day(cfg, path, eid, heading, day)
         try:
             store.write(new_path, text)
             if new_path != path:
@@ -1196,9 +1468,7 @@ def upsert_event_from_capture(
     )
     # If the client sent a sticky path that differs (rare), prefer fingerprint hit.
     path = str(event.get("path") or path_hint)
-    written, skipped = _append_snippets_to_event(
-        cfg, path=path, snippets=snippets, store=store
-    )
+    written, skipped = _append_snippets_to_event(cfg, path=path, snippets=snippets, store=store)
     return {
         "mode": "event",
         "path": path,
@@ -1281,18 +1551,21 @@ def list_events(
         store = vault_store_from_config(cfg)
     start_d = day_from_local(date_from) if date_from else ""
     end_d = day_from_local(date_to) if date_to else ""
-    keys = _list_event_keys(cfg, store)
-    # Single-day: only read notes whose filename starts with YYYY-MM-DD-
-    if start_d and start_d == end_d:
-        prefix = f"{start_d}-"
-        keys = [k for k in keys if k.rsplit("/", 1)[-1].startswith(prefix)]
+    listed = _list_event_meta(cfg, store)
+    # Notes are named ``YYYY-MM-DD-…`` (renamed when the day changes), so a
+    # dated name outside the range is skipped without reading it.
+    if start_d or end_d:
+        kept = []
+        for key, etag in listed:
+            name_day = _name_day(key)
+            if name_day and ((start_d and name_day < start_d) or (end_d and name_day > end_d)):
+                continue
+            kept.append((key, etag))
+        listed = kept
     out: list[dict[str, Any]] = []
-    for key in keys:
-        try:
-            text = store.read(key)
-            ev = parse_event_note(text, path=key)
-        except Exception as exc:  # noqa: BLE001
-            logger.debug("skip event %s: %s", key, exc)
+    for key, etag in listed:
+        ev = _read_event(store, key, etag)
+        if ev is None:
             continue
         day = ev.get("day") or day_from_local(ev.get("start") or "")
         if start_d and day and day < start_d:
@@ -1329,13 +1602,75 @@ def _transcript_path_db(cfg: Any, session_id: str) -> Optional[str]:
     return None
 
 
+def _as_datetime(value: Any) -> Optional[datetime]:
+    if isinstance(value, datetime):
+        return value
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        return datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+def session_span(
+    created_at: Any,
+    updated_at: Any,
+    duration_seconds: Any,
+) -> tuple[Optional[str], Optional[str]]:
+    """Wall-clock start and end of a recording.
+
+    ``transcription_segments.created_at`` is the insert time. A one-shot
+    upload writes every segment at the end, so the recording started
+    ``duration`` before the latest stamp. Chunked recorders write the first
+    chunk near the start, and the earliest stamp is the start.
+    """
+    start_stamp = _as_datetime(created_at)
+    if start_stamp is None:
+        return None, None
+    end_stamp = _as_datetime(updated_at) or start_stamp
+    try:
+        duration = max(0.0, float(duration_seconds or 0))
+    except (TypeError, ValueError):
+        duration = 0.0
+    wall = abs((end_stamp - start_stamp).total_seconds())
+    batch = wall < max(_BATCH_WALL_FLOOR_S, duration * _BATCH_WALL_FRACTION)
+    if batch:
+        end = end_stamp
+        start = end - timedelta(seconds=duration)
+    else:
+        start = start_stamp
+        end = start + timedelta(seconds=duration)
+    return start.isoformat(), end.isoformat()
+
+
+def _stamp_session_span(session: dict[str, Any]) -> None:
+    if session.get("start") and session.get("end"):
+        return
+    start, end = session_span(
+        session.get("created_at"),
+        session.get("updated_at"),
+        session.get("duration_seconds"),
+    )
+    if start:
+        session["start"] = start
+    if end:
+        session["end"] = end
+
+
 def _candidate_to_session(cfg: Any, cand: Any, *, day: str) -> dict[str, Any]:
     sid = str(cand.session_id)
+    created = cand.created_at.isoformat() if getattr(cand, "created_at", None) else None
+    updated = cand.updated_at.isoformat() if getattr(cand, "updated_at", None) else None
+    start, end = session_span(created, updated, cand.duration_seconds)
     return {
         "session_id": sid,
         "title": cand.title or sid,
-        "created_at": cand.created_at.isoformat() if getattr(cand, "created_at", None) else None,
-        "updated_at": cand.updated_at.isoformat() if getattr(cand, "updated_at", None) else None,
+        "created_at": created,
+        "updated_at": updated,
+        "start": start,
+        "end": end,
         "segments": cand.segments,
         "duration_seconds": cand.duration_seconds,
         "summary": cand.summary,
@@ -1463,29 +1798,76 @@ def _open_items_for_day(cfg: Any, day: str) -> list[dict[str, Any]]:
     return out
 
 
-def build_day(
+def _daily_plan(cfg: Any, day: str, store: Any) -> tuple[str, str]:
+    """``## Plan`` text from the coworker daily note, plus that note's path."""
+    try:
+        from pawn_agent.tools.day_plan_impl import daily_note_key, extract_plan  # noqa: PLC0415
+
+        key = daily_note_key(cfg, day)
+    except Exception:  # noqa: BLE001
+        key = f"{_agent_root(cfg)}/Daily/{day}.md"
+        extract_plan = None  # type: ignore[assignment]
+    try:
+        text = store.read(key)
+    except Exception:  # noqa: BLE001
+        return "", key
+    if extract_plan is None:
+        return "", key
+    return extract_plan(text), key
+
+
+def _attach_prep_status(cfg: Any, events: list[dict[str, Any]]) -> None:
+    """Set ``prep_job_status`` while the meeting-prep job is still running."""
+    dsn = getattr(cfg, "db_dsn", "") or ""
+    if not dsn:
+        return
+    try:
+        from pawn_agent.utils.db import get_vault_task  # noqa: PLC0415
+    except Exception:  # noqa: BLE001
+        return
+    for ev in events:
+        job_id = str(ev.get("prep_job_id") or "").strip()
+        if not job_id:
+            continue
+        try:
+            row = get_vault_task(dsn, job_id)
+        except Exception:  # noqa: BLE001
+            ev["prep_job_status"] = None
+            continue
+        status = str(getattr(row, "status", "") or "") if row is not None else ""
+        ev["prep_job_status"] = status if status in _PREP_RUNNING else None
+
+
+def _include_linked_sessions(
     cfg: Any,
-    day: str,
-    *,
-    store: Any = None,
-) -> dict[str, Any]:
-    """Merged timeline for one local calendar day."""
-    if store is None:
-        store = vault_store_from_config(cfg)
-    day_key = day_from_local(day) or _today(cfg)
-
-    events = list(list_events(cfg, date_from=day_key, date_to=day_key, store=store))
-    sessions = _sessions_for_day(cfg, day_key)
-    by_id = {str(s.get("session_id") or ""): s for s in sessions}
-
-    # Pull linked sessions that fall outside the created_at day window.
+    day_key: str,
+    events: list[dict[str, Any]],
+    sessions: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    by_id = {str(sess.get("session_id") or ""): sess for sess in sessions}
+    out = list(sessions)
     for ev in events:
         sid = str(ev.get("session_id") or "").strip()
         if sid and sid not in by_id:
             linked = _session_by_id(cfg, sid, day=day_key)
             if linked:
-                sessions.append(linked)
+                out.append(linked)
                 by_id[sid] = linked
+    return out
+
+
+def _assemble_day(
+    cfg: Any,
+    day_key: str,
+    events: list[dict[str, Any]],
+    sessions: list[dict[str, Any]],
+    store: Any,
+) -> dict[str, Any]:
+    sessions = _include_linked_sessions(cfg, day_key, events, sessions)
+    for sess in sessions:
+        _stamp_session_span(sess)
+    _attach_prep_status(cfg, events)
+    by_id = {str(sess.get("session_id") or ""): sess for sess in sessions}
 
     blocks: list[dict[str, Any]] = []
     used_sessions: set[str] = set()
@@ -1511,23 +1893,21 @@ def build_day(
         blocks.append(
             {
                 "kind": "session",
-                "sort_key": sess.get("created_at") or day_key,
+                "sort_key": sess.get("start") or sess.get("created_at") or day_key,
                 "event": None,
                 "session": sess,
                 "items": _items_for_session(cfg, sid),
             }
         )
 
-    blocks.sort(key=lambda b: str(b.get("sort_key") or ""))
+    blocks.sort(key=lambda block: str(block.get("sort_key") or ""))
 
     meeting_item_ids = {
-        str(it.get("id") or "")
-        for b in blocks
-        for it in (b.get("items") or [])
+        str(it.get("id") or "") for block in blocks for it in (block.get("items") or [])
     }
     meeting_refs: set[str] = set()
-    for b in blocks:
-        sess = b.get("session")
+    for block in blocks:
+        sess = block.get("session")
         if isinstance(sess, dict):
             sid = str(sess.get("session_id") or "").strip()
             if sid:
@@ -1538,7 +1918,7 @@ def build_day(
         if str(it.get("id") or "") not in meeting_item_ids
         and str(it.get("source_ref") or "") not in meeting_refs
     ]
-
+    plan, plan_path = _daily_plan(cfg, day_key, store)
     return {
         "date": day_key,
         "events": events,
@@ -1546,6 +1926,100 @@ def build_day(
         "blocks": blocks,
         "other_items": other_items,
         "suggestions": _suggest_links(events, sessions),
+        "plan": plan,
+        "plan_path": plan_path,
+    }
+
+
+def build_day(
+    cfg: Any,
+    day: str,
+    *,
+    store: Any = None,
+) -> dict[str, Any]:
+    """Merged timeline for one local calendar day."""
+    if store is None:
+        store = vault_store_from_config(cfg)
+    day_key = day_from_local(day) or _today(cfg)
+    events = list(list_events(cfg, date_from=day_key, date_to=day_key, store=store))
+    sessions = _sessions_for_day(cfg, day_key)
+    return _assemble_day(cfg, day_key, events, sessions, store)
+
+
+def _calendar_days(start: str, end: str) -> list[str]:
+    cur = date.fromisoformat(start)
+    last = date.fromisoformat(end)
+    out: list[str] = []
+    while cur <= last:
+        out.append(cur.isoformat())
+        if len(out) > _RANGE_MAX_DAYS:
+            raise PlannerError("range is at most 14 days", status_code=422)
+        cur += timedelta(days=1)
+    return out
+
+
+def _sessions_by_day(cfg: Any, days: list[str]) -> dict[str, list[dict[str, Any]]]:
+    """One candidate query, split onto each day in *days*."""
+    grouped: dict[str, list[dict[str, Any]]] = {day: [] for day in days}
+    wanted = set(days)
+    from pawn_agent.tools.list_sessions import list_session_candidates_impl  # noqa: PLC0415
+
+    try:
+        candidates = list_session_candidates_impl(cfg, name_filter="", limit=300)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("planner sessions list failed: %s", exc)
+        return grouped
+    for cand in candidates:
+        created = day_from_local(
+            cand.created_at.isoformat() if getattr(cand, "created_at", None) else ""
+        )
+        updated = day_from_local(
+            cand.updated_at.isoformat() if getattr(cand, "updated_at", None) else ""
+        )
+        row: Optional[dict[str, Any]] = None
+        for day in days:
+            if created != day and updated != day:
+                continue
+            if day not in wanted:
+                continue
+            if row is None:
+                row = _candidate_to_session(cfg, cand, day=day)
+            else:
+                row = dict(row)
+                row["day"] = day
+            grouped[day].append(row)
+    return grouped
+
+
+def build_range(
+    cfg: Any,
+    date_from: str,
+    date_to: str,
+    *,
+    store: Any = None,
+) -> dict[str, Any]:
+    """Merged timelines for an inclusive local-date range (14 days max).
+
+    Event notes are listed and parsed once for the whole range.
+    """
+    if store is None:
+        store = vault_store_from_config(cfg)
+    start = day_from_local(date_from)
+    end = day_from_local(date_to)
+    if not start or not end:
+        raise PlannerError("from and to must be YYYY-MM-DD", status_code=422)
+    if end < start:
+        raise PlannerError("to is before from", status_code=422)
+    days = _calendar_days(start, end)
+    events = list_events(cfg, date_from=start, date_to=end, store=store)
+    by_day: dict[str, list[dict[str, Any]]] = {day: [] for day in days}
+    for ev in events:
+        day = str(ev.get("day") or "")
+        if day in by_day:
+            by_day[day].append(ev)
+    sessions = _sessions_by_day(cfg, days)
+    return {
+        "days": [_assemble_day(cfg, day, by_day[day], sessions.get(day, []), store) for day in days]
     }
 
 

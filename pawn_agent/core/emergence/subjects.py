@@ -378,9 +378,31 @@ def insert_observation(dsn: str, *, source_kind: str, source_ref: str, **fields:
 def nearest(
     vector: Any, candidates: list[dict[str, Any]], *, key: str = "centroid"
 ) -> list[tuple[float, dict[str, Any]]]:
-    """Candidates sorted by cosine distance to ``vector`` (closest first)."""
-    scored = [
-        (cosine_distance(vector, c.get(key)), c) for c in candidates if c.get(key) is not None
-    ]
-    scored.sort(key=lambda pair: pair[0])
-    return scored
+    """Candidates sorted by cosine distance to ``vector`` (closest first).
+
+    Unit vectors are cached on each candidate dict (``_unit_{key}``), so
+    calling this once per observation over the same candidates (routing,
+    the brainmap's ghost strings) converts each vector only once.
+    """
+    query = unit(vector)
+    if query is None:
+        return []
+    cache_key = f"_unit_{key}"
+    usable: list[dict[str, Any]] = []
+    rows: list[np.ndarray] = []
+    for c in candidates:
+        if c.get(key) is None:
+            continue
+        u = c.get(cache_key)
+        if u is None:
+            u = unit(c[key])
+            c[cache_key] = u if u is not None else False
+        if u is False or u is None or u.shape != query.shape:
+            continue
+        usable.append(c)
+        rows.append(u)
+    if not usable:
+        return []
+    distances = 1.0 - np.stack(rows) @ query
+    order = np.argsort(distances, kind="stable")
+    return [(float(distances[i]), usable[i]) for i in order]

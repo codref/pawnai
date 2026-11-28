@@ -530,7 +530,10 @@ PHONE = Skill(
         "after reading back recipient and text; the phone then asks the user "
         "to confirm with a biometric prompt. If the result says declined, "
         "accept it and do not retry. If the phone does not answer, say so — "
-        "never claim a message was sent unless the tool said so."
+        "never claim a message was sent unless the tool said so.\n"
+        "The user's voice assistants (laptop and phone) can also speak a "
+        "sentence (assistant_speak) or start a timer (assistant_timer); both "
+        "default to the assistant the user was last near."
     ),
     tools=(
         "phone_events",
@@ -539,7 +542,48 @@ PHONE = Skill(
         "phone_status_now",
         "phone_sms_send",
         "phone_notify",
+        "assistant_speak",
+        "assistant_timer",
         "knowledge_search",
+        "people_show",
+    ),
+)
+
+
+BOARD = Skill(
+    name="board",
+    description=(
+        "The user is talking about a brainmap board (a corkboard of cards and red "
+        "strings): what connects these cards, what is missing, argue against a "
+        "decision, group or link cards, what changed overnight. Use whenever the "
+        "message carries a Board snapshot."
+    ),
+    prompt=(
+        "Active skill: board.\n"
+        "The Board section of the message is the board right now; SELECTED cards come "
+        "first and are what the user means by 'these'. Cite cards by id and title.\n"
+        "Think like an investigator: what links the cards (people, sessions, "
+        "decisions, timing), what contradicts what, which assumption is weakest, "
+        "what evidence is missing. Use board_read --node ID for a card's evidence, "
+        "session_transcript / note_search / knowledge_search for what is not on the "
+        "board. Do not invent facts the tools did not return.\n"
+        "You cannot change the board. Suggest changes with board_propose: a string "
+        "(--kind string --from --to --role, between evidence and a subject or two "
+        "subjects), a note card holding a conclusion "
+        "(--kind card --title --content-file @note --source …), a group under a new "
+        "thread (--kind group --title --node …), or a card to pin (--kind pin --node). "
+        "A few strong proposals, each with --reason, beat many weak ones. Tell the user "
+        "what you proposed; they accept or burn the ghosts.\n"
+        "Keep the answer short and concrete. Do not write vault notes."
+    ),
+    tools=(
+        "board_read",
+        "board_propose",
+        "note_read",
+        "note_search",
+        "knowledge_search",
+        "sessions_list",
+        "session_transcript",
         "people_show",
     ),
 )
@@ -561,5 +605,6 @@ def build_pawn_skills() -> SkillRegistry:
             MEETING_PREP,
             VAULT_TASKS,
             PHONE,
+            BOARD,
         ]
     )

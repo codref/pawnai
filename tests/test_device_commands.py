@@ -141,7 +141,7 @@ def test_refuses_missing_capability_or_channel(env: SimpleNamespace) -> None:
 def test_several_devices_need_a_name(env: SimpleNamespace) -> None:
     _phone(env.dsn)
     _phone(env.dsn)
-    with pytest.raises(CommandError, match="Several phones"):
+    with pytest.raises(CommandError, match="Several devices"):
         run_command(env.dsn, "location_now", {}, timeout_s=0.1)
 
 

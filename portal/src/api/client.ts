@@ -5,6 +5,28 @@ import { SseParser, parseSseText, type SseEvent } from "./sse";
 import {
   HttpError,
   type Annotation,
+  type Board,
+  type BoardCreate,
+  type BoardPatch,
+  type BoardProposal,
+  type BrainEdge,
+  type BrainGraph,
+  type BrainGraphParams,
+  type BrainLassoBody,
+  type BrainLassoResult,
+  type BrainLayout,
+  type BrainNode,
+  type BrainTieResult,
+  type EmergenceStatus,
+  type EmergenceSubject,
+  type EmergenceSubjectDetail,
+  type AssistantCommand,
+  type AssistantCommandResult,
+  type AssistantKind,
+  type AssistantRegistration,
+  type AssistantSummary,
+  type AssistantsOverview,
+  type WakeModel,
   type AnnotationCreate,
   type CaptureAtom,
   type CaptureCollection,
@@ -20,6 +42,8 @@ import {
   type ItemsPage,
   type SettingsPayload,
   type SettingsStatus,
+  type SchedulerDiagnostics,
+  type ConfigDiagnostics,
   type AnnotationListParams,
   type AnnotationPatch,
   type Chat,
@@ -48,6 +72,27 @@ import {
   type TagTrees,
   type VaultEvents,
   type Workspace,
+  type BulkReidentifyBody,
+  type GallerySpeaker,
+  type Job,
+  type ListSessionsParams,
+  type PlannerDay,
+  type PlannerEvent,
+  type PlannerEventCreate,
+  type PlannerEventPatch,
+  type PlannerRange,
+  type SessionAudioUrls,
+  type SessionDetail,
+  type SessionEnrollBody,
+  type SessionExtractResult,
+  type SessionReprocessBody,
+  type SessionTranscript,
+  type SessionsPage,
+  type SpeakerDetail,
+  type SpeakerMergeResult,
+  type SpeakerPatch,
+  type SpeakerPeopleResult,
+  type SpeakerSummary,
 } from "./types";
 
 export type TokenProvider = () => string;
@@ -111,6 +156,12 @@ export function dispatchChatEvent(ev: SseEvent, h: ChatStreamHandlers): void {
         id: String(data.id ?? ""),
         title: String(data.title ?? ""),
         tags: Array.isArray(data.tags) ? data.tags.map(String) : [],
+      });
+      break;
+    case "board":
+      h.onBoard?.({
+        board: String(data.board ?? ""),
+        proposals: Array.isArray(data.proposals) ? (data.proposals as BoardProposal[]) : [],
       });
       break;
     case "error":
@@ -470,5 +521,328 @@ export class HttpApi implements PortalApi {
 
   settingsStatus(): Promise<SettingsStatus> {
     return this.json<SettingsStatus>("GET", "/v1/portal/settings/status");
+  }
+
+  settingsScheduler(): Promise<SchedulerDiagnostics> {
+    return this.json<SchedulerDiagnostics>("GET", "/v1/portal/settings/scheduler");
+  }
+
+  settingsConfig(): Promise<ConfigDiagnostics> {
+    return this.json<ConfigDiagnostics>("GET", "/v1/portal/settings/config");
+  }
+
+  // ── sessions / day / speakers ───────────────────────────────────────────
+
+  listSessions(params: ListSessionsParams = {}): Promise<SessionsPage> {
+    return this.json<SessionsPage>("GET", `/v1/sessions${qs({ ...params })}`);
+  }
+
+  getSession(id: string): Promise<SessionDetail> {
+    return this.json<SessionDetail>("GET", `/v1/sessions/${encodeURIComponent(id)}`);
+  }
+
+  sessionTranscript(id: string, words = false): Promise<SessionTranscript> {
+    return this.json<SessionTranscript>(
+      "GET",
+      `/v1/sessions/${encodeURIComponent(id)}/transcript${qs({ words: words ? 1 : undefined })}`,
+    );
+  }
+
+  sessionAudioUrl(id: string): Promise<SessionAudioUrls> {
+    return this.json<SessionAudioUrls>("POST", `/v1/sessions/${encodeURIComponent(id)}/audio-url`);
+  }
+
+  async sessionAudio(id: string, index: number, range?: string): Promise<Response> {
+    const headers = this.headers(false);
+    if (range) headers.Range = range;
+    const resp = await fetch(
+      `${this.base}/v1/sessions/${encodeURIComponent(id)}/audio/${index}`,
+      { headers },
+    );
+    if (resp.status === 401) this.onUnauthorized();
+    if (resp.status !== 200 && resp.status !== 206) {
+      throw new HttpError(resp.status, await errorDetail(resp.clone()));
+    }
+    return resp;
+  }
+
+  createSpeaker(displayName: string): Promise<GallerySpeaker> {
+    return this.json<GallerySpeaker>("POST", "/v1/speakers", { display_name: displayName });
+  }
+
+  enrollSession(id: string, body: SessionEnrollBody): Promise<Record<string, unknown>> {
+    return this.json("POST", `/v1/sessions/${encodeURIComponent(id)}/enroll`, body);
+  }
+
+  reidentifySession(id: string): Promise<Record<string, unknown>> {
+    return this.json("POST", `/v1/sessions/${encodeURIComponent(id)}/reidentify`);
+  }
+
+  relabelSession(id: string, body: { from: string; to: string }): Promise<Record<string, unknown>> {
+    return this.json("POST", `/v1/sessions/${encodeURIComponent(id)}/relabel`, body);
+  }
+
+  reprocessSession(id: string, body: SessionReprocessBody): Promise<Record<string, unknown>> {
+    return this.json("POST", `/v1/sessions/${encodeURIComponent(id)}/reprocess`, body);
+  }
+
+  ignoreSessionSpeaker(id: string, body: { from: string; ignore?: boolean }): Promise<Record<string, unknown>> {
+    return this.json("POST", `/v1/sessions/${encodeURIComponent(id)}/ignore`, body);
+  }
+
+  setSessionTrained(id: string, trained = true): Promise<Record<string, unknown>> {
+    return this.json("POST", `/v1/sessions/${encodeURIComponent(id)}/speakers-trained`, { trained });
+  }
+
+  extractSession(id: string, body: { items?: boolean; people?: boolean } = {}): Promise<SessionExtractResult> {
+    return this.json("POST", `/v1/sessions/${encodeURIComponent(id)}/extract`, body);
+  }
+
+  reidentifySessions(body: BulkReidentifyBody = {}): Promise<{ job_id: string }> {
+    return this.json("POST", "/v1/sessions/reidentify", body);
+  }
+
+  plannerDay(date = ""): Promise<PlannerDay> {
+    return this.json<PlannerDay>("GET", `/v1/planner/day${qs({ date })}`);
+  }
+
+  plannerRange(from: string, to: string): Promise<PlannerRange> {
+    return this.json<PlannerRange>("GET", `/v1/planner/range${qs({ from, to })}`);
+  }
+
+  async listPlannerEvents(from = "", to = ""): Promise<PlannerEvent[]> {
+    const body = await this.json<{ data: PlannerEvent[] }>("GET", `/v1/planner/events${qs({ from, to })}`);
+    return body.data ?? [];
+  }
+
+  upsertPlannerEvent(body: PlannerEventCreate): Promise<PlannerEvent> {
+    return this.json<PlannerEvent>("POST", "/v1/planner/events", body);
+  }
+
+  patchPlannerEvent(id: string, body: PlannerEventPatch): Promise<PlannerEvent> {
+    return this.json<PlannerEvent>("PATCH", `/v1/planner/events/${encodeURIComponent(id)}`, body);
+  }
+
+  linkPlannerEvent(id: string, sessionId: string | null): Promise<PlannerEvent> {
+    return this.json<PlannerEvent>("POST", `/v1/planner/events/${encodeURIComponent(id)}/link`, {
+      session_id: sessionId,
+    });
+  }
+
+  deletePlannerEvent(id: string): Promise<{ deleted: boolean }> {
+    return this.json("DELETE", `/v1/planner/events/${encodeURIComponent(id)}`);
+  }
+
+  prepPlannerEvent(id: string): Promise<Job> {
+    return this.json<Job>("POST", `/v1/planner/events/${encodeURIComponent(id)}/prep`);
+  }
+
+  async listSpeakers(params: { q?: string; include_inactive?: boolean } = {}): Promise<SpeakerSummary[]> {
+    const body = await this.json<{ data: SpeakerSummary[] }>("GET", `/v1/speakers${qs({ ...params })}`);
+    return body.data ?? [];
+  }
+
+  getSpeaker(id: string): Promise<SpeakerDetail> {
+    return this.json<SpeakerDetail>("GET", `/v1/speakers/${encodeURIComponent(id)}`);
+  }
+
+  patchSpeaker(
+    id: string,
+    body: SpeakerPatch,
+  ): Promise<SpeakerDetail & { referenced_sessions?: number; job_id?: string | null }> {
+    return this.json("PATCH", `/v1/speakers/${encodeURIComponent(id)}`, body);
+  }
+
+  deactivateSpeaker(id: string): Promise<SpeakerSummary> {
+    return this.json<SpeakerSummary>("DELETE", `/v1/speakers/${encodeURIComponent(id)}`);
+  }
+
+  async deleteEnrollment(speakerId: string, enrollmentId: string): Promise<void> {
+    await this.raw(
+      "DELETE",
+      `/v1/speakers/${encodeURIComponent(speakerId)}/enrollments/${encodeURIComponent(enrollmentId)}`,
+    );
+  }
+
+  mergeSpeakers(id: string, into: string, reidentify = false): Promise<SpeakerMergeResult> {
+    return this.json("POST", `/v1/speakers/${encodeURIComponent(id)}/merge`, { into, reidentify });
+  }
+
+  ensureSpeakerNote(id: string): Promise<SpeakerPeopleResult> {
+    return this.json("POST", `/v1/speakers/${encodeURIComponent(id)}/people`);
+  }
+
+  assistantsOverview(): Promise<AssistantsOverview> {
+    return this.json<AssistantsOverview>("GET", "/v1/portal/assistants");
+  }
+
+  registerAssistant(name: string, kind: AssistantKind): Promise<AssistantRegistration> {
+    return this.json("POST", "/v1/devices/register", { name, kind });
+  }
+
+  renameAssistant(id: string, name: string): Promise<AssistantSummary> {
+    return this.json("PUT", `/v1/devices/${encodeURIComponent(id)}`, { name });
+  }
+
+  revokeAssistant(id: string): Promise<{ deleted: string; events_removed: number }> {
+    return this.json("DELETE", `/v1/devices/${encodeURIComponent(id)}`);
+  }
+
+  runAssistantCommand(id: string, tool: string, args: Record<string, string>): Promise<AssistantCommandResult> {
+    return this.json("POST", `/v1/devices/${encodeURIComponent(id)}/commands`, { tool, args, timeout_s: 30 });
+  }
+
+  async assistantCommands(id: string, limit = 50): Promise<AssistantCommand[]> {
+    const body = await this.json<{ commands: AssistantCommand[] }>(
+      "GET",
+      `/v1/portal/assistants/${encodeURIComponent(id)}/commands${qs({ limit })}`,
+    );
+    return body.commands ?? [];
+  }
+
+  publishWakeModel(file: File, opts: { version?: string; notes?: string } = {}): Promise<WakeModel> {
+    const form = new FormData();
+    form.append("file", file, file.name);
+    if (opts.version) form.append("version", opts.version);
+    if (opts.notes) form.append("notes", opts.notes);
+    return this.json("POST", "/v1/assistants/wake/models", form);
+  }
+
+  activateWakeModel(version: string): Promise<WakeModel> {
+    return this.json("POST", `/v1/assistants/wake/models/${encodeURIComponent(version)}/activate`);
+  }
+
+  brainmap(board: string, params: BrainGraphParams = {}): Promise<BrainGraph> {
+    return this.json<BrainGraph>("GET", `/v1/portal/brainmaps/${encodeURIComponent(board)}${qs({ ...params })}`);
+  }
+
+  brainmapSpill(board: string, subjectId: string): Promise<{ nodes: BrainNode[]; edges: BrainEdge[] }> {
+    return this.json(
+      "GET",
+      `/v1/portal/brainmaps/${encodeURIComponent(board)}/spill/${encodeURIComponent(subjectId)}`,
+    );
+  }
+
+  brainmapTie(board: string, from: string, to: string, role: string): Promise<BrainTieResult> {
+    return this.json<BrainTieResult>("POST", `/v1/portal/brainmaps/${encodeURIComponent(board)}/strings`, {
+      from,
+      to,
+      role,
+    });
+  }
+
+  brainmapCut(board: string, edgeId: string): Promise<{ receipt: string }> {
+    return this.json(
+      "DELETE",
+      `/v1/portal/brainmaps/${encodeURIComponent(board)}/strings/${encodeURIComponent(edgeId)}`,
+    );
+  }
+
+  brainmapSuggestion(
+    board: string,
+    id: string,
+    verdict: "confirm" | "snip",
+  ): Promise<{ edge?: BrainEdge | null; receipt: string }> {
+    return this.json(
+      "POST",
+      `/v1/portal/brainmaps/${encodeURIComponent(board)}/suggestions/${encodeURIComponent(id)}`,
+      { verdict },
+    );
+  }
+
+  brainmapLasso(board: string, body: BrainLassoBody): Promise<BrainLassoResult> {
+    return this.json<BrainLassoResult>("POST", `/v1/portal/brainmaps/${encodeURIComponent(board)}/lasso`, body);
+  }
+
+  getBrainmapLayout(board: string): Promise<BrainLayout> {
+    return this.json<BrainLayout>("GET", `/v1/portal/brainmaps/${encodeURIComponent(board)}/layout`);
+  }
+
+  putBrainmapLayout(board: string, layout: BrainLayout): Promise<BrainLayout> {
+    return this.json<BrainLayout>("PUT", `/v1/portal/brainmaps/${encodeURIComponent(board)}/layout`, layout);
+  }
+
+  async listBoards(archived = false): Promise<Board[]> {
+    const res = await this.json<{ boards: Board[] }>("GET", `/v1/portal/boards${qs({ archived: archived || undefined })}`);
+    return res.boards;
+  }
+
+  createBoard(body: BoardCreate): Promise<Board> {
+    return this.json<Board>("POST", "/v1/portal/boards", body);
+  }
+
+  getBoard(name: string): Promise<Board> {
+    return this.json<Board>("GET", `/v1/portal/boards/${encodeURIComponent(name)}`);
+  }
+
+  patchBoard(name: string, patch: BoardPatch): Promise<Board> {
+    return this.json<Board>("PATCH", `/v1/portal/boards/${encodeURIComponent(name)}`, patch);
+  }
+
+  deleteBoard(name: string): Promise<{ deleted: string }> {
+    return this.json("DELETE", `/v1/portal/boards/${encodeURIComponent(name)}`);
+  }
+
+  pinToBoard(name: string, nodeIds: string[]): Promise<Board> {
+    return this.json<Board>("POST", `/v1/portal/boards/${encodeURIComponent(name)}/pins`, { node_ids: nodeIds });
+  }
+
+  removeFromBoard(name: string, nodeIds: string[]): Promise<Board> {
+    return this.json<Board>("POST", `/v1/portal/boards/${encodeURIComponent(name)}/remove`, { node_ids: nodeIds });
+  }
+
+  boardSeen(name: string): Promise<Board> {
+    return this.json<Board>("POST", `/v1/portal/boards/${encodeURIComponent(name)}/seen`);
+  }
+
+  boardChat(name: string): Promise<Chat> {
+    return this.json<Chat>("POST", `/v1/portal/boards/${encodeURIComponent(name)}/chat`);
+  }
+
+  decideBoardProposal(
+    name: string,
+    id: string,
+    verdict: "accept" | "reject",
+  ): Promise<{ receipt: string; proposal: BoardProposal }> {
+    return this.json(
+      "POST",
+      `/v1/portal/boards/${encodeURIComponent(name)}/proposals/${encodeURIComponent(id)}`,
+      { verdict },
+    );
+  }
+
+  emergenceSubject(id: string): Promise<EmergenceSubjectDetail> {
+    return this.json<EmergenceSubjectDetail>("GET", `/v1/emergence/subjects/${encodeURIComponent(id)}`);
+  }
+
+  emergenceStatus(id: string, status: EmergenceStatus): Promise<{ subject: EmergenceSubject }> {
+    return this.json("POST", `/v1/emergence/subjects/${encodeURIComponent(id)}/status`, {
+      status,
+      surface: "brainmap",
+    });
+  }
+
+  emergenceCouncil(id: string): Promise<{ started: string }> {
+    return this.json("POST", `/v1/emergence/subjects/${encodeURIComponent(id)}/council`);
+  }
+
+  getJob(id: string): Promise<Job> {
+    return this.json<Job>("GET", `/v1/jobs/${encodeURIComponent(id)}`);
+  }
+
+  jobEvents(onJob: (job: Job) => void, signal?: AbortSignal): Promise<void> {
+    return this.streamFetch(
+      "/v1/jobs/events",
+      undefined,
+      (ev) => {
+        if (ev.event !== "job") return;
+        try {
+          onJob(JSON.parse(ev.data) as Job);
+        } catch {
+          /* keep-alive or a non-json frame */
+        }
+      },
+      signal,
+    );
   }
 }

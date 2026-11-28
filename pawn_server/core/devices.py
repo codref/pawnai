@@ -91,15 +91,26 @@ def device_view(row: Device) -> dict[str, Any]:
         "unifiedpush": bool(row.unifiedpush_endpoint),
         "created_at": row.created_at.isoformat() if row.created_at else None,
         "last_seen": row.last_seen.isoformat() if row.last_seen else None,
+        "kind": row.kind or "phone",
+        "platform": row.platform,
+        "presence": dict(row.presence or {}),
+        "presence_at": row.presence_at.isoformat() if row.presence_at else None,
     }
 
 
 # ── Registry / auth ───────────────────────────────────────────────────────────
 
 
-def register_device(dsn: str, name: str) -> dict[str, Any]:
+def register_device(
+    dsn: str, name: str, *, kind: str = "phone", platform: Optional[str] = None
+) -> dict[str, Any]:
     """Create a device and return its id plus the one-time plaintext token."""
-    label = (name or "").strip()[:80] or "phone"
+    from pawn_server.core.device_commands import DEVICE_KINDS  # noqa: PLC0415
+
+    kind = (kind or "phone").strip().lower()
+    if kind not in DEVICE_KINDS:
+        raise DeviceError(f"kind must be one of {', '.join(DEVICE_KINDS)}")
+    label = (name or "").strip()[:80] or kind
     device_id = uuid.uuid4().hex
     token = secrets.token_urlsafe(32)
     now = _now()
@@ -112,9 +123,41 @@ def register_device(dsn: str, name: str) -> dict[str, Any]:
                 enabled_categories=[],
                 created_at=now,
                 last_seen=now,
+                kind=kind,
+                platform=(platform or "").strip()[:40] or None,
             )
         )
-    return {"device_id": device_id, "device_token": token, "name": label}
+    return {"device_id": device_id, "device_token": token, "name": label, "kind": kind}
+
+
+PRESENCE_STATES: tuple[str, ...] = ("active", "idle", "away")
+_PRESENCE_FLAGS: tuple[str, ...] = ("headset", "on_call", "in_session")
+
+
+def update_presence(dsn: str, device_id: str, report: dict[str, Any]) -> dict[str, Any]:
+    """Store what the assistant says about itself now (state + a few flags)."""
+    state = str(report.get("state") or "").strip().lower()
+    if state not in PRESENCE_STATES:
+        raise DeviceError(f"state must be one of {', '.join(PRESENCE_STATES)}")
+    presence: dict[str, Any] = {"state": state}
+    for flag in _PRESENCE_FLAGS:
+        if flag in report and report[flag] is not None:
+            presence[flag] = bool(report[flag])
+    wake = report.get("last_wake_at")
+    if wake not in (None, ""):
+        try:
+            presence["last_wake_at"] = parse_ts(wake).isoformat()
+        except (ValueError, TypeError, OverflowError) as exc:
+            raise DeviceError("last_wake_at must be epoch or ISO-8601") from exc
+    now = _now()
+    with _get_session(dsn) as db:
+        row = db.get(Device, device_id)
+        if row is None:
+            raise DeviceError("Unknown device", status_code=404)
+        row.presence = presence
+        row.presence_at = now
+        row.last_seen = now
+        return device_view(row)
 
 
 def authenticate(dsn: str, device_id: str, token: Optional[str]) -> bool:
@@ -184,8 +227,28 @@ def update_device(
 def delete_device(dsn: str, device_id: str) -> int:
     """Delete a device and everything derived from it. Returns events removed."""
     removed = purge_events(dsn, device_id)
+    from pawn_agent.utils.db import AccessRequest, VoiceThread, WakeClip  # noqa: PLC0415
+
     with _get_session(dsn) as db:
         db.execute(delete(DeviceCommand).where(DeviceCommand.device_id == device_id))
+        for model, column in (
+            (AccessRequest, AccessRequest.requester_device_id),
+            (AccessRequest, AccessRequest.approver_device_id),
+        ):
+            try:
+                with db.begin_nested():
+                    db.execute(delete(model).where(column == device_id))
+            except Exception:  # noqa: BLE001 — table missing on an old schema
+                pass
+        try:
+            with db.begin_nested():
+                # Wake clips stay as training data; threads stay readable.
+                for thread in db.scalars(select(VoiceThread).where(VoiceThread.device_id == device_id)):
+                    thread.device_id = None
+                for clip in db.scalars(select(WakeClip).where(WakeClip.device_id == device_id)):
+                    clip.device_id = None
+        except Exception:  # noqa: BLE001
+            pass
         row = db.get(Device, device_id)
         if row is None:
             raise DeviceError("Unknown device", status_code=404)

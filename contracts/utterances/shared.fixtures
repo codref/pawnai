@@ -1,0 +1,28 @@
+# Utterances both voice assistants must route to the same intent on the fast path
+# (no LLM). Format, as in the Android skill-testkit:
+#   lang | utterance | intent
+# "-" as intent means "must not match a local command". Slots are left out on
+# purpose: slot names differ per client. Intent names are the Android ones;
+# linux-aliases.txt maps them to the Linux client's names.
+#
+# Conversation-only phrases ("abbiamo finito") are left out: the
+# Linux client matches them only while a conversation holds the floor.
+#
+# Canonical copy: pawnai (parakeet) contracts/utterances/. Copy into the client
+# repos with scripts/sync-contracts.sh; never edit the copies.
+
+it | che ore sono | clock.time
+it | che giorno è oggi | clock.date
+en | what time is it | clock.time
+it | metti un timer di cinque minuti | timer.set
+en | set a timer for five minutes | timer.set
+it | parliamo | pawn.start
+en | let's talk | pawn.start
+it | sblocca le sessioni | pawn.unlock
+it | blocca le sessioni | pawn.lock
+en | lock the sessions | pawn.lock
+it | continua qui | pawn.resume
+it | riprendi la conversazione | pawn.resume
+en | continue here | pawn.resume
+it | sblocca col telefono | pawn.unlock_phone
+en | unlock with the phone | pawn.unlock_phone

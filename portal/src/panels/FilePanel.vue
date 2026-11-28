@@ -6,7 +6,7 @@ import { useFilesStore } from "@/stores/files";
 import { useTabsStore } from "@/stores/tabs";
 import { isSideChat, useChatsStore } from "@/stores/chats";
 import { useAnnotationsStore } from "@/stores/annotations";
-import { openChat } from "@/router";
+import { openChat, openDay, openSession } from "@/router";
 import { vTarget, type Target } from "@/lib/targets";
 import { toWorkspace } from "@/lib/workspace";
 import { errorText, notifyError } from "@/lib/errors";
@@ -46,6 +46,15 @@ const isMarkdown = computed(() => /\.md$/i.test(props.fileKey));
 const dirty = computed(() => editing.value && draft.value !== content.value);
 const parts = computed(() => splitFrontmatter(content.value));
 const crumbs = computed(() => props.fileKey.split("/"));
+
+function front(name: string): string {
+  const hit = parts.value.frontmatter?.fields.find(([key]) => key === name);
+  return (hit?.[1] ?? "").trim().replace(/^["']|["']$/g, "");
+}
+
+const transcriptSession = computed(() => (front("pawn") === "transcript" ? front("session_id") : ""));
+const eventId = computed(() => (front("pawn") === "event" ? front("id") : ""));
+const eventDay = computed(() => front("start").slice(0, 10));
 
 async function load(): Promise<void> {
   loading.value = true;
@@ -254,7 +263,7 @@ onBeforeUnmount(() => {
         <q-tooltip>Outside Pawn/ and not marked “pawn: editable”</q-tooltip>
       </q-badge>
       <template v-if="editing">
-        <span v-if="dirty" class="text-caption text-orange q-mr-sm">unsaved</span>
+        <span v-if="dirty" class="pawn-status warn q-mr-sm">unsaved</span>
         <q-btn flat dense no-caps label="Cancel" class="q-mr-xs" @click="cancelEdit" />
         <q-btn unelevated dense no-caps color="primary" icon="save" label="Save" :loading="saving" @click="save()" />
       </template>
@@ -328,7 +337,26 @@ onBeforeUnmount(() => {
       </q-btn>
     </div>
 
-    <q-banner v-if="remoteChanged && editing" dense class="bg-orange-1 text-orange-10">
+    <q-banner v-if="transcriptSession" dense class="pawn-banner">
+      This note is the transcript for {{ transcriptSession }}.
+      <template #action>
+        <q-btn flat dense no-caps label="Open as session" @click="openSession(transcriptSession)" />
+      </template>
+    </q-banner>
+    <q-banner v-else-if="eventId" dense class="pawn-banner">
+      This note is a day event.
+      <template #action>
+        <q-btn
+          flat
+          dense
+          no-caps
+          label="Open in Day"
+          @click="openDay({ date: eventDay || undefined, eventId })"
+        />
+      </template>
+    </q-banner>
+
+    <q-banner v-if="remoteChanged && editing" dense class="pawn-banner warn">
       This file changed on the server while you were editing. Saving will ask before overwriting.
     </q-banner>
 
@@ -340,7 +368,7 @@ onBeforeUnmount(() => {
     <div v-else-if="editing" class="col q-pa-md editor-wrap">
       <CodeEditor v-model="draft" @save="save()" />
     </div>
-    <q-scroll-area v-else class="col">
+    <div v-else class="col pawn-scroll">
       <div class="row no-wrap q-pa-lg file-row">
       <div ref="bodyEl" v-target="bodyTarget" class="col file-body">
         <img v-if="isImage" :src="blobUrl" :alt="fileKey" class="file-image" />
@@ -361,7 +389,7 @@ onBeforeUnmount(() => {
       </div>
       <AnnotationLayer v-if="isText" kind="file" :refs="fileRefs" :root-for="() => bodyEl" />
       </div>
-    </q-scroll-area>
+    </div>
   </div>
 </template>
 

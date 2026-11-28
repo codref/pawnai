@@ -120,7 +120,7 @@ def test_list_sessions_http(env: SimpleNamespace, monkeypatch: pytest.MonkeyPatc
     monkeypatch.setattr(
         sessions_api,
         "list_sessions_page",
-        lambda cfg, *, limit=50, q="", needs_speakers=False, speaker="": {
+        lambda cfg, *, limit=50, q="", needs_speakers=False, speaker="", **_extra: {
             "data": [
                 {
                     "session_id": "meet-1",

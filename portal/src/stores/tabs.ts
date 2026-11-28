@@ -8,8 +8,31 @@ import { loadJson, saveJson } from "@/lib/storage";
 // `${kind}:${ref}`, unique across the whole workspace, so opening something
 // that is already open anywhere just focuses it.
 
-export type TabKind = "chat" | "file" | "clip" | "inbox" | "settings";
-const KINDS: readonly TabKind[] = ["chat", "file", "clip", "inbox", "settings"];
+export type TabKind =
+  | "chat"
+  | "file"
+  | "clip"
+  | "inbox"
+  | "settings"
+  | "sessions"
+  | "session"
+  | "day"
+  | "speakers"
+  | "assistants"
+  | "brainmap";
+const KINDS: readonly TabKind[] = [
+  "chat",
+  "file",
+  "clip",
+  "inbox",
+  "settings",
+  "sessions",
+  "session",
+  "day",
+  "speakers",
+  "assistants",
+  "brainmap",
+];
 /** Singleton tool tabs (one per workspace, ref is always "main"). */
 export const TOOL_REF = "main";
 

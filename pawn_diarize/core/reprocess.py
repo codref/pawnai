@@ -148,7 +148,16 @@ def retranscribe_session(
     from pawn_diarize.core.s3 import to_canonical_paths
 
     audio_files, engine = prepare_session_audio(session_id, db_dsn, app_cfg)
+    processing = None
+    with OrmSession(engine) as db:
+        state = db.get(SessionState, session_id)
+        if state is not None:
+            processing = state.processing
     seg_n, map_n = wipe_session_asr_state(engine, session_id)
+    if processing:
+        from pawn_diarize.core.database import set_session_processing
+
+        set_session_processing(session_id, processing, engine)
     logger.info(
         "retranscribe wipe %r: %d segment(s), %d speaker-map row(s)",
         session_id,
@@ -181,24 +190,24 @@ def retranscribe_session(
             diarization_backend=str(
                 getattr(getattr(app_cfg, "models", None), "diarization_backend", "pyannote")
             ),
-            diarization_model=getattr(
-                getattr(app_cfg, "models", None), "diarization_model", None
-            ),
-            embedding_model=getattr(
-                getattr(app_cfg, "models", None), "embedding_model", None
-            ),
+            diarization_model=getattr(getattr(app_cfg, "models", None), "diarization_model", None),
+            embedding_model=getattr(getattr(app_cfg, "models", None), "embedding_model", None),
             hf_token=getattr(getattr(app_cfg, "models", None), "hf_token", None),
             transcription_engine=transcription_engine,
             diarization_engine=diarization_engine,
         )
         if result:
+            from pawn_diarize.core.database import canonical_file_offsets
+
             new_processed = to_canonical_paths(resolved, path_map)
+            offset_rows = canonical_file_offsets(result.get("file_offsets"), path_map)
             save_session_state(
                 session_id,
                 result.get("session_speaker_embeddings") or {},
                 result.get("new_time_cursor", 0.0),
                 new_processed,
                 engine,
+                **({"file_offsets": offset_rows} if offset_rows else {}),
             )
             if result.get("segments"):
                 save_transcription_segments(result["segments"], session_id, engine, start_index=0)

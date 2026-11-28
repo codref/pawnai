@@ -18,6 +18,7 @@ logger = logging.getLogger(__name__)
 
 JOBS = (
     "sync",
+    "boards",
     "clustering",
     "synthesis",
     "assumptions",
@@ -45,6 +46,10 @@ async def _job(name: str, cfg: Any, store: Any, budget: Budget, today: date) -> 
 
     if name == "sync":
         return {"goals": threads.sync_goals(cfg, store), "notes": threads.sync_notes(cfg, store)}
+    if name == "boards":
+        from pawn_agent.core.emergence import board_night  # noqa: PLC0415
+
+        return await board_night.work_boards(cfg, store, budget=budget)
     if name == "clustering":
         return len(await threads.emergent_threads(cfg, store, budget=budget))
     if name == "synthesis":

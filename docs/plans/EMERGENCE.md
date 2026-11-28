@@ -409,6 +409,17 @@ A user can create a question by writing `Pawn/Questions/*.md` with
   of that window).
 - **Settings**: emergence metrics (§7) and the night-shift budget.
 - Later: a **Map** view (threads × time, sized by evidence).
+- **Brainmap** (2026-11-28): a corkboard visualization type, first board `items`
+  ([PORTAL.md](../PORTAL.md#brainmap)). It is the first Portal surface for
+  unlink/relink (§7): tie, cut, ghost-string verdicts, lasso into threads,
+  accept/burn proposed subjects. Backend: `pawn_server/core/brainmap.py`
+  (graph builder, mutations), `brainmap_api.py` (`/v1/portal/brainmaps/*`),
+  migration `0033` (`portal_boards` layout). Labels: `target_kind` `link`
+  (key = subject id + normalized observation text, so a cut survives
+  re-processing; `route`, the ambiguous pass and the directed pass skip
+  rejected pairs) and `subject` (accept/dismiss from any surface). Both carry
+  no embedding and are left out of `emergence export`, so they never mix
+  with extraction verdicts.
 
 ## 10. Config
 

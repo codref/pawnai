@@ -1,26 +1,43 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
-import type { Annotation, Chat, ChatSort, Clip, FileHit, FolderNode, SearchResults, TagNode } from "@/api";
+import type { Annotation, Board, Chat, ChatSort, Clip, FileHit, FolderNode, SearchResults, TagNode } from "@/api";
 import { api } from "@/api";
 import { useAnnotationsStore } from "@/stores/annotations";
 import { useChatsStore, type ChatView } from "@/stores/chats";
 import { useFilesStore } from "@/stores/files";
 import { useTabsStore } from "@/stores/tabs";
-import { closeRef, openChat, openClip, openFile } from "@/router";
+import { closeRef, openChat, openClip, openFile, openSession } from "@/router";
 import { confirmAction, promptText } from "@/lib/dialogs";
-import { DND_CHAT, DND_FOLDER, hasType } from "@/lib/dnd";
+import { DND_CHAT, DND_FILE, DND_FOLDER, hasType, leftElement } from "@/lib/dnd";
+import { ICONS } from "@/lib/icons";
+import type { SegmentOption } from "@/lib/segment";
+import { useComposerStore } from "@/stores/composer";
 import { notifyError } from "@/lib/errors";
 import { loadJson, saveJson } from "@/lib/storage";
 import { fullTime, relativeTime } from "@/lib/time";
 import { colorOf } from "@/lib/highlights";
 import type { TreeItem } from "@/lib/tree";
 import { vTarget, type Target } from "@/lib/targets";
+import { useBoardsStore } from "@/stores/boards";
+import BoardRow from "./BoardRow.vue";
+import NewBoardDialog from "./NewBoardDialog.vue";
 import ChatRow from "./ChatRow.vue";
+import SegmentedControl from "./SegmentedControl.vue";
 import TreeList from "./TreeList.vue";
 
 const chats = useChatsStore();
 const files = useFilesStore();
 const tabs = useTabsStore();
+const boards = useBoardsStore();
+
+// ── boards ───────────────────────────────────────────────────────────────
+const boardsOpen = ref(loadJson<boolean>("chat.boardsOpen", true));
+watch(boardsOpen, (v) => saveJson("chat.boardsOpen", v));
+const newBoard = ref<{ folderId: string | null; tags: string[] } | null>(null);
+function openNewBoard(folderId: string | null = null, tags: string[] = []): void {
+  newBoard.value = { folderId, tags };
+}
+onMounted(() => void boards.refresh());
 
 // ── search ───────────────────────────────────────────────────────────────
 const query = ref("");
@@ -69,10 +86,10 @@ function searchTag(path: string): void {
 }
 
 const FILE_ICONS: Record<string, string> = {
-  markdown: "article",
-  pdf: "picture_as_pdf",
-  docx: "description",
-  image: "image",
+  markdown: ICONS.markdown,
+  pdf: ICONS.pdf,
+  docx: ICONS.doc,
+  image: ICONS.image,
   audio: "audiotrack",
 };
 function fileHitIcon(kind: string): string {
@@ -119,7 +136,8 @@ const resultCount = computed(() =>
       results.value.messages.length +
       (results.value.files?.length ?? 0) +
       results.value.clips.length +
-      results.value.annotations.length
+      results.value.annotations.length +
+      (results.value.sessions?.length ?? 0)
     : 0,
 );
 
@@ -136,10 +154,10 @@ async function newFolder(parentId: string | null = null): Promise<void> {
 }
 
 // ── view + sort ──────────────────────────────────────────────────────────
-const views: { value: ChatView; label: string }[] = [
-  { value: "folders", label: "Folders" },
-  { value: "tags", label: "Tags" },
-  { value: "all", label: "All" },
+const views: SegmentOption<ChatView>[] = [
+  { value: "folders", label: "Folders", icon: ICONS.folder },
+  { value: "tags", label: "Tags", icon: ICONS.tag },
+  { value: "all", label: "All", icon: ICONS.list },
 ];
 const sortOptions: { value: ChatSort; label: string }[] = [
   { value: "updated", label: "Last updated" },
@@ -158,10 +176,11 @@ const pinnedTop = computed(() => chats.pinned.filter((c) => !chats.nested(c)));
 
 // ── folders view (QTree) ─────────────────────────────────────────────────
 interface TreeNode extends TreeItem {
-  kind: "folder" | "chat" | "unfiled";
+  kind: "folder" | "chat" | "unfiled" | "board";
   label: string;
   folder?: FolderNode;
   chat?: Chat;
+  board?: Board;
   count?: number;
   children?: TreeNode[];
 }
@@ -191,14 +210,24 @@ const folderNodes = computed<TreeNode[]>(() => {
       children: kids.map((k) => chatNode(k, depth + 1)),
     };
   };
+  // Boards filed in a folder sit there too; unfiled ones live in the Boards section.
+  const boardsIn = new Map<string, Board[]>();
+  for (const b of boards.userBoards) {
+    if (b.folder_id) boardsIn.set(b.folder_id, [...(boardsIn.get(b.folder_id) ?? []), b]);
+  }
+  const boardNode = (b: Board): TreeNode => ({ key: `b:${b.name}`, kind: "board", label: b.title, board: b });
   const build = (f: FolderNode): TreeNode => ({
     key: `f:${f.id}`,
     kind: "folder",
     label: f.name,
     folder: f,
-    count: f.chat_count,
+    count: f.chat_count + (boardsIn.get(f.id)?.length ?? 0),
     expandable: true,
-    children: [...f.children.map(build), ...(byFolder.get(f.id) ?? []).map((c) => chatNode(c))],
+    children: [
+      ...f.children.map(build),
+      ...(boardsIn.get(f.id) ?? []).map(boardNode),
+      ...(byFolder.get(f.id) ?? []).map((c) => chatNode(c)),
+    ],
   });
   return [
     ...chats.folders.map(build),
@@ -212,8 +241,6 @@ const folderNodes = computed<TreeNode[]>(() => {
     },
   ];
 });
-
-const dropKey = ref("");
 
 function folderContains(root: FolderNode, id: string): boolean {
   return root.id === id || root.children.some((c) => folderContains(c, id));
@@ -229,31 +256,46 @@ function findFolder(nodes: FolderNode[], id: string): FolderNode | null {
 
 function onFolderDragStart(ev: DragEvent, f: FolderNode): void {
   ev.dataTransfer?.setData(DND_FOLDER, f.id);
+  ev.dataTransfer?.setData("text/plain", f.name);
   if (ev.dataTransfer) ev.dataTransfer.effectAllowed = "move";
 }
 
-function onDragOver(ev: DragEvent, key: string): void {
-  if (!hasType(ev, DND_CHAT) && !hasType(ev, DND_FOLDER)) return;
-  ev.preventDefault();
-  if (ev.dataTransfer) ev.dataTransfer.dropEffect = "move";
-  dropKey.value = key;
+/** The folder a tree row stands for when something is dropped on it. */
+function folderOfNode(node: TreeNode): string | null {
+  if (node.kind === "folder") return node.folder?.id ?? null;
+  if (node.kind === "chat") return node.chat?.folder_id ?? null;
+  return null;
 }
 
-function onDragLeave(key: string): void {
-  if (dropKey.value === key) dropKey.value = "";
+function acceptsChatDrag(ev: DragEvent): boolean {
+  return hasType(ev, DND_CHAT) || hasType(ev, DND_FOLDER) || hasType(ev, DND_FILE);
 }
 
-/** Drop a chat or a folder onto a folder (targetId) or onto Unfiled/root (null). */
-async function onDrop(ev: DragEvent, targetId: string | null): Promise<void> {
+function onRowDragOver(ev: DragEvent, node: TreeNode): void {
+  if (!acceptsChatDrag(ev)) return;
+  // A file only lands on a folder (or Unfiled): it starts a chat there.
+  if (hasType(ev, DND_FILE) && node.kind === "chat") return;
   ev.preventDefault();
-  dropKey.value = "";
+  if (ev.dataTransfer) ev.dataTransfer.dropEffect = hasType(ev, DND_FILE) ? "copy" : "move";
+}
+
+function onRowDrop(ev: DragEvent, node: TreeNode): void {
+  void dropInto(ev, folderOfNode(node));
+}
+
+/** Drop a chat, a folder or a vault file into a folder (targetId) or Unfiled/root (null). */
+async function dropInto(ev: DragEvent, targetId: string | null): Promise<void> {
+  ev.preventDefault();
+  ev.stopPropagation();
+  rootOver.value = false;
   const chatId = ev.dataTransfer?.getData(DND_CHAT);
   const folderId = ev.dataTransfer?.getData(DND_FOLDER);
+  const filePath = ev.dataTransfer?.getData(DND_FILE);
   if (chatId) {
     const chat = chats.byId.get(chatId);
     if (chat && (chat.folder_id ?? null) === targetId) return;
     await chats.moveChat(chatId, targetId);
-    if (targetId) expandKey(`f:${targetId}`);
+    expandKey(targetId ? `f:${targetId}` : "unfiled");
   } else if (folderId) {
     if (folderId === targetId) return;
     const moving = findFolder(chats.folders, folderId);
@@ -264,7 +306,32 @@ async function onDrop(ev: DragEvent, targetId: string | null): Promise<void> {
     if (moving && (moving.parent_id ?? null) === targetId) return;
     await chats.moveFolder(folderId, targetId);
     if (targetId) expandKey(`f:${targetId}`);
+  } else if (filePath) {
+    const chat = await chats.createChat({ folder_id: targetId });
+    if (!chat) return;
+    useComposerStore().addNote(chat.id, filePath);
+    openChat(chat.id, { pin: true });
   }
+}
+
+// Empty space below the folder tree is the top level: chats go to Unfiled,
+// folders to the root.
+const rootOver = ref(false);
+function onRootDragOver(ev: DragEvent): void {
+  if (ev.defaultPrevented || chats.view !== "folders" || results.value || !acceptsChatDrag(ev)) {
+    rootOver.value = false;
+    return;
+  }
+  ev.preventDefault();
+  if (ev.dataTransfer) ev.dataTransfer.dropEffect = hasType(ev, DND_FILE) ? "copy" : "move";
+  rootOver.value = true;
+}
+function onRootDragLeave(ev: DragEvent): void {
+  if (leftElement(ev)) rootOver.value = false;
+}
+function onRootDrop(ev: DragEvent): void {
+  if (!rootOver.value) return;
+  void dropInto(ev, null);
 }
 
 async function renameFolder(f: FolderNode): Promise<void> {
@@ -316,12 +383,29 @@ watch([selectedTag, () => chats.allTags], async ([tag]) => {
     notifyError(e, "Could not load tagged files");
   }
 });
+function onTagDragOver(ev: DragEvent): void {
+  if (!hasType(ev, DND_CHAT)) return;
+  ev.preventDefault();
+  if (ev.dataTransfer) ev.dataTransfer.dropEffect = "link";
+}
+async function onTagDrop(ev: DragEvent, node: TagTreeNode): Promise<void> {
+  const chatId = ev.dataTransfer?.getData(DND_CHAT);
+  if (!chatId) return;
+  ev.preventDefault();
+  const chat = chats.byId.get(chatId);
+  if (!chat || chat.tags.includes(node.path)) return;
+  await chats.patchChat(chatId, { tags: [...chat.tags, node.path] });
+}
+
 const tagExpanded = ref<string[]>(loadJson<string[]>("chat.tagExpanded", []));
 watch(tagExpanded, (v) => saveJson("chat.tagExpanded", v));
 
 function tagMatches(tags: string[], prefix: string): boolean {
   return tags.some((t) => t === prefix || t.startsWith(prefix + "/"));
 }
+const tagBoards = computed(() =>
+  selectedTag.value ? boards.userBoards.filter((b) => tagMatches(b.tags, selectedTag.value)) : [],
+);
 const tagChats = computed(() =>
   selectedTag.value
     ? chats.chats.filter((c) => tagMatches(c.tags, selectedTag.value) && !chats.nested(c))
@@ -379,7 +463,7 @@ async function deleteClip(c: Clip): Promise<void> {
 </script>
 
 <template>
-  <div class="column no-wrap full-height chat-sidebar">
+  <div class="column no-wrap full-height chat-sidebar sidebar-root">
     <div class="q-pa-sm border-b">
       <q-input
         ref="searchInput"
@@ -402,13 +486,19 @@ async function deleteClip(c: Clip): Promise<void> {
       </div>
       <div v-else class="row q-gutter-xs q-mt-xs">
         <q-btn class="col" unelevated dense color="primary" icon="add" label="New chat" no-caps @click="newChat()" />
-        <q-btn dense flat icon="create_new_folder" aria-label="New folder" @click="newFolder()">
+        <q-btn dense flat :icon="ICONS.newFolder" aria-label="New folder" class="head-btn" @click="newFolder()">
           <q-tooltip>New folder</q-tooltip>
         </q-btn>
       </div>
     </div>
 
-    <q-scroll-area class="col">
+    <div
+      class="col pawn-scroll relative-position"
+      :class="{ 'root-over': rootOver }"
+      @dragover="onRootDragOver"
+      @dragleave="onRootDragLeave"
+      @drop="onRootDrop"
+    >
       <!-- Search results replace the views while a query is typed. -->
       <div v-if="results" class="q-pa-xs search-results">
         <div v-if="results.tags?.length" class="q-px-sm q-py-xs">
@@ -431,7 +521,7 @@ async function deleteClip(c: Clip): Promise<void> {
             @click="openHit(f)"
             @dblclick="openHit(f, true)"
           >
-            <q-icon :name="fileHitIcon(f.kind)" size="18px" class="text-muted hit-icon" />
+            <q-icon :name="fileHitIcon(f.kind)" class="text-muted hit-icon" />
             <div class="col" style="min-width: 0">
               <div class="row no-wrap items-center">
                 <span class="col ellipsis-1">{{ f.title }}</span>
@@ -449,10 +539,24 @@ async function deleteClip(c: Clip): Promise<void> {
           </div>
         </template>
 
+        <template v-if="results.sessions?.length">
+          <div class="section-label">Sessions</div>
+          <div v-for="s in results.sessions" :key="s.session_id" class="hit" @click="openSession(s.session_id)">
+            <q-icon name="graphic_eq" class="text-muted hit-icon" />
+            <div class="col" style="min-width: 0">
+              <div class="row no-wrap items-center">
+                <span class="col ellipsis-1">{{ s.title }}</span>
+                <span v-if="s.created_at" class="age">{{ relativeTime(s.created_at) }}</span>
+              </div>
+              <div v-if="s.snippet" class="text-caption snippet">{{ s.snippet }}</div>
+            </div>
+          </div>
+        </template>
+
         <template v-if="results.messages.length">
           <div class="section-label">Messages</div>
           <div v-for="m in results.messages" :key="m.id" class="hit" @click="openChat(m.chat_id)">
-            <q-icon :name="m.role === 'user' ? 'person' : 'smart_toy'" size="16px" class="text-muted hit-icon" />
+            <q-icon :name="m.role === 'user' ? 'person' : 'smart_toy'" class="text-muted hit-icon" />
             <div class="col" style="min-width: 0">
               <div class="row no-wrap items-center">
                 <span class="col ellipsis-1">{{ m.chat_title || "Untitled chat" }}</span>
@@ -466,7 +570,7 @@ async function deleteClip(c: Clip): Promise<void> {
         <template v-if="results.clips.length">
           <div class="section-label">Clips</div>
           <div v-for="c in results.clips" :key="c.id" v-target="clipTarget(c)" class="hit" @click="openClipRow(c)">
-            <q-icon name="content_cut" size="16px" class="text-muted hit-icon" />
+            <q-icon name="content_cut" class="text-muted hit-icon" />
             <span class="col ellipsis-1">{{ c.title || "Clip" }}</span>
             <span v-if="c.created_at" class="age">{{ relativeTime(c.created_at) }}</span>
           </div>
@@ -489,24 +593,54 @@ async function deleteClip(c: Clip): Promise<void> {
       </div>
 
       <template v-else>
-        <div v-if="chats.pinned.length" class="q-pa-xs border-b">
-          <div class="section-label">Pinned</div>
+        <div v-if="chats.pinned.length || boards.pinned.length" class="q-pa-xs border-b">
+          <div class="section-label"><q-icon name="push_pin" size="13px" />Pinned</div>
+          <BoardRow v-for="b in boards.pinned" :key="b.name" :board="b" dense />
           <ChatRow v-for="c in pinnedTop" :key="c.id" :chat="c" dense />
         </div>
 
+        <q-expansion-item
+          v-model="boardsOpen"
+          dense
+          icon="dashboard"
+          :label="`Boards${boards.userBoards.length ? ` (${boards.userBoards.length})` : ''}`"
+          header-class="drawer-section"
+          class="border-b"
+        >
+          <template #header>
+            <q-item-section avatar><q-icon name="dashboard" /></q-item-section>
+            <q-item-section>Boards{{ boards.userBoards.length ? ` (${boards.userBoards.length})` : "" }}</q-item-section>
+            <q-item-section side>
+              <q-btn flat dense round size="sm" icon="add" aria-label="New board" @click.stop="openNewBoard()">
+                <q-tooltip>New board</q-tooltip>
+              </q-btn>
+            </q-item-section>
+          </template>
+          <div class="q-pa-xs">
+            <BoardRow v-if="boards.boards.find((b) => b.kind === 'items')" :board="boards.boards.find((b) => b.kind === 'items')!" dense />
+            <BoardRow
+              v-for="b in boards.userBoards.filter((x) => !x.folder_id && !x.pinned)"
+              :key="b.name"
+              :board="b"
+              dense
+            />
+            <div v-if="boards.loaded && !boards.userBoards.length" class="text-caption text-muted q-px-sm q-py-xs">
+              Make a board to investigate something, and talk to it.
+            </div>
+          </div>
+        </q-expansion-item>
+
         <div class="row items-center no-wrap q-px-sm q-py-xs">
-          <q-btn-toggle
+          <SegmentedControl
             :model-value="chats.view"
             :options="views"
-            dense
-            no-caps
-            unelevated
             size="sm"
-            toggle-color="primary"
-            class="col view-toggle"
+            stretch
+            aria-label="Chat view"
+            class="col"
             @update:model-value="chats.setView"
           />
-          <q-btn flat dense round size="sm" icon="sort" class="q-ml-xs" aria-label="Sort">
+          <q-btn flat dense round size="sm" :icon="ICONS.sort" class="q-ml-xs" aria-label="Sort">
             <q-tooltip>Sort: {{ sortLabel }} ({{ chats.sort.order }})</q-tooltip>
             <q-menu auto-close>
               <q-list dense style="min-width: 160px">
@@ -540,24 +674,22 @@ async function deleteClip(c: Clip): Promise<void> {
           :nodes="folderNodes"
           :selected="selectedChatKey"
           empty-label="No folders yet"
+          @row-dragover="onRowDragOver"
+          @row-drop="onRowDrop"
         >
           <template #default="{ node, open: isOpen }">
             <ChatRow v-if="node.kind === 'chat' && node.chat" :chat="node.chat" compact />
+            <BoardRow v-else-if="node.kind === 'board' && node.board" :board="node.board" dense />
             <div
               v-else
               class="row items-center no-wrap full-width folder-header"
-              :class="{ 'drop-target': dropKey === node.key }"
               :draggable="node.kind === 'folder'"
               @dragstart="node.folder && onFolderDragStart($event, node.folder)"
-              @dragover="onDragOver($event, node.key)"
-              @dragleave="onDragLeave(node.key)"
-              @drop="onDrop($event, node.folder ? node.folder.id : null)"
             >
               <q-icon
-                :name="node.kind === 'unfiled' ? 'inbox' : isOpen ? 'folder_open' : 'folder'"
-                size="17px"
-                class="q-mr-xs"
-                :class="node.kind === 'unfiled' ? 'text-muted' : 'folder-icon'"
+                :name="node.kind === 'unfiled' ? ICONS.inbox : isOpen ? ICONS.folderOpen : ICONS.folder"
+                class="row-icon"
+                :class="{ 'folder-icon': node.kind !== 'unfiled' }"
               />
               <span class="col ellipsis-1">{{ node.label }}</span>
               <span class="count">{{ node.count || "" }}</span>
@@ -566,6 +698,9 @@ async function deleteClip(c: Clip): Promise<void> {
                 <q-list dense style="min-width: 170px">
                   <q-item clickable @click="newChat({ folder_id: node.folder?.id ?? null })">
                     <q-item-section>New chat here</q-item-section>
+                  </q-item>
+                  <q-item v-if="node.folder" clickable @click="openNewBoard(node.folder.id)">
+                    <q-item-section>New board here</q-item-section>
                   </q-item>
                   <template v-if="node.folder">
                     <q-item clickable @click="newFolder(node.folder.id)">
@@ -596,10 +731,12 @@ async function deleteClip(c: Clip): Promise<void> {
             :selected="selectedTag || null"
             empty-label="No tags yet. Right-click a chat or file → Edit tags."
             @select="selectTag"
+            @row-dragover="onTagDragOver"
+            @row-drop="onTagDrop"
           >
             <template #default="{ node }">
               <div class="row items-center no-wrap full-width">
-                <q-icon name="sell" size="15px" class="q-mr-xs text-muted" />
+                <q-icon :name="ICONS.tag" class="row-icon" />
                 <span class="col ellipsis-1">{{ node.label }}</span>
                 <span class="count">{{ node.count }}</span>
                 <q-menu context-menu touch-position auto-close>
@@ -622,6 +759,10 @@ async function deleteClip(c: Clip): Promise<void> {
             <div class="section-label">{{ selectedTag ? `#${selectedTag}` : "Untagged chats" }}</div>
             <ChatRow v-for="c in tagChats" :key="c.id" :chat="c" dense />
             <div v-if="!tagChats.length" class="text-caption text-muted q-px-sm q-py-xs">No chats.</div>
+            <template v-if="selectedTag && tagBoards.length">
+              <div class="section-label">Boards</div>
+              <BoardRow v-for="b in tagBoards" :key="b.name" :board="b" dense />
+            </template>
             <template v-if="selectedTag">
               <div class="section-label">Files</div>
               <div
@@ -631,7 +772,7 @@ async function deleteClip(c: Clip): Promise<void> {
                 @click="openHit(f)"
                 @dblclick="openHit(f, true)"
               >
-                <q-icon :name="fileHitIcon(f.kind)" size="16px" class="text-muted hit-icon" />
+                <q-icon :name="fileHitIcon(f.kind)" class="text-muted hit-icon" />
                 <span class="col ellipsis-1">{{ f.title }}</span>
                 <span v-if="f.modified" class="age">{{ relativeTime(f.modified) }}</span>
               </div>
@@ -647,7 +788,7 @@ async function deleteClip(c: Clip): Promise<void> {
         </div>
 
         <q-separator class="q-mt-sm" />
-        <q-expansion-item v-model="archivedOpen" dense icon="inventory_2" label="Archived" header-class="text-muted">
+        <q-expansion-item v-model="archivedOpen" dense :icon="ICONS.archive" label="Archived" header-class="drawer-section">
           <div class="q-pa-xs">
             <ChatRow v-for="c in chats.archived" :key="c.id" :chat="c" dense />
             <div v-if="chats.archivedLoaded && !chats.archived.length" class="text-caption text-muted q-pa-sm">
@@ -657,9 +798,9 @@ async function deleteClip(c: Clip): Promise<void> {
         </q-expansion-item>
         <q-expansion-item
           dense
-          icon="content_cut"
+          :icon="ICONS.clip"
           :label="`Saved clips${chats.clips.length ? ` (${chats.clips.length})` : ''}`"
-          header-class="text-muted"
+          header-class="drawer-section"
         >
           <div class="q-pa-xs">
             <div
@@ -670,7 +811,7 @@ async function deleteClip(c: Clip): Promise<void> {
               @click="openClipRow(c)"
               @dblclick="openClipRow(c, true)"
             >
-              <q-icon :name="c.vault_key ? 'description' : 'content_cut'" size="16px" class="text-muted hit-icon" />
+              <q-icon :name="c.vault_key ? 'description' : 'content_cut'" class="text-muted hit-icon" />
               <div class="col" style="min-width: 0">
                 <div class="row no-wrap items-center">
                   <span class="col ellipsis-1">{{ c.title || "Clip" }}</span>
@@ -684,9 +825,19 @@ async function deleteClip(c: Clip): Promise<void> {
             <div v-if="!chats.clips.length" class="text-caption text-muted q-pa-sm">No clips yet.</div>
           </div>
         </q-expansion-item>
+        <div class="root-drop-pad" />
       </template>
-    </q-scroll-area>
+      <div v-if="rootOver" class="drop-overlay root-drop-hint">
+        <q-icon :name="ICONS.inbox" size="18px" />Drop to move to the top level
+      </div>
+    </div>
 
+    <NewBoardDialog
+      :model-value="!!newBoard"
+      :folder-id="newBoard?.folderId ?? null"
+      :tags="newBoard?.tags ?? []"
+      @update:model-value="(v: boolean) => !v && (newBoard = null)"
+    />
   </div>
 </template>
 
@@ -694,27 +845,16 @@ async function deleteClip(c: Clip): Promise<void> {
 .folder-header {
   min-height: 28px;
 }
-.folder-icon {
-  color: #e0a43a;
-}
 .count {
   flex: none;
   font-size: 0.72rem;
   color: var(--pawn-muted);
   margin-left: 6px;
 }
-.section-label {
-  font-size: 0.7rem;
-  font-weight: 600;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
-  color: var(--pawn-muted);
-  padding: 8px 10px 4px;
-}
-.ann-hit-swatch {
+.hit-icon.ann-hit-swatch {
   width: 12px;
   height: 12px;
-  margin-top: 3px;
+  margin: 3px 3px 0;
 }
 .ann-hit-quote {
   font-style: italic;
@@ -734,8 +874,10 @@ async function deleteClip(c: Clip): Promise<void> {
   background: var(--pawn-active);
 }
 .hit-icon {
-  margin-top: 2px;
+  margin-top: 1px;
   flex: none;
+  width: 18px;
+  font-size: var(--pawn-row-icon);
 }
 .snippet {
   display: -webkit-box;
@@ -751,7 +893,29 @@ async function deleteClip(c: Clip): Promise<void> {
   border-radius: 4px;
   padding: 0 4px;
 }
-.view-toggle :deep(.q-btn) {
-  padding: 0 8px;
+.head-btn {
+  width: 32px;
+}
+.root-drop-pad {
+  min-height: 48px;
+}
+.root-drop-hint {
+  position: sticky;
+  inset: auto;
+  bottom: 6px;
+  margin: 0 6px;
+  height: 44px;
+}
+:deep(.drawer-section) {
+  color: var(--pawn-muted);
+  min-height: 34px;
+  font-size: 0.8rem;
+}
+:deep(.drawer-section .q-item__section--avatar) {
+  min-width: 28px;
+  padding-right: 6px;
+}
+:deep(.drawer-section .q-icon) {
+  font-size: 18px;
 }
 </style>

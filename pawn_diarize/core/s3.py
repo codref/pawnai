@@ -339,6 +339,30 @@ class S3Client:
             if close is not None:
                 close()
 
+    def get_object(
+        self,
+        object_key: str,
+        bucket: Optional[str] = None,
+        *,
+        range_header: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Return a raw ``get_object`` response, optionally with an HTTP Range.
+
+        The caller owns ``Body`` and must close it. ``ContentRange`` is present
+        when S3 honours *range_header*.
+        """
+        target_bucket = bucket if bucket is not None else self._config.bucket
+        kwargs: Dict[str, Any] = {"Bucket": target_bucket, "Key": object_key}
+        if range_header:
+            kwargs["Range"] = range_header
+        return self._client.get_object(**kwargs)
+
+    def head_content_length(self, object_key: str, bucket: Optional[str] = None) -> int:
+        """Return the object size in bytes."""
+        target_bucket = bucket if bucket is not None else self._config.bucket
+        head = self._client.head_object(Bucket=target_bucket, Key=object_key)
+        return int(head.get("ContentLength") or 0)
+
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Context manager: resolve s3:// paths to temporary local files

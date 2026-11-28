@@ -40,7 +40,12 @@ Return JSON: {{"keep": false, "why": "one line"}}
 
 
 def _pairs(
-    observations: list[dict[str, Any]], n: int, *, seed: Optional[int] = None
+    observations: list[dict[str, Any]],
+    n: int,
+    *,
+    seed: Optional[int] = None,
+    min_days: int = 7,
+    band: tuple[float, float] = (0.3, 0.65),
 ) -> list[tuple]:
     """Pairs of observations that are far apart in time and moderately similar."""
     rng = random.Random(seed)
@@ -61,10 +66,10 @@ def _pairs(
         a, b = usable[i], usable[j]
         if i == j or a.get("source_ref") == b.get("source_ref"):
             continue
-        if abs((a["created_at"] - b["created_at"]).days) < 7:
+        if abs((a["created_at"] - b["created_at"]).days) < min_days:
             continue
         distance = float(1.0 - vecs[i] @ vecs[j])
-        if not 0.3 <= distance <= 0.65:
+        if not band[0] <= distance <= band[1]:
             continue
         key = tuple(sorted((a["id"], b["id"])))
         if key in seen:
@@ -80,8 +85,36 @@ async def dream(cfg: Any, store: Any, *, budget: Any = None, seed: Optional[int]
         return 0
     cap = int(getattr(getattr(cfg, "emergence", None), "dream_max_hypotheses", 2) or 0)
     pool = subj.recent_observations(cfg.db_dsn, days=120)
+    return len(await _dream_pairs(cfg, store, _pairs(pool, n, seed=seed), cap, budget=budget))
+
+
+async def dream_board(
+    cfg: Any, store: Any, subject_id: str, *, budget: Any = None, seed: Optional[int] = None
+) -> list[dict[str, Any]]:
+    """Dream only among one board question's evidence; hypotheses hang off it."""
+    em = getattr(cfg, "emergence", None)
+    n = int(getattr(em, "board_dream_pairs", 6) or 0)
+    cap = int(getattr(em, "board_dream_max", 1) or 0)
+    if n <= 0 or cap <= 0:
+        return []
+    pool = [o for o in subj.subject_observations(cfg.db_dsn, subject_id, limit=200)]
+    # A board is small and recent: pairs may be close in time, and closer in meaning.
+    pairs = _pairs(pool, n, seed=seed, min_days=1, band=(0.2, 0.7))
+    return await _dream_pairs(cfg, store, pairs, cap, budget=budget, parent_id=subject_id)
+
+
+async def _dream_pairs(
+    cfg: Any,
+    store: Any,
+    pairs: list[tuple],
+    cap: int,
+    *,
+    budget: Any = None,
+    parent_id: Optional[str] = None,
+) -> list[dict[str, Any]]:
+    made: list[dict[str, Any]] = []
     kept = 0
-    for a, b, distance in _pairs(pool, n, seed=seed):
+    for a, b, distance in pairs:
         if (budget is not None and budget.exhausted) or kept >= cap:
             break
         idea = await ask_json(
@@ -126,6 +159,7 @@ async def dream(cfg: Any, store: Any, *, budget: Any = None, seed: Optional[int]
                 "distance": round(distance, 3),
             },
             centroid=vector,
+            parent_id=parent_id,
         )
         subj.link(cfg.db_dsn, a["id"], h["id"], role="evidence_for", linked_by="dream")
         subj.link(cfg.db_dsn, b["id"], h["id"], role="evidence_for", linked_by="dream")
@@ -138,7 +172,8 @@ async def dream(cfg: Any, store: Any, *, budget: Any = None, seed: Optional[int]
             features={"novelty": 1.0},
         )
         kept += 1
-    return kept
+        made.append(h)
+    return made
 
 
 PERSONAS = (

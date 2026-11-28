@@ -34,6 +34,7 @@ KIND_WEIGHT: dict[str, float] = {
     "prediction_resolved": 0.55,
     "decision_review": 0.5,
     "question_answered": 0.5,
+    "board_update": 0.55,
     "recurring_concern": 0.5,
     "momentum": 0.45,
     "overdue_theirs": 0.45,

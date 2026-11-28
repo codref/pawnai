@@ -246,10 +246,95 @@ class Device(_Base):
     token_hash: Mapped[str] = mapped_column(String, nullable=False)
     unifiedpush_endpoint: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     enabled_categories: Mapped[Optional[list]] = mapped_column(JSON, nullable=True)
-    # Live tools the phone will run (location_now, status_now, sms_send, notify).
+    # Live tools the device will run (location_now, status_now, sms_send, notify, speak, …).
     capabilities: Mapped[Optional[list]] = mapped_column(JSON, nullable=True)
     created_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     last_seen: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    # phone (UnifiedPush wake-ups) | desktop (SSE command stream). See docs/ASSISTANTS.md.
+    kind: Mapped[str] = mapped_column(String, nullable=False, default="phone", server_default="phone")
+    platform: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    # Last reported presence: {state: active|idle|away, headset?, on_call?, last_wake_at?}.
+    presence: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
+    presence_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+
+
+class VoiceThread(_Base):
+    """One ``voice:`` conversation and the device that currently holds it."""
+
+    __tablename__ = "voice_threads"
+
+    conversation: Mapped[str] = mapped_column(String, primary_key=True)
+    device_id: Mapped[Optional[str]] = mapped_column(
+        String, ForeignKey("devices.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    access: Mapped[str] = mapped_column(String, nullable=False, default="chat")
+    lang: Mapped[str] = mapped_column(String, nullable=False, default="it")
+    # active | handed_off | ended
+    state: Mapped[str] = mapped_column(String, nullable=False, default="active", index=True)
+    turns: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    last_user: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    last_answer: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    portal_chat_id: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    started_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    last_turn_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True, index=True)
+
+
+class AccessRequest(_Base):
+    """A request for full voice access on one device, approved on another (phone)."""
+
+    __tablename__ = "access_requests"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    requester_device_id: Mapped[str] = mapped_column(
+        String, ForeignKey("devices.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    approver_device_id: Mapped[Optional[str]] = mapped_column(
+        String, ForeignKey("devices.id", ondelete="CASCADE"), nullable=True
+    )
+    conversation: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    minutes: Mapped[int] = mapped_column(Integer, nullable=False, default=15)
+    # pending | approved | denied | expired | error
+    status: Mapped[str] = mapped_column(String, nullable=False, default="pending", index=True)
+    command_id: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    message: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    created_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    expires_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    access_until: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+
+
+class WakeClip(_Base):
+    """A labelled 2 s wake-word clip uploaded by an assistant for retraining."""
+
+    __tablename__ = "wake_clips"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    device_id: Mapped[Optional[str]] = mapped_column(
+        String, ForeignKey("devices.id", ondelete="CASCADE"), nullable=True, index=True
+    )
+    label: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    score: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    path: Mapped[str] = mapped_column(String, nullable=False)
+    size: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    meta: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
+    captured_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True, index=True)
+
+
+class WakeModel(_Base):
+    """A published wake-word model; the ``active`` one is what assistants download."""
+
+    __tablename__ = "wake_models"
+
+    version: Mapped[str] = mapped_column(String, primary_key=True)
+    name: Mapped[str] = mapped_column(String, nullable=False, default="hey_pawn")
+    path: Mapped[str] = mapped_column(String, nullable=False)
+    sha256: Mapped[str] = mapped_column(String, nullable=False)
+    size: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    notes: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    # Suggested {wake, barge_in} thresholds from `wake-train calibrate`.
+    thresholds: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
+    active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    created_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
 
 
 class PhoneEvent(_Base):

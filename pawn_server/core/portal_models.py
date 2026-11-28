@@ -125,6 +125,63 @@ class PortalWorkspace(Base):
     updated_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
 
 
+class PortalBoard(Base):
+    """One brainmap board: what is on it (seed + pins - hidden) and its layout.
+
+    ``name`` is the board id used in URLs (``items`` is built in; user boards
+    are ``b-…``). Meaning (links, parents, subjects) stays in the emergence
+    tables; a board only stores membership, note cards and positions.
+    """
+
+    __tablename__ = "portal_boards"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    name: Mapped[str] = mapped_column(String, nullable=False, unique=True)
+    title: Mapped[str] = mapped_column(String, nullable=False, default="")
+    # items | lens | manual | question
+    kind: Mapped[str] = mapped_column(String, nullable=False, default="manual")
+    # Lens seed: {q, kinds, statuses, tags, people, subject_ids, sources}
+    spec: Mapped[Optional[dict[str, Any]]] = mapped_column(JSON, nullable=True)
+    pins: Mapped[Optional[list[str]]] = mapped_column(JSON, nullable=True)
+    hidden: Mapped[Optional[list[str]]] = mapped_column(JSON, nullable=True)
+    # Accepted note cards: [{id, title, body, sources: [node_id]}]
+    notes: Mapped[Optional[list[dict[str, Any]]]] = mapped_column(JSON, nullable=True)
+    folder_id: Mapped[Optional[str]] = mapped_column(String, nullable=True, index=True)
+    tags: Mapped[Optional[list[str]]] = mapped_column(JSON, nullable=True)
+    pinned: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    archived: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    chat_id: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    # Question boards: the em_subjects row the night shift works on.
+    subject_id: Mapped[Optional[str]] = mapped_column(String, nullable=True, index=True)
+    # {node_id: {x, y, pinned}}
+    positions: Mapped[Optional[dict[str, Any]]] = mapped_column(JSON, nullable=True)
+    # {x, y, zoom}
+    viewport: Mapped[Optional[dict[str, Any]]] = mapped_column(JSON, nullable=True)
+    seen_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    updated_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+
+
+class PortalBoardProposal(Base):
+    """A ghost card / string / group / pin proposed for a board, until decided."""
+
+    __tablename__ = "portal_board_proposals"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    board: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    chat_id: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    run_id: Mapped[Optional[str]] = mapped_column(String, nullable=True, index=True)
+    # chat | night
+    origin: Mapped[str] = mapped_column(String, nullable=False, default="chat")
+    # string | card | group | pin
+    kind: Mapped[str] = mapped_column(String, nullable=False)
+    payload: Mapped[Optional[dict[str, Any]]] = mapped_column(JSON, nullable=True)
+    # proposed | accepted | rejected
+    status: Mapped[str] = mapped_column(String, nullable=False, default="proposed")
+    created_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    decided_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+
+
 class PortalFileTags(Base):
     """Tags for vault files whose body Pawn can't or shouldn't rewrite."""
 
@@ -159,6 +216,8 @@ PORTAL_TABLES = [
     PortalClip.__table__,
     PortalAnnotation.__table__,
     PortalWorkspace.__table__,
+    PortalBoard.__table__,
+    PortalBoardProposal.__table__,
     PortalFileTags.__table__,
     PortalFileIndex.__table__,
 ]

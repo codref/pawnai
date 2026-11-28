@@ -1,0 +1,6 @@
+event: answer
+data: {"content": "Ok."}
+
+event: done
+data: {"conversation": "voice:contract"}
+

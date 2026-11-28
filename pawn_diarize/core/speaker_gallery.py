@@ -21,7 +21,7 @@ from datetime import datetime, timezone
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 import numpy as np
-from sqlalchemy import delete, func, select
+from sqlalchemy import delete, func, select, update
 from sqlalchemy.orm import Session as OrmSession
 
 from pawn_core.config import SpeakersConfig
@@ -188,6 +188,59 @@ class SpeakerGallery:
                 raise ValueError(f"Unknown speaker id: {speaker_id}")
             row.active = False
             row.updated_at = datetime.now(timezone.utc)
+
+    def merge_speakers(self, source_id: str, into_id: str) -> tuple[Speaker, list[str]]:
+        """Move *source_id* into *into_id* and deactivate the source.
+
+        Enrollments move, ``session_speaker_map`` rows are repointed, and the
+        source display name joins the destination aliases. Returns the
+        destination and the session ids whose map changed.
+        """
+        src_id = (source_id or "").strip()
+        dst_id = (into_id or "").strip()
+        if not src_id or not dst_id:
+            raise ValueError("source and into are required")
+        if src_id == dst_id:
+            raise ValueError("Cannot merge a speaker into itself")
+        now = datetime.now(timezone.utc)
+        with get_session(self._engine) as db:
+            src = db.get(Speaker, src_id)
+            dst = db.get(Speaker, dst_id)
+            if src is None:
+                raise ValueError(f"Unknown speaker id: {src_id}")
+            if dst is None:
+                raise ValueError(f"Unknown speaker id: {dst_id}")
+            db.execute(
+                update(SpeakerEnrollment)
+                .where(SpeakerEnrollment.speaker_id == src_id)
+                .values(speaker_id=dst_id)
+            )
+            maps = list(
+                db.scalars(select(SessionSpeakerMap).where(SessionSpeakerMap.speaker_id == src_id))
+            )
+            affected: list[str] = []
+            for row in maps:
+                row.speaker_id = dst_id
+                row.display_name = dst.display_name
+                row.updated_at = now
+                if row.session_id not in affected:
+                    affected.append(row.session_id)
+            names = [str(item).strip() for item in (dst.aliases or []) if str(item).strip()]
+            seen = {item.lower() for item in names}
+            seen.add(dst.display_name.strip().lower())
+            for alias in list(src.aliases or []) + [src.display_name]:
+                text = str(alias or "").strip()
+                if not text or text.lower() in seen:
+                    continue
+                names.append(text)
+                seen.add(text.lower())
+            dst.aliases = names
+            dst.updated_at = now
+            src.active = False
+            src.updated_at = now
+            db.flush()
+            db.expunge(dst)
+            return dst, affected
 
     # ── Enrollments ───────────────────────────────────────────────────────
 

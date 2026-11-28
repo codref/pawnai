@@ -1,0 +1,6 @@
+# canonical (Android) intent = Linux pawn-assistant intent
+clock.time = time.now
+clock.date = date.today
+core.cancel = cancel
+core.greeting = greeting
+core.help = help

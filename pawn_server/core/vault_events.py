@@ -11,6 +11,7 @@ import asyncio
 import logging
 import threading
 from collections import deque
+from collections.abc import Callable
 from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
@@ -26,6 +27,7 @@ class VaultEventBus:
         self._seq = 0
         self._events: deque[dict[str, Any]] = deque(maxlen=maxlen)
         self._waiters: set[asyncio.Event] = set()
+        self._listeners: list[Callable[[dict[str, Any]], None]] = []
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._closed = False
 
@@ -74,9 +76,20 @@ class VaultEventBus:
             }
             self._events.append(event)
             seq = self._seq
+            listeners = list(self._listeners)
         self._wake()
+        for listener in listeners:
+            try:
+                listener(event)
+            except Exception:  # noqa: BLE001
+                logger.debug("vault event listener failed", exc_info=True)
         logger.debug("vault event seq=%s source=%s paths=%s", seq, source, cleaned)
         return seq
+
+    def add_listener(self, listener: Callable[[dict[str, Any]], None]) -> None:
+        """Call *listener* with each published event (used to drop caches)."""
+        with self._mu:
+            self._listeners.append(listener)
 
     async def wait(self, since: int, timeout: float) -> dict[str, Any]:
         """Return a snapshot, waiting up to *timeout* seconds for a newer event."""

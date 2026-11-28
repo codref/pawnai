@@ -12,14 +12,29 @@ import { DND_FILE, hasType } from "@/lib/dnd";
 import { errorText, isAbort } from "@/lib/errors";
 import { vTarget, type Target } from "@/lib/targets";
 import { toWorkspace } from "@/lib/workspace";
+import { useBrainmapStore } from "@/stores/brainmap";
+import { useBoardsStore } from "@/stores/boards";
+import { openBrainmap } from "@/router";
 import MarkdownView from "@/components/MarkdownView.vue";
 import AnnotationLayer from "@/components/AnnotationLayer.vue";
 
-const props = defineProps<{ id: string; tabId: string }>();
+// Embedded beside a board (`board` set, no tab of its own): every turn sends the
+// board's selected cards; the ghosts a turn proposes reload the board.
+const props = defineProps<{ id: string; tabId?: string; board?: string; initialPrompt?: string }>();
 const chats = useChatsStore();
 const files = useFilesStore();
 const tabs = useTabsStore();
 const composer = useComposerStore();
+const boards = useBoardsStore();
+const boardStore = props.board ? useBrainmapStore(props.board) : null;
+
+/** Tab status and pinning only apply when the chat has a tab of its own. */
+function setTab(status: Parameters<typeof tabs.setStatus>[1]): void {
+  if (props.tabId) tabs.setStatus(props.tabId, status);
+}
+function pinTab(): void {
+  if (props.tabId) tabs.pin(props.tabId);
+}
 
 interface UiMessage {
   key: string;
@@ -67,7 +82,7 @@ async function load(): Promise<void> {
   try {
     chat.value = await api().getChat(props.id);
     messages.value = chat.value.messages.map(toUi);
-    tabs.setStatus(props.tabId, { title: chat.value.title || "New chat" });
+    setTab({ title: chat.value.title || "New chat" });
     await scrollToBottom();
   } catch (e) {
     loadError.value = e instanceof HttpError && e.status === 404 ? "This chat no longer exists." : errorText(e);
@@ -81,7 +96,7 @@ async function refreshMeta(): Promise<void> {
   try {
     const fresh = await api().getChat(props.id);
     if (chat.value) Object.assign(chat.value, { ...fresh, messages: chat.value.messages });
-    tabs.setStatus(props.tabId, { title: fresh.title || "New chat" });
+    setTab({ title: fresh.title || "New chat" });
   } catch {
     /* deleted or offline: the sidebar reports it */
   }
@@ -126,9 +141,9 @@ async function send(): Promise<void> {
   const r = messages.value[messages.value.length - 1];
   await scrollToBottom();
 
-  tabs.pin(props.tabId);
+  pinTab();
   streaming.value = true;
-  tabs.setStatus(props.tabId, { busy: true });
+  setTab({ busy: true });
   const ctl = new AbortController();
   abort = ctl;
   // The composer unlocks once the answer is stored; the stream may stay open
@@ -142,7 +157,7 @@ async function send(): Promise<void> {
       streaming.value = false;
       abort = null;
     }
-    tabs.setStatus(props.tabId, { busy: false });
+    setTab({ busy: false });
     if (!r.content && !r.error && !r.note) r.note = "No answer.";
     chats.touched();
     void scrollToBottom();
@@ -155,6 +170,7 @@ async function send(): Promise<void> {
         message: text,
         context: notes.map((path) => ({ path, inline: false })),
         model: chats.model || null,
+        ...(boardStore ? { board_selection: [...boardStore.selection] } : {}),
       },
       {
         onMessage: (m) => {
@@ -169,7 +185,7 @@ async function send(): Promise<void> {
             chat.value.title = c.title;
             chat.value.tags = c.tags;
           }
-          tabs.setStatus(props.tabId, { title: c.title || "New chat" });
+          setTab({ title: c.title || "New chat" });
           chats.touched();
           void chats.refreshTags();
         },
@@ -187,6 +203,10 @@ async function send(): Promise<void> {
         onFiles: (paths) => {
           r.context = { ...r.context, written_files: paths };
           files.noteWritten(paths);
+        },
+        onBoard: (b) => {
+          r.context = { ...r.context, board_proposals: b.proposals.map((p) => p.id) };
+          if (boardStore) void boardStore.load();
         },
         onJob: () => {
           r.note = "Queued as a background job; the answer will land in the jobs list.";
@@ -226,7 +246,7 @@ async function rename(): Promise<void> {
   if (title !== null && (await chats.patchChat(props.id, { title }))) {
     chat.value.title = title;
     chat.value.title_auto = false;
-    tabs.setStatus(props.tabId, { title });
+    setTab({ title });
   }
 }
 
@@ -383,7 +403,7 @@ watch(
       .map((t) => t.trim().split("\n").map((l) => `> ${l}`).join("\n"))
       .join("\n\n");
     draft.value = draft.value.trim() ? `${draft.value.trimEnd()}\n\n${block}\n\n` : `${block}\n\n`;
-    tabs.pin(props.tabId);
+    pinTab();
     void nextTick(() => input.value?.focus());
   },
   { immediate: true },
@@ -392,7 +412,23 @@ watch(
 onMounted(async () => {
   await load();
   input.value?.focus();
+  if (props.initialPrompt && !messages.value.length) {
+    draft.value = props.initialPrompt;
+    void send();
+  }
 });
+
+/** "Board from this chat": a board whose chat is this chat; it proposes the pins. */
+async function boardFromChat(): Promise<void> {
+  const title = await promptText("Board from this chat", chat.value?.title || "", { label: "Board name" });
+  if (title === null || !title.trim()) return;
+  const b = await boards.create(
+    { title: title.trim(), kind: "manual", chat_id: props.id },
+    "Propose pins for the meetings, items, threads and decisions this conversation is about. " +
+      "Then propose the strings between them.",
+  );
+  if (b) openBrainmap(b.name);
+}
 onBeforeUnmount(() => abort?.abort());
 </script>
 
@@ -402,7 +438,7 @@ onBeforeUnmount(() => abort?.abort());
     <div v-else-if="loadError || !chat" class="col flex flex-center column text-muted">
       <q-icon name="error_outline" size="40px" />
       <div class="q-mt-sm">{{ loadError }}</div>
-      <q-btn flat no-caps label="Close tab" class="q-mt-sm" @click="closeTab(tabId)" />
+      <q-btn v-if="tabId" flat no-caps label="Close tab" class="q-mt-sm" @click="closeTab(tabId)" />
     </div>
 
     <template v-else>
@@ -431,6 +467,12 @@ onBeforeUnmount(() => abort?.abort());
             <q-badge v-if="chat.archived" outline color="grey" label="archived" />
           </div>
         </div>
+        <q-btn v-if="!board && !origin?.board" flat dense round icon="dashboard_customize" @click="boardFromChat">
+          <q-tooltip>Board from this chat: Pawn proposes the cards it is about</q-tooltip>
+        </q-btn>
+        <q-btn v-else-if="!board && origin?.board" flat dense round icon="dashboard" @click="openBrainmap(origin.board)">
+          <q-tooltip>Open this chat's board</q-tooltip>
+        </q-btn>
         <q-btn flat dense round icon="push_pin" :color="chat.pinned ? 'primary' : undefined" @click="togglePin">
           <q-tooltip>{{ chat.pinned ? "Unpin" : "Pin" }}</q-tooltip>
         </q-btn>
@@ -439,7 +481,7 @@ onBeforeUnmount(() => abort?.abort());
         </q-btn>
       </div>
 
-      <div v-if="origin" class="origin-bar row items-center no-wrap q-px-md q-py-xs border-b">
+      <div v-if="origin && origin.kind && origin.kind !== 'board'" class="origin-bar row items-center no-wrap q-px-md q-py-xs border-b">
         <q-icon :name="origin.kind === 'file' ? 'find_in_page' : 'question_answer'" size="16px" class="text-muted q-mr-sm" />
         <span class="text-caption text-muted q-mr-xs">{{ origin.promoted ? "From" : "Asked about" }}</span>
         <span class="col ellipsis-1 text-caption origin-quote cursor-pointer" @click="openOrigin">
@@ -503,12 +545,23 @@ onBeforeUnmount(() => abort?.abort());
               </details>
 
               <MarkdownView v-if="m.content" :source="m.content" />
-              <q-banner v-if="m.error" dense rounded class="bg-red-1 text-negative q-mt-xs">
+              <q-banner v-if="m.error" dense rounded class="pawn-banner danger q-mt-xs">
                 <template #avatar><q-icon name="error_outline" /></template>
                 {{ m.error }}
               </q-banner>
               <div v-if="m.note" class="text-caption text-muted q-mt-xs">{{ m.note }}</div>
 
+              <div v-if="m.context.night" class="text-caption text-muted q-mt-xs">
+                <q-icon name="bedtime" size="14px" /> Night shift
+              </div>
+              <div
+                v-if="Array.isArray(m.context.board_proposals) && m.context.board_proposals.length"
+                class="q-mt-sm text-caption text-muted"
+              >
+                <q-icon name="auto_awesome" size="14px" />
+                {{ m.context.board_proposals.length }} ghost{{ m.context.board_proposals.length > 1 ? "s" : "" }}
+                on the board: accept or burn them there.
+              </div>
               <div v-if="m.context.written_files?.length" class="q-mt-sm row items-center q-gutter-xs">
                 <span class="text-caption text-muted">Wrote</span>
                 <q-chip

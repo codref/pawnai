@@ -21,7 +21,6 @@ from .speakers_cmd import speakers_app  # noqa: E402
 app.add_typer(speakers_app, name="speakers")
 
 
-
 def _resolve_s3_paths(
     paths: List[str],
     app_cfg: Any,
@@ -753,12 +752,18 @@ def transcribe_diarize(
             updated_processed = prior_processed_files + to_canonical_paths(
                 [str(p) for p in audio_paths], _path_map
             )
+            from ..core.database import canonical_file_offsets, stored_file_offsets
+
+            offset_rows = canonical_file_offsets((full_result or {}).get("file_offsets"), _path_map)
+            if offset_rows:
+                offset_rows = stored_file_offsets(session_id, db_engine) + offset_rows
             save_session_state(
                 session_id=session_id,
                 speaker_embeddings=updated_session_embeddings,
                 time_cursor=new_time_cursor,
                 processed_files=updated_processed,
                 engine=db_engine,
+                **({"file_offsets": offset_rows} if offset_rows else {}),
             )
             console.print(f"[green]✓ Session state updated: '{session_id}'[/green]")
 
@@ -1590,9 +1595,7 @@ def session_info(
             else:
                 vecs = []
                 for lbl in labels:
-                    v = np.asarray(
-                        session_emb_meta[lbl]["embedding"], dtype=np.float32
-                    ).flatten()
+                    v = np.asarray(session_emb_meta[lbl]["embedding"], dtype=np.float32).flatten()
                     n = float(np.linalg.norm(v))
                     vecs.append(v / n if n > 0 else v)
                 stacked = np.stack(vecs)
@@ -2105,9 +2108,7 @@ def push_vault(
             raise typer.Exit(1)
 
     if not dry_run and not vault_bucket:
-        console.print(
-            "[red]Error: No vault bucket. Set vault.s3.bucket in pawnai.yaml.[/red]"
-        )
+        console.print("[red]Error: No vault bucket. Set vault.s3.bucket in pawnai.yaml.[/red]")
         raise typer.Exit(1)
 
     engine = get_engine(db_dsn)
@@ -2596,7 +2597,6 @@ def _fmt_size(num_bytes: int) -> str:
 # ──────────────────────────────────────────────────────────────────────────────
 
 
-
 @app.command()
 def reidentify(
     session: str = typer.Option(..., "--session", "-s", help="Session id to rematch"),
@@ -2645,9 +2645,7 @@ def reidentify(
 
 @app.command(name="repair-audio-paths")
 def repair_audio_paths(
-    session: Optional[str] = typer.Option(
-        None, "--session", "-s", help="Repair one session id"
-    ),
+    session: Optional[str] = typer.Option(None, "--session", "-s", help="Repair one session id"),
     all_sessions: bool = typer.Option(
         False, "--all", help="Repair every session that has segments"
     ),
