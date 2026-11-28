@@ -197,14 +197,35 @@ async def apply_action(
     *,
     registry: Any = None,
     store: Any = None,
+    surface: str = "inbox",
 ) -> str:
-    """Apply a triage action. Returns a one-line receipt."""
+    """Apply a triage action. Returns a one-line receipt.
+
+    ``surface`` (inbox | matrix | note | chat) is recorded on the emergence
+    label the action implies.
+    """
     action = (action or "").strip().lower()
     if action not in ACTIONS:
         return f"Unknown action {action!r}."
     item = itemdb.get_item(cfg.db_dsn, item_id)
     if item is None:
         return f"No item {item_id}."
+    receipt = await _apply(cfg, item, action, arg, registry=registry, store=store)
+    from pawn_agent.core.emergence.labels import record_item_label  # noqa: PLC0415
+
+    await asyncio.to_thread(record_item_label, cfg, item, action, surface=surface)
+    return receipt
+
+
+async def _apply(
+    cfg: AgentConfig,
+    item: dict[str, Any],
+    action: str,
+    arg: Optional[str],
+    *,
+    registry: Any,
+    store: Any,
+) -> str:
     vault = None
     try:
         vault = _store(cfg, store)
@@ -254,7 +275,7 @@ async def apply_action(
         return f"Ignored {item['short_id']}."
 
     if action == "delete":
-        return _delete_item_record(cfg, item, vault)
+        return _delete_item_record(cfg, item, vault, label=False)
 
     if action == "approve" and item.get("kind") == "proposal":
         from pawn_agent.core.coworker.pipeline import _run_research  # noqa: PLC0415
@@ -278,8 +299,19 @@ async def apply_action(
     return f"Unknown action {action!r}."
 
 
-def _delete_item_record(cfg: AgentConfig, item: dict[str, Any], vault: Any) -> str:
+def _delete_item_record(
+    cfg: AgentConfig,
+    item: dict[str, Any],
+    vault: Any,
+    *,
+    label: bool = True,
+    surface: str = "inbox",
+) -> str:
     """Sync delete: suppress fingerprint, mark dismissed, remove vault note."""
+    if label:
+        from pawn_agent.core.emergence.labels import record_item_label  # noqa: PLC0415
+
+        record_item_label(cfg, item, "delete", surface=surface, embed=surface != "bulk")
     itemdb.add_suppression(cfg.db_dsn, item["fingerprint"])
     itemdb.update_item(cfg.db_dsn, item["id"], status="dismissed")
     _delete_note(vault, item, dsn=cfg.db_dsn)
@@ -327,6 +359,7 @@ def _delete_items_blocking(
     cfg: AgentConfig,
     target_ids: list[str],
     store: Any = None,
+    surface: str = "inbox",
 ) -> list[str]:
     """Delete many items synchronously (DB + S3). Must not run on the event loop."""
     vault = None
@@ -340,7 +373,7 @@ def _delete_items_blocking(
         if item is None:
             receipts.append(f"No item {item_id}.")
             continue
-        receipts.append(_delete_item_record(cfg, item, vault))
+        receipts.append(_delete_item_record(cfg, item, vault, surface=surface))
     return receipts
 
 
@@ -354,8 +387,12 @@ async def delete_items(
     q: Optional[str] = None,
     registry: Any = None,
     store: Any = None,
+    surface: str = "inbox",
 ) -> dict[str, Any]:
     """Delete many items. Returns ``{deleted, receipts}``.
+
+    One explicit id is a deliberate reject on ``surface``; anything larger
+    (Delete all, multi-select) is labelled ``bulk`` and not trained on.
 
     Resolution and per-item DB/S3 work run in a worker thread so long bulk
     deletes (plugin flushClosed batches) do not stall Matrix sync / SSE.
@@ -370,7 +407,10 @@ async def delete_items(
         kind=kind,
         q=q,
     )
-    receipts = await asyncio.to_thread(_delete_items_blocking, cfg, target_ids, store)
+    label_surface = surface if (not all_open and len(target_ids) == 1) else "bulk"
+    receipts = await asyncio.to_thread(
+        _delete_items_blocking, cfg, target_ids, store, surface=label_surface
+    )
     return {"deleted": len(target_ids), "receipts": receipts}
 
 

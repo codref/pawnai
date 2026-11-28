@@ -620,6 +620,151 @@ def coworker_people_refresh(
     console.print(result)
 
 
+@coworker_app.command("observations")
+def coworker_observations(
+    session: str = typer.Option(..., "--session", "-s", help="Source ref (session id)."),
+    rejected: bool = typer.Option(False, "--rejected", help="Also list rejected ones."),
+    type_name: Optional[str] = typer.Option(None, "--type", "-t", help="Only this type."),
+    config: Optional[str] = typer.Option(None, "--config", "-c"),
+) -> None:
+    """List stored observations from the latest emergence run for a source."""
+    from pawn_agent.core.coworker.notes import format_offset  # noqa: PLC0415
+    from pawn_agent.core.emergence.store import get_source, list_observations  # noqa: PLC0415
+    from pawn_agent.utils.config import load_config  # noqa: PLC0415
+
+    cfg = load_config(config)
+    source = get_source(cfg.db_dsn, session)
+    if source is None:
+        console.print(
+            f"[yellow]No emergence run for {session!r}. Enable emergence and run "
+            "`pawn-server coworker process`.[/yellow]"
+        )
+        raise typer.Exit(1)
+    statuses = ("live", "rejected") if rejected else ("live",)
+    rows = list_observations(cfg.db_dsn, session, statuses=statuses)
+    if type_name:
+        rows = [r for r in rows if r["type"] == type_name]
+    table = Table(title=f"{session} — {source['stats']}")
+    for col in ("at", "type", "status", "speaker", "text"):
+        table.add_column(col)
+    for row in rows:
+        table.add_row(
+            format_offset(row["start_sec"]),
+            row["type"],
+            row["status"] if row["status"] == "live" else f"{row['reject_reason']}",
+            row["speaker_name"],
+            row["text"],
+        )
+    console.print(table)
+
+
+@coworker_app.command("compare")
+def coworker_compare(
+    session: str = typer.Option(..., "--session", "-s", help="Diarization session id."),
+    out: Optional[str] = typer.Option(
+        None,
+        "--out",
+        "-o",
+        help="Vault key for the report (default Pawn/Reviews/extract-compare-{session}.md); "
+        "'-' prints it.",
+    ),
+    config: Optional[str] = typer.Option(None, "--config", "-c"),
+) -> None:
+    """Run the single-prompt and observation extractors side by side.
+
+    Writes a review note with both item lists to tick. Creates no Items and
+    stores no observations, and works whether or not emergence is enabled.
+    """
+    import asyncio  # noqa: PLC0415
+
+    from pawn_agent.core.coworker.pipeline import session_source_text  # noqa: PLC0415
+    from pawn_agent.core.emergence.compare import render_report, run_comparison  # noqa: PLC0415
+    from pawn_agent.utils.config import load_config  # noqa: PLC0415
+    from pawn_core.vault_config import vault_store_from_config  # noqa: PLC0415
+
+    cfg = load_config(config)
+    store = vault_store_from_config(cfg)
+    text = session_source_text(cfg, session, store)
+    report = render_report(asyncio.run(run_comparison(cfg, source_ref=session, source_text=text)))
+    if out == "-":
+        console.print(report, markup=False, highlight=False)
+        return
+    key = out or f"{cfg.coworker.reviews_dir.rstrip('/')}/extract-compare-{session}.md"
+    store.write(key, report)
+    console.print(f"[green]Wrote {key}[/green]")
+
+
+labels_app = typer.Typer(help="Emergence labels: your verdicts Pawn learns from.")
+coworker_app.add_typer(labels_app, name="labels")
+
+
+@labels_app.command("import")
+def coworker_labels_import(
+    note: Optional[str] = typer.Option(
+        None, "--note", "-n", help="One review note key (default: every extract-compare note)."
+    ),
+    config: Optional[str] = typer.Option(None, "--config", "-c"),
+) -> None:
+    """Read ticks from compare review notes into labels.
+
+    Ticked = wanted. Unticked = not wanted only when the note's frontmatter
+    says ``reviewed: true``. Re-importing a note replaces its labels.
+    """
+    from pawn_agent.core.emergence.labels import (  # noqa: PLC0415
+        import_review_note,
+        import_review_notes,
+    )
+    from pawn_agent.utils.config import load_config  # noqa: PLC0415
+    from pawn_core.vault_config import vault_store_from_config  # noqa: PLC0415
+
+    cfg = load_config(config)
+    store = vault_store_from_config(cfg)
+    results = (
+        {note: import_review_note(cfg, note, store.read(note))}
+        if note
+        else import_review_notes(cfg, store)
+    )
+    table = Table(title="Imported labels")
+    for col in ("note", "accept", "reject", "skipped"):
+        table.add_column(col)
+    for key, counts in results.items():
+        table.add_row(key, str(counts["accept"]), str(counts["reject"]), str(counts["skipped"]))
+    console.print(table)
+
+
+@labels_app.command("stats")
+def coworker_labels_stats(config: Optional[str] = typer.Option(None, "--config", "-c")) -> None:
+    """Label counts by surface and verdict, plus the ranker's state."""
+    from pawn_agent.core.emergence import ranker  # noqa: PLC0415
+    from pawn_agent.core.emergence.labels import label_counts  # noqa: PLC0415
+    from pawn_agent.utils.config import load_config  # noqa: PLC0415
+
+    cfg = load_config(config)
+    counts = label_counts(cfg.db_dsn)
+    table = Table(title=f"{counts['total']} labels")
+    for col in ("surface", "verdict", "count"):
+        table.add_column(col)
+    for surface, verdict, n in counts["by"]:
+        table.add_row(surface, verdict, str(n))
+    console.print(table)
+    model = ranker.load(cfg)
+    console.print(
+        {k: v for k, v in (model or {"status": "untrained"}).items() if k not in {"w", "b"}}
+    )
+
+
+@coworker_app.command("ranker")
+def coworker_ranker(config: Optional[str] = typer.Option(None, "--config", "-c")) -> None:
+    """Retrain the relevance ranker on all labels and print its cross-validated AUC."""
+    from pawn_agent.core.emergence import ranker  # noqa: PLC0415
+    from pawn_agent.core.emergence.labels import label_counts  # noqa: PLC0415
+    from pawn_agent.utils.config import load_config  # noqa: PLC0415
+
+    cfg = load_config(config)
+    meta = ranker.train(cfg, label_total=label_counts(cfg.db_dsn)["total"])
+    console.print(meta)
+
+
 @coworker_app.command("reindex")
 def coworker_reindex(
     notes: bool = typer.Option(False, "--notes", help="Index vault markdown."),

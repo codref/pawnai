@@ -11,6 +11,7 @@ from sqlalchemy import (
     JSON,
     Boolean,
     DateTime,
+    Float,
     ForeignKey,
     Integer,
     String,
@@ -315,6 +316,109 @@ class CoworkerDecision(_Base):
     agent_run_id: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     error: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     created_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+
+
+class EmSource(_Base):
+    """One processed source for the emergence layer (session, note, mail, …)."""
+
+    __tablename__ = "em_sources"
+    __table_args__ = (UniqueConstraint("kind", "ref", name="uq_em_sources_kind_ref"),)
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    kind: Mapped[str] = mapped_column(String, nullable=False)
+    ref: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    occurred_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    content_hash: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    pipeline_version: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    run_id: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    status: Mapped[str] = mapped_column(String, nullable=False, default="done")
+    stats: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
+    processed_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+
+
+class EmWindow(_Base):
+    """One slice of a source with its triage scores (latest run only)."""
+
+    __tablename__ = "em_windows"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    source_id: Mapped[str] = mapped_column(
+        String, ForeignKey("em_sources.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    run_id: Mapped[str] = mapped_column(String, nullable=False)
+    ordinal: Mapped[int] = mapped_column(Integer, nullable=False)
+    char_start: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    char_end: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    start_sec: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    end_sec: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    content_hash: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    triage: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
+    triage_model: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    embedding: Mapped[Optional[list]] = mapped_column(Vector(1024), nullable=True)
+
+
+class EmObservation(_Base):
+    """One atomic, typed, quoted claim extracted from a window."""
+
+    __tablename__ = "em_observations"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    source_id: Mapped[str] = mapped_column(
+        String, ForeignKey("em_sources.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    window_id: Mapped[Optional[str]] = mapped_column(
+        String, ForeignKey("em_windows.id", ondelete="SET NULL"), nullable=True
+    )
+    run_id: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    type: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    text: Mapped[str] = mapped_column(Text, nullable=False)
+    context: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    speaker_name: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    speaker_id: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    quote: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    quote_score: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    start_sec: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    fields: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
+    confidence: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    extractor: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    model: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    embedding: Mapped[Optional[list]] = mapped_column(Vector(1024), nullable=True)
+    # live | rejected | superseded
+    status: Mapped[str] = mapped_column(String, nullable=False, default="live", index=True)
+    reject_reason: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    created_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+
+
+class EmLabel(_Base):
+    """A user's verdict on an observation, item or review line (training row)."""
+
+    __tablename__ = "em_labels"
+    __table_args__ = (UniqueConstraint("target_kind", "target_id", name="uq_em_labels_target"),)
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    # item | observation | review | window
+    target_kind: Mapped[str] = mapped_column(String, nullable=False)
+    target_id: Mapped[str] = mapped_column(String, nullable=False)
+    # accept | reject | edit | missed
+    verdict: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    # inbox | matrix | note | chat | review | bulk | api
+    surface: Mapped[str] = mapped_column(String, nullable=False)
+    # Observation type (decision, commitment, question, …).
+    type: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    text: Mapped[str] = mapped_column(Text, nullable=False)
+    quote: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    context: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    source_ref: Mapped[Optional[str]] = mapped_column(String, nullable=True, index=True)
+    start_sec: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    observation_id: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    item_id: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    extractor: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    features: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
+    before: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
+    after: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
+    embedding: Mapped[Optional[list]] = mapped_column(Vector(1024), nullable=True)
+    created_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    updated_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
 
 
 def get_session_analysis(session_id: str, dsn: str) -> Optional[SessionAnalysis]:

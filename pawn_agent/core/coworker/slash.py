@@ -294,6 +294,7 @@ async def resolve_chat_message(
                 classified.extra or None,
                 registry=registry,
                 store=store,
+                surface="chat",
             )
         except Exception as exc:
             logger.exception("triage command failed")

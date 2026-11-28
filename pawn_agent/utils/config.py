@@ -508,6 +508,64 @@ class CoworkerConfig(BaseModel):
     notify: CoworkerNotifyConfig = Field(default_factory=CoworkerNotifyConfig)
 
 
+class EmergenceConfig(BaseModel):
+    """``emergence:`` — observation layer (docs/plans/EMERGENCE.md).
+
+    When enabled, coworker extraction runs triage + one prompt per
+    observation type over each window, stores every observation, and
+    projects the actionable ones into Items.
+    """
+
+    enabled: bool = False
+    # Catalog id for the per-window passes; empty → background default.
+    fast_model: str = ""
+    window_chars: int = 12000
+    window_overlap: int = 1500
+    # A type is extracted from a window when triage scores it at least this.
+    triage_threshold: float = 0.35
+    # Extracted from every window regardless of triage. Triage scores are
+    # poorly calibrated (0.2-0.4 on windows with clear commitments), so the
+    # kinds that become Items are not left to it.
+    always_types: list[str] = Field(
+        default_factory=lambda: ["decision", "commitment", "block"]
+    )
+    # Observations whose quote matches the window less than this are rejected.
+    quote_min_score: float = 0.8
+    # Types whose extraction lets the model reason first. Triage never thinks.
+    # Thinking costs 2-5k tokens a call; it pays off on the kinds that
+    # become Items, less on concerns/facts/predictions.
+    think_types: list[str] = Field(
+        default_factory=lambda: ["decision", "commitment", "block"]
+    )
+    # Retrieved examples from the user's labels in each typed prompt.
+    few_shot: bool = True
+    few_shot_accept: int = 3
+    few_shot_reject: int = 2
+    # Relevance ranker trained on labels (numpy logistic regression).
+    ranker: bool = True
+    ranker_min_labels: int = 30
+    # Items scoring below this are stored as observations but not filed.
+    # 0 = score only. Applied only once the ranker's cross-validated AUC
+    # reaches ranker_min_auc.
+    ranker_min_score: float = 0.0
+    ranker_min_auc: float = 0.7
+    # Bulk deletes (Delete all / multi-select) are recorded but not trained on.
+    train_on_bulk: bool = False
+    # Observation types to extract (subset of the built-in list).
+    types: list[str] = Field(
+        default_factory=lambda: [
+            "decision",
+            "commitment",
+            "question",
+            "block",
+            "contradiction",
+            "prediction",
+            "concern",
+            "fact",
+        ]
+    )
+
+
 # ── AgentConfig ───────────────────────────────────────────────────────────────
 
 
@@ -543,6 +601,7 @@ class AgentConfig(PawnConfig):
     matrix_bot: MatrixBotConfig = Field(default_factory=MatrixBotConfig)
     vault_watcher: VaultWatcherConfig = Field(default_factory=VaultWatcherConfig)
     coworker: CoworkerConfig = Field(default_factory=CoworkerConfig)
+    emergence: EmergenceConfig = Field(default_factory=EmergenceConfig)
     tasknotes: TaskNotesConfig = Field(default_factory=TaskNotesConfig)
     capture: CaptureConfig = Field(default_factory=CaptureConfig)
     planner: PlannerConfig = Field(default_factory=PlannerConfig)

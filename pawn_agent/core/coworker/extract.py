@@ -275,6 +275,11 @@ def _similar(a: str, b: str, threshold: float) -> bool:
     return difflib.SequenceMatcher(None, na, nb, autojunk=False).ratio() >= threshold
 
 
+def claims_similar(a: str, b: str, threshold: float = 0.85) -> bool:
+    """Whether two claims say nearly the same thing (word-normalized)."""
+    return _similar(a, b, threshold)
+
+
 def _richness(item: dict[str, Any]) -> tuple[float, int]:
     return (
         float(item.get("quote_score") or 0.0),
@@ -282,17 +287,17 @@ def _richness(item: dict[str, Any]) -> tuple[float, int]:
     )
 
 
-def merge_items(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def merge_items(items: list[dict[str, Any]], *, kind_key: str = "kind") -> list[dict[str, Any]]:
     """Drop duplicates from overlapping windows, keeping the richer copy.
 
-    Two items are the same when they share a kind and either their claims
-    are near-identical or their quotes are.
+    Two items are the same when they share a kind (``kind_key``) and either
+    their claims are near-identical or their quotes are.
     """
     kept: list[dict[str, Any]] = []
     for item in items:
         dup_index = None
         for index, other in enumerate(kept):
-            if other.get("kind") != item.get("kind"):
+            if other.get(kind_key) != item.get(kind_key):
                 continue
             if _similar(other.get("text") or "", item.get("text") or "", 0.85) or (
                 (item.get("quote") or "").strip()

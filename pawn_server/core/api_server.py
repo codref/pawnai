@@ -2045,6 +2045,32 @@ async def item_action(
     return {"receipt": receipt, "item": item}
 
 
+class EmergenceLabelRequest(BaseModel):
+    """A verdict on something Pawn extracted, or something it missed."""
+
+    type: str
+    text: str
+    verdict: str = "missed"  # missed | accept | reject
+    quote: Optional[str] = None
+    source_ref: Optional[str] = None
+    start_sec: Optional[float] = None
+    target_id: Optional[str] = None
+
+
+@app.post("/v1/emergence/labels", dependencies=[Depends(_require_token)])
+async def emergence_label(
+    body: EmergenceLabelRequest,
+    cfg: Any = Depends(_get_cfg),
+) -> dict:
+    """Record a label. ``missed`` marks a passage Pawn should have extracted."""
+    from pawn_agent.core.emergence.labels import record_api_label  # noqa: PLC0415
+
+    try:
+        return await asyncio.to_thread(record_api_label, cfg, body.model_dump())
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
 # ── Deprecated vault task aliases (plugin <= 0.1) ─────────────────────────────
 
 

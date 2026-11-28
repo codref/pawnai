@@ -459,6 +459,33 @@ Phase 0 landed on 2026-11-28: `window_source`, `locate_quote` and
 does not drop items yet; that is pass 4 in Phase 1. The exit test still needs
 one real 90-minute meeting run through `pawn-server coworker process`.
 
+Phase 1 landed on 2026-11-28 behind `emergence.enabled` (default off):
+migration `0029`, package `pawn_agent/core/emergence/` (`prompts.py`
+versioned per type, `passes.py` triage + typed extraction, `pipeline.py`
+`observe_source` / `project_items`, `store.py`, `compare.py`), routed from
+`coworker.pipeline._extract`, tests in `tests/test_emergence_observations.py`.
+Differences from §4: speaker ids are not resolved yet (`speaker_name` only);
+embedding columns exist but stay empty; windows are re-run on every pass
+(no content-hash cache yet). The exit test runs through
+`pawn-server coworker compare --session ID` on five meetings: tick useful
+items in each column and compare precision and "found only here".
+
+Phase 1 tuning from four runs on one 61-minute meeting (2026-11-28): thinking
+models spent 2-5k tokens per call, so `think_types` limits reasoning to
+decision/commitment/block; triage scored clear commitments at 0.2-0.4, so
+`always_types` extracts those three kinds from every window and triage only
+gates the rest; one statement filed as several kinds is merged into one Item
+(`merge_statements`); prompts are decision v2 and question v3; replies that
+are not valid JSON are parsed leniently and retried once.
+
+Phase 2 landed on 2026-11-28 (migration `0031`, `labels.py`, `ranker.py`).
+Differences from §7: the Inbox history was not backfilled, because of ~830
+extracted items only 5 were ever accepted (the rest were mostly cleared in
+bulk), so labels start from compare review notes and single-item triage;
+`missed` counts as a positive; bulk deletes are stored but not trained on;
+nightly prompt search (level 4) is not built. There is no Portal "Pawn
+missed this" button yet; the API endpoint exists for it.
+
 ## 12. Risks and open questions
 
 - **Hallucinated observations** poison threads. Mitigation: quote verification

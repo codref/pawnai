@@ -202,7 +202,8 @@ def test_bulk_delete_all_open(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(itemdb, "list_item_ids", lambda dsn, **kwargs: ["id1", "id2"])
     called: list[str] = []
 
-    def _blocking(cfg, target_ids, store=None):  # noqa: ANN001,ARG001
+    def _blocking(cfg, target_ids, store=None, surface="inbox"):  # noqa: ANN001,ARG001
+        assert surface == "bulk"
         for item_id in target_ids:
             called.append(f"delete:{item_id}")
         return [f"Deleted {item_id}." for item_id in target_ids]
