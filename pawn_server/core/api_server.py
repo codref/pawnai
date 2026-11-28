@@ -2071,6 +2071,142 @@ async def emergence_label(
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
+def _public_subject(row: dict) -> dict:
+    out = {k: v for k, v in row.items() if k != "centroid"}
+    out["fields"] = {k: v for k, v in (row.get("fields") or {}).items() if not k.startswith("_")}
+    for key in ("last_evidence_at", "state_at", "checked_at", "review_at", "created_at", "updated_at"):
+        if out.get(key) is not None and hasattr(out[key], "isoformat"):
+            out[key] = out[key].isoformat()
+    return out
+
+
+@app.get("/v1/emergence/subjects", dependencies=[Depends(_require_token)])
+async def emergence_subjects(
+    kind: Optional[str] = None,
+    status: Optional[str] = None,
+    cfg: Any = Depends(_get_cfg),
+) -> dict:
+    """Threads, questions, decisions, commitments, predictions, hypotheses."""
+    from pawn_agent.core.emergence import subjects as subj  # noqa: PLC0415
+
+    kinds = [k for k in (kind or "").split(",") if k] or None
+    statuses = [s for s in (status or "").split(",") if s] or None
+    rows = await asyncio.to_thread(subj.list_subjects, cfg.db_dsn, kinds=kinds, statuses=statuses)
+    return {"subjects": [_public_subject(r) for r in rows]}
+
+
+@app.get("/v1/emergence/subjects/{subject_id}", dependencies=[Depends(_require_token)])
+async def emergence_subject(subject_id: str, cfg: Any = Depends(_get_cfg)) -> dict:
+    """One subject with its linked observations and history."""
+    from datetime import datetime  # noqa: PLC0415
+
+    from pawn_agent.core.emergence import subjects as subj  # noqa: PLC0415
+
+    row = await asyncio.to_thread(subj.get_subject, cfg.db_dsn, subject_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="no such subject")
+    observations = await asyncio.to_thread(subj.subject_observations, cfg.db_dsn, subject_id)
+    for o in observations:
+        o.pop("embedding", None)
+        for key in ("created_at", "linked_at"):
+            if o.get(key) is not None:
+                o[key] = o[key].isoformat()
+    since = row.get("created_at") or datetime.min
+    events = [
+        {**e, "at": e["at"].isoformat()}
+        for e in await asyncio.to_thread(subj.events_since, cfg.db_dsn, since)
+        if e["subject_id"] == subject_id
+    ]
+    return {"subject": _public_subject(row), "observations": observations, "events": events}
+
+
+class EmergenceStatusRequest(BaseModel):
+    status: str
+    # Where the verdict was given (labels record it): api | brainmap.
+    surface: Optional[str] = None
+
+
+@app.post("/v1/emergence/subjects/{subject_id}/status", dependencies=[Depends(_require_token)])
+async def emergence_subject_status(
+    subject_id: str, body: EmergenceStatusRequest, cfg: Any = Depends(_get_cfg)
+) -> dict:
+    """Accept (``active``), drop (``dismissed``), close (``done``) a subject."""
+    from pawn_agent.core.emergence import subjects as subj  # noqa: PLC0415
+    from pawn_agent.core.emergence.threads import USER_STATUSES  # noqa: PLC0415
+
+    if body.status not in USER_STATUSES:
+        raise HTTPException(status_code=400, detail=f"status must be one of {sorted(USER_STATUSES)}")
+    from pawn_agent.core.emergence.labels import record_subject_label  # noqa: PLC0415
+
+    before = await asyncio.to_thread(subj.get_subject, cfg.db_dsn, subject_id)
+    if before is None:
+        raise HTTPException(status_code=404, detail="no such subject")
+    row = await asyncio.to_thread(subj.set_status, cfg.db_dsn, subject_id, body.status, reason="api")
+    if row is None:
+        raise HTTPException(status_code=404, detail="no such subject")
+    if before["status"] != body.status:
+        surface = body.surface if body.surface in {"api", "brainmap"} else "api"
+        await asyncio.to_thread(record_subject_label, cfg, before, body.status, surface=surface)
+    return {"subject": _public_subject(row)}
+
+
+@app.get("/v1/emergence/provocations", dependencies=[Depends(_require_token)])
+async def emergence_provocations(days: int = 14, cfg: Any = Depends(_get_cfg)) -> dict:
+    """Recent provocations (shown and candidate) with verdicts."""
+    from pawn_agent.core.emergence.provocations import list_recent  # noqa: PLC0415
+
+    return {"provocations": await asyncio.to_thread(list_recent, cfg, days=days)}
+
+
+class EmergenceVerdictRequest(BaseModel):
+    verdict: str  # useful | wrong | not_now
+
+
+@app.post("/v1/emergence/provocations/{short_id}/verdict", dependencies=[Depends(_require_token)])
+async def emergence_verdict(
+    short_id: str, body: EmergenceVerdictRequest, cfg: Any = Depends(_get_cfg)
+) -> dict:
+    """Record a verdict on a provocation (and act on its subject)."""
+    from pawn_agent.core.emergence.provocations import apply_verdict  # noqa: PLC0415
+
+    return {"receipt": await asyncio.to_thread(apply_verdict, cfg, short_id, body.verdict)}
+
+
+class EmergenceNightRequest(BaseModel):
+    jobs: Optional[list[str]] = None
+
+
+@app.post("/v1/emergence/night", status_code=202, dependencies=[Depends(_require_token)])
+async def emergence_night(
+    body: EmergenceNightRequest, background: BackgroundTasks, cfg: Any = Depends(_get_cfg)
+) -> dict:
+    """Start the night shift now (all jobs, or the ones listed)."""
+    from pawn_agent.core.emergence.night import JOBS, run_night  # noqa: PLC0415
+
+    unknown = [j for j in body.jobs or [] if j not in JOBS]
+    if unknown:
+        raise HTTPException(status_code=400, detail=f"unknown jobs: {unknown}")
+    background.add_task(run_night, cfg, jobs=body.jobs)
+    return {"started": body.jobs or "all"}
+
+
+@app.post("/v1/emergence/subjects/{subject_id}/council", status_code=202,
+          dependencies=[Depends(_require_token)])
+async def emergence_council(
+    subject_id: str, background: BackgroundTasks, cfg: Any = Depends(_get_cfg)
+) -> dict:
+    """Run the council (five personas + pre-mortem) on a decision."""
+    from pawn_agent.core.emergence import subjects as subj  # noqa: PLC0415
+    from pawn_agent.core.emergence.dream import council  # noqa: PLC0415
+    from pawn_core.vault_config import vault_store_from_config  # noqa: PLC0415
+
+    row = await asyncio.to_thread(subj.get_subject, cfg.db_dsn, subject_id)
+    if row is None or row["kind"] != "decision":
+        raise HTTPException(status_code=404, detail="no such decision")
+    background.add_task(council, cfg, vault_store_from_config(cfg), subject_id)
+    return {"started": subject_id}
+
+
 # ── Deprecated vault task aliases (plugin <= 0.1) ─────────────────────────────
 
 

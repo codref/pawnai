@@ -51,7 +51,7 @@ def row_features(row: dict[str, Any]) -> np.ndarray:
 
 
 def _sigmoid(z: np.ndarray) -> np.ndarray:
-    return 1.0 / (1.0 + np.exp(-np.clip(z, -30, 30)))
+    return np.asarray(1.0 / (1.0 + np.exp(-np.clip(z, -30, 30))))
 
 
 def fit(x: np.ndarray, y: np.ndarray) -> tuple[np.ndarray, float]:

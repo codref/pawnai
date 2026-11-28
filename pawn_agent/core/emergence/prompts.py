@@ -215,13 +215,49 @@ def examples_block(name: str, examples: dict[str, list[dict[str, str]]] | None) 
     return "\n".join(lines) + "\n"
 
 
+# Promoted prompt-search variants: {type: {"definition", "rules", "tag"}}.
+_OVERRIDES: dict[str, dict] = {}
+
+
+def set_overrides(overrides: dict[str, dict] | None) -> None:
+    """Install prompt-search winners (see ``search.py``)."""
+    _OVERRIDES.clear()
+    for name, value in (overrides or {}).items():
+        if name in SPECS and isinstance(value, dict):
+            _OVERRIDES[name] = value
+
+
+def effective_spec(name: str) -> TypeSpec:
+    """The built-in spec, or its promoted override."""
+    spec = SPECS[name]
+    override = _OVERRIDES.get(name)
+    if not override:
+        return spec
+    return TypeSpec(
+        name=spec.name,
+        version=spec.version,
+        definition=str(override.get("definition") or spec.definition),
+        fields=spec.fields,
+        rules=tuple(override.get("rules") or spec.rules),
+    )
+
+
+def extractor_tag(name: str) -> str:
+    """``decision.v2`` or ``decision.v2+s3`` when a search variant is live."""
+    base = SPECS[name].extractor
+    tag = (_OVERRIDES.get(name) or {}).get("tag")
+    return f"{base}+{tag}" if tag else base
+
+
 def typed_prompt(
     name: str,
     source: str,
     part: str,
     examples: dict[str, list[dict[str, str]]] | None = None,
+    *,
+    spec: TypeSpec | None = None,
 ) -> str:
-    spec = SPECS[name]
+    spec = spec or effective_spec(name)
     fields = ",\n".join(f'  "{key}": "{desc}"' for key, desc in spec.fields.items())
     rules = "".join(f"- {rule}\n" for rule in spec.rules)
     return TYPED_PROMPT.format(

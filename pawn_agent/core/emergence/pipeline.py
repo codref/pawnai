@@ -16,12 +16,14 @@ import re
 import time
 import uuid
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import Any, Optional
 
 from pawn_agent.core.coworker.extract import (
     Window,
     locate_quote,
     merge_items,
+    speaker_at,
     split_annotations,
     start_seconds_at,
     window_source,
@@ -154,6 +156,8 @@ class ObserveResult:
     windows: list[WindowResult] = field(default_factory=list)
     observations: list[dict[str, Any]] = field(default_factory=list)
     stats: dict[str, Any] = field(default_factory=dict)
+    # When the source happened (meeting start); None → processing time.
+    occurred_at: Optional[datetime] = None
 
     @property
     def live(self) -> list[dict[str, Any]]:
@@ -211,6 +215,11 @@ def verify(obs: dict[str, Any], window: Window, body: str, quote_min: float) -> 
     obs["start_sec"] = (
         start_seconds_at(body, window.char_start + offset) if offset is not None else None
     )
+    if offset is not None and score >= quote_min:
+        # The transcript's own speaker label beats the model's spelling of it.
+        speaker = speaker_at(body, window.char_start + offset)
+        if speaker:
+            obs["speaker_name"] = speaker
     if not quote.strip():
         obs["status"], obs["reject_reason"] = "rejected", "no_quote"
     elif score < quote_min:
@@ -227,6 +236,7 @@ async def observe_source(
     source_ref: str,
     source_text: str,
     persist: bool = True,
+    occurred_at: Optional[datetime] = None,
 ) -> ObserveResult:
     """Run the Phase 1 passes over one source.
 
@@ -234,6 +244,9 @@ async def observe_source(
     only when every call failed.
     """
     settings = _settings(cfg)
+    from pawn_agent.core.emergence.search import install_overrides  # noqa: PLC0415
+
+    install_overrides(cfg)
     run_cfg, model_id = model_cfg(cfg)
     result = ObserveResult(
         source_kind=source_kind,
@@ -241,6 +254,7 @@ async def observe_source(
         run_id=str(uuid.uuid4()),
         content_hash=_hash(source_text),
         model=model_id,
+        occurred_at=occurred_at,
     )
     annotations, body = split_annotations(source_text or "")
     windows = window_source(
@@ -375,9 +389,10 @@ def _priority(item: dict[str, Any]) -> int:
     kind = item.get("kind") or ""
     rank = KIND_PRIORITY.index(kind) if kind in KIND_PRIORITY else len(KIND_PRIORITY)
     # A commitment with nobody owing it is weaker than a decision.
+    score = float(rank)
     if kind == "commitment" and not item.get("owner"):
-        rank = KIND_PRIORITY.index("decision") + 0.5
-    return int(rank * 2)
+        score = KIND_PRIORITY.index("decision") + 0.5
+    return int(score * 2)
 
 
 def merge_statements(items: list[dict[str, Any]]) -> list[dict[str, Any]]:

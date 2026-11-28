@@ -186,6 +186,116 @@ def record_api_label(cfg: Any, body: dict[str, Any]) -> dict[str, Any]:
     )
 
 
+# ── links and subjects (Portal brainmap) ─────────────────────────────────────
+
+# Labels on strings and cards. They carry no embedding, so the extraction
+# ranker, few-shot retrieval and prompt search (which read embedded or
+# typed rows) never mix them with "was this worth extracting" verdicts.
+STRUCTURE_TARGETS = ("link", "subject")
+LINK_VERDICTS = ("accept", "reject")
+
+
+def link_key(subject_id: str, text: str) -> str:
+    """Stable key for an (observation, subject) pair across re-processing.
+
+    Observation ids change when a source is re-run; the normalized text does not.
+    """
+    digest = hashlib.sha256(_norm(text).encode()).hexdigest()[:16]
+    return f"{subject_id}:{digest}"
+
+
+def record_link_label(
+    cfg: Any,
+    *,
+    subject: dict[str, Any],
+    observation: dict[str, Any],
+    verdict: str,
+    surface: str = "brainmap",
+    role: str = "",
+    before: Optional[dict[str, Any]] = None,
+) -> Optional[dict[str, Any]]:
+    """Record that a string between *observation* and *subject* is right or wrong.
+
+    ``reject`` also keeps routing from tying the pair again (see
+    :func:`rejected_link_keys`). Never raises.
+    """
+    if verdict not in LINK_VERDICTS:
+        raise ValueError(f"verdict must be one of {', '.join(LINK_VERDICTS)}")
+    text = str(observation.get("text") or "")
+    try:
+        return upsert_label(
+            cfg.db_dsn,
+            target_kind="link",
+            target_id=link_key(subject["id"], text),
+            verdict=verdict,
+            surface=surface,
+            type=str(observation.get("type") or "evidence"),
+            text=text,
+            quote=observation.get("quote") or None,
+            source_ref=observation.get("source_ref") or None,
+            start_sec=observation.get("start_sec"),
+            observation_id=observation.get("id"),
+            features={
+                "subject_id": subject["id"],
+                "subject_kind": subject.get("kind"),
+                "subject_title": subject.get("title"),
+                "role": role,
+            },
+            before=before,
+            after={"subject_id": subject["id"], "role": role} if verdict == "accept" else None,
+            embedding=None,
+        )
+    except Exception as exc:
+        logger.warning("could not record link label for %s: %s", subject.get("id"), exc)
+        return None
+
+
+def rejected_link_keys(dsn: str) -> set[str]:
+    """Keys (``link_key``) of strings the user cut or snipped."""
+    with _get_session(dsn) as db:
+        rows = db.scalars(
+            select(EmLabel.target_id).where(
+                EmLabel.target_kind == "link", EmLabel.verdict == "reject"
+            )
+        ).all()
+        return set(rows)
+
+
+def link_rejected(rejected: set[str], subject_id: str, text: str) -> bool:
+    return bool(rejected) and link_key(subject_id, text) in rejected
+
+
+def record_subject_label(
+    cfg: Any, subject: dict[str, Any], status: str, *, surface: str = "api"
+) -> Optional[dict[str, Any]]:
+    """Accepting a proposed subject is ``accept``; dismissing one is ``reject``.
+
+    Other status changes (done, parked, resolved) are lifecycle, not verdicts,
+    and are not labelled. Never raises.
+    """
+    verdict = {"active": "accept", "dismissed": "reject"}.get(status)
+    if verdict is None:
+        return None
+    try:
+        return upsert_label(
+            cfg.db_dsn,
+            target_kind="subject",
+            target_id=str(subject["id"]),
+            verdict=verdict,
+            surface=surface,
+            type=str(subject.get("kind") or "thread"),
+            text=str(subject.get("title") or ""),
+            context=(subject.get("state_md") or None),
+            features={"origin": subject.get("origin"), "before": subject.get("status")},
+            before={"status": subject.get("status")},
+            after={"status": status},
+            embedding=None,
+        )
+    except Exception as exc:
+        logger.warning("could not record subject label for %s: %s", subject.get("id"), exc)
+        return None
+
+
 # ── review notes ─────────────────────────────────────────────────────────────
 
 _CHECK_RE = re.compile(r"^- \[( |x|X)\] (.*)$")
@@ -354,7 +464,7 @@ def training_rows(dsn: str, *, include_bulk: bool = False) -> list[dict[str, Any
                 "type": r.type,
                 "verdict": "accept" if r.verdict in POSITIVE_VERDICTS else "reject",
                 "features": r.features or {},
-                "embedding": [float(x) for x in r.embedding],
+                "embedding": [float(x) for x in (r.embedding if r.embedding is not None else [])],
             }
             for r in rows
         ]

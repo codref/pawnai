@@ -421,6 +421,94 @@ class EmLabel(_Base):
     updated_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
 
 
+class EmSubject(_Base):
+    """A long-lived subject: thread, question, decision, commitment, …"""
+
+    __tablename__ = "em_subjects"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    # thread | question | decision | commitment | prediction | hypothesis
+    kind: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    title: Mapped[str] = mapped_column(Text, nullable=False)
+    slug: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    # goal | emergent | user | extracted | dream
+    origin: Mapped[str] = mapped_column(String, nullable=False)
+    # proposed | active | open | done | dismissed | expired | resolved
+    status: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    state_md: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    fields: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
+    momentum: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    source_ref: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    parent_id: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    last_evidence_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    state_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    checked_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    review_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    note_key: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    centroid: Mapped[Optional[list]] = mapped_column(Vector(1024), nullable=True)
+    created_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    updated_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+
+
+class EmLink(_Base):
+    """An observation attached to a subject with a role."""
+
+    __tablename__ = "em_links"
+    __table_args__ = (
+        UniqueConstraint("observation_id", "subject_id", name="uq_em_links_obs_subject"),
+    )
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    observation_id: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    subject_id: Mapped[str] = mapped_column(
+        String, ForeignKey("em_subjects.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    # mentions | evidence_for | evidence_against | updates | resolves | contradicts | origin
+    role: Mapped[str] = mapped_column(String, nullable=False)
+    score: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    # embedding | model | directed | cluster | user | ledger
+    linked_by: Mapped[str] = mapped_column(String, nullable=False)
+    created_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+
+
+class EmSubjectEvent(_Base):
+    """Append-only history of a subject."""
+
+    __tablename__ = "em_subject_events"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    subject_id: Mapped[str] = mapped_column(
+        String, ForeignKey("em_subjects.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    at: Mapped[datetime] = mapped_column(DateTime, nullable=False, index=True)
+    kind: Mapped[str] = mapped_column(String, nullable=False)
+    diff: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
+    cause_observation_ids: Mapped[Optional[list]] = mapped_column(JSON, nullable=True)
+
+
+class EmProvocation(_Base):
+    """A surfaced change in a subject, phrased as a question to the user."""
+
+    __tablename__ = "em_provocations"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    short_id: Mapped[str] = mapped_column(String, nullable=False, unique=True)
+    day: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    subject_id: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    kind: Mapped[str] = mapped_column(String, nullable=False)
+    text: Mapped[str] = mapped_column(Text, nullable=False)
+    score: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    features: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
+    fingerprint: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    # candidate | shown | skipped
+    status: Mapped[str] = mapped_column(String, nullable=False, default="candidate", index=True)
+    shown_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    # useful | wrong | not_now
+    verdict: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    verdict_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+
+
 def get_session_analysis(session_id: str, dsn: str) -> Optional[SessionAnalysis]:
     """Return the most recent SessionAnalysis row for *session_id*, or None."""
     from sqlalchemy import select

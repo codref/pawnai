@@ -49,6 +49,11 @@ portal_app = typer.Typer(
     rich_markup_mode="rich",
 )
 app.add_typer(coworker_app, name="coworker")
+emergence_app = typer.Typer(
+    help="Emergence layer: threads, ledger, night shift, provocations.",
+    no_args_is_help=True,
+)
+app.add_typer(emergence_app, name="emergence")
 app.add_typer(portal_app, name="portal")
 
 
@@ -1238,3 +1243,196 @@ def serve(
     except Exception as exc:
         console.print(f"[red]Error: {exc}[/red]")
         raise typer.Exit(1)
+
+
+# ── emergence ────────────────────────────────────────────────────────────────
+
+
+def _em_cfg(config: Optional[str]) -> Any:
+    from pawn_agent.utils.config import load_config  # noqa: PLC0415
+
+    return load_config(config)
+
+
+@emergence_app.command("night")
+def emergence_night(
+    job: Optional[list[str]] = typer.Option(None, "--job", "-j", help="Run only these jobs."),
+    config: Optional[str] = typer.Option(None, "--config", "-c"),
+) -> None:
+    """Run the night shift now (sync, clustering, synthesis, ledger, …)."""
+    import asyncio  # noqa: PLC0415
+
+    from pawn_agent.core.emergence.night import JOBS, run_night  # noqa: PLC0415
+
+    unknown = [j for j in job or [] if j not in JOBS]
+    if unknown:
+        console.print(f"[red]Unknown jobs {unknown}. Choose from {', '.join(JOBS)}.[/red]")
+        raise typer.Exit(1)
+    cfg = _em_cfg(config)
+    console.print(asyncio.run(run_night(cfg, jobs=list(job) if job else None)))
+
+
+@emergence_app.command("subjects")
+def emergence_subjects(
+    kind: Optional[str] = typer.Option(None, "--kind", "-k", help="thread, question, decision, …"),
+    status: Optional[str] = typer.Option(None, "--status", "-s", help="Comma-separated."),
+    config: Optional[str] = typer.Option(None, "--config", "-c"),
+) -> None:
+    """List subjects with momentum and status."""
+    from pawn_agent.core.emergence import subjects as subj  # noqa: PLC0415
+
+    cfg = _em_cfg(config)
+    rows = subj.list_subjects(
+        cfg.db_dsn,
+        kinds=[kind] if kind else None,
+        statuses=[s for s in (status or "").split(",") if s] or None,
+    )
+    table = Table(title=f"{len(rows)} subjects")
+    for col in ("id", "kind", "status", "origin", "momentum", "title"):
+        table.add_column(col)
+    for r in rows:
+        table.add_row(r["id"][:8], r["kind"], r["status"], r["origin"],
+                      "" if r["momentum"] is None else str(r["momentum"]), r["title"][:80])
+    console.print(table)
+
+
+@emergence_app.command("status")
+def emergence_status(
+    subject_id: str = typer.Argument(..., help="Subject id (prefix ok)."),
+    status: str = typer.Argument(..., help="active, dismissed, done, parked, resolved, open"),
+    config: Optional[str] = typer.Option(None, "--config", "-c"),
+) -> None:
+    """Accept, drop or close a subject."""
+    from pawn_agent.core.emergence import subjects as subj  # noqa: PLC0415
+    from pawn_agent.core.emergence.threads import USER_STATUSES  # noqa: PLC0415
+
+    cfg = _em_cfg(config)
+    if status not in USER_STATUSES:
+        console.print(f"[red]Status must be one of {sorted(USER_STATUSES)}.[/red]")
+        raise typer.Exit(1)
+    match = [s for s in subj.list_subjects(cfg.db_dsn) if s["id"].startswith(subject_id)]
+    if len(match) != 1:
+        console.print(f"[red]{len(match)} subjects match {subject_id!r}.[/red]")
+        raise typer.Exit(1)
+    subj.set_status(cfg.db_dsn, match[0]["id"], status, reason="cli")
+    console.print(f"[green]{match[0]['title']} → {status}[/green]")
+
+
+@emergence_app.command("provocations")
+def emergence_provocations(
+    days: int = typer.Option(14, "--days"),
+    config: Optional[str] = typer.Option(None, "--config", "-c"),
+) -> None:
+    """Recent provocations and verdicts."""
+    from pawn_agent.core.emergence.provocations import list_recent  # noqa: PLC0415
+
+    cfg = _em_cfg(config)
+    table = Table(title="Provocations")
+    for col in ("id", "day", "status", "verdict", "score", "text"):
+        table.add_column(col)
+    for p in list_recent(cfg, days=days):
+        table.add_row(p["short_id"], p["day"], p["status"], p["verdict"] or "",
+                      "" if p["score"] is None else str(p["score"]), p["text"][:90])
+    console.print(table)
+
+
+@emergence_app.command("verdict")
+def emergence_verdict(
+    short_id: str = typer.Argument(...),
+    verdict: str = typer.Argument(..., help="useful | wrong | not_now"),
+    config: Optional[str] = typer.Option(None, "--config", "-c"),
+) -> None:
+    """Record a verdict on a provocation."""
+    from pawn_agent.core.emergence.provocations import apply_verdict  # noqa: PLC0415
+
+    console.print(apply_verdict(_em_cfg(config), short_id, verdict))
+
+
+@emergence_app.command("council")
+def emergence_council(
+    subject_id: str = typer.Argument(..., help="Decision id (prefix ok)."),
+    config: Optional[str] = typer.Option(None, "--config", "-c"),
+) -> None:
+    """Run the council (five personas + pre-mortem) on one decision."""
+    import asyncio  # noqa: PLC0415
+
+    from pawn_agent.core.emergence import subjects as subj  # noqa: PLC0415
+    from pawn_agent.core.emergence.dream import council  # noqa: PLC0415
+    from pawn_core.vault_config import vault_store_from_config  # noqa: PLC0415
+
+    cfg = _em_cfg(config)
+    match = [s for s in subj.list_subjects(cfg.db_dsn, kinds=("decision",))
+             if s["id"].startswith(subject_id)]
+    if len(match) != 1:
+        console.print(f"[red]{len(match)} decisions match {subject_id!r}.[/red]")
+        raise typer.Exit(1)
+    key = asyncio.run(council(cfg, vault_store_from_config(cfg), match[0]["id"]))
+    console.print(f"[green]Wrote {key}[/green]")
+
+
+@emergence_app.command("retro")
+def emergence_retro(
+    kind: str = typer.Option("week", "--kind", "-k", help="week | month | quarter"),
+    force: bool = typer.Option(True, "--force/--no-force", help="Rewrite an existing retro."),
+    config: Optional[str] = typer.Option(None, "--config", "-c"),
+) -> None:
+    """Write the retrospective for the last completed week, month or quarter."""
+    import asyncio  # noqa: PLC0415
+
+    from pawn_agent.core.emergence.reflect import write_retro  # noqa: PLC0415
+    from pawn_core.vault_config import vault_store_from_config  # noqa: PLC0415
+
+    cfg = _em_cfg(config)
+    key = asyncio.run(write_retro(cfg, vault_store_from_config(cfg), kind, force=force))
+    console.print(f"[green]Wrote {key}[/green]" if key else "Nothing to write.")
+
+
+@emergence_app.command("prompt-search")
+def emergence_prompt_search(
+    type_name: str = typer.Option(..., "--type", "-t", help="decision, commitment, block, …"),
+    variants: int = typer.Option(2, "--variants"),
+    config: Optional[str] = typer.Option(None, "--config", "-c"),
+) -> None:
+    """Try prompt variants against your labels; promote a clear winner."""
+    import asyncio  # noqa: PLC0415
+
+    from pawn_agent.core.emergence.search import prompt_search  # noqa: PLC0415
+    from pawn_core.vault_config import vault_store_from_config  # noqa: PLC0415
+
+    cfg = _em_cfg(config)
+    console.print(asyncio.run(
+        prompt_search(cfg, vault_store_from_config(cfg), type_name, variants=variants)
+    ))
+
+
+@emergence_app.command("export")
+def emergence_export(
+    out: str = typer.Option("emergence-labels.jsonl", "--out", "-o"),
+    include_bulk: bool = typer.Option(False, "--include-bulk"),
+    config: Optional[str] = typer.Option(None, "--config", "-c"),
+) -> None:
+    """Export labels as JSONL for fine-tuning a model outside Pawn."""
+    from pathlib import Path  # noqa: PLC0415
+
+    from pawn_agent.core.emergence.search import export_labels  # noqa: PLC0415
+
+    cfg = _em_cfg(config)
+    n = export_labels(cfg.db_dsn, Path(out), include_bulk=include_bulk)
+    console.print(f"[green]Wrote {n} labels to {out}[/green]")
+
+
+@emergence_app.command("render")
+def emergence_render(config: Optional[str] = typer.Option(None, "--config", "-c")) -> None:
+    """Re-render every subject note and the ledger pages."""
+    from pawn_agent.core.emergence import subjects as subj  # noqa: PLC0415
+    from pawn_agent.core.emergence import vault_notes  # noqa: PLC0415
+    from pawn_agent.core.emergence.threads import render_all  # noqa: PLC0415
+    from pawn_core.vault_config import vault_store_from_config  # noqa: PLC0415
+
+    cfg = _em_cfg(config)
+    store = vault_store_from_config(cfg)
+    n = render_all(cfg, store)
+    vault_notes.render_commitments(cfg, store, subj.list_subjects(cfg.db_dsn, kinds=("commitment",)))
+    vault_notes.render_predictions(cfg, store, subj.list_subjects(cfg.db_dsn, kinds=("prediction",)))
+    console.print(f"[green]Rendered {n} subject notes plus Commitments and Predictions.[/green]")
+

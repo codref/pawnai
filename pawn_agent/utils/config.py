@@ -551,6 +551,51 @@ class EmergenceConfig(BaseModel):
     ranker_min_auc: float = 0.7
     # Bulk deletes (Delete all / multi-select) are recorded but not trained on.
     train_on_bulk: bool = False
+    # ── Phase 3+: subjects, night shift, provocations ──
+    # Vault root for thread / question / decision / retro notes.
+    vault_root: str = "Pawn"
+    # Directed pass: one call per window asking about nearby open subjects.
+    directed: bool = True
+    directed_max_subjects: int = 12
+    # Routing an observation to a subject by embedding (cosine distance).
+    route_max_distance: float = 0.32
+    route_margin: float = 0.04
+    route_ambiguous_distance: float = 0.45
+    # Emergent threads: clusters of unrouted observations.
+    cluster_distance: float = 0.35
+    cluster_min_observations: int = 4
+    cluster_min_sources: int = 2
+    cluster_window_days: int = 30
+    proposed_expiry_days: int = 21
+    # Ledger.
+    decision_review_days: int = 30
+    commitment_days: int = 7
+    # Night shift.
+    night_cron: str = "30 1 * * *"
+    night_max_minutes: int = 300
+    night_max_calls: int = 400
+    night_jobs: list[str] = Field(
+        default_factory=lambda: [
+            "sync",
+            "clustering",
+            "synthesis",
+            "assumptions",
+            "commitments",
+            "predictions",
+            "contradictions",
+            "people",
+            "dreaming",
+            "council",
+            "retros",
+            "provocations",
+        ]
+    )
+    # Morning brief.
+    brief_max_per_day: int = 3
+    # Dreaming: pairs examined per night; survivors become hypotheses.
+    dream_pairs: int = 12
+    # People notes: tone trend is opt-in.
+    people_tone: bool = False
     # Observation types to extract (subset of the built-in list).
     types: list[str] = Field(
         default_factory=lambda: [

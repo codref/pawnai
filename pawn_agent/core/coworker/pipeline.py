@@ -98,8 +98,38 @@ def _source_with_annotations(transcript: str, annotations: str) -> str:
     return f"{ANNOTATIONS_HEADING}\n{ann}\n\n{TRANSCRIPT_HEADING}\n{transcript}"
 
 
+def _source_time(cfg: AgentConfig, source_kind: str, source_ref: str) -> Optional[datetime]:
+    """When a session happened: its first transcript segment (naive UTC)."""
+    if source_kind != "session":
+        return None
+    try:
+        from sqlalchemy import func, select  # noqa: PLC0415
+
+        from pawn_core.database import TranscriptionSegment, _get_session  # noqa: PLC0415
+
+        with _get_session(cfg.db_dsn) as db:
+            first = db.scalar(
+                select(func.min(TranscriptionSegment.created_at)).where(
+                    TranscriptionSegment.session_id == source_ref
+                )
+            )
+    except Exception as exc:
+        logger.debug("session time unavailable for %s: %s", source_ref, exc)
+        return None
+    if first is None:
+        return None
+    if first.tzinfo is not None:
+        first = first.astimezone(timezone.utc).replace(tzinfo=None)
+    return first
+
+
 async def _extract(
-    cfg: AgentConfig, *, source_kind: str, source_ref: str, source_text: str
+    cfg: AgentConfig,
+    *,
+    source_kind: str,
+    source_ref: str,
+    source_text: str,
+    store: Any = None,
 ) -> tuple[list[dict[str, Any]], str]:
     """Item dicts plus an audit summary.
 
@@ -114,9 +144,16 @@ async def _extract(
         )
 
         result = await observe_source(
-            cfg, source_kind=source_kind, source_ref=source_ref, source_text=source_text
+            cfg,
+            source_kind=source_kind,
+            source_ref=source_ref,
+            source_text=source_text,
+            occurred_at=_source_time(cfg, source_kind, source_ref),
         )
         items = _rank_filter(cfg, project_items(result.observations), result.stats)
+        from pawn_agent.core.emergence.route import after_observe  # noqa: PLC0415
+
+        result.stats["subjects"] = await after_observe(cfg, result, store=store)
         stats = result.stats
         summary = (
             f"{len(items)} items from {stats.get('live', 0)} observations "
@@ -198,7 +235,11 @@ async def process_source(
     extract_run = _audit(cfg, "extract", source_text[:500], source_ref)
     try:
         extracted, summary = await _extract(
-            cfg, source_kind=source_kind, source_ref=source_ref, source_text=source_text
+            cfg,
+            source_kind=source_kind,
+            source_ref=source_ref,
+            source_text=source_text,
+            store=store,
         )
         _finish(cfg, extract_run, summary)
     except Exception as exc:

@@ -111,7 +111,7 @@ def normalize_observation(entry: dict[str, Any], type_name: str) -> dict[str, An
         "quote": _clip(entry.get("quote"), _QUOTE_MAX),
         "confidence": _score(entry.get("confidence")) if "confidence" in entry else None,
         "fields": fields,
-        "extractor": spec.extractor,
+        "extractor": prompts.extractor_tag(type_name),
     }
 
 
@@ -149,13 +149,14 @@ async def extract_type(
     *,
     think: bool = False,
     examples: dict[str, list[dict[str, str]]] | None = None,
+    spec: Any = None,
 ) -> list[dict[str, Any]]:
     """Run one type's prompt over a window. Raises :class:`PassError`.
 
     A reply that is not JSON is retried once; a second bad reply yields an
     empty list.
     """
-    prompt = prompts.typed_prompt(type_name, source, part, examples)
+    prompt = prompts.typed_prompt(type_name, source, part, examples, spec=spec)
     for attempt in range(2):
         try:
             raw = await llm_run(

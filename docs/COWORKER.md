@@ -213,7 +213,8 @@ A decision with no owner on Project X storage.
 
 Off by default. With it on, step 1 above changes: instead of one prompt per
 window, Pawn stores **observations** and files Items from the actionable ones.
-Design and later phases: [plans/EMERGENCE.md](plans/EMERGENCE.md).
+Threads, the ledger, the night shift and provocations are in
+[EMERGENCE.md](EMERGENCE.md); design: [plans/EMERGENCE.md](plans/EMERGENCE.md).
 
 ```bash
 alembic upgrade head   # 0029: em_sources, em_windows, em_observations

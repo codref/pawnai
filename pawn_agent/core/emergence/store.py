@@ -33,6 +33,8 @@ def save_run(dsn: str, result: "ObserveResult", *, pipeline_version: str) -> str
             source = EmSource(id=result.run_id, kind=result.source_kind, ref=result.source_ref)
             db.add(source)
         source.content_hash = result.content_hash
+        if getattr(result, "occurred_at", None) is not None:
+            source.occurred_at = result.occurred_at
         source.pipeline_version = pipeline_version
         source.run_id = result.run_id
         source.status = "done"

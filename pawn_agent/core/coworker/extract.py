@@ -262,6 +262,23 @@ def start_seconds_at(text: str, offset: int) -> Optional[float]:
     return best
 
 
+_SPEAKER_RE = re.compile(r"^\[\d+:\d+(?:\.\d+)?\]\s+(.+?):\s*$")
+
+
+def speaker_at(text: str, offset: int) -> Optional[str]:
+    """Speaker label of the last ``[mm:ss.ss] Name:`` turn at or before *offset*."""
+    best: Optional[str] = None
+    pos = 0
+    for line in (text or "").splitlines(keepends=True):
+        if pos > offset:
+            break
+        match = _SPEAKER_RE.match(line.rstrip("\n"))
+        if match:
+            best = match.group(1).strip()
+        pos += len(line)
+    return best
+
+
 def _norm(text: str) -> str:
     return " ".join(w for w, _ in _words(text))
 

@@ -483,8 +483,32 @@ Differences from §7: the Inbox history was not backfilled, because of ~830
 extracted items only 5 were ever accepted (the rest were mostly cleared in
 bulk), so labels start from compare review notes and single-item triage;
 `missed` counts as a positive; bulk deletes are stored but not trained on;
-nightly prompt search (level 4) is not built. There is no Portal "Pawn
+nightly prompt search (level 4) came with Phase 7. There is no Portal "Pawn
 missed this" button yet; the API endpoint exists for it.
+
+Phases 3-7 landed on 2026-11-28 (migration `0032`; `subjects.py`, `route.py`,
+`threads.py`, `ledger.py`, `provocations.py`, `reflect.py`, `dream.py`,
+`search.py`, `night.py`, `vault_notes.py`; user guide `docs/EMERGENCE.md`).
+Decisions taken while building:
+
+- One table for all subject kinds (`em_subjects.kind`); ledger entries are
+  subjects with `parent_id` pointing at their thread.
+- Routing runs right after each source (embedding first, one batched model
+  call for ambiguous cases); the directed pass stores what it finds as
+  `evidence` observations so the evidence keeps its quote and time.
+- Emergent clustering requires ≥ 2 sources but not ≥ 2 days, because
+  observation timestamps are processing time, not meeting time.
+- Notes are the UI: frontmatter `status` and `council: true` are read back;
+  Pawn tracks the status it last wrote so a user edit and a DB change are
+  told apart. No Portal tabs yet: the portal is being changed in parallel, so
+  the backend is exposed as `/v1/emergence/*` for a later Threads / Ledger tab.
+- People: digests go to `Pawn/People/`; gallery bios only get open loops
+  under autonomy `people_refresh = allow`; tone trends are not built.
+- Provocations are scored by fixed per-kind weights plus features until 20
+  useful/wrong verdicts exist, then by logistic regression on them.
+- Level 5 is an export (`emergence export`), not in-process fine-tuning.
+- `prompt_search` is not in the default night jobs (it is expensive); run it
+  by hand or add it to `night_jobs`.
 
 ## 12. Risks and open questions
 
